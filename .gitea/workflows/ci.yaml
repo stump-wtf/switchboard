@@ -1,23 +1,12 @@
-# webhook-mcp — Gitea CI (PRIMARY host: gitea.stump.rocks/joestump/webhook-mcp).
+# webhook-mcp — Gitea CI (PRIMARY host).
 #
-# Gitea is the source of truth (ADR-006). This is the fast + security gate the brief (§5.3) mandates:
-# ruff, mypy, bandit, pip-audit, Gitleaks, Semgrep, pytest. Reproduce locally with `make ci`.
+# TEMPORARY DIAGNOSTIC LAYOUT: one job per check. This Gitea instance does not expose the Actions
+# logs API (runs/jobs/logs all 404 — only /actions/tasks is available, which reports per-JOB
+# status). Splitting each check into its own job makes the failing check identifiable from job
+# status alone. Once the failing check is fixed, this collapses back to a single sequential job.
 #
-# Runner notes (why this differs from .github/workflows/ci.yml):
-#   - This job runs inside `container: python:3.12-slim-bookworm` rather than using
-#     actions/setup-python. This instance's act_runner does not reliably provision Python via
-#     setup-python; pinning the interpreter via a container image is the house-robust approach and
-#     guarantees the 3.12 floor (ADR-001).
-#   - Gitleaks is run from a pinned release binary (the dotfiles house pattern) instead of a
-#     `docker://` action-step, which cannot run inside a container job.
-#   - Single sequential job (not the parallel matrix of the GitHub mirror), matching reduit: the
-#     act_runner is more contended, so we keep it to one job.
-#   - Semgrep is scoped to code rulesets (p/python, p/security-audit) rather than `--config auto`,
-#     which additionally enforces SHA-pinned action tags — a policy the StumpCloud convention does
-#     not follow (it pins to tags + Dependabot). Same scope on the GitHub mirror.
-#
-# LOCKSTEP: keep the checks here in sync with .github/workflows/ci.yml. Dependabot only watches
-# .github/, so bump pinned versions here (gitleaks, action refs) BY HAND (ADR-006).
+# All jobs run inside `container: python:3.12-slim-bookworm` (the act_runner does not reliably
+# provision Python via actions/setup-python; the container guarantees the 3.12 floor — see ADR-006).
 name: ci
 
 on:
@@ -33,45 +22,77 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checks:
-    name: ruff + mypy + bandit + pip-audit + gitleaks + semgrep + pytest
+  ruff:
     runs-on: ubuntu-latest
     container: python:3.12-slim-bookworm
     steps:
-      - name: System deps (git for checkout/gitleaks, curl for the gitleaks binary)
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends git curl ca-certificates
+      - run: apt-get update && apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory '*'
+      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
+      - run: ruff check . && ruff format --check .
+
+  mypy:
+    runs-on: ubuntu-latest
+    container: python:3.12-slim-bookworm
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory '*'
+      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
+      - run: mypy app
+
+  bandit:
+    runs-on: ubuntu-latest
+    container: python:3.12-slim-bookworm
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory '*'
+      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
+      - run: bandit -c pyproject.toml -r app
+
+  pipaudit:
+    runs-on: ubuntu-latest
+    container: python:3.12-slim-bookworm
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory '*'
+      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
+      - run: pip-audit --skip-editable
+
+  pytest:
+    runs-on: ubuntu-latest
+    container: python:3.12-slim-bookworm
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory '*'
+      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
+      - run: pytest
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    container: python:3.12-slim-bookworm
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Trust workspace (git refuses "dubious ownership" inside a container job)
-        run: git config --global --add safe.directory '*'
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e '.[dev]'
-      - name: ruff (lint + format check)
-        run: |
-          ruff check .
-          ruff format --check .
-      - name: mypy
-        run: mypy app
-      - name: bandit
-        run: bandit -c pyproject.toml -r app
-      - name: pip-audit
-        run: pip-audit --skip-editable
-      - name: gitleaks (pinned release binary)
-        run: |
+      - run: git config --global --add safe.directory '*'
+      - run: |
           VER=8.21.2
           curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
             | tar -xzf - gitleaks
-          # --no-git scans the working tree as a directory, avoiding any dependence on git
-          # history/ownership inside the container.
           ./gitleaks detect --source . --no-git --redact --no-banner
-      - name: semgrep (code rulesets)
-        run: |
-          pip install semgrep
-          semgrep scan --config p/python --config p/security-audit --error
-      - name: pytest
-        run: pytest
+
+  semgrep:
+    runs-on: ubuntu-latest
+    container: python:3.12-slim-bookworm
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory '*'
+      - run: pip install semgrep
+      - run: semgrep scan --config p/python --config p/security-audit --error
