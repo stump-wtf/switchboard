@@ -20,12 +20,15 @@ patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
 [ADR-000](docs/adr/ADR-000-project-naming-and-scope.md)).
 
 > [!IMPORTANT]
-> **Status: docs-first, code in progress.** The canonical design record — the **architecture decision
-> records** (`docs/adr/`) and the **API/stream/tool specs** (`docs/specs/`) — is complete and published
-> to [GitHub Pages](https://joestump.github.io/switchboard/). A **Go skeleton** exists (`cmd/switchboard`,
-> `internal/`) that builds and serves `/healthz`; the receive → verify → todo → vend pipeline is built
-> *from these documents*. The "Running it" and "Usage" sections describe the **intended** behavior the
-> specs define. Start at the design index: [`docs/README.md`](docs/README.md).
+> **Status: MVP working.** The design record — the **architecture decision records** (`docs/adr/`) and
+> the **specs** (`docs/specs/`) — is published to [GitHub Pages](https://joestump.github.io/switchboard/)
+> and remains the source of truth. The **MVP is implemented and verified end-to-end**: OIDC login
+> (Pocket ID RP) → register an agent → **vend a scoped MCP endpoint** → a `switchboard channel` stdio
+> adapter serves the todo work-tools and **pushes new todos into a live Claude Code session over
+> Channels**, backed by the durable PostgreSQL queue. A signed GitHub webhook is the reference
+> ingestion path. Still ahead of the MVP: the SSE web dashboard/log screens, personas/A2A cards and
+> friending, more signed providers and the Redis pull adapter, and two-way Channels. Start at the
+> design index: [`docs/README.md`](docs/README.md).
 
 ## Two layers
 
@@ -103,13 +106,34 @@ the caller knows a secret, but unlike HMAC it can't attest the payload.
 3. **Provider config** — each provider's type, path/channel, secret status (`configured` / `missing` / `none-by-design` — never the secret itself), enable/disable toggle.
 4. **Settings** — retention policy (age + row cap), SSE reconnect behavior, general config.
 
-## Running it (intended — code deferred)
+## Running it
+
+Switchboard needs PostgreSQL. Point it at a database and run the service:
 
 ```bash
-# Once the code session lands:
-make build            # compile the switchboard binary (assets embedded)
-./switchboard         # serves the UI, /webhooks/*, /events (SSE), and the MCP mount on 127.0.0.1
+make build                                   # compile ./bin/switchboard (assets embedded)
+export SWITCHBOARD_DATABASE_URL='postgres://user@127.0.0.1:5432/switchboard?sslmode=disable'
+export SWITCHBOARD_OIDC_ISSUER=https://pocket-id.example \
+       SWITCHBOARD_OIDC_CLIENT_ID=… SWITCHBOARD_OIDC_CLIENT_SECRET=…
+./bin/switchboard serve                      # web UI + /webhooks/* + /agent API on 127.0.0.1:8080
 ```
+
+Migrations apply on startup. For a local spin without a real Pocket ID, set `SWITCHBOARD_DEV_LOGIN=1`
+(loud, dev-only) to log in and vend.
+
+**The vend → Channels loop (the MVP):**
+
+1. Log in, register an agent, and **vend a scoped endpoint** (queues + verbs). The vend page shows the
+   credential once, plus a ready-to-paste `.mcp.json`.
+2. Drop that `.mcp.json` into your project and start Claude Code:
+   ```bash
+   claude --dangerously-load-development-channels server:switchboard
+   ```
+   Claude Code spawns the `switchboard channel` stdio adapter, which authenticates with the vended
+   credential, serves the work tools (`list_todos` / `claim` / `complete` / `fail`), and pushes new
+   todos into your session as `<channel source="switchboard">` events. Requires Claude Code v2.1.80+.
+3. Send a signed webhook (`POST /webhooks/github`) — or, in dev mode, `POST /dev/todos` — and the todo
+   arrives in your session.
 
 The service is **loopback-bound by default and ships no in-app auth**. If you ever expose it on the
 homelab LAN it **must** sit behind Caddy `forward_auth`, like everything else in the stack — auth is
