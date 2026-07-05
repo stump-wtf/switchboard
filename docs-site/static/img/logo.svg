@@ -1,0 +1,19 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Switchboard">
+  <title>Switchboard</title>
+  <!-- three panel jacks -->
+  <g fill="none" stroke="#c99b4d" stroke-width="3">
+    <circle cx="16" cy="19" r="7"/>
+    <circle cx="48" cy="19" r="7"/>
+    <circle cx="32" cy="46" r="7"/>
+  </g>
+  <g fill="#241c17">
+    <circle cx="16" cy="19" r="3"/>
+    <circle cx="48" cy="19" r="3"/>
+    <circle cx="32" cy="46" r="3"/>
+  </g>
+  <!-- oxblood patch cord, left jack to bottom jack -->
+  <path d="M16 19 C 8 40, 20 44, 32 46" fill="none" stroke="#b1533f" stroke-width="4" stroke-linecap="round"/>
+  <!-- brass plug tips -->
+  <circle cx="16" cy="19" r="2.6" fill="#e3ba6a"/>
+  <circle cx="32" cy="46" r="2.6" fill="#e3ba6a"/>
+</svg>

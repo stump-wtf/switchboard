@@ -1,0 +1,119 @@
+/*
+ * switchboard docs — Infima theme override.
+ * The same switchboard-era palette as the app's static/tokens.css: bakelite, brass,
+ * operator-cream, oxblood, patch-cable tones. Dark (dim operator room) is the default.
+ */
+
+:root {
+  /* brass primary */
+  --ifm-color-primary: #9a7326;          /* darker brass — AA on cream (light mode) */
+  --ifm-color-primary-dark: #8a681f;
+  --ifm-color-primary-darker: #82621d;
+  --ifm-color-primary-darkest: #6b5118;
+  --ifm-color-primary-light: #aa7f2d;
+  --ifm-color-primary-lighter: #b28530;
+  --ifm-color-primary-lightest: #c99b4d;
+
+  --ifm-background-color: #f3ead3;        /* operator cream */
+  --ifm-background-surface-color: #ece0c2;
+  --ifm-font-color-base: #2b2017;         /* ink */
+  --ifm-heading-color: #241a12;
+  --ifm-navbar-background-color: #e9dcbd;
+  --ifm-footer-background-color: #241c17; /* walnut footer even in light */
+  --ifm-code-background: #ece0c2;
+  --ifm-code-font-size: 92%;
+  --ifm-font-family-monospace: "Iosevka", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ifm-blockquote-border-color: #c99b4d;
+  --ifm-toc-border-color: #d3c29a;
+  --docusaurus-highlighted-code-line-bg: rgba(201, 155, 77, 0.18);
+  --ifm-menu-color-background-active: rgba(201, 155, 77, 0.14);
+  --ifm-breadcrumb-item-background-active: rgba(201, 155, 77, 0.16);
+}
+
+/* Dark: the dim operator room, brass aglow */
+[data-theme='dark'] {
+  --ifm-color-primary: #c99b4d;           /* brass */
+  --ifm-color-primary-dark: #bd8d3a;
+  --ifm-color-primary-darker: #b28535;
+  --ifm-color-primary-darkest: #936d2c;
+  --ifm-color-primary-light: #d1a862;
+  --ifm-color-primary-lighter: #d8b271;
+  --ifm-color-primary-lightest: #e3ba6a;
+
+  --ifm-background-color: #1a1411;        /* bakelite */
+  --ifm-background-surface-color: #241c17;/* walnut panel */
+  --ifm-font-color-base: #ece0c6;         /* cream text */
+  --ifm-heading-color: #f0e5cb;
+  --ifm-navbar-background-color: #201812;
+  --ifm-footer-background-color: #140f0c;
+  --ifm-code-background: #221a14;
+  --ifm-blockquote-border-color: #9a7734;
+  --ifm-toc-border-color: #3d3025;
+  --ifm-color-content-secondary: #a99a7c;
+  --docusaurus-highlighted-code-line-bg: rgba(201, 155, 77, 0.22);
+  --ifm-menu-color-background-active: rgba(201, 155, 77, 0.16);
+}
+
+/* Navbar: a brass hairline under the panel */
+.navbar {
+  border-bottom: 1px solid var(--ifm-toc-border-color);
+  box-shadow: none;
+}
+.navbar__title {
+  letter-spacing: 0.02em;
+}
+
+/* Hero-ish first heading on the landing page */
+.markdown h1:first-child {
+  letter-spacing: 0.01em;
+}
+
+/* Trust-mode badges reused from the app tokens (ADR-003) so docs and UI match.
+   Usage in MDX: <span class="sb-badge sb-badge--signed">signed</span> */
+.sb-badge {
+  display: inline-block;
+  padding: 0.06rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  white-space: nowrap;
+}
+.sb-badge--signed { color: #6f9a5f; }
+.sb-badge--unverified { color: #cf9028; }
+.sb-badge--redis { color: #6d8a99; }
+.sb-badge--rejected { color: #a83f2f; }
+[data-theme='dark'] .sb-badge--unverified { color: #d99a3c; }
+
+/* Status/metadata chips at the top of each ADR (status · date) */
+.sb-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 1.25rem;
+  font-size: 0.8rem;
+}
+.sb-chip {
+  padding: 0.1rem 0.55rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--ifm-toc-border-color);
+  background: var(--ifm-background-surface-color);
+  color: var(--ifm-color-content-secondary, #6f6149);
+}
+.sb-chip strong { color: var(--ifm-font-color-base); font-weight: 600; }
+
+/* Mermaid diagrams: give them a framed panel so they read as switchboard schematics */
+.docusaurus-mermaid-container {
+  border: 1px solid var(--ifm-toc-border-color);
+  border-radius: 0.4rem;
+  padding: 0.75rem;
+  background: var(--ifm-background-surface-color);
+}
+
+/* Cards on the landing page */
+.card {
+  border: 1px solid var(--ifm-toc-border-color);
+  background: var(--ifm-background-surface-color);
+}
