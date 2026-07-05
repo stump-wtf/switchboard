@@ -5,22 +5,56 @@
 // are stored hashed in PostgreSQL. There is no external secret manager (see the design record).
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 // Config is the resolved runtime configuration.
 type Config struct {
-	// Addr is the listen address for the HTTP surface (webhooks, web UI, SSE, MCP mount).
+	// Addr is the listen address for the HTTP surface (webhooks, web UI, SSE, agent API).
 	Addr string
-	// DatabaseURL is the PostgreSQL DSN (ADR-002). Empty until the code session wires persistence.
+	// BaseURL is the externally-reachable base URL, used to build the OIDC redirect URL and the
+	// vended endpoint URLs handed to agents. No trailing slash.
+	BaseURL string
+	// DatabaseURL is the PostgreSQL DSN (ADR-002).
 	DatabaseURL string
+
+	// --- OIDC relying-party config (ADR-011: switchboard is an RP against Pocket ID, a passkey IdP) ---
+	OIDCIssuer       string // e.g. https://pocket-id.stump.rocks
+	OIDCClientID     string
+	OIDCClientSecret string
+	// OIDCRedirectURL defaults to BaseURL + /auth/callback when empty.
+	OIDCRedirectURL string
+
+	// DevLogin, when true, enables a loud, unauthenticated dev-only login that mints a session for a
+	// fixed local human — so the vend → agent → Channels loop is exercisable without a live Pocket ID.
+	// NEVER enable in production. Off by default. (SWITCHBOARD_DEV_LOGIN=1)
+	DevLogin bool
 }
 
 // FromEnv builds a Config from environment variables, applying defaults.
 func FromEnv() Config {
-	return Config{
-		Addr:        getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
-		DatabaseURL: os.Getenv("SWITCHBOARD_DATABASE_URL"),
+	base := strings.TrimRight(getenv("SWITCHBOARD_BASE_URL", "http://127.0.0.1:8080"), "/")
+	redirect := os.Getenv("SWITCHBOARD_OIDC_REDIRECT_URL")
+	if redirect == "" {
+		redirect = base + "/auth/callback"
 	}
+	return Config{
+		Addr:             getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
+		BaseURL:          base,
+		DatabaseURL:      os.Getenv("SWITCHBOARD_DATABASE_URL"),
+		OIDCIssuer:       os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
+		OIDCClientID:     os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
+		OIDCClientSecret: os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
+		OIDCRedirectURL:  redirect,
+		DevLogin:         os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
+	}
+}
+
+// OIDCConfigured reports whether the OIDC relying-party settings are present.
+func (c Config) OIDCConfigured() bool {
+	return c.OIDCIssuer != "" && c.OIDCClientID != "" && c.OIDCClientSecret != ""
 }
 
 func getenv(key, def string) string {
