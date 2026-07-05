@@ -18,6 +18,9 @@ subject to the same retention posture.
 - **Single-ownership while claimed:** at most one consumer holds a valid lease on a todo at any time.
 - **No secrets in a todo.** The `payload_ref` points at stored, sanitized event data
   ([ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md)); signing secrets never appear.
+- **The todo is the delivery of record.** A todo may *also* be announced to an attached session via a
+  best-effort Channels push, but that push never replaces claiming from the queue — an offline session
+  loses nothing ([ADR-013](../adr/ADR-013-channels-push-delivery.md), [channel-delivery spec](channel-delivery.md)).
 
 ## Todo object
 

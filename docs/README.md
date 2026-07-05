@@ -8,9 +8,10 @@ Two layers:
 
 - **Event-store core (ADR-000–006)** — receive, verify, persist, and expose inbound webhooks/queue
   events to MCP clients and a local web UI.
-- **Agent layer (ADR-007–012)** — inbound events become durable **todos**; humans register agents and
+- **Agent layer (ADR-007–013)** — inbound events become durable **todos**; humans register agents and
   are vended scoped MCP endpoints; personas are A2A Agent Cards; cross-agent work is granted by
-  human-approved friending.
+  human-approved friending; and todos are pushed into live harness sessions over Claude Code Channels,
+  with the durable queue staying the ledger.
 
 ## Architecture Decision Records (MADR)
 
@@ -29,6 +30,7 @@ Two layers:
 | [ADR-010](adr/ADR-010-a2a-discovery-human-vended-friending.md) | **A2A discovery + human-vended friending** | A2A discovers; MCP tools; todo-queue transports; approval-is-vend. |
 | [ADR-011](adr/ADR-011-identity-assurance-oidc-passkey-deferred.md) | **Identity & assurance** | Simple OIDC (Pocket ID) now; passkey `amr`/`acr` step-up deferred. |
 | [ADR-012](adr/ADR-012-agents-self-manage-webhooks.md) | **Agents self-manage webhooks** | Webhook CRUD within a human-vended ceiling; switchboard owns verification. |
+| [ADR-013](adr/ADR-013-channels-push-delivery.md) | **Channels push-delivery** | Claude Code Channels pushes into a live session as a notify layer; the durable todo queue stays the ledger. |
 
 ## Specifications
 
@@ -43,6 +45,7 @@ Two layers:
 | [personas-and-agent-cards.md](specs/personas-and-agent-cards.md) | Persona record, verb→skill derivation, A2A Agent Card + well-known (ADR-009). |
 | [friend-requests.md](specs/friend-requests.md) | Discover → request → approval-todo → approve(=vend) flow (ADR-010). |
 | [accounts-and-endpoints.md](specs/accounts-and-endpoints.md) | Human OIDC account, agent registration, vend/scope/ceiling (ADR-008/011/012). |
+| [channel-delivery.md](specs/channel-delivery.md) | Channels push: todo→notification mapping, lossy/degrade-to-pull semantics, two-way reply/permission relay (ADR-013). |
 
 ## Open questions / to confirm
 
@@ -67,6 +70,22 @@ Decisions recorded as *proposed* that Joe should confirm before the code session
    The ADR-005 event tools (history/audit) and the todo tools (work) are currently two surfaces sharing
    one SQLite layer, with events as todo producers. Whether they remain two surfaces indefinitely, or
    whether events collapse into a pure sub-record of todos, is left to confirm.
+
+4. **Channels push: notification-only vs. inline payload** *(proposed: notification-only)* —
+   [ADR-013](adr/ADR-013-channels-push-delivery.md), [channel-delivery spec](specs/channel-delivery.md).
+   A Channels wake carries the todo id + summary and the agent claims via the queue; whether to also
+   inline a small payload in the push is left to confirm.
+
+5. **Channels two-way (reply tool + permission relay): MVP or defer** *(proposed: defer)* —
+   [ADR-013](adr/ADR-013-channels-push-delivery.md).
+   One-way notify first; the reply tool and human-consent permission relay (mapping onto todo
+   completion and friend approvals) are recommended for a later phase. **Confirm.**
+
+6. **Local channel-adapter ↔ central switchboard handshake** —
+   [ADR-013](adr/ADR-013-channels-push-delivery.md), [channel-delivery spec](specs/channel-delivery.md).
+   Channels needs a local stdio subprocess but switchboard is a central service; the thin local adapter
+   authenticates with the vended credential and bridges pull + push. The exact adapter/auth shape is a
+   code-session detail to confirm.
 
 ## Conventions
 

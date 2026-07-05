@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-003, ADR-005, ADR-008, ADR-012]
+related: [ADR-003, ADR-005, ADR-008, ADR-012, ADR-013]
 ---
 
 # ADR-007: Todos as the Core Primitive (not a message inbox)
@@ -18,7 +18,7 @@ This ADR establishes the primitive the agent-facing layer of switchboard is buil
 * **Work outlives a read.** An agent handing off, crashing, or timing out must not silently drop the work. The object has to persist until it is explicitly completed, and a crash must leave it re-claimable.
 * **At-least-once ingestion demands dedup.** Webhook deliveries retry; the same GitHub delivery can arrive twice ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)). Two deliveries of the same event must collapse into **one** unit of work, not two.
 * **Concurrency without double-processing.** Multiple agents (or multiple personas of one agent, [ADR-009](ADR-009-personas-as-scoped-agent-cards.md)) may drain the same queue. Exactly one must own a given item at a time.
-* **MCP can't push.** The MCP protocol is request/response; the server cannot notify a client of new work. Whatever primitive we choose must be **pullable** — an agent drains its own list on its own loop.
+* **The MCP tool model can't push; the primitive must be pullable.** MCP request/response has no server-initiated notify on the tool surface, so whatever primitive we choose must be **pullable** — an agent drains its own list on its own loop. *(Later refinement: [ADR-013](ADR-013-channels-push-delivery.md) adds a real push path via the MCP-based Claude Code Channels capability. It does **not** overturn this decision — Channels delivery is best-effort/lossy, so it rides on top of the durable pull queue as a notify layer, never replacing it.)*
 * **Ownership and accountability are first-class.** Every unit of work should carry who it is for (an assignee or a pool/topic) so it can be routed, and — via [ADR-008](ADR-008-human-principal-vended-endpoints.md) — traced to a human owner.
 * **Producers are decoupled from consumers.** Webhooks, the Redis consumer, other agents, and switchboard itself all create work; agents consume it. The primitive is the contract between them.
 
@@ -72,7 +72,7 @@ The event log and the todo model are complementary, not competing: **an event is
 * Good, because producers (webhooks, Redis, agents, switchboard itself) and consumers are decoupled through one durable contract.
 * Bad, because at-least-once means handlers **must** be idempotent; exactly-once is not offered (it is not achievable end-to-end). Documented as a handler requirement.
 * Bad, because leases add a time dimension (TTL tuning, clock assumptions) a plain inbox would not have — the cost of crash-safety.
-* Bad, because polling has latency and load characteristics push would not; mitigated by long-poll/backoff in the worker loop and acceptable for this system's scale.
+* Bad, because polling has latency and load characteristics push would not; mitigated by long-poll/backoff in the worker loop, by acceptable scale, and — where a harness supports it — by a Channels notify that wakes the consumer immediately while the durable queue stays the ledger ([ADR-013](ADR-013-channels-push-delivery.md)).
 
 ### Confirmation
 

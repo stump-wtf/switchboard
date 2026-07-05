@@ -16,6 +16,10 @@ verbs in its **verb allowlist**, acting only on its **granted queues**.
 - **Idempotent producers.** `create_for`/`create_webhook`-produced todos dedup on idempotency key
   ([todos spec](todos.md)).
 - **Time:** ISO-8601 UTC. **Errors:** stable `code` + human `message`, never secret-bearing.
+- **Push is a doorbell, not a verb.** The same vended endpoint may also carry the Claude Code Channels
+  `claude/channel` capability and *push* a `notifications/claude/channel` wake when a todo is
+  created/assigned — but the agent still **claims/completes via the verbs below**. Push is best-effort
+  and never gates correctness ([ADR-013](../adr/ADR-013-channels-push-delivery.md), [channel-delivery spec](channel-delivery.md)).
 
 ## Verb groups
 
