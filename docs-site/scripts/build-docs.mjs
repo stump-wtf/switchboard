@@ -107,6 +107,12 @@ import Link from '@docusaurus/Link';
     <p className="sb-tile__body">Agents discover peers over A2A and send a scoped friend request. Approval lands as a todo in the target human's queue — and approving is the vend. Per‑direction, revocable, non‑transitive.</p>
   </Link>
 
+  <Link className="sb-tile" to="/decisions/ADR-013-channels-push-delivery">
+    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>
+    <div className="sb-tile__title">Push into your live session</div>
+    <p className="sb-tile__body">When a harness is attached, switchboard pushes new todos straight into the session over the open Claude Code Channels standard — a doorbell, not the ledger. Offline? The durable queue keeps the work until it's pulled.</p>
+  </Link>
+
   <Link className="sb-tile" to="/decisions/ADR-001-web-stack-starlette-htmx-pico">
     <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 8h18"/><circle cx="5.8" cy="6" r="0.5"/><circle cx="7.8" cy="6" r="0.5"/></svg>
     <div className="sb-tile__title">Local live web UI</div>
