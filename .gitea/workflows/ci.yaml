@@ -1,12 +1,18 @@
 # webhook-mcp — Gitea CI (PRIMARY host).
 #
-# TEMPORARY DIAGNOSTIC LAYOUT: one job per check. This Gitea instance does not expose the Actions
-# logs API (runs/jobs/logs all 404 — only /actions/tasks is available, which reports per-JOB
-# status). Splitting each check into its own job makes the failing check identifiable from job
-# status alone. Once the failing check is fixed, this collapses back to a single sequential job.
+# Host-based (NOT container-based): this act_runner cannot run the Node-based actions/checkout
+# inside a `container:` job (verified — a per-check split had all jobs fail), and it also does not
+# reliably provision Python via actions/setup-python (the very first run failed all jobs at that
+# step). So we follow the house pattern (reduit/dotfiles run on the host image with `sudo apt-get`):
+# install Python 3.12 + venv via apt and work inside a venv (avoids PEP 668 "externally-managed").
 #
-# All jobs run inside `container: python:3.12-slim-bookworm` (the act_runner does not reliably
-# provision Python via actions/setup-python; the container guarantees the 3.12 floor — see ADR-006).
+# `probe-syspy` is a temporary diagnostic that passes iff the runner's python3 is >= 3.12. If the
+# main `checks` job ever fails, this pinpoints whether the host Python version is the cause. It is
+# removed once CI is confirmed green.
+#
+# LOCKSTEP: the CHECKS here mirror .github/workflows/ci.yml (which provisions Python differently —
+# GitHub hosted runners support actions/setup-python + a version matrix). Dependabot only watches
+# .github/, so bump pins here by hand (ADR-006).
 name: ci
 
 on:
@@ -22,77 +28,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ruff:
+  probe-syspy:
     runs-on: ubuntu-latest
-    container: python:3.12-slim-bookworm
     steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends git
-      - uses: actions/checkout@v4
-      - run: git config --global --add safe.directory '*'
-      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
-      - run: ruff check . && ruff format --check .
+      - run: python3 --version || true
+      - name: pass iff host python3 >= 3.12
+        run: python3 -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 12) else 1)"
 
-  mypy:
+  checks:
+    name: ruff + mypy + bandit + pip-audit + gitleaks + semgrep + pytest
     runs-on: ubuntu-latest
-    container: python:3.12-slim-bookworm
     steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends git
-      - uses: actions/checkout@v4
-      - run: git config --global --add safe.directory '*'
-      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
-      - run: mypy app
-
-  bandit:
-    runs-on: ubuntu-latest
-    container: python:3.12-slim-bookworm
-    steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends git
-      - uses: actions/checkout@v4
-      - run: git config --global --add safe.directory '*'
-      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
-      - run: bandit -c pyproject.toml -r app
-
-  pipaudit:
-    runs-on: ubuntu-latest
-    container: python:3.12-slim-bookworm
-    steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends git
-      - uses: actions/checkout@v4
-      - run: git config --global --add safe.directory '*'
-      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
-      - run: pip-audit --skip-editable
-
-  pytest:
-    runs-on: ubuntu-latest
-    container: python:3.12-slim-bookworm
-    steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends git
-      - uses: actions/checkout@v4
-      - run: git config --global --add safe.directory '*'
-      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
-      - run: pytest
-
-  gitleaks:
-    runs-on: ubuntu-latest
-    container: python:3.12-slim-bookworm
-    steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: git config --global --add safe.directory '*'
-      - run: |
+      - name: Python 3.12 + venv (host runner)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 python3-venv python3-pip curl ca-certificates
+          python3 --version
+      - name: Install (venv avoids PEP 668 externally-managed error)
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]' semgrep
+      - name: ruff (lint + format check)
+        run: |
+          . .venv/bin/activate
+          ruff check .
+          ruff format --check .
+      - name: mypy
+        run: |
+          . .venv/bin/activate
+          mypy app
+      - name: bandit
+        run: |
+          . .venv/bin/activate
+          bandit -c pyproject.toml -r app
+      - name: pip-audit
+        run: |
+          . .venv/bin/activate
+          pip-audit --skip-editable
+      - name: gitleaks (pinned release binary, house pattern)
+        run: |
           VER=8.21.2
           curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
             | tar -xzf - gitleaks
           ./gitleaks detect --source . --no-git --redact --no-banner
-
-  semgrep:
-    runs-on: ubuntu-latest
-    container: python:3.12-slim-bookworm
-    steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends git
-      - uses: actions/checkout@v4
-      - run: git config --global --add safe.directory '*'
-      - run: pip install semgrep
-      - run: semgrep scan --config p/python --config p/security-audit --error
+      - name: semgrep (code rulesets)
+        run: |
+          . .venv/bin/activate
+          semgrep scan --config p/python --config p/security-audit --error
+      - name: pytest
+        run: |
+          . .venv/bin/activate
+          pytest
