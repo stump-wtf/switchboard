@@ -1,73 +1,18 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Go build output
+/bin/
+/switchboard
+*.exe
+*.test
+*.out
+coverage.out
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
-
-# Type checkers / linters
-.mypy_cache/
-.dmypy.json
-dmypy.json
-.pyre/
-.pytype/
-.ruff_cache/
-
-# Environments
+# Env / secrets — NEVER commit (secrets are injected via env/deployment config)
 .env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Secrets / auth — NEVER commit (secrets come from OpenBao, see ADR-004)
-.vault-token
+.env.*
 *.pem
 *.key
-secret_id
-.secret_id
 
-# switchboard runtime data — SQLite lives on disk, not in git (ADR-002)
-*.db
-*.sqlite
-*.sqlite3
-*.db-wal
-*.db-shm
+# switchboard runtime data (kept out of git)
 data/
 
 # IDE / editor / OS

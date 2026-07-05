@@ -20,12 +20,12 @@ patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
 [ADR-000](docs/adr/ADR-000-project-naming-and-scope.md)).
 
 > [!IMPORTANT]
-> **Status: docs-first bootstrap.** This repository currently contains the **architecture decision
-> records** (`docs/adr/`), the **API/stream/tool specs** (`docs/specs/`), and the repo/CI scaffolding.
-> There is **no application code yet** beyond empty package placeholders under `app/` — it is written
-> *fresh from these documents* in a follow-up session. The "Running it" and "Usage" sections below
-> describe the **intended** behavior these specs define, not something you can `pip install` and run
-> today. Start at the design index: [`docs/README.md`](docs/README.md).
+> **Status: docs-first, code in progress.** The canonical design record — the **architecture decision
+> records** (`docs/adr/`) and the **API/stream/tool specs** (`docs/specs/`) — is complete and published
+> to [GitHub Pages](https://joestump.github.io/switchboard/). A **Go skeleton** exists (`cmd/switchboard`,
+> `internal/`) that builds and serves `/healthz`; the receive → verify → todo → vend pipeline is built
+> *from these documents*. The "Running it" and "Usage" sections describe the **intended** behavior the
+> specs define. Start at the design index: [`docs/README.md`](docs/README.md).
 
 ## Two layers
 
