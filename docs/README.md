@@ -84,11 +84,12 @@ Decisions recorded as *proposed* that Joe should confirm before the code session
    One-way notify first; the reply tool and human-consent permission relay (mapping onto todo
    completion and friend approvals) are recommended for a later phase. **Confirm.**
 
-6. **Local channel-adapter ↔ central switchboard handshake** —
+6. **Channels transport: HTTP-direct vs. local stdio adapter** —
    [ADR-013](adr/ADR-013-channels-push-delivery.md), [channel-delivery spec](specs/channel-delivery.md).
-   Channels needs a local stdio subprocess but switchboard is a central service; the thin local adapter
-   authenticates with the vended credential and bridges pull + push. The exact adapter/auth shape is a
-   code-session detail to confirm.
+   If Claude Code Channels can use the Streamable HTTP MCP transport, switchboard serves channels
+   directly over HTTP (no separate process). If Channels stays stdio-subprocess-only, a thin Go stdio
+   adapter bridges to central switchboard with the vended credential. Language-independent (Go either
+   way); the transport + handshake shape is a code-session detail to confirm.
 
 7. **Pull-adapter ack timing: ack-on-store vs. ack-on-complete** *(proposed: ack-on-store)* —
    [ADR-014](adr/ADR-014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](specs/ingestion-adapters.md).

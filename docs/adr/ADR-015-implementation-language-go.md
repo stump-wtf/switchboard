@@ -2,33 +2,33 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-001, ADR-002, ADR-003, ADR-005, ADR-006, ADR-014]
+related: [ADR-001, ADR-002, ADR-003, ADR-005, ADR-006, ADR-010, ADR-013, ADR-014]
 ---
 
 # ADR-015: Implementation Language & Runtime — Go
 
 ## Context and Problem Statement
 
-The implementation language was, until now, only *implicit* — the web-stack ADR ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)) originally assumed Python/Starlette because the first cut of switchboard was a single-node homelab **event store**. What the design has since become is a different animal: a **centrally hosted, multi-tenant service** whose hot path is a **concurrent todo work-queue** — many agent-worker loops draining PostgreSQL via `FOR UPDATE SKIP LOCKED` ([ADR-002](ADR-002-postgres-persistence-and-retention.md)), a lease reaper, pull-adapter queue consumers ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)), webhook ingestion, SSE + Channels push ([ADR-013](ADR-013-channels-push-delivery.md)), and a fleet of vended MCP endpoints ([ADR-008](ADR-008-human-principal-vended-endpoints.md)). That is a concurrency- and operations-heavy profile, and it deserves an explicit language decision. Because **no application code exists yet** (docs-first), this is the cheapest possible moment to choose — a language *selection*, not a migration.
+The implementation language was, until now, only *implicit* — the web-stack ADR ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)) originally assumed Python/Starlette from the earliest single-node cut of switchboard. Now that switchboard is a **centrally hosted, managed service**, the language should be an explicit decision and should match the rest of the fleet. **Every other centrally hosted/managed StumpCloud service is Go + HTMX + SSE**, and switchboard is not special: MCP, A2A, and Claude Code Channels are **ordinary wire protocols over HTTP and stdio** — MCP is JSON-RPC (Streamable HTTP or stdio), A2A is HTTP + JSON with SSE streaming, and a Channel is just MCP notifications. A Go/HTMX/SSE service serves all of that natively. Since **no application code exists yet** (docs-first), this is simply the moment to write the house choice down — a language *selection*, not a migration.
 
 ## Decision Drivers
 
-* **Concurrency fit.** The core workload is many long-lived workers draining queues, timers (leases/retention), fan-out consumers, and streaming connections. A goroutine-per-worker model maps directly onto that with no async/await coloring and no GIL serializing CPU-bound bits (signature verification, JSON handling) under load.
-* **Operational simplicity for a hosted service.** A single statically-linked binary with embedded assets deploys as one container with a tiny image, low memory, and fast start — easy to run several instances against one PostgreSQL. This matches the StumpCloud central-service posture better than a Python app + ASGI worker manager + interpreter/venv.
-* **Type safety across many moving parts.** Scopes, verb allowlists, the todo state machine, trust modes, and adapter families are exactly the kind of invariants a compiler should enforce.
-* **Protocol SDKs now exist in Go.** The historical reason to pick Python here — MCP/A2A maturity — has largely closed: the **official Go MCP SDK** and A2A Go support both landed in 2025, so the whole agent-protocol surface is buildable in Go.
-* **Idiomatic Postgres queue.** `pgx` + `FOR UPDATE SKIP LOCKED` is a well-trodden Go pattern; the queue mechanics in [ADR-002](ADR-002-postgres-persistence-and-retention.md) are native, not bolted on.
-* **No sunk cost.** With zero code written, "we already have Python" is not a reason — the switching cost is docs, which this ADR pays down.
+* **Fleet consistency.** The centrally hosted/managed StumpCloud services are Go + HTMX + SSE. One stack means shared ops, deploy patterns, CI (reduit's Go gate, [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)), and idioms. Deviating for one service needs a *reason*, and there isn't one.
+* **The agent protocols are just HTTP/stdio.** MCP (JSON-RPC over Streamable HTTP or stdio), A2A (HTTP + JSON + SSE), and Channels (MCP notifications) are wire formats, not a runtime requirement. Go's stdlib `net/http` + JSON + SSE serve them directly; the official Go MCP SDK and A2A Go support exist, but the surface is buildable from the wire spec regardless.
+* **Concurrency fit reinforces it.** The hot path is many long-lived workers draining PostgreSQL queues via `FOR UPDATE SKIP LOCKED` ([ADR-002](ADR-002-postgres-persistence-and-retention.md)), lease/retention timers, pull-adapter consumers ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)), and streaming connections (SSE, Channels). Goroutines map onto that directly — no async coloring, no GIL.
+* **Operational simplicity.** A single statically-linked binary with embedded assets is a tiny container, low memory, fast start, trivially run as several instances against one PostgreSQL — the same ops story as the rest of the fleet.
+* **Type safety across many moving parts.** Scopes, verb allowlists, the todo state machine, trust modes, and adapter families are invariants a compiler should enforce.
+* **No sunk cost.** With zero code written, "we already have Python" is not a reason; the switching cost is docs, which this ADR pays down.
 
 ## Considered Options
 
-* **Go** — statically-typed, goroutine concurrency, single-binary deploys; official Go MCP SDK + A2A Go.
-* **Python** — Starlette/`asyncpg`/the reference `mcp` Python SDK; the richest, fastest-moving MCP/A2A ecosystem and Joe's house language (the existing Channels prototype is Python).
-* **TypeScript / Node** — the most MCP/Channels-native runtime (the reference channels are TS/Bun), strong for the agent-protocol surface.
+* **Go** — the house stack for centrally hosted services (Go + HTMX + SSE); statically typed, goroutine concurrency, single-binary deploys.
+* **Python** — Starlette/`asyncpg`/the `mcp` Python SDK; a mature MCP ecosystem and the language of the existing Channels prototype, but inconsistent with the fleet.
+* **TypeScript / Node** — where the reference channels ship (TS/Bun); also inconsistent with the fleet and buys nothing the wire protocols don't already give Go.
 
 ## Decision Outcome
 
-Chosen option: **Go.** The service is now a long-lived, concurrent, multi-worker queue service, which is Go's strongest domain; the SDK gap that once favored Python has closed; and with no code written the choice is free.
+Chosen option: **Go.** It is the established stack for centrally hosted StumpCloud services, and nothing about MCP/A2A/Channels — all HTTP/stdio wire protocols — argues for treating switchboard differently. Concurrency, single-binary ops, and static typing all reinforce the choice.
 
 ### What this pins (details in the cited ADRs)
 
@@ -38,55 +38,60 @@ Chosen option: **Go.** The service is now a long-lived, concurrent, multi-worker
 | PostgreSQL | `pgx` (no heavy ORM); `SKIP LOCKED` claims, `ON CONFLICT` dedup | [ADR-002](ADR-002-postgres-persistence-and-retention.md) |
 | Signature verification | `crypto/hmac` + `crypto/subtle` (`hmac.Equal` / constant-time compare) | [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) |
 | Pull-adapter queue client | a Go Redis client (`redis/go-redis`), streams + consumer groups | [ADR-014](ADR-014-ingestion-adapters-push-pull.md) |
-| MCP server + tools/resources | the official **Go MCP SDK** (`github.com/modelcontextprotocol/go-sdk`) | [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) |
+| MCP server + tools/resources | the official **Go MCP SDK** (`github.com/modelcontextprotocol/go-sdk`), or the wire protocol directly | [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) |
+| A2A discovery / agent cards | `net/http` + JSON (+ SSE for streaming) | [ADR-010](ADR-010-a2a-discovery-human-vended-friending.md) |
 | Secrets (OpenBao AppRole) | the Vault/OpenBao Go HTTP API client | [ADR-004](ADR-004-secrets-management-openbao-approle.md) |
 | Build & CI | `go build` / `go test` / `go vet` + `golangci-lint`; a single static binary | [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md) |
 
 A pinned modern Go toolchain (Go 1.23+); the exact minor version and dependency set are the code session's to lock in `go.mod`.
 
-### The Channels nuance
+### Channels is HTTP/stdio too — a transport detail, not a language one
 
-A Claude Code **channel** is an MCP server the harness spawns over stdio ([ADR-013](ADR-013-channels-push-delivery.md)); the reference channels are TS/Bun and the switchboard prototype is Python. In Go this is the one component slightly off the busiest path: it is served by the Go MCP SDK (which supports the stdio transport and server-initiated notifications), or, if a specific Channels feature lags in the Go SDK, kept as a **thin separate channel-adapter process** in whatever language has the best channel support, bridging to central switchboard with a vended credential ([channel-delivery spec](../specs/channel-delivery.md)). Either way the durable todo queue remains the ledger, so the adapter is replaceable.
+A Channel is an MCP server ([ADR-013](ADR-013-channels-push-delivery.md)); Go serves it like any other MCP surface. The only open detail is **transport**, and it is language-independent:
+
+* If Claude Code Channels can use the **Streamable HTTP MCP transport**, switchboard serves channels **directly over HTTP** alongside its vended MCP endpoints and the web UI's SSE — no separate process, maximally consistent with the rest of the fleet.
+* If Channels remains a **local stdio subprocess** of the harness, a small **Go** stdio binary bridges to central switchboard with a vended credential ([channel-delivery spec](../specs/channel-delivery.md)) — still Go, still the same binary/toolchain.
+
+Either way it is Go, and the durable todo queue remains the ledger. The Python prototype under `~/src/switchboard` is a **behavioral reference** for what a channel emits, not a codebase to carry forward.
 
 ### Consequences
 
-* Good, because the concurrency model fits the worker/queue/timer/stream workload directly — no event-loop gymnastics, no GIL.
-* Good, because a single static binary with embedded assets is the simplest thing to deploy and scale horizontally for a central service.
+* Good, because switchboard is one more Go + HTMX + SSE service — shared ops, deploys, CI, and idioms across the fleet, no special-casing.
+* Good, because goroutines fit the worker/queue/timer/stream workload directly — no event-loop gymnastics, no GIL.
+* Good, because a single static binary with embedded assets is the simplest thing to deploy and scale horizontally.
 * Good, because compile-time types catch whole classes of scope/state-machine bugs before runtime.
-* Good, because the Postgres queue, HMAC verification, and MCP surface are all idiomatic Go with first-party or official libraries.
-* Bad, because Go is off the *busiest* MCP/A2A/Channels ecosystem path (Python/TS) — mitigated by the now-official Go SDKs and the replaceable channel-adapter boundary.
-* Bad, because it discards the working Python Channels prototype as a starting point — accepted; it remains a reference for behavior, and there is no other code to carry over.
-* Neutral, because contributors fluent in Python must switch — acceptable for a single-maintainer service where the runtime fit wins.
+* Good, because the Postgres queue, HMAC verification, and the MCP/A2A/Channels surfaces are all ordinary Go over `net/http`/stdio + JSON, with official SDKs available where useful.
+* Neutral, because contributors fluent only in Python must switch — expected, since this is the house stack.
 
 ### Confirmation
 
 * The repo is a Go module (`go.mod`), not a Python package; there is no `pyproject.toml`/`requirements` for the service.
 * CI runs the Go toolchain (`build`/`test`/`vet` + `golangci-lint`) and produces a static binary ([ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
-* The MCP surface is served via the Go MCP SDK; a smoke test exercises a tool call and the recent-events resource ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
+* The MCP surface is served over Go `net/http`/stdio (via the Go MCP SDK or directly); a smoke test exercises a tool call and the recent-events resource ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
 * A concurrency test exercises N goroutine workers claiming one Postgres queue with `SKIP LOCKED` and no double-claim ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
 
 ## Pros and Cons of the Options
 
 ### Go (chosen)
 
-* Good, because goroutine concurrency, single-binary ops, and compile-time types fit a concurrent central queue service.
-* Good, because official Go MCP + A2A SDKs and idiomatic `pgx`/`SKIP LOCKED`.
-* Bad, because the Channels/MCP reference ecosystem is Python/TS — a manageable, bounded gap.
+* Good, because it *is* the centrally-hosted house stack (Go + HTMX + SSE) — consistency, not novelty.
+* Good, because goroutine concurrency, single-binary ops, and compile-time types fit a concurrent central queue service, and the agent protocols are plain HTTP/stdio wire formats Go serves natively (official Go MCP + A2A SDKs available).
+* Bad, because if a bleeding-edge Channels feature ships first in the TS/Python SDK, Go may trail briefly — bounded, and irrelevant to the durable-queue ledger.
 
 ### Python (rejected)
 
-* Good, because the richest MCP/A2A/Channels ecosystem, Joe's house language, and a working Channels prototype.
-* Bad, because the GIL and async-coloring are a poorer fit for a worker/queue-heavy long-lived service, and at this scale the language — not Postgres — would be the thing you tune around; with no code yet, ecosystem familiarity is the only real pull, and it does not outweigh the runtime fit.
+* Good, because a mature MCP ecosystem and the language of the existing Channels prototype.
+* Bad, because it is inconsistent with the Go fleet with no offsetting advantage (the protocols are just HTTP/stdio), and the GIL/async-coloring are a poorer fit for a worker/queue-heavy service. With no code yet, familiarity is the only pull, and it does not outweigh fleet consistency.
 
 ### TypeScript / Node (rejected)
 
-* Good, because it is the most MCP/Channels-native runtime.
-* Bad, because it is the largest departure from the Python-adjacent tooling around this project, single-threaded for the worker fan-out (worker threads/cluster to compensate), and buys little over Go for the non-Channels surface.
+* Good, because the reference channels ship there.
+* Bad, because it is equally inconsistent with the fleet, single-threaded for the worker fan-out, and buys nothing over Go for surfaces that are all HTTP/stdio anyway.
 
 ## More Information
 
 * Web/UI stack this decides the language for: [ADR-001](ADR-001-web-stack-go-htmx-pico.md).
 * Persistence & queue mechanics that are idiomatic in Go: [ADR-002](ADR-002-postgres-persistence-and-retention.md).
-* MCP surface via the Go SDK: [ADR-005](ADR-005-mcp-tool-and-resource-contract.md). Go MCP SDK: <https://github.com/modelcontextprotocol/go-sdk>.
+* MCP surface (Go SDK or the wire protocol directly): [ADR-005](ADR-005-mcp-tool-and-resource-contract.md). Go MCP SDK: <https://github.com/modelcontextprotocol/go-sdk>.
 * Signature verification primitives: [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md). CI & build: [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md).
-* The Channels adapter boundary: [ADR-013](ADR-013-channels-push-delivery.md), [channel-delivery spec](../specs/channel-delivery.md).
+* Channels transport (HTTP vs. stdio) — language-independent: [ADR-013](ADR-013-channels-push-delivery.md), [channel-delivery spec](../specs/channel-delivery.md).

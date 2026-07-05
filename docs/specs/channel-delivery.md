@@ -16,27 +16,30 @@ MCP endpoint ([ADR-008](../adr/ADR-008-human-principal-vended-endpoints.md)).
 
 ## The channel is the vended endpoint
 
-A Channels server is an MCP server that (per the standard) Claude Code spawns as a **stdio
-subprocess** and that declares `capabilities.experimental['claude/channel'] = {}`. switchboard's vended
-MCP endpoint ([ADR-008](../adr/ADR-008-human-principal-vended-endpoints.md)) carries this capability, so
-the *same* endpoint that exposes the todo/webhook/friending verbs
-([agent-mcp-tools spec](agent-mcp-tools.md)) also receives pushes.
+A Channels server is an MCP server declaring `capabilities.experimental['claude/channel'] = {}`.
+switchboard's vended MCP endpoint ([ADR-008](../adr/ADR-008-human-principal-vended-endpoints.md)) carries
+this capability, so the *same* endpoint that exposes the todo/webhook/friending verbs
+([agent-mcp-tools spec](agent-mcp-tools.md)) also emits pushes. The only open detail is the **transport**,
+and it is language-independent — switchboard is Go either way ([ADR-015](../adr/ADR-015-implementation-language-go.md)):
 
-Because Channels requires a local subprocess but switchboard is a central service, the endpoint runs as
-a thin **local channel adapter**: the harness spawns it; it authenticates to central switchboard with
-the vended credential and bridges both directions —
+- **HTTP-direct** — if Claude Code Channels can use the **Streamable HTTP** MCP transport, switchboard
+  serves channels directly over HTTP, alongside the vended endpoints and the web UI's SSE. No separate
+  process; maximally consistent with the rest of the fleet.
+- **Local stdio adapter** — if Channels remains a local stdio subprocess of the harness, a thin **Go**
+  stdio adapter runs beside the harness, authenticates to central switchboard with the vended credential,
+  and bridges both directions:
 
 ```
 harness (Claude Code / other)
-   │ spawns stdio subprocess
+   │ spawns stdio subprocess (stdio-adapter case only)
    ▼
-local channel adapter  ──auth: vended credential──▶  central switchboard  ──▶ durable todos (PostgreSQL)
+Go channel adapter  ──auth: vended credential──▶  central switchboard  ──▶ durable todos (PostgreSQL)
    ▲  notifications/claude/channel (server→session push)      │
    └──────────────────── todo created/assigned ◀──────────────┘
 ```
 
-*(The adapter/auth handshake shape is a code-session detail; see Open questions in
-[docs/README.md](../README.md).)*
+*(Which transport Channels supports is the open item; the handshake shape is a code-session detail — see
+Open questions in [docs/README.md](../README.md).)*
 
 ## Todo → notification mapping
 
