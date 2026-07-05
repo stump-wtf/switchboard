@@ -59,53 +59,87 @@ slug: /
 title: Switchboard
 sidebar_label: Overview
 sidebar_position: 0
+hide_table_of_contents: true
 ---
 
-# Switchboard
+import Link from '@docusaurus/Link';
 
-*Many lines come in. The operator verifies each caller, and patches it through.*
+<div className="sb-hero">
+  <div className="sb-hero__eyebrow">MCP server · local web UI · Redis queue</div>
+  <h1 className="sb-hero__title">Switchboard</h1>
+  <p className="sb-hero__tagline"><em>Many lines come in. The operator verifies each caller, and patches it through.</em></p>
+  <p className="sb-hero__lead">Switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human‑vended MCP endpoints. One box: receive · verify · patch through.</p>
+  <div className="sb-hero__cta">
+    <Link className="button button--primary button--lg" to="/decisions">Read the decisions →</Link>
+    <Link className="button button--secondary button--lg" to="/specs">Browse the specs</Link>
+  </div>
+</div>
 
-**Switchboard** is the operator's board for your inbound webhooks. It receives events from external
-providers (GitHub, Stripe, Slack, Docker Hub, and self-hosted/homelab senders), verifies and
-normalizes each one, stores them in SQLite, and patches them through to two consumers of the same
-backend — **MCP clients** (Claude Code and other agents) and a **human** at a small, local-only web
-UI that updates live over Server-Sent Events. A fourth incoming line, a **Redis queue consumer**,
-feeds the same pipeline with no HTTP endpoint at all.
+<div className="sb-tiles">
 
-On top of that event-store core, switchboard adds an **agent layer**: inbound events become durable
-**todos** that agents claim and complete; humans register agents and are vended scoped MCP endpoints;
-personas are advertised as A2A Agent Cards; and cross-agent work is granted by human-approved
-friending. See the todo/agent-vending/A2A decisions (ADR-007 onward).
+  <Link className="sb-tile" to="/decisions/ADR-003-per-provider-ingestion-and-trust-model">
+    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 13v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/><path d="M8 9l4 4 4-4"/><path d="M12 2v11"/></svg>
+    <div className="sb-tile__title">Per‑source verified ingestion</div>
+    <p className="sb-tile__body">GitHub, Stripe, Slack, Docker Hub, a generic endpoint, and a Redis queue — each with an explicit, enforced trust mode. A bad signature is a 401, never stored as if it were real.</p>
+  </Link>
 
-The name is the architecture: a manual telephone exchange took many incoming lines, an operator
-verified the caller, and patched the line through to its destination. That is exactly this — and it
-is why these pages wear a switchboard-era palette of brass, bakelite, operator-cream, oxblood, and
-patch-cable tones.
+  <Link className="sb-tile" to="/decisions/ADR-007-todos-as-core-primitive">
+    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 5.5l1 1 2-2"/><path d="M4 11.5l1 1 2-2"/><path d="M4 17.5l1 1 2-2"/></svg>
+    <div className="sb-tile__title">Durable todo work‑queue</div>
+    <p className="sb-tile__body">Every event becomes a work‑item with a lifecycle — claimed under a lease, completed with an ack, deduped by idempotency key. A crashed worker's todo re‑surfaces; nothing is read‑once and lost.</p>
+  </Link>
+
+  <Link className="sb-tile" to="/decisions/ADR-008-human-principal-vended-endpoints">
+    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="4"/><path d="M10.8 10.8L20 20"/><path d="M17 17l2-2"/><path d="M14.5 14.5l2-2"/></svg>
+    <div className="sb-tile__title">Per‑agent vended MCP endpoints</div>
+    <p className="sb-tile__body">Humans are the accountable principals; each agent is vended a scoped MCP endpoint (queues + verb allowlist). The credential lives in OpenBao, short‑lived and revocable — revoke = kill the endpoint.</p>
+  </Link>
+
+  <Link className="sb-tile" to="/decisions/ADR-009-personas-as-scoped-agent-cards">
+    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="7" width="13" height="10" rx="1.5"/><path d="M7.5 4.5H19a1.5 1.5 0 0 1 1.5 1.5v9"/></svg>
+    <div className="sb-tile__title">Personas as A2A Agent Cards</div>
+    <p className="sb-tile__body">One agent, many least‑privilege faces. A persona is a human‑authored prompt plus a verb subset; its advertised skills are derived from what's actually vended, published as an A2A Agent Card.</p>
+  </Link>
+
+  <Link className="sb-tile" to="/decisions/ADR-010-a2a-discovery-human-vended-friending">
+    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 12h3"/><path d="M12.5 10.7l1.3 1.3 2.2-2.2"/></svg>
+    <div className="sb-tile__title">Human‑approved friending</div>
+    <p className="sb-tile__body">Agents discover peers over A2A and send a scoped friend request. Approval lands as a todo in the target human's queue — and approving is the vend. Per‑direction, revocable, non‑transitive.</p>
+  </Link>
+
+  <Link className="sb-tile" to="/decisions/ADR-001-web-stack-starlette-htmx-pico">
+    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 8h18"/><circle cx="5.8" cy="6" r="0.5"/><circle cx="7.8" cy="6" r="0.5"/></svg>
+    <div className="sb-tile__title">Local live web UI</div>
+    <p className="sb-tile__body">A small, local‑only operator board — four screens on Starlette + HTMX + Pico.css, updating live over Server‑Sent Events, with the same trust badges the API and MCP surfaces carry.</p>
+  </Link>
+
+</div>
+
+<div className="sb-trust">
+  <span>Trust is explicit, per‑provider, and shown:</span>
+  <span className="sb-badge sb-badge--signed">signed</span>
+  <span className="sb-badge sb-badge--unverified">unverified</span>
+  <span className="sb-badge sb-badge--redis">redis</span>
+  <span>— see <Link to="/decisions/ADR-003-per-provider-ingestion-and-trust-model">ADR‑003</Link>.</span>
+</div>
 
 :::note Docs-first bootstrap
-This site documents the **design** of switchboard — ${adrFiles.length} architecture decision records and
-${specCount} API/stream/tool specs. Application code is written *fresh from these documents* in a
-follow-up session; there is no runnable build yet.
+This site is the **canonical design record** for switchboard — ${adrFiles.length} architecture decision
+records and ${specCount} API/stream/tool specs. Application code is written *fresh from these documents*
+in a follow‑up session; there is no runnable build yet. The name is the architecture: a manual
+telephone exchange took many incoming lines, an operator verified the caller, and patched the line
+through — which is why these pages wear a switchboard‑era palette of brass, bakelite, operator‑cream,
+oxblood, and patch‑cable tones.
 :::
 
 ## Start here
 
 - **[Decisions (ADRs)](/decisions)** — why switchboard is built the way it is: the stack, the SQLite
-  persistence, the three-mode trust model, secrets via OpenBao, the MCP contract, the repo/CI setup,
-  and the todo/agent-vending/A2A layer.
+  persistence, the three‑mode trust model, secrets via OpenBao, the MCP contract, the repo/CI setup,
+  and the todo/agent‑vending/A2A layer.
 - **[Specifications](/specs)** — the HTTP surface (OpenAPI), the live SSE stream (AsyncAPI), the MCP
-  tool + resource contracts, the todo object/state-machine, webhook ingestion, personas/Agent Cards,
-  friending, and the account/vended-endpoint model.
-
-## The trust model in one glance
-
-Every event's trust story is explicit, per-provider, and shown — never assumed.
-
-- <span className="sb-badge sb-badge--signed">signed</span> GitHub / Stripe / Slack — mandatory HMAC verification; a bad signature is a **401** and the payload is not stored.
-- <span className="sb-badge sb-badge--unverified">unverified</span> Docker Hub + homelab — a generic endpoint with no signature scheme; opt-in, disabled by default, always labeled unverified.
-- <span className="sb-badge sb-badge--redis">redis</span> the queue cord — no HTTP signature; trust is the Redis connection's ACL/TLS.
-
-See **[ADR-003](/decisions/ADR-003-per-provider-ingestion-and-trust-model)** for the full model.
+  tool + resource contracts, the todo object/state‑machine, webhook ingestion, personas/Agent Cards,
+  friending, and the account/vended‑endpoint model.
 `);
 
 // ---- ADRs -> decisions/ ----
