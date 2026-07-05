@@ -1,14 +1,23 @@
-# webhook-mcp
+# Switchboard
 
-An MCP server that receives inbound webhooks from external providers (GitHub, Stripe, Slack,
-Docker Hub, and self-hosted/homelab senders), verifies and normalizes them, stores them in SQLite,
-and exposes them to **two consumers of the same backend**:
+*Many lines come in. The operator verifies each caller, and patches it through.*
+
+Switchboard is the operator's board for your inbound webhooks. It receives events from external
+providers (GitHub, Stripe, Slack, Docker Hub, and self-hosted/homelab senders), verifies and
+normalizes each one, stores them in SQLite, and patches them through to **two consumers of the same
+backend**:
 
 - **MCP clients** (Claude Code, other agents) — via MCP tools (`list` / `get` / `replay` / `list_providers`) and a recent-events resource.
 - **A human** — via a small, local-only web UI (4 screens) that updates live over Server-Sent Events.
 
-A fourth ingestion path — a **Redis queue consumer** — feeds the same pipeline without any HTTP
+A fourth incoming line — a **Redis queue consumer** — feeds the same pipeline without any HTTP
 endpoint, proving the abstraction generalizes beyond HTTP webhooks.
+
+The name is the architecture: a manual telephone exchange took many incoming lines, an operator
+verified the caller, and patched the line through to its destination. That's exactly this — and it's
+why the UI and docs wear a switchboard-era palette (brass, bakelite, operator-cream, oxblood, and
+patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
+[ADR-000](docs/adr/ADR-000-project-naming-and-scope.md)).
 
 > [!IMPORTANT]
 > **Status: docs-first bootstrap.** This repository currently contains the **architecture decision
@@ -21,7 +30,7 @@ endpoint, proving the abstraction generalizes beyond HTTP webhooks.
 ## Why this exists
 
 Different providers have wildly different security stories, and pretending otherwise is a security
-bug. `webhook-mcp` makes each source's trust level **explicit, per-provider, enforced, and visible** —
+bug. `switchboard` makes each source's trust level **explicit, per-provider, enforced, and visible** —
 a signed GitHub event and an unverified Docker Hub event are never displayed or exposed as if they
 were the same thing. See [ADR-003](docs/adr/ADR-003-per-provider-ingestion-and-trust-model.md).
 
@@ -108,7 +117,7 @@ webhook URL to the tunnel's public URL + the provider path:
 - Slack → `https://<tunnel>/webhooks/slack`
 - Docker Hub (unverified) → `https://<tunnel>/webhooks/generic/dockerhub?token=<shared-token>`
 
-Put the corresponding signing secret in OpenBao at `secret/webhook-mcp/providers/<provider>` first,
+Put the corresponding signing secret in OpenBao at `secret/switchboard/providers/<provider>` first,
 or the signed endpoint will (correctly) 401.
 
 ## Adding a new provider (intended shape)
@@ -116,7 +125,7 @@ or the signed endpoint will (correctly) 401.
 1. **Signed provider:** add an adapter under `app/providers/<name>.py` implementing the verification
    for its signature scheme (raw-body HMAC, constant-time compare, timestamp window if the scheme
    signs one), register it with `trust_mode=signed`, and store its secret in OpenBao at
-   `secret/webhook-mcp/providers/<name>`.
+   `secret/switchboard/providers/<name>`.
 2. **Unsigned / homelab sender:** don't write an adapter — create a **generic** provider
    (`/webhooks/generic/<name>`), which is unverified by design and disabled until you opt in.
 3. **Queue source:** point the Redis consumer at another channel/stream; the trust boundary is that
@@ -139,8 +148,8 @@ CI runs on **Gitea** (primary, `.gitea/workflows/ci.yaml` — the fast + securit
 
 ## Repository hosting
 
-- **Primary (source of truth):** <https://gitea.stump.rocks/joestump/webhook-mcp>
-- **Mirror (backup/reach):** <https://github.com/joestump/webhook-mcp> — a Gitea push-mirror.
+- **Primary (source of truth):** <https://gitea.stump.rocks/joestump/switchboard>
+- **Mirror (backup/reach):** <https://github.com/joestump/switchboard> — a Gitea push-mirror.
 
 ## License
 

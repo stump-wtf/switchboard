@@ -9,107 +9,111 @@ related: [ADR-001, ADR-003, ADR-005, ADR-006]
 
 ## Context and Problem Statement
 
-This repository is being bootstrapped from a design-discussion handoff under the working name `webhook-mcp`, which the brief explicitly flagged as a placeholder to confirm or replace in this ADR. Before any specs or code are written, two things need to be pinned down so later documents (and the follow-up implementation session) have a stable foundation: **what is this project called**, and **what is in and out of scope** — both for the MVP as a whole and for *this* documentation-only session. What name best communicates the project's purpose while fitting the existing StumpCloud repo conventions, and what boundary keeps the MVP shippable?
+This repository was bootstrapped from a design-discussion handoff under the placeholder working name `webhook-mcp`, which the brief explicitly flagged as provisional — "rename if a better name lands during ADR-000." Before the specs and code solidify around a name, two things need to be pinned down: **what is this project called**, and **what is in and out of scope** — for the MVP and for the docs-only bootstrap session. What name best captures what this system *is* — a hub that receives inbound lines from many sources and patches each one through to where it needs to go — while staying legible in the StumpCloud org?
 
 ## Decision Drivers
 
-* **Convention fit.** StumpCloud repos for MCP servers already follow a `<domain>-mcp` pattern (e.g. `paperless-mcp`). A name that matches is instantly legible to anyone browsing the Gitea org.
-* **Descriptiveness over cleverness.** The name should say what the thing is. This is a receiver for inbound webhooks exposed over MCP — a reader should not need a glossary.
-* **Discoverability.** The name is typed into `git clone`, MCP client config, and search. Short, lowercase, hyphenated, no ambiguity with existing repos.
-* **Scope legibility.** The brief is explicit that this is a *docs-only* session and that the MVP is deliberately narrow (single-node, receive-only). The naming ADR is the natural place to also ratify that boundary so it is not silently widened later.
-* **Reversibility.** A rename is cheap now (no code, no published package, no MCP clients pointed at it) and expensive later. If a rename is going to happen, it happens here.
+* **Name the metaphor, not the mechanism.** This system receives inbound connections (webhooks over HTTP, events off a Redis queue) from many sources, verifies them, and patches each through to its destinations (MCP clients, the web UI). That *is* a switchboard. A name that captures the metaphor communicates the whole architecture at a glance.
+* **Accurate *and* memorable.** The best name is both. A purely descriptive name (`webhook-mcp`) is legible but forgettable; a purely evocative name risks hiding what the thing does. "Switchboard" is the rare name that is both precise and vivid.
+* **The interface is not the identity.** MCP is *one* of the surfaces this exposes (the other is a web UI), and the ingestion side speaks HTTP webhooks *and* a Redis queue. Baking `-mcp` or `webhook` into the name overweights one facet of a multi-surface system.
+* **Discoverability.** Short, lowercase, unambiguous — typed into `git clone`, MCP client config, and search.
+* **Scope legibility.** The naming ADR is the natural place to also ratify the MVP/session boundary so it is not silently widened later.
+* **Reversibility.** A rename is cheap now (fresh repo, no external consumers) and expensive later. If a rename happens, it happens here.
 
 ## Considered Options
 
-* **Option 1 — `webhook-mcp` (keep the working name).**
-* **Option 2 — a more evocative brand name** (e.g. `hooklog`, `inbound`, `catchall`, `relayd`, `hookpost`).
-* **Option 3 — a scope-narrowing name** (e.g. `webhook-receiver-mcp`, `inbound-webhooks-mcp`).
+* **Option 1 — `webhook-mcp` (keep the placeholder).**
+* **Option 2 — `switchboard` (name the metaphor).**
+* **Option 3 — a hyphenated descriptive name** (`webhook-receiver-mcp`, `inbound-webhooks-mcp`).
 
 ## Decision Outcome
 
-Chosen option: **"Option 1 — keep `webhook-mcp`"**, because it matches the established `<domain>-mcp` StumpCloud convention (`paperless-mcp`), states exactly what the project is (a webhook receiver exposed as an MCP server), and carries no cleverness tax. The evocative names (Option 2) trade legibility for personality this internal tool does not need, and the scope-narrowing names (Option 3) are longer without adding real information — "webhook" already implies inbound in this context, and "receiver" is redundant with what an MCP webhook server obviously does.
+Chosen option: **"Option 2 — `switchboard`."** An operator switchboard is precisely this system's job: many incoming lines arrive at one place, an operator verifies each caller, and patches the line through to its destination. Here the "lines" are webhooks and queue events, the "operator" is the per-provider verification and normalization layer ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)), and the "destinations" are the MCP tools/resources ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)) and the live web UI. The name is both accurate and memorable, which is rare enough to be worth choosing over the literal-but-forgettable placeholder.
+
+This reverses the instinct to default to the `<domain>-mcp` convention (`paperless-mcp`): that convention optimizes for legibility, but `switchboard` delivers legibility *through* metaphor while also being distinctive. The `-mcp` suffix is dropped deliberately — MCP is one interface this project exposes, not its identity (it also serves a web UI and consumes a Redis queue). The descriptive hyphenated names (Option 3) are longer without adding information the metaphor doesn't already carry.
+
+The metaphor also gives the project a coherent **visual identity**: the UI palette and docs-site theme draw on the era of manual telephone exchanges — brass, bakelite, operator-cream, oxblood, and patch-cable tones (see [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md) and `static/tokens.css`).
 
 ### Scope confirmation
 
 This ADR also ratifies the scope the rest of the documents assume:
 
-**In scope for the MVP** (realized across the next session's implementation):
+**In scope for the MVP:**
 
-* Receive and persist webhooks from at least two *signed* providers end-to-end (GitHub + one other) to prove the abstraction.
-* Prove all three trust models: one signed provider, the generic/unverified endpoint (Docker Hub routed through it), and the Redis queue consumer (see [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)).
-* MCP tool surface exposing webhook history / detail / replay (see [ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
+* Receive and persist events from at least two *signed* providers end-to-end (GitHub + one other) to prove the abstraction.
+* Prove all three trust models: one signed provider, the generic/unverified endpoint (Docker Hub routed through it), and the Redis queue consumer ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)).
+* MCP tool surface exposing history / detail / replay ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
 * A local-only, 4-screen web UI updating live via SSE.
-* SQLite persistence, no external database (see [ADR-002](ADR-002-sqlite-persistence-and-retention.md)).
+* SQLite persistence, no external database ([ADR-002](ADR-002-sqlite-persistence-and-retention.md)).
 
 **Out of scope for the MVP:**
 
-* Outbound webhook delivery/retries to other systems (the `replay` tool re-emits on demand; it is not a delivery scheduler).
-* Multi-user auth / RBAC on the web UI — localhost-bound for now, behind Caddy `forward_auth` if ever exposed (see [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md) and README).
+* Outbound webhook delivery/retries (the `replay` tool re-emits on demand; it is not a delivery scheduler).
+* Multi-user auth / RBAC on the web UI — localhost-bound, behind Caddy `forward_auth` if ever exposed ([ADR-001](ADR-001-web-stack-starlette-htmx-pico.md)).
 * Horizontal scaling / multi-instance — single node, single process.
-* Provider-side webhook management (registering/creating webhooks via provider APIs) — the MVP only receives what is pointed at it.
+* Provider-side webhook management (registering webhooks via provider APIs).
 
-**In scope for *this* session (docs only):**
+**In scope for *this* session (docs only):** the seven ADRs, the three specs (`docs/specs/openapi.yaml`, `asyncapi.yaml`, `mcp-tools.md`), and repo + CI scaffolding ([ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
 
-* The seven ADRs (ADR-000 … ADR-006).
-* The three specs: `docs/specs/openapi.yaml`, `docs/specs/asyncapi.yaml`, `docs/specs/mcp-tools.md`.
-* Repo + CI scaffolding (see [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
-
-**Explicitly deferred to the follow-up session:** all application code under `app/` beyond empty `__init__.py` placeholders. Implementation is written *fresh from these documents* rather than the documents being retrofitted to code.
+**Explicitly deferred to the follow-up session:** all application code under `app/` beyond empty `__init__.py` placeholders. Implementation is written *fresh from these documents*.
 
 ### Consequences
 
-* Good, because the name needs no explanation and sorts naturally alongside `paperless-mcp` in the Gitea org.
-* Good, because ratifying the MVP boundary here gives every downstream ADR and spec a single, citable scope statement.
-* Good, because the rename question is closed — the next session will not waste cycles second-guessing the name.
-* Neutral, because `webhook-mcp` is generic enough that a future public release might want a distinct brand; that is a cheap rename to make later if the project ever leaves the homelab.
-* Bad, because "webhook" slightly undersells the Redis pull path (which is a queue consumer, not an HTTP webhook) — mitigated by treating Redis as a fourth *ingestion path* into the same pipeline, documented in [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md), not as a webhook provider.
+* Good, because the name encodes the architecture — a reader who knows what a switchboard is already understands the system's shape.
+* Good, because it is distinctive and memorable while remaining accurate, and it seeds a coherent visual identity (the throwback theme).
+* Good, because dropping `-mcp` keeps the name honest about a multi-surface system (MCP + web UI + Redis).
+* Neutral, because it breaks the `<domain>-mcp` naming convention used elsewhere in the org — an acceptable trade for a name this apt.
+* Bad, because "switchboard" is a common word and could collide with other projects/namespaces — mitigated by it living under the `joestump/` namespace and being an internal tool.
+* Bad, because a reader unfamiliar with manual telephone exchanges may not get the metaphor immediately — mitigated by the README's one-line framing.
 
 ### Confirmation
 
-* The repo is created on Gitea as `joestump/webhook-mcp` (see [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
-* Every subsequent ADR and spec in this session refers to the project as `webhook-mcp` and cites the scope statement above rather than re-deriving it.
+* The repo is `joestump/switchboard` on Gitea (primary) and GitHub (mirror) ([ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
+* Every subsequent ADR and spec refers to the project as `switchboard` and cites the scope statement above.
+* The MCP server name, the resource URI scheme (`switchboard://`), the OpenBao secret path (`secret/switchboard/*`), and the distribution name are all `switchboard`.
 * No file under `app/` beyond `__init__.py` placeholders exists at the end of this session.
 
 ## Pros and Cons of the Options
 
-### Option 1: `webhook-mcp` (chosen)
+### Option 1: `webhook-mcp` (rejected)
 
-* Good, because it matches the `<domain>-mcp` convention already used in the org.
-* Good, because it is self-documenting: webhook + MCP server.
-* Good, because it is short and unambiguous to type and search.
-* Neutral, because it is generic — fine for an internal tool, less distinctive for a hypothetical public release.
+* Good, because maximally descriptive and matches the `<domain>-mcp` convention.
+* Good, because self-documenting at a glance.
+* Bad, because forgettable, and it overweights the MCP interface while underselling the web UI and the Redis ingestion path.
 
-### Option 2: Evocative brand name (`hooklog`, `relayd`, `catchall`, …)
+### Option 2: `switchboard` (chosen)
 
-* Good, because it is memorable and has personality.
-* Bad, because it hides the "MCP server" half of the identity, which is the whole point of the project.
-* Bad, because it breaks the `<domain>-mcp` convention, making the repo harder to place at a glance.
-* Bad, because several candidates (`relayd`, `catchall`) imply *forwarding/relaying*, which is an explicit non-goal for the MVP.
+* Good, because it names the metaphor — receive many lines, verify, patch each through — which *is* the architecture.
+* Good, because accurate and memorable at once, and it grounds a distinctive visual identity.
+* Good, because interface-agnostic: it does not privilege MCP over the UI or HTTP over the queue.
+* Neutral, because it departs from the `-mcp` convention.
+* Bad, because it is a common word (namespace-collision risk) — mitigated by the `joestump/` namespace.
 
-### Option 3: Scope-narrowing name (`webhook-receiver-mcp`, `inbound-webhooks-mcp`)
+### Option 3: `webhook-receiver-mcp` / `inbound-webhooks-mcp` (rejected)
 
-* Good, because it is maximally explicit that this receives rather than sends.
-* Bad, because it is longer to type without adding information the context does not already supply.
-* Bad, because "receiver" is redundant — an inbound webhook MCP server is understood to receive.
+* Good, because unambiguous that it receives.
+* Bad, because longer without adding information, and still interface-biased toward webhooks/MCP.
 
 ## Architecture Diagram
 
 ```mermaid
 flowchart LR
-  subgraph inbound[webhook-mcp — one process, two consumers]
+  subgraph board[switchboard — receive · verify · patch through]
     direction TB
-    ingest[Ingestion paths<br/>HTTP push + Redis pull] --> pipe[normalize → persist → broadcast]
-    pipe --> mcp[MCP tools/resources]
-    pipe --> ui[Local web UI + SSE]
+    ingest[Incoming lines<br/>HTTP webhooks + Redis queue] --> op[Operator: verify → normalize]
+    op --> patch[Patch through]
+    patch --> mcp[MCP tools/resources]
+    patch --> ui[Local web UI + SSE]
   end
   providers[(GitHub / Stripe / Slack /<br/>Docker Hub / generic)] -->|HTTPS POST| ingest
   redis[(Redis channel/stream)] -->|subscribe| ingest
-  mcp --> clients([Claude Code / other MCP clients])
+  mcp --> clients([Claude Code / MCP clients])
   ui --> human([Human, localhost])
 ```
 
 ## More Information
 
-* Working name confirmed from the project brief §1 and the "rename if a better name lands during ADR-000" instruction.
+* The `webhook-mcp` working name is from the project brief §1; the "rename if a better name lands during ADR-000" instruction is honored here by choosing `switchboard`.
 * Scope statement consolidates brief §2 (goals/non-goals) and the §5/§13 "docs-only this session" instruction.
-* Related decisions: [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md) (stack), [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) (trust models), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) (MCP surface), [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md) (repo/CI).
+* Visual identity (throwback switchboard-era palette): [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md), `static/tokens.css`.
+* Related decisions: [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md), [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md), [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md).

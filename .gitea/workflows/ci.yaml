@@ -1,4 +1,4 @@
-# webhook-mcp — Gitea CI (PRIMARY host: gitea.stump.rocks/joestump/webhook-mcp).
+# switchboard — Gitea CI (PRIMARY host: gitea.stump.rocks/joestump/switchboard).
 #
 # Gitea is the source of truth (ADR-006). This is the fast + security gate the brief (§5.3) mandates:
 # ruff, mypy, bandit, pip-audit, Gitleaks, Semgrep, pytest. Reproduce locally with `make ci`.

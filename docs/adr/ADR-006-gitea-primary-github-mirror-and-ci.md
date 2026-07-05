@@ -9,7 +9,7 @@ related: [ADR-000, ADR-001, ADR-004]
 
 ## Context and Problem Statement
 
-`webhook-mcp` must be hosted and continuously checked following the established StumpCloud conventions, not as a one-off. Those conventions were confirmed by inspecting the existing Gitea instance (`gitea.stump.rocks`): Gitea is the canonical source of truth with GitHub as a push-mirror; workflows run on `act_runner` labeled `ubuntu-latest`; and the "comprehensive" test gate is duplicated on the GitHub mirror. Two brief assumptions turned out to be false and shape this decision: **there is no shared `ci-actions` monorepo** (the house pattern for a shared action is a Docker container action pinned to a git tag and referenced by full URL, e.g. `stumpcloud/garage-pages-deploy@v1`), and **no existing Python repo** exists to inherit ruff/mypy/bandit config from — this is the first. So: where does the repo live, how is the mirror wired, and how is the Python lint/type/security/test CI structured given there is nothing to inherit?
+`switchboard` must be hosted and continuously checked following the established StumpCloud conventions, not as a one-off. Those conventions were confirmed by inspecting the existing Gitea instance (`gitea.stump.rocks`): Gitea is the canonical source of truth with GitHub as a push-mirror; workflows run on `act_runner` labeled `ubuntu-latest`; and the "comprehensive" test gate is duplicated on the GitHub mirror. Two brief assumptions turned out to be false and shape this decision: **there is no shared `ci-actions` monorepo** (the house pattern for a shared action is a Docker container action pinned to a git tag and referenced by full URL, e.g. `stumpcloud/garage-pages-deploy@v1`), and **no existing Python repo** exists to inherit ruff/mypy/bandit config from — this is the first. So: where does the repo live, how is the mirror wired, and how is the Python lint/type/security/test CI structured given there is nothing to inherit?
 
 ## Decision Drivers
 
@@ -34,8 +34,8 @@ Chosen: **Gitea-primary + GitHub push-mirror (A)**, **dual CI with a Gitea fast+
 
 ### Hosting and mirror
 
-* **Primary:** `https://gitea.stump.rocks/joestump/webhook-mcp` — canonical, where issues/PRs/CI live.
-* **Mirror:** `https://github.com/joestump/webhook-mcp` — a **Gitea push-mirror**, configured as a **Gitea repo setting** (Settings → Mirror Settings, or `POST /repos/joestump/webhook-mcp/push_mirrors`), authenticated with a GitHub PAT stored in Gitea. It is **not** a file in the repo and **not** a workflow that pushes — matching reduit. The mirror is set up once, out-of-band; this ADR records that it must exist and how.
+* **Primary:** `https://gitea.stump.rocks/joestump/switchboard` — canonical, where issues/PRs/CI live.
+* **Mirror:** `https://github.com/joestump/switchboard` — a **Gitea push-mirror**, configured as a **Gitea repo setting** (Settings → Mirror Settings, or `POST /repos/joestump/switchboard/push_mirrors`), authenticated with a GitHub PAT stored in Gitea. It is **not** a file in the repo and **not** a workflow that pushes — matching reduit. The mirror is set up once, out-of-band; this ADR records that it must exist and how.
 * **Tracker/branch/PR conventions** (house-wide, from reduit `CLAUDE.md`): tracker is Gitea; branches `feat/{n}-{slug}`, `fix/{n}-{slug}`, `chore/…`, `docs/…`, `ci/…`; PR title = issue title, body includes `Closes #N`, target `main`; squash-merge; lifecycle labels `queued → in-progress → in-review → merged`.
 
 ### CI structure
@@ -79,7 +79,7 @@ A `Makefile` exposes `make fmt` (ruff format), `make lint` (ruff + mypy + bandit
 
 ### Confirmation
 
-* The repo exists at `gitea.stump.rocks/joestump/webhook-mcp` and the GitHub mirror at `github.com/joestump/webhook-mcp` receives pushes.
+* The repo exists at `gitea.stump.rocks/joestump/switchboard` and the GitHub mirror at `github.com/joestump/switchboard` receives pushes.
 * `.gitea/workflows/ci.yaml` and `.github/workflows/ci.yml` exist, use `runs-on: ubuntu-latest`, and run the ruff/mypy/bandit/pip-audit/Gitleaks/Semgrep/pytest job set; both are green on the bootstrap commit.
 * `make ci` runs the same gate locally and passes; `.pre-commit-config.yaml` runs ruff + mypy.
 * `LICENSE` is MIT with `Copyright (c) 2026 Joe Stump`.
@@ -113,9 +113,9 @@ A `Makefile` exposes `make fmt` (ruff format), `make lint` (ruff + mypy + bandit
 
 ```mermaid
 flowchart TB
-  dev([Developer]) -->|push / PR| gitea[(Gitea PRIMARY<br/>gitea.stump.rocks/joestump/webhook-mcp)]
+  dev([Developer]) -->|push / PR| gitea[(Gitea PRIMARY<br/>gitea.stump.rocks/joestump/switchboard)]
   gitea -->|.gitea/workflows/ci.yaml<br/>runs-on: ubuntu-latest| gate1[[Fast + Security gate<br/>ruff · mypy · bandit · pip-audit<br/>Gitleaks · Semgrep · pytest]]
-  gitea -->|Gitea push-mirror<br/>repo setting + GitHub PAT| gh[(GitHub MIRROR<br/>github.com/joestump/webhook-mcp)]
+  gitea -->|Gitea push-mirror<br/>repo setting + GitHub PAT| gh[(GitHub MIRROR<br/>github.com/joestump/switchboard)]
   gh -->|.github/workflows/ci.yml| gate2[[Comprehensive gate<br/>same suite × Python 3.12 / 3.13]]
   gitea -. Dependabot watches ONLY .github;<br/>bump .gitea pins by hand .-> gh
   subgraph local[Local reproducibility]

@@ -1,6 +1,6 @@
 asyncapi: 3.0.0
 
-# webhook-mcp — SSE event schema.
+# switchboard — SSE event schema.
 # The `/events` endpoint (defined as an HTTP GET in docs/specs/openapi.yaml) is a
 # text/event-stream. This document specifies the *messages* that flow over it: the named
 # SSE events the browser subscribes to via htmx-ext-sse, and their payload shapes.
@@ -13,16 +13,16 @@ asyncapi: 3.0.0
 # HTTP, SSE, and MCP (docs/specs/mcp-tools.md) surfaces never drift.
 
 info:
-  title: webhook-mcp SSE stream
+  title: switchboard SSE stream
   version: 0.1.0
   description: |
-    Server-Sent Events broadcast to the local web UI when webhook-mcp accepts a new event or
+    Server-Sent Events broadcast to the local web UI when switchboard accepts a new event or
     when the status strip needs refreshing. Transport is SSE over the HTTP `/events` endpoint;
     reconnection is standard SSE (the server advertises `retry:` = `sse_retry_ms`, and clients may
     resume with `Last-Event-ID`).
   license:
     name: MIT
-    url: https://gitea.stump.rocks/joestump/webhook-mcp/src/branch/main/LICENSE
+    url: https://gitea.stump.rocks/joestump/switchboard/src/branch/main/LICENSE
 
 defaultContentType: application/json
 

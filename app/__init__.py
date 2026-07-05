@@ -1,1 +1,1 @@
-"""webhook-mcp application package (implementation deferred — see docs/adr and docs/specs)."""
+"""switchboard application package (implementation deferred — see docs/adr and docs/specs)."""

@@ -9,7 +9,7 @@ related: [ADR-000, ADR-002, ADR-003]
 
 ## Context and Problem Statement
 
-`webhook-mcp` exposes its stored events to MCP clients (Claude Code and other agents) through the official `mcp` Python SDK, running as a server mounted in the same Starlette process as the web UI ([ADR-001](ADR-001-web-stack-starlette-htmx-pico.md)) and reading the same SQLite layer ([ADR-002](ADR-002-sqlite-persistence-and-retention.md)). The brief fixes the minimum tool set — `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, `list_providers` — plus a resource stream of recent events (§7). This ADR pins the *shape* of that contract: naming, input/output schemas at a design level, pagination and filtering semantics, how the one side-effecting tool (`replay`) is made safe, and the tools-vs-resources split. The exact JSON schemas live in `docs/specs/mcp-tools.md`; this ADR records the decisions that spec must reflect. What contract makes the event log queryable and replayable by an agent while staying honest about trust ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) and safe about outbound side effects?
+`switchboard` exposes its stored events to MCP clients (Claude Code and other agents) through the official `mcp` Python SDK, running as a server mounted in the same Starlette process as the web UI ([ADR-001](ADR-001-web-stack-starlette-htmx-pico.md)) and reading the same SQLite layer ([ADR-002](ADR-002-sqlite-persistence-and-retention.md)). The brief fixes the minimum tool set — `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, `list_providers` — plus a resource stream of recent events (§7). This ADR pins the *shape* of that contract: naming, input/output schemas at a design level, pagination and filtering semantics, how the one side-effecting tool (`replay`) is made safe, and the tools-vs-resources split. The exact JSON schemas live in `docs/specs/mcp-tools.md`; this ADR records the decisions that spec must reflect. What contract makes the event log queryable and replayable by an agent while staying honest about trust ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) and safe about outbound side effects?
 
 ## Decision Drivers
 
@@ -64,7 +64,7 @@ Every event object includes `trust_mode` + `verified` + `verify_detail` so an ag
 
 ### Resource
 
-Recent events are also exposed as a **read-only MCP resource** (e.g. URI `webhook-mcp://events/recent`), returning the same `EventSummary` shape as `list`. This lets clients that model context as resources subscribe to "recent events" without a tool call. It is strictly read-only; all mutation/replay stays in tools. Whether the SDK's resource-subscription/update mechanism is wired for push is left to the code session; the MVP guarantees at least a pull-able recent-events resource.
+Recent events are also exposed as a **read-only MCP resource** (e.g. URI `switchboard://events/recent`), returning the same `EventSummary` shape as `list`. This lets clients that model context as resources subscribe to "recent events" without a tool call. It is strictly read-only; all mutation/replay stays in tools. Whether the SDK's resource-subscription/update mechanism is wired for push is left to the code session; the MVP guarantees at least a pull-able recent-events resource.
 
 ### Structured output
 
@@ -126,9 +126,9 @@ flowchart LR
     c2[get_webhook_event]
     c3[replay_webhook_event]
     c4[list_providers]
-    r1[[resource: webhook-mcp://events/recent]]
+    r1[[resource: switchboard://events/recent]]
   end
-  subgraph server[webhook-mcp MCP server — same process]
+  subgraph server[switchboard MCP server — same process]
     dal[(SQLite data-access layer)]
     out[outbound HTTP client]
   end

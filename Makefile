@@ -1,4 +1,4 @@
-# webhook-mcp — local dev entry points.
+# switchboard — local dev entry points.
 # `make ci` runs the same lint/type/security/test gate CI does (ADR-006), so you can reproduce the
 # gate before opening a PR. (Gitleaks + Semgrep run in CI only — they need Docker / an extra install.)
 

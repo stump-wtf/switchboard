@@ -1,6 +1,6 @@
 openapi: 3.1.0
 
-# webhook-mcp — HTTP surface: webhook ingestion + local web UI.
+# switchboard — HTTP surface: webhook ingestion + local web UI.
 # Authored by hand (see ADR-001): the endpoints are webhook receivers (raw body + HMAC)
 # and server-rendered HTML, neither of which is model-driven, so there is no framework
 # generating this spec. It is the contract the code session implements against.
@@ -13,10 +13,10 @@ openapi: 3.1.0
 # MCP tool contract: docs/specs/mcp-tools.md.
 
 info:
-  title: webhook-mcp HTTP API
+  title: switchboard HTTP API
   version: 0.1.0
   description: |
-    Inbound webhook ingestion and the local-only web UI for **webhook-mcp**.
+    Inbound webhook ingestion and the local-only web UI for **switchboard**.
 
     ## Two groups of endpoints
     - **Webhook ingestion** (`/webhooks/*`): providers POST here. Signed providers are
@@ -34,7 +34,7 @@ info:
     (`signed` providers) or a non-cryptographic shared-token bozo-filter (`generic`). See ADR-003.
   license:
     name: MIT
-    url: https://gitea.stump.rocks/joestump/webhook-mcp/src/branch/main/LICENSE
+    url: https://gitea.stump.rocks/joestump/switchboard/src/branch/main/LICENSE
   contact:
     name: Joe Stump
 

@@ -62,7 +62,7 @@ venv.bak/
 secret_id
 .secret_id
 
-# webhook-mcp runtime data — SQLite lives on disk, not in git (ADR-002)
+# switchboard runtime data — SQLite lives on disk, not in git (ADR-002)
 *.db
 *.sqlite
 *.sqlite3

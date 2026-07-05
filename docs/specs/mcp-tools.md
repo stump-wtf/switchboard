@@ -1,6 +1,6 @@
-# webhook-mcp — MCP Tool & Resource Contract
+# switchboard — MCP Tool & Resource Contract
 
-Authoritative contract for the MCP surface of **webhook-mcp**, served by the official `mcp` Python
+Authoritative contract for the MCP surface of **switchboard**, served by the official `mcp` Python
 SDK from the same Starlette process as the web UI ([ADR-001](../adr/ADR-001-web-stack-starlette-htmx-pico.md))
 and reading the same SQLite layer ([ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md)).
 
@@ -13,7 +13,7 @@ must not drift.
 
 ## Conventions
 
-- **Server name:** `webhook-mcp`.
+- **Server name:** `switchboard`.
 - **Transport:** whatever the code session wires (stdio and/or the SDK's Streamable HTTP mount inside
   the Starlette app). Out of scope for this contract.
 - **Structured output:** every tool declares an input JSON Schema and returns SDK **structured
@@ -175,7 +175,7 @@ result.
   "external_id": null, "content_type": "application/json", "source_ip": "10.0.4.12",
   "payload_size": 512, "received_at": "2026-07-05T18:04:02.101Z",
   "headers": { "content-type": "application/json", "x-hub-signature-256": "«redacted»" },
-  "payload": "{\"push_data\":{\"tag\":\"latest\"},\"repository\":{\"repo_name\":\"joestump/webhook-mcp\"}}"
+  "payload": "{\"push_data\":{\"tag\":\"latest\"},\"repository\":{\"repo_name\":\"joestump/switchboard\"}}"
 }
 ```
 
@@ -272,7 +272,7 @@ calls. All mutation/replay stays in tools.
 
 | URI | Returns | Notes |
 |-----|---------|-------|
-| `webhook-mcp://events/recent` | `{ "events": EventSummary[] }` | Newest-first, capped (e.g. 50). Same shape as `list_webhook_events` without filters. |
+| `switchboard://events/recent` | `{ "events": EventSummary[] }` | Newest-first, capped (e.g. 50). Same shape as `list_webhook_events` without filters. |
 
 - **MIME type:** `application/json`.
 - The MVP guarantees at least a **pull-able** recent-events resource. Whether the SDK's

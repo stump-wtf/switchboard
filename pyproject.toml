@@ -1,4 +1,4 @@
-# webhook-mcp — project + tooling config.
+# switchboard — project + tooling config.
 # The runtime dependencies below are the stack locked in by ADR-001 (Starlette/Jinja2/HTMX/Pico,
 # aiosqlite, redis, mcp, hvac for OpenBao). No application code is shipped in this docs-only
 # bootstrap beyond empty package placeholders; the deps are declared so the code session builds
@@ -9,7 +9,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "webhook-mcp"
+name = "switchboard"
 version = "0.1.0"
 description = "An MCP server that receives, verifies, normalizes, stores, and exposes inbound webhooks (GitHub, Stripe, Slack, Docker Hub, generic, Redis) to MCP clients and a local web UI."
 readme = "README.md"
@@ -42,9 +42,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://gitea.stump.rocks/joestump/webhook-mcp"
-Source = "https://gitea.stump.rocks/joestump/webhook-mcp"
-Mirror = "https://github.com/joestump/webhook-mcp"
+Homepage = "https://gitea.stump.rocks/joestump/switchboard"
+Source = "https://gitea.stump.rocks/joestump/switchboard"
+Mirror = "https://github.com/joestump/switchboard"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

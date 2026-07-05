@@ -1,0 +1,147 @@
+/*
+ * switchboard — tokens.css
+ * The palette override layer over Pico.css (classless), per ADR-001.
+ *
+ * A throwback to the era of manual telephone exchanges: bakelite and walnut panels, brass jacks,
+ * operator-cream bakelite handsets, aged paper labels, oxblood patch cords, and the amber glow of
+ * incandescent lamps. Warm, slightly desaturated, tactile.
+ *
+ * Two layers:
+ *   1. --sb-*   raw palette (the physical materials of a switchboard)
+ *   2. --pico-* semantic overrides so classless Pico markup themes itself
+ * Plus trust-mode tokens (signed / unverified / redis) used by the UI badges (ADR-003).
+ *
+ * Dark is the default (a dim operator room, panels aglow). Light is the operator's paper-label
+ * daytime view. Toggle with <html data-theme="light|dark"> or via prefers-color-scheme.
+ */
+
+:root {
+  /* ---- raw palette: switchboard materials ---- */
+  --sb-bakelite:      #1a1411; /* darkest — bakelite black-brown */
+  --sb-walnut:        #241c17; /* panel wood */
+  --sb-walnut-raised: #2f251d; /* raised panel / card */
+  --sb-brass:         #c99b4d; /* primary — polished brass jack */
+  --sb-brass-bright:  #e3ba6a; /* brass highlight */
+  --sb-brass-dim:     #9a7734; /* tarnished brass */
+  --sb-cream:         #f3ead3; /* operator-cream bakelite / paper */
+  --sb-cream-panel:   #e9dcbd; /* aged paper panel */
+  --sb-parchment:     #d8c8a1; /* label card */
+  --sb-ink:           #2b2017; /* ink on cream */
+  --sb-ink-soft:      #6f6149; /* faded ink */
+  --sb-cream-text:    #ece0c6; /* cream text on dark */
+  --sb-cream-muted:   #a99a7c; /* muted cream */
+  --sb-oxblood:       #b1533f; /* patch-cord oxblood */
+  --sb-oxblood-deep:  #8f3a2c; /* deep burgundy / danger */
+  --sb-amber:         #d99a3c; /* incandescent amber glow */
+  --sb-patch-green:   #6f9a5f; /* connected / a patched line */
+  --sb-patch-blue:    #6d8a99; /* dusty telephone blue (the queue cord) */
+  --sb-copper:        #a86b3c;
+
+  /* ---- trust-mode semantics (ADR-003) ---- */
+  --sb-trust-signed:      var(--sb-patch-green); /* verified line patched through */
+  --sb-trust-unverified:  var(--sb-amber);       /* caution — no signature */
+  --sb-trust-redis:       var(--sb-patch-blue);  /* the queue cord */
+  --sb-trust-rejected:    var(--sb-oxblood-deep);/* 401 — call refused */
+
+  /* ---- Pico semantic overrides: LIGHT (operator's paper-label daytime) ---- */
+  --pico-font-family: "Iosevka", "DejaVu Sans Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --pico-background-color: var(--sb-cream);
+  --pico-color: var(--sb-ink);
+  --pico-h1-color: var(--sb-ink);
+  --pico-muted-color: var(--sb-ink-soft);
+  --pico-muted-border-color: #cdbc95;
+  --pico-primary: #9a7326;               /* darker brass for AA contrast on cream */
+  --pico-primary-hover: #7f5f1e;
+  --pico-primary-focus: rgba(154, 115, 38, 0.25);
+  --pico-primary-inverse: var(--sb-cream);
+  --pico-secondary: var(--sb-oxblood-deep);
+  --pico-secondary-hover: #772f22;
+  --pico-card-background-color: var(--sb-cream-panel);
+  --pico-card-border-color: #d3c29a;
+  --pico-card-sectioning-background-color: #f7efda;
+  --pico-form-element-background-color: #f7efda;
+  --pico-form-element-border-color: #cdbc95;
+  --pico-code-background-color: #ece0c2;
+  --pico-code-color: #6b4f1e;
+  --pico-mark-background-color: #f2d79a;
+  --pico-blockquote-border-color: var(--sb-brass);
+  --pico-border-radius: 0.25rem;
+}
+
+/* ---- DARK (default mood): dim operator room, panels aglow ---- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --pico-background-color: var(--sb-bakelite);
+    --pico-color: var(--sb-cream-text);
+    --pico-h1-color: #f0e5cb;
+    --pico-muted-color: var(--sb-cream-muted);
+    --pico-muted-border-color: #3d3025;
+    --pico-primary: var(--sb-brass);
+    --pico-primary-hover: var(--sb-brass-bright);
+    --pico-primary-focus: rgba(201, 155, 77, 0.3);
+    --pico-primary-inverse: var(--sb-bakelite);
+    --pico-secondary: var(--sb-oxblood);
+    --pico-secondary-hover: #c76552;
+    --pico-card-background-color: var(--sb-walnut);
+    --pico-card-border-color: #3d3025;
+    --pico-card-sectioning-background-color: var(--sb-walnut-raised);
+    --pico-form-element-background-color: var(--sb-walnut-raised);
+    --pico-form-element-border-color: #46372a;
+    --pico-code-background-color: #221a14;
+    --pico-code-color: var(--sb-brass-bright);
+    --pico-mark-background-color: #4a3a1c;
+    --pico-mark-color: #f0e5cb;
+    --pico-blockquote-border-color: var(--sb-brass-dim);
+  }
+}
+
+/* explicit dark opt-in mirrors the media query */
+[data-theme="dark"] {
+  --pico-background-color: var(--sb-bakelite);
+  --pico-color: var(--sb-cream-text);
+  --pico-h1-color: #f0e5cb;
+  --pico-muted-color: var(--sb-cream-muted);
+  --pico-muted-border-color: #3d3025;
+  --pico-primary: var(--sb-brass);
+  --pico-primary-hover: var(--sb-brass-bright);
+  --pico-primary-focus: rgba(201, 155, 77, 0.3);
+  --pico-primary-inverse: var(--sb-bakelite);
+  --pico-secondary: var(--sb-oxblood);
+  --pico-secondary-hover: #c76552;
+  --pico-card-background-color: var(--sb-walnut);
+  --pico-card-border-color: #3d3025;
+  --pico-card-sectioning-background-color: var(--sb-walnut-raised);
+  --pico-form-element-background-color: var(--sb-walnut-raised);
+  --pico-form-element-border-color: #46372a;
+  --pico-code-background-color: #221a14;
+  --pico-code-color: var(--sb-brass-bright);
+  --pico-mark-background-color: #4a3a1c;
+  --pico-mark-color: #f0e5cb;
+  --pico-blockquote-border-color: var(--sb-brass-dim);
+}
+
+/*
+ * Trust-mode badges (ADR-003): every event's trust story is shown, never assumed.
+ * Usage (code session): <span class="sb-badge sb-badge--signed">signed</span>
+ */
+.sb-badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.sb-badge--signed     { color: var(--sb-trust-signed); }
+.sb-badge--unverified { color: var(--sb-trust-unverified); }
+.sb-badge--redis      { color: var(--sb-trust-redis); }
+.sb-badge--rejected   { color: var(--sb-trust-rejected); }
+
+/* the live status lamp on the dashboard (● receiving / ○ idle) */
+.sb-lamp { color: var(--sb-cream-muted); }
+.sb-lamp--receiving {
+  color: var(--sb-amber);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--sb-amber) 70%, transparent);
+}

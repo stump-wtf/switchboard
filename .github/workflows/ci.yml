@@ -1,4 +1,4 @@
-# webhook-mcp — GitHub CI (MIRROR host: github.com/joestump/webhook-mcp).
+# switchboard — GitHub CI (MIRROR host: github.com/joestump/switchboard).
 #
 # GitHub is a push-mirror of the canonical Gitea repo (ADR-006). Per the house convention, the
 # COMPREHENSIVE gate lives here: the same lint/type/security/test suite as .gitea/workflows/ci.yaml,
