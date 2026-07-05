@@ -46,7 +46,7 @@ An **ingestion adapter** turns an external delivery into a todo. Two families sh
 
 * **Push (webhook):** the "ack" is the HTTP response. A non-2xx makes the *sender* retry — that is where at-least-once comes from — and idempotency dedup collapses the retries. There is no source-side message to remove.
 * **Pull (queue): the source ack is coupled to the todo.** On consume, switchboard creates and **durably stores the todo first**, and only **then** acks/removes the source message. Concretely:
-  1. Consume a message → derive the idempotency key **from the source message id** (e.g. a stream entry id) → create the todo (dedup) → todo is durably in SQLite ([ADR-002](ADR-002-sqlite-persistence-and-retention.md)).
+  1. Consume a message → derive the idempotency key **from the source message id** (e.g. a stream entry id) → create the todo (dedup) → todo is durably in SQLite ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
   2. **Then** ack the source (stream consumer-group `XACK`; remove from the processing list; etc.).
   3. A crash **between** consume and todo-store leaves the source message **un-acked** ⇒ it is **redelivered** ⇒ dedup (idempotency key = source message id) collapses it ⇒ **no duplicate todo, no lost message.**
 

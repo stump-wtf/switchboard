@@ -16,7 +16,7 @@ related: [ADR-003, ADR-006]
 * **No secrets in the repo, config, or a committed `.env`.** Secrets are fetched at runtime from OpenBao. The repo contains *paths and role references*, never secret material.
 * **Machine identity, not a human token.** A service should authenticate as itself (AppRole) with a scoped policy, so its access can be rotated/revoked independently of any person.
 * **Least privilege.** The service's policy grants read on only its own KV path (`secret/switchboard/*`), nothing else.
-* **Secrets stay in memory.** Fetched secrets are held in process memory only; they are never written to disk, never logged, and never persisted to SQLite ([ADR-002](ADR-002-sqlite-persistence-and-retention.md) stores only a non-secret "configured / missing / none-by-design" status).
+* **Secrets stay in memory.** Fetched secrets are held in process memory only; they are never written to disk, never logged, and never persisted to SQLite ([ADR-002](ADR-002-postgres-persistence-and-retention.md) stores only a non-secret "configured / missing / none-by-design" status).
 * **Token lifecycle.** The AppRole login yields a short-lived token; the app must renew or re-login before expiry so long-running ingestion never stalls on an expired token.
 * **Homelab-consistent.** Uses the same `vault.stump.rocks` + AppRole flow the rest of StumpCloud uses, so operational knowledge transfers.
 

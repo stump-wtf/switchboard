@@ -9,7 +9,7 @@ The verbs that drive this state machine are in the [agent-mcp-tools spec](agent-
 push (webhook) and pull (queue) adapters normalize deliveries into todos is in the
 [ingestion-adapters spec](ingestion-adapters.md) ([ADR-014](../adr/ADR-014-ingestion-adapters-push-pull.md)).
 Todos are persisted in
-the same SQLite layer as events ([ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md)) and
+the same SQLite layer as events ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)) and
 subject to the same retention posture.
 
 ## Conventions
@@ -129,4 +129,4 @@ todo transitions back to `pending` with `attempt` incremented (until `max_attemp
 - Verbs driving the machine (`list_todos`/`claim`/`complete`/`fail`/`create_for`): [agent-mcp-tools spec](agent-mcp-tools.md).
 - Producers → todos (push/pull adapters, routing, idempotency-key derivation, pull ack-coupling): [ingestion-adapters spec](ingestion-adapters.md), [ADR-014](../adr/ADR-014-ingestion-adapters-push-pull.md), [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md).
 - Who may drain which queue (scope), and how ownership traces to a human: [ADR-008](../adr/ADR-008-human-principal-vended-endpoints.md), [accounts-and-endpoints spec](accounts-and-endpoints.md).
-- Persistence & retention of terminal todos: [ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md).
+- Persistence & retention of terminal todos: [ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md).

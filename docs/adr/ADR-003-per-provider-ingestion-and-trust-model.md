@@ -19,7 +19,7 @@ related: [ADR-000, ADR-002, ADR-004, ADR-005, ADR-014]
 * **Redis is a different front door.** No HTTP request, no signature header exists to check. The trust boundary is *who can publish to the channel* — i.e. Redis auth/ACL/TLS. That assumption must be documented, not implicit.
 * **One pipeline, many front doors.** However an event arrives, it flows through the same `normalize → persist → broadcast → expose` path. The trust model is metadata carried on the event, not a fork in the pipeline.
 * **Replay resistance for the schemes that support it.** Stripe and Slack sign a timestamp; we enforce a freshness window to blunt replay. GitHub does not, so we do not pretend to.
-* **No secret leakage.** Signature headers and secrets must never be logged in full or persisted (cross-ref [ADR-002](ADR-002-sqlite-persistence-and-retention.md), [ADR-004](ADR-004-secrets-management-openbao-approle.md)).
+* **No secret leakage.** Signature headers and secrets must never be logged in full or persisted (cross-ref [ADR-002](ADR-002-postgres-persistence-and-retention.md), [ADR-004](ADR-004-secrets-management-openbao-approle.md)).
 
 ## Considered Options
 
@@ -32,7 +32,7 @@ related: [ADR-000, ADR-002, ADR-004, ADR-005, ADR-014]
 
 Chosen options: **B (three explicit declared trust modes, enforced per provider)**, **B (Docker Hub via the generic/unverified endpoint with a shared token)**, **B (Redis trust = connection ACL/TLS, documented)**, and **B (signed-provider verification failures return 401 and are not persisted)**.
 
-Every provider config declares exactly one `trust_mode`, and the mode is stored on every event ([ADR-002](ADR-002-sqlite-persistence-and-retention.md) `trust_mode` + `verified` + `verify_detail`) and shown everywhere in the UI and API:
+Every provider config declares exactly one `trust_mode`, and the mode is stored on every event ([ADR-002](ADR-002-postgres-persistence-and-retention.md) `trust_mode` + `verified` + `verify_detail`) and shown everywhere in the UI and API:
 
 ### Mode 1 — `signed` (verification mandatory)
 
@@ -70,7 +70,7 @@ An in-process task subscribes to a Redis channel/stream and feeds messages into 
 ### Cross-cutting rules (all modes)
 
 * **Header sanitization before persist.** Before writing `headers` to the DB, signature/secret-bearing headers (`X-Hub-Signature-256`, `Stripe-Signature`, `X-Slack-Signature`, `Authorization`, any `?token=`) are redacted to a marker like `«redacted»`. Full signature values and secrets are never logged (brief §8).
-* **Disabled providers reject fast.** A provider toggled off in the registry ([ADR-002](ADR-002-sqlite-persistence-and-retention.md) `providers.enabled`) returns 404/403 without processing.
+* **Disabled providers reject fast.** A provider toggled off in the registry ([ADR-002](ADR-002-postgres-persistence-and-retention.md) `providers.enabled`) returns 404/403 without processing.
 * **Same downstream pipeline.** Regardless of front door, accepted events normalize to the common event shape, persist, broadcast over SSE, and become visible to the MCP tools ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
 
 ### Consequences
@@ -164,5 +164,5 @@ flowchart TD
 * Provider signature references: GitHub <https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries>, Stripe <https://docs.stripe.com/webhooks#verify-events>, Slack <https://api.slack.com/authentication/verifying-requests-from-slack>, Docker Hub (no native signing) <https://docs.docker.com/docker-hub/webhooks/>.
 * Redis trust references: `redis-py` asyncio <https://redis-py.readthedocs.io/en/stable/examples/asyncio_examples.html>, Redis ACL <https://redis.io/docs/latest/operate/oss_and_stack/management/security/acl/>.
 * Secret sourcing for all provider secrets and the Redis URL: [ADR-004](ADR-004-secrets-management-openbao-approle.md).
-* Storage of `trust_mode`/`verified`/`verify_detail` and header redaction: [ADR-002](ADR-002-sqlite-persistence-and-retention.md).
+* Storage of `trust_mode`/`verified`/`verify_detail` and header redaction: [ADR-002](ADR-002-postgres-persistence-and-retention.md).
 * This ADR governs the ingestion half of `docs/specs/openapi.yaml` (webhook endpoints, 401 responses) and is realized by the provider adapters (`app/providers/{github,stripe,slack,generic,redis}.py`) in the code session.

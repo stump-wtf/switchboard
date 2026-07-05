@@ -44,7 +44,7 @@ This ADR also ratifies the scope the rest of the documents assume:
 * Prove all three trust models: one signed provider, the generic/unverified endpoint (Docker Hub routed through it), and the Redis queue consumer ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)).
 * MCP tool surface exposing history / detail / replay ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
 * A local-only, 4-screen web UI updating live via SSE.
-* SQLite persistence, no external database ([ADR-002](ADR-002-sqlite-persistence-and-retention.md)).
+* SQLite persistence, no external database ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
 
 **Out of scope for the MVP:**
 

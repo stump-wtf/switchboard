@@ -48,7 +48,7 @@ Chosen option: **"(C) durable todo/work-item."** Switchboard's core agent-facing
 
 * **pending** — created and unclaimed; visible to any consumer whose scope covers its queue.
 * **claimed** — a consumer holds a **lease** (owner + expiry). Others cannot claim it. If the lease expires (the worker crashed or hung), the todo returns to **pending** and is re-claimable — this is the crash-safety guarantee.
-* **done** — the consumer **acked** completion. Terminal; persists as an audit record subject to retention ([ADR-002](ADR-002-sqlite-persistence-and-retention.md)).
+* **done** — the consumer **acked** completion. Terminal; persists as an audit record subject to retention ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
 * **failed** — the consumer reported failure (or attempts were exhausted). Terminal unless retried.
 * **retry** — a failed/expired todo re-enters **pending** with an incremented attempt count, up to a max; beyond the max it stays **failed** (a dead-letter state).
 

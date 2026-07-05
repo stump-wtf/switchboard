@@ -84,7 +84,7 @@ meaningless for every other provider.
 |-----|----------------|
 | [ADR-000](docs/adr/ADR-000-project-naming-and-scope.md) | Project name + MVP/session scope |
 | [ADR-001](docs/adr/ADR-001-web-stack-starlette-htmx-pico.md) | Web/UI stack — and why not FastAPI / Tailwind / icon fonts |
-| [ADR-002](docs/adr/ADR-002-sqlite-persistence-and-retention.md) | SQLite persistence, schema sketch, retention/pruning |
+| [ADR-002](docs/adr/ADR-002-postgres-persistence-and-retention.md) | SQLite persistence, schema sketch, retention/pruning |
 | [ADR-003](docs/adr/ADR-003-per-provider-ingestion-and-trust-model.md) | Per-provider ingestion & the three trust models |
 | [ADR-004](docs/adr/ADR-004-secrets-management-openbao-approle.md) | Secrets via OpenBao AppRole |
 | [ADR-005](docs/adr/ADR-005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract shape |

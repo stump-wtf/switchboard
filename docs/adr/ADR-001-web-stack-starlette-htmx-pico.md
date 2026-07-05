@@ -140,4 +140,4 @@ flowchart TB
 * Rejected alternatives are drawn directly from the brief §4 ("Explicitly rejected alternatives — already litigated, don't relitigate") and §13 (key learnings on Nerd Fonts and the icon-pack split).
 * Icon sourcing: Lucide (<https://lucide.dev/>) for chrome, Simple Icons (<https://simpleicons.org/>) for brands.
 * Stack references: Starlette <https://www.starlette.io/>, uvicorn <https://www.uvicorn.org/>, sse-starlette <https://github.com/sysid/sse-starlette>, Jinja2 <https://jinja.palletsprojects.com/>, HTMX <https://htmx.org/>, `htmx-ext-sse` <https://github.com/bigskysoftware/htmx-extensions/tree/main/src/sse>, Pico.css <https://picocss.com/>.
-* Related: [ADR-002](ADR-002-sqlite-persistence-and-retention.md) (the SQLite layer the UI reads), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) (the MCP surface sharing this process).
+* Related: [ADR-002](ADR-002-postgres-persistence-and-retention.md) (the SQLite layer the UI reads), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) (the MCP surface sharing this process).

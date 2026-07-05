@@ -2,7 +2,7 @@
 
 Authoritative contract for the MCP surface of **switchboard**, served by the official `mcp` Python
 SDK from the same Starlette process as the web UI ([ADR-001](../adr/ADR-001-web-stack-starlette-htmx-pico.md))
-and reading the same SQLite layer ([ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md)).
+and reading the same SQLite layer ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 
 This document is the source of truth for tool/resource **schemas**. The *shape* decisions behind it
 are in [ADR-005](../adr/ADR-005-mcp-tool-and-resource-contract.md); the trust semantics are in
@@ -21,7 +21,7 @@ must not drift.
 - **Trust is always present.** Every event object carries `trust_mode`, `verified`, and (in detail)
   `verify_detail`, so an agent can always tell a signed, verified event from an unverified/Redis one.
 - **No secrets cross the boundary.** Responses contain **sanitized** headers only; signing secrets and
-  full signature header values are never returned ([ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md)/[ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md)).
+  full signature header values are never returned ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)/[ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md)).
 - **Time:** all timestamps are ISO-8601 UTC strings.
 - **Errors:** tools raise MCP tool errors with a stable `code` and a human `message`. `message` never
   contains secret material. See [Errors](#errors).
@@ -295,7 +295,7 @@ secrets):
 
 - Shape decisions & rationale: [ADR-005](../adr/ADR-005-mcp-tool-and-resource-contract.md).
 - Trust semantics (`trust_mode`/`verified`/`verify_detail`): [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md).
-- Storage schema behind these shapes: [ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md).
+- Storage schema behind these shapes: [ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md).
 - HTTP + SSE surfaces sharing these shapes: [`openapi.yaml`](openapi.yaml), [`asyncapi.yaml`](asyncapi.yaml).
 - MCP Python SDK: <https://github.com/modelcontextprotocol/python-sdk> · MCP spec: <https://modelcontextprotocol.io/>.
 ```

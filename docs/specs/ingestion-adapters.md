@@ -172,4 +172,4 @@ order; each match produces one todo (fan-out allowed).
 - Todo object, dedup, lease/ack lifecycle: [todos spec](todos.md), [ADR-007](../adr/ADR-007-todos-as-core-primitive.md).
 - Agent-created webhooks (push family) & the ceiling: [ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md), [agent-mcp-tools spec](agent-mcp-tools.md).
 - Secrets (webhook signing secrets, queue connection URLs): [ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md).
-- Delivery/history surface: [ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md), [ADR-005](../adr/ADR-005-mcp-tool-and-resource-contract.md), [`openapi.yaml`](openapi.yaml).
+- Delivery/history surface: [ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md), [ADR-005](../adr/ADR-005-mcp-tool-and-resource-contract.md), [`openapi.yaml`](openapi.yaml).

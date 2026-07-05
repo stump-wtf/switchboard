@@ -19,7 +19,7 @@ Two layers:
 |-----|-------|----------|
 | [ADR-000](adr/ADR-000-project-naming-and-scope.md) | Project naming & scope | The project is `switchboard`; MVP scope ratified. |
 | [ADR-001](adr/ADR-001-web-stack-starlette-htmx-pico.md) | Web stack | Starlette + HTMX + Pico.css over FastAPI/SPA/Tailwind. |
-| [ADR-002](adr/ADR-002-sqlite-persistence-and-retention.md) | SQLite persistence & retention | Single-file SQLite; age + row-cap pruning. |
+| [ADR-002](adr/ADR-002-postgres-persistence-and-retention.md) | SQLite persistence & retention | Single-file SQLite; age + row-cap pruning. |
 | [ADR-003](adr/ADR-003-per-provider-ingestion-and-trust-model.md) | Per-provider trust model | Three explicit trust modes (`signed`/`unverified`/`redis`), enforced. |
 | [ADR-004](adr/ADR-004-secrets-management-openbao-approle.md) | Secrets via OpenBao AppRole | Machine identity; `secret/switchboard/*`; nothing on disk. |
 | [ADR-005](adr/ADR-005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay`/`list_providers` + recent-events resource. |
