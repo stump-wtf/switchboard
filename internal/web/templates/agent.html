@@ -1,0 +1,35 @@
+{{define "content"}}
+<p><a href="/">← agents</a></p>
+<h1>{{.Agent.Name}}</h1>
+<p class="muted">{{.Agent.Description}}</p>
+
+<h2>Vend a scoped MCP endpoint</h2>
+<div class="card">
+  <form method="post" action="/agents/{{.Agent.ID}}/vend">
+    <label>Queues (comma-separated) — the todo queues this endpoint may work</label>
+    <input name="queues" placeholder="reviews, deploys" required>
+    <label>Verbs (comma-separated) — allowed MCP tools</label>
+    <input name="verbs" value="list_todos,claim,complete,fail" required>
+    <p style="margin-top:.8rem"><button>Vend endpoint</button></p>
+  </form>
+  <p class="muted">Scope is immutable — to change access, revoke and re-vend.</p>
+</div>
+
+<h2>Endpoints</h2>
+{{if .Endpoints}}
+<table>
+  <thead><tr><th>Credential</th><th>Queues</th><th>Verbs</th><th>State</th><th></th></tr></thead>
+  <tbody>
+  {{range .Endpoints}}
+    <tr>
+      <td><code>{{.CredentialPrefix}}</code></td>
+      <td class="muted">{{range .ScopeQueues}}{{.}} {{end}}</td>
+      <td class="muted">{{range .ScopeVerbs}}{{.}} {{end}}</td>
+      <td><span class="badge {{.State}}">{{.State}}</span></td>
+      <td>{{if eq .State "active"}}<form method="post" action="/endpoints/{{.ID}}/revoke"><button class="secondary">revoke</button></form>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}<p class="muted">No endpoints vended yet.</p>{{end}}
+{{end}}

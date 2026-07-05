@@ -1,0 +1,19 @@
+{{define "content"}}
+<p><a href="/agents/{{.Agent.ID}}">← {{.Agent.Name}}</a></p>
+<h1>Endpoint vended</h1>
+<p class="warn">Copy the credential now — it is shown only once and stored only as a hash.</p>
+<div class="card">
+  <label>Credential</label>
+  <pre>{{.Token}}</pre>
+  <p class="muted">queues: {{range .Endpoint.ScopeQueues}}<code>{{.}}</code> {{end}} · verbs: {{range .Endpoint.ScopeVerbs}}<code>{{.}}</code> {{end}}</p>
+</div>
+
+<h2>Wire it into Claude Code Channels</h2>
+<p class="muted">Add this to your project's <code>.mcp.json</code>, then start Claude Code with the
+channels flag. Switchboard pushes new todos into your session as
+<code>&lt;channel source="switchboard"&gt;</code> events and serves the work tools
+(<code>list_todos</code> / <code>claim</code> / <code>complete</code>) over the same connection.</p>
+<pre>{{.MCPJSON}}</pre>
+<pre>claude --dangerously-load-development-channels server:switchboard</pre>
+<p class="muted">Requires Claude Code v2.1.80+ and the <code>switchboard</code> binary on your PATH.</p>
+{{end}}

@@ -1,57 +1,67 @@
-// Command switchboard is the entrypoint for the Switchboard service — an MCP server that
-// receives, verifies, and routes inbound events into a durable todo work-queue that agents drain.
+// Command switchboard is the entrypoint for the Switchboard service.
 //
-// This is the skeleton the code session grows into the full pipeline. The design record is the
-// source of truth: https://joestump.github.io/switchboard/ (docs/adr/ + docs/specs/).
+//	switchboard serve     Run the central service: webhooks → verify → durable todo queue,
+//	                      the human web UI (OIDC login + vend), and the vended agent API.
+//	switchboard channel   Run the local Claude Code Channels stdio adapter: bridges a session to
+//	                      central switchboard with a vended credential (SWITCHBOARD_URL + SWITCHBOARD_TOKEN),
+//	                      serving the work tools and pushing new todos in as <channel> events.
+//
+// The design record is the source of truth: https://joestump.github.io/switchboard/
 package main
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
-	"time"
 
+	"github.com/joestump/switchboard/internal/channel"
 	"github.com/joestump/switchboard/internal/config"
+	"github.com/joestump/switchboard/internal/server"
 )
 
 func main() {
+	cmd := "serve"
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		cmd = os.Args[1]
+	}
+
+	switch cmd {
+	case "serve":
+		runServe()
+	case "channel":
+		runChannel()
+	default:
+		fmt.Fprintf(os.Stderr, "usage: switchboard [serve|channel]\n")
+		os.Exit(2)
+	}
+}
+
+func runServe() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	cfg := config.FromEnv()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
-	// TODO(code-session): mount /webhooks/{provider} + /webhooks/generic/{name} (ADR-003/014),
-	// the /events SSE stream + web UI (ADR-001), and the MCP server (ADR-005/008).
-
-	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go func() {
-		log.Info("switchboard listening", "addr", cfg.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server error", "err", err)
-			os.Exit(1)
-		}
-	}()
+	if err := server.Run(ctx, cfg, log); err != nil {
+		log.Error("serve", "err", err)
+		os.Exit(1)
+	}
+}
 
-	<-ctx.Done()
-	log.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("shutdown error", "err", err)
+func runChannel() {
+	// stdout is the JSON-RPC pipe to Claude Code — ALL logs go to stderr.
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := channel.Run(ctx, os.Getenv("SWITCHBOARD_URL"), os.Getenv("SWITCHBOARD_TOKEN")); err != nil {
+		log.Error("channel", "err", err)
+		os.Exit(1)
 	}
 }

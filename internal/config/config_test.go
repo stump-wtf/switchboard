@@ -6,8 +6,8 @@ import (
 )
 
 func TestFromEnvDefaults(t *testing.T) {
-	os.Unsetenv("SWITCHBOARD_ADDR")
-	os.Unsetenv("SWITCHBOARD_DATABASE_URL")
+	_ = os.Unsetenv("SWITCHBOARD_ADDR")
+	_ = os.Unsetenv("SWITCHBOARD_DATABASE_URL")
 	cfg := FromEnv()
 	if cfg.Addr != "127.0.0.1:8080" {
 		t.Fatalf("default Addr: got %q, want 127.0.0.1:8080", cfg.Addr)
