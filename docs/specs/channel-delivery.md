@@ -115,5 +115,5 @@ Channels is a **research preview** ([ADR-013](../adr/ADR-013-channels-push-deliv
 - Durable primitive & the revised "MCP can't push" framing: [ADR-007](../adr/ADR-007-todos-as-core-primitive.md), [todos spec](todos.md).
 - Transport (vended endpoint) & scope: [ADR-008](../adr/ADR-008-human-principal-vended-endpoints.md), [accounts-and-endpoints spec](accounts-and-endpoints.md).
 - Human consent that permission-relay accelerates: [ADR-010](../adr/ADR-010-a2a-discovery-human-vended-friending.md), [friend-requests spec](friend-requests.md).
-- Human-side SSE push analogue: [ADR-001](../adr/ADR-001-web-stack-starlette-htmx-pico.md).
+- Human-side SSE push analogue: [ADR-001](../adr/ADR-001-web-stack-go-htmx-pico.md).
 - Claude Code Channels reference: <https://code.claude.com/docs/en/channels-reference>.

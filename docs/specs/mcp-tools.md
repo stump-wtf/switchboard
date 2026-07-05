@@ -1,7 +1,7 @@
 # switchboard — MCP Tool & Resource Contract
 
 Authoritative contract for the MCP surface of **switchboard**, served by the official `mcp` Python
-SDK from the same Starlette process as the web UI ([ADR-001](../adr/ADR-001-web-stack-starlette-htmx-pico.md))
+SDK from the same Starlette process as the web UI ([ADR-001](../adr/ADR-001-web-stack-go-htmx-pico.md))
 and reading the same PostgreSQL layer ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 
 This document is the source of truth for tool/resource **schemas**. The *shape* decisions behind it

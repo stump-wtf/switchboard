@@ -81,7 +81,7 @@ An in-process task subscribes to a Redis channel/stream and feeds messages into 
 * Good, because Redis's trust boundary is documented as connection/ACL, so operators know what actually protects the channel.
 * Good, because one pipeline with trust-as-metadata keeps the code, schema, and specs uniform across four front doors.
 * Bad, because operators must understand three trust modes rather than "webhooks are secure" — mitigated by prominent UI labeling and this ADR.
-* Bad, because the generic endpoint is a genuine foot-gun if exposed off a trusted network — mitigated by default-disabled, explicit opt-in, unverified labeling, and the localhost/Caddy posture in the README ([ADR-001](ADR-001-web-stack-starlette-htmx-pico.md)).
+* Bad, because the generic endpoint is a genuine foot-gun if exposed off a trusted network — mitigated by default-disabled, explicit opt-in, unverified labeling, and the localhost/Caddy posture in the README ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)).
 * Bad, because we maintain three distinct HMAC schemes for the signed providers — irreducible; each provider defines its own, and faking a common one would be wrong.
 
 ### Confirmation

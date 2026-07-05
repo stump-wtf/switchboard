@@ -41,7 +41,7 @@ Chosen option: **"(C) Channels as a notify layer over the durable queue."** This
 * **Lossy by design ⇒ degrade to pull.** Because Channels drops events when no session is attached, the todo simply stays `pending` and the worker loop ([ADR-007](ADR-007-todos-as-core-primitive.md)) drains it when the harness returns. **Push never gates correctness.** Notify is at-least-once; duplicates are harmless (idempotency-key dedup + idempotent `claim`).
 * **Two-way (optional).** Expose a **reply tool** so a chat-sourced todo can be answered inline, and/or opt into **permission relay** so a human can approve/deny a consent prompt — e.g. a friend approval ([ADR-010](ADR-010-a2a-discovery-human-vended-friending.md)) or a scoped tool use — from their own channel, applying the first verdict to arrive. Consent still lands as a durable approval-todo; relay is the fast path, not a bypass of human vending.
 * **Attribution is the sender gate.** Only **verified, human-attributed** todos are ever pushed; switchboard's per-source verification ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) satisfies the reference's "gate on sender" requirement. The prototype's hardening — rejecting payloads containing a `</channel>` break, and withholding secret values behind a fetchable `secret-ref` — is retained.
-* **Symmetry with the human UI.** Humans are pushed via the web UI's SSE ([ADR-001](ADR-001-web-stack-starlette-htmx-pico.md)); agents/harnesses are pushed via Channels. **Two audiences, two push transports, one durable ledger** ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
+* **Symmetry with the human UI.** Humans are pushed via the web UI's SSE ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)); agents/harnesses are pushed via Channels. **Two audiences, two push transports, one durable ledger** ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
 
 ### Consequences
 
@@ -99,6 +99,6 @@ flowchart LR
 * The durable primitive this layers on, and the "MCP can't push" framing it revises: [ADR-007](ADR-007-todos-as-core-primitive.md).
 * The vended endpoint that carries the `claude/channel` capability: [ADR-008](ADR-008-human-principal-vended-endpoints.md).
 * Human consent that permission-relay accelerates (still durable todos): [ADR-010](ADR-010-a2a-discovery-human-vended-friending.md).
-* The human-side push analogue (SSE web UI): [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md).
+* The human-side push analogue (SSE web UI): [ADR-001](ADR-001-web-stack-go-htmx-pico.md).
 * Delivery contract, message mapping, two-way + limits: [channel-delivery spec](../specs/channel-delivery.md).
 * Claude Code Channels reference: <https://code.claude.com/docs/en/channels-reference>. MCP: <https://modelcontextprotocol.io/>.

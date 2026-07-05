@@ -32,7 +32,7 @@ Chosen option: **"Option 2 — `switchboard`."** An operator switchboard is prec
 
 This reverses the instinct to default to the `<domain>-mcp` convention (`paperless-mcp`): that convention optimizes for legibility, but `switchboard` delivers legibility *through* metaphor while also being distinctive. The `-mcp` suffix is dropped deliberately — MCP is one interface this project exposes, not its identity (it also serves a web UI and consumes a Redis queue). The descriptive hyphenated names (Option 3) are longer without adding information the metaphor doesn't already carry.
 
-The metaphor also gives the project a coherent **visual identity**: the UI palette and docs-site theme draw on the era of manual telephone exchanges — brass, bakelite, operator-cream, oxblood, and patch-cable tones (see [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md) and `static/tokens.css`).
+The metaphor also gives the project a coherent **visual identity**: the UI palette and docs-site theme draw on the era of manual telephone exchanges — brass, bakelite, operator-cream, oxblood, and patch-cable tones (see [ADR-001](ADR-001-web-stack-go-htmx-pico.md) and `static/tokens.css`).
 
 ### Scope confirmation
 
@@ -49,7 +49,7 @@ This ADR also ratifies the scope the rest of the documents assume:
 **Out of scope for the MVP:**
 
 * Outbound webhook delivery/retries (the `replay` tool re-emits on demand; it is not a delivery scheduler).
-* Multi-user auth / RBAC on the web UI — localhost-bound, behind Caddy `forward_auth` if ever exposed ([ADR-001](ADR-001-web-stack-starlette-htmx-pico.md)).
+* Multi-user auth / RBAC on the web UI — localhost-bound, behind Caddy `forward_auth` if ever exposed ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)).
 * Standing up PostgreSQL's own HA/replication — the app tier can run multiple instances against one PostgreSQL ([ADR-002](ADR-002-postgres-persistence-and-retention.md)), but operating Postgres in HA is deferred.
 * Provider-side webhook management (registering webhooks via provider APIs).
 
@@ -115,5 +115,5 @@ flowchart LR
 
 * The `webhook-mcp` working name is from the project brief §1; the "rename if a better name lands during ADR-000" instruction is honored here by choosing `switchboard`.
 * Scope statement consolidates brief §2 (goals/non-goals) and the §5/§13 "docs-only this session" instruction.
-* Visual identity (throwback switchboard-era palette): [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md), `static/tokens.css`.
-* Related decisions: [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md), [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md), [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md).
+* Visual identity (throwback switchboard-era palette): [ADR-001](ADR-001-web-stack-go-htmx-pico.md), `static/tokens.css`.
+* Related decisions: [ADR-001](ADR-001-web-stack-go-htmx-pico.md), [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md), [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md).

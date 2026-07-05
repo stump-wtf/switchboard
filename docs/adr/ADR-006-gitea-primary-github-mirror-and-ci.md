@@ -132,4 +132,4 @@ flowchart TB
 * Conventions confirmed by inspecting `joestump/reduit` (Go), `joestump/dotfiles` (Shell), and `stumpcloud/{docker,garage-pages-deploy}` on `gitea.stump.rocks`. There is no `stumpcloud/ci-actions` repo and no prior Python repo; this is the first, so its tool config is authored fresh here.
 * Runner label `ubuntu-latest`, Gitleaks pinned Docker image, and Trivy image-scan (not used here — no container image in MVP) are the reusable house security patterns.
 * Push-mirror mechanism: Gitea Settings → Mirror Settings / `push_mirrors` API with a GitHub PAT — a one-time setting, not a repo file.
-* Related: [ADR-001](ADR-001-web-stack-starlette-htmx-pico.md) (what the `tests` job exercises), [ADR-004](ADR-004-secrets-management-openbao-approle.md) (Gitleaks backstops no-secrets-in-repo).
+* Related: [ADR-001](ADR-001-web-stack-go-htmx-pico.md) (what the `tests` job exercises), [ADR-004](ADR-004-secrets-management-openbao-approle.md) (Gitleaks backstops no-secrets-in-repo).
