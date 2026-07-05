@@ -1,18 +1,23 @@
-# webhook-mcp — Gitea CI (PRIMARY host).
+# webhook-mcp — Gitea CI (PRIMARY host: gitea.stump.rocks/joestump/webhook-mcp).
 #
-# Host-based (NOT container-based): this act_runner cannot run the Node-based actions/checkout
-# inside a `container:` job (verified — a per-check split had all jobs fail), and it also does not
-# reliably provision Python via actions/setup-python (the very first run failed all jobs at that
-# step). So we follow the house pattern (reduit/dotfiles run on the host image with `sudo apt-get`):
-# install Python 3.12 + venv via apt and work inside a venv (avoids PEP 668 "externally-managed").
+# Gitea is the source of truth (ADR-006). This is the fast + security gate the brief (§5.3) mandates:
+# ruff, mypy, bandit, pip-audit, Gitleaks, Semgrep, pytest. Reproduce locally with `make ci`.
 #
-# `probe-syspy` is a temporary diagnostic that passes iff the runner's python3 is >= 3.12. If the
-# main `checks` job ever fails, this pinpoints whether the host Python version is the cause. It is
-# removed once CI is confirmed green.
+# Host-based (NOT container-based), following the house pattern (reduit/dotfiles run on the host
+# image with `sudo apt-get`):
+#   - This act_runner cannot run the Node-based actions/checkout inside a `container:` job (a
+#     per-check split had every containerized job fail), and it does not reliably provision Python
+#     via actions/setup-python (the first run failed all jobs at that step). So we install
+#     Python 3.12 + venv via apt and work inside a venv (avoids PEP 668 "externally-managed").
+#   - Single sequential job, matching reduit (the act_runner is contended; one job).
+#   - Gitleaks runs from a pinned release binary (dotfiles house pattern).
+#   - Semgrep is scoped to code rulesets (p/python, p/security-audit), not `--config auto`, which
+#     also blocks on mutable action tags — a policy the StumpCloud tag+Dependabot convention does
+#     not follow. Same scope on the GitHub mirror.
 #
-# LOCKSTEP: the CHECKS here mirror .github/workflows/ci.yml (which provisions Python differently —
-# GitHub hosted runners support actions/setup-python + a version matrix). Dependabot only watches
-# .github/, so bump pins here by hand (ADR-006).
+# LOCKSTEP: keep the checks here in sync with .github/workflows/ci.yml (which provisions Python
+# differently — GitHub hosted runners support actions/setup-python + a version matrix). Dependabot
+# only watches .github/, so bump pins here (gitleaks, action refs) BY HAND (ADR-006).
 name: ci
 
 on:
@@ -28,13 +33,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  probe-syspy:
-    runs-on: ubuntu-latest
-    steps:
-      - run: python3 --version || true
-      - name: pass iff host python3 >= 3.12
-        run: python3 -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 12) else 1)"
-
   checks:
     name: ruff + mypy + bandit + pip-audit + gitleaks + semgrep + pytest
     runs-on: ubuntu-latest
