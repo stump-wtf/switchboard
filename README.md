@@ -83,7 +83,7 @@ meaningless for every other provider.
 | Doc | What it covers |
 |-----|----------------|
 | [ADR-000](docs/adr/ADR-000-project-naming-and-scope.md) | Project name + MVP/session scope |
-| [ADR-001](docs/adr/ADR-001-web-stack-go-htmx-pico.md) | Web/UI stack — and why not FastAPI / Tailwind / icon fonts |
+| [ADR-001](docs/adr/ADR-001-web-stack-go-htmx-pico.md) | Web/UI stack (Go net/http + chi, html/template, HTMX + Pico) — and why not a framework / Tailwind / icon fonts |
 | [ADR-002](docs/adr/ADR-002-postgres-persistence-and-retention.md) | PostgreSQL persistence, queue mechanics, schema sketch, retention |
 | [ADR-003](docs/adr/ADR-003-per-provider-ingestion-and-trust-model.md) | Per-provider ingestion & the three trust models |
 | [ADR-004](docs/adr/ADR-004-secrets-management-openbao-approle.md) | Secrets via OpenBao AppRole |
