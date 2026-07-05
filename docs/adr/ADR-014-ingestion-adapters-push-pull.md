@@ -37,7 +37,7 @@ An **ingestion adapter** turns an external delivery into a todo. Two families sh
 | Family | Transport | Members | Verified by | Trust ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) |
 |--------|-----------|---------|-------------|-------|
 | **Push (webhooks)** | inbound HTTP | GitHub, Stripe, Slack | HMAC signature at receive | `signed` |
-| | | Docker Hub, generic | weak per-instance token (bozo filter) | `unverified` |
+| | | Docker Hub, generic | shared-secret token (header or `?token=`), required by default | `token` / `open` |
 | **Pull (queue adapters)** | the app consumes a queue | **Redis (lists / streams / pub-sub) — reference**; SQS / NATS / AMQP later | the connection itself (ACL / TLS) | `redis` (queue) |
 
 **Redis is reclassified** from "a webhook source / a third trust-mode sibling" to **"the reference *pull* adapter."** Its `redis` trust mode (trust = connection ACL/TLS) from [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) is unchanged; what changes is the framing — it is a transport *family*, not an HTTP source, and its family generalizes.
@@ -100,7 +100,7 @@ The result: **the todo's durability (and thereafter its lease/ack, [ADR-007](ADR
 flowchart TB
   subgraph push[Push adapters — webhooks / inbound HTTP]
     gh[GitHub · Stripe · Slack<br/>signed]
-    gen[Docker Hub · generic<br/>unverified]
+    gen[Docker Hub · generic<br/>token / open]
   end
   subgraph pull[Pull adapters — queue / the app consumes]
     redis[Redis streams/lists/pubsub<br/>reference]

@@ -47,7 +47,7 @@ Chosen option: **"(D) OpenBao AppRole."** The service authenticates to `vault.st
 | `secret/switchboard/providers/github` | `hmac_secret` | GitHub signature verification ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) |
 | `secret/switchboard/providers/stripe` | `signing_secret` | Stripe signature verification |
 | `secret/switchboard/providers/slack` | `signing_secret` | Slack signature verification |
-| `secret/switchboard/generic/<name>` | `token` | Generic endpoint shared-token bozo-filter |
+| `secret/switchboard/generic/<name>` | `token` | Generic-webhook shared-secret token — caller auth ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) |
 | `secret/switchboard/redis` | `url` (may embed password), optional `ca_cert` | Redis pull-adapter connection ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)) |
 | `secret/switchboard/postgres` | `dsn` (may embed password), optional `ca_cert` | PostgreSQL connection ([ADR-002](ADR-002-postgres-persistence-and-retention.md)) |
 

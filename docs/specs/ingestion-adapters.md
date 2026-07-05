@@ -41,8 +41,8 @@ including for agent-created webhooks ([ADR-012](../adr/ADR-012-agents-self-manag
 | **GitHub** | `signed` | `X-Hub-Signature-256`, HMAC-SHA256 over raw body, `sha256=` prefix, constant-time compare. Fail ⇒ 401, not persisted, no todo. |
 | **Stripe** | `signed` | `Stripe-Signature` (`t=` + `v1=`) HMAC-SHA256 over `"{t}.{body}"`; reject if `|now − t| > 300s`. |
 | **Slack** | `signed` | `X-Slack-Signature` + `X-Slack-Request-Timestamp`, `v0=` HMAC-SHA256 over `"v0:{ts}:{body}"`; reject stale. |
-| **Docker Hub** | `unverified` | No native signing scheme ⇒ routed through the **generic** endpoint. Labeled unverified everywhere. |
-| **generic** (`/webhooks/generic/{name}`) | `unverified` | No signature; a weak per-instance path/query **token** (bozo filter, constant-time compare). Opt-in, disabled by default. |
+| **Docker Hub** | `token` | No native signing scheme ⇒ routed through the generic endpoint; guarded by a shared-secret token (header or `?token=`), required by default ([ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md)). |
+| **generic** (`/webhooks/generic/{name}`) | `token` (or `open`) | No signature; requires a configured shared-secret token the caller presents (header preferred, `?token=` fallback), constant-time compare; disabled until a token is set. `open` is an explicit trusted-network opt-in. |
 
 **Push "ack" is the HTTP response.** A non-2xx makes the *sender* retry — that is the source of
 at-least-once — and idempotency dedup collapses the retries. There is no source-side message to remove.

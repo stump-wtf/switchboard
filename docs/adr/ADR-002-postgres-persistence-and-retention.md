@@ -78,9 +78,10 @@ A sketch to anchor the specs; the code session owns the final migration DDL. Tim
 CREATE TABLE events (
   id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   source        text        NOT NULL,   -- adapter instance: 'github' | 'generic:<name>' | 'redis:<stream>' (ADR-014)
+  family        text        NOT NULL,   -- 'webhook' | 'queue' (ADR-003)
   event_type    text,
   external_id   text,                   -- provider/message delivery id for dedupe; NULL if none
-  trust_mode    text        NOT NULL,   -- 'signed' | 'unverified' | 'redis' (ADR-003)
+  trust_mode    text        NOT NULL,   -- 'signed' | 'token' | 'open' | 'queue' (ADR-003)
   verified      boolean     NOT NULL,
   verify_detail text,
   content_type  text,
@@ -122,9 +123,8 @@ CREATE UNIQUE INDEX idx_todos_dedupe ON todos (queue, idempotency_key) WHERE sta
 -- Adapter registry (runtime enable/disable + NON-SECRET config; secrets in OpenBao, ADR-004).
 CREATE TABLE adapters (
   name       text PRIMARY KEY,             -- 'github' | 'generic:homelab' | 'redis:deploys'
-  family     text NOT NULL,                -- 'push' | 'pull' (ADR-014)
-  kind       text NOT NULL,                -- 'signed' | 'generic' | 'redis'
-  trust_mode text NOT NULL,
+  family     text NOT NULL,                -- 'webhook' | 'queue' (ADR-003; push=webhook, pull=queue per ADR-014)
+  trust_mode text NOT NULL,                -- 'signed' | 'token' | 'open' | 'queue' (ADR-003)
   enabled    boolean NOT NULL DEFAULT true,
   config     jsonb,                        -- route path / stream name / signature scheme / secret-status flag
   created_at timestamptz NOT NULL DEFAULT now(),

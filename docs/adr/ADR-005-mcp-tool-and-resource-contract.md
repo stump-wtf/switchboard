@@ -44,7 +44,7 @@ Chosen: **tools + a recent-events resource (B)**, **compact `list` summaries wit
 
 * **`EventSummary`** (compact, for `list`): `id`, `provider`, `event_type`, `trust_mode`, `verified`, `payload_size`, `received_at`. No payload, no headers — keeps agent context small.
 * **`EventDetail`** (full, for `get`): all summary fields plus `verify_detail`, sanitized `headers` (object), raw `payload`, `content_type`, `source_ip`, `external_id`.
-* **`ProviderStatus`**: `name`, `kind` (`signed`/`generic`/`redis`), `trust_mode`, `enabled`, `secret_status` (`configured`/`missing`/`none-by-design`), and the route path or Redis channel. Never the secret value ([ADR-004](ADR-004-secrets-management-openbao-approle.md)).
+* **`ProviderStatus`**: `name`, `family` (`webhook`/`queue`), `trust_mode`, `enabled`, `secret_status` (`configured`/`missing`/`none-by-design`), and the route path or Redis channel. Never the secret value ([ADR-004](ADR-004-secrets-management-openbao-approle.md)).
 
 Every event object includes `trust_mode` + `verified` + `verify_detail` so an agent can distinguish a signed, verified event from an unverified/Redis one — the MCP surface is held to the same honesty bar as the UI ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)).
 

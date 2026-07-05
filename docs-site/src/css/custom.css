@@ -82,10 +82,11 @@
   white-space: nowrap;
 }
 .sb-badge--signed { color: #6f9a5f; }
-.sb-badge--unverified { color: #cf9028; }
-.sb-badge--redis { color: #6d8a99; }
+.sb-badge--token { color: #cf9028; }
+.sb-badge--open { color: #a83f2f; }
+.sb-badge--queue { color: #6d8a99; }
 .sb-badge--rejected { color: #a83f2f; }
-[data-theme='dark'] .sb-badge--unverified { color: #d99a3c; }
+[data-theme='dark'] .sb-badge--token { color: #d99a3c; }
 
 /* Status/metadata chips at the top of each ADR (status · date) */
 .sb-meta {

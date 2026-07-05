@@ -122,10 +122,11 @@ import Link from '@docusaurus/Link';
 </div>
 
 <div className="sb-trust">
-  <span>Trust is explicit, per‑provider, and shown:</span>
+  <span>Two families — webhook &amp; queue — each event's trust shown:</span>
   <span className="sb-badge sb-badge--signed">signed</span>
-  <span className="sb-badge sb-badge--unverified">unverified</span>
-  <span className="sb-badge sb-badge--redis">redis</span>
+  <span className="sb-badge sb-badge--token">token</span>
+  <span className="sb-badge sb-badge--open">open</span>
+  <span className="sb-badge sb-badge--queue">queue</span>
   <span>— see <Link to="/decisions/ADR-003-per-provider-ingestion-and-trust-model">ADR‑003</Link>.</span>
 </div>
 

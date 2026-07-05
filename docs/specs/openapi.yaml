@@ -6,7 +6,7 @@ openapi: 3.1.0
 # generating this spec. It is the contract the code session implements against.
 #
 # Trust model (ADR-003): signed providers are verified-or-401; the generic endpoint is
-# unverified-by-design and labeled as such; Redis is a separate ingestion path (see
+# a shared-secret token (or open); Redis is a separate pull ingestion path (see
 # docs/specs/asyncapi.yaml, not here — it has no HTTP endpoint).
 #
 # Live-update stream schema (SSE): docs/specs/asyncapi.yaml.
@@ -20,7 +20,7 @@ info:
 
     ## Two groups of endpoints
     - **Webhook ingestion** (`/webhooks/*`): providers POST here. Signed providers are
-      verified-or-rejected (401, not persisted); the generic endpoint is unverified by design.
+      verified-or-rejected (401, not persisted); the generic endpoint uses a shared-secret token (or open).
     - **Web UI** (`/`, `/log`, `/providers`, `/settings`) + the SSE stream (`/events`):
       server-rendered HTML (html/template + HTMX) plus a `text/event-stream` for live updates.
 
@@ -31,7 +31,7 @@ info:
     therefore marked `security: []` (no in-app auth) **by design**, not by oversight.
 
     For **webhook** endpoints, "authentication" means per-provider signature verification
-    (`signed` providers) or a non-cryptographic shared-token bozo-filter (`generic`). See ADR-003.
+    (`signed` providers) or a shared-secret token that authenticates the caller (`generic`). See ADR-003.
   license:
     name: MIT
     url: https://gitea.stump.rocks/joestump/switchboard/src/branch/main/LICENSE
@@ -139,19 +139,20 @@ paths:
     post:
       tags: [ingestion]
       operationId: ingestGenericWebhook
-      summary: Receive an unverified (by design) generic webhook — incl. Docker Hub
+      summary: Receive a token-authenticated (or open) generic webhook — incl. Docker Hub
       description: |
         Catch-all receiver for senders with **no signature scheme at all** — self-hosted /
         homelab-internal tooling and **Docker Hub** (which has no native webhook signing).
 
-        - **Unverified by design.** Events are persisted with `verified=false`,
-          `trust_mode=unverified`, `verify_detail="unverified by design"`, and are labeled
-          unverified everywhere in the UI and API (ADR-003).
+        - **Shared-secret token (or open).** Events are persisted with `verified=false`,
+          `trust_mode=token`, `verify_detail="token ok"`, and are labeled
+          per their trust level everywhere in the UI and API (ADR-003).
         - **Opt-in and disabled by default.** A generic provider does not exist until an operator
           explicitly creates one; an unknown `{name}` returns 404.
-        - Guarded by a **non-cryptographic shared token** (`?token=` or path token) — a bozo-filter
-          against stray traffic, **not** authentication. Compared in constant time. A bad token
-          returns 403.
+        - Requires a configured **shared-secret token** the caller presents — `Authorization: Bearer`
+          (or a header) preferred, `?token=`/path token as a URL fallback (Docker Hub). It authenticates
+          the caller but **not** the body; constant-time compare; required by default. A bad/missing
+          token returns 403 (ADR-003).
         - Appropriate **only on a trusted network** already isolated by Caddy `forward_auth` /
           UniFi segmentation.
       security: []
@@ -164,7 +165,7 @@ paths:
         - name: token
           in: query
           required: false
-          description: Per-instance shared token (bozo-filter, not auth). May instead be a path token.
+          description: Shared-secret token (URL fallback; authenticates the caller, not the body). May instead be a path token.
           schema: { type: string }
       requestBody:
         required: true
@@ -175,7 +176,7 @@ paths:
               additionalProperties: true
       responses:
         '202':
-          description: Accepted and persisted (unverified by design).
+          description: Accepted and persisted (token-authenticated).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/IngestAck' }
@@ -292,7 +293,7 @@ paths:
       operationId: getProviders
       summary: Provider config (UI screen 3)
       description: |
-        Lists configured providers with type (`signed` / `generic unverified` / `redis`), the
+        Lists configured providers with family (`webhook` / `queue`) and trust_mode (`signed` / `token` / `open` / `queue`), the
         webhook URL path or Redis channel, secret/verification status
         (`configured` / `missing` / `none-by-design` — the secret itself is **never** shown), and an
         enable/disable toggle. HTML page.
@@ -435,12 +436,16 @@ components:
   schemas:
     TrustMode:
       type: string
-      description: How the event's authenticity is established (ADR-003).
-      enum: [signed, unverified, redis]
+      description: >-
+        How the event's trust is established (ADR-003). `signed` = HMAC-verified webhook;
+        `token` = shared-secret-authenticated webhook (caller, not body); `open` = unchecked
+        webhook (trusted-network only); `queue` = pull adapter, trust = broker connection.
+      enum: [signed, token, open, queue]
 
-    ProviderKind:
+    ProviderFamily:
       type: string
-      enum: [signed, generic, redis]
+      description: Ingestion family (ADR-003) — webhook (push) or queue (pull).
+      enum: [webhook, queue]
 
     SecretStatus:
       type: string
@@ -494,7 +499,7 @@ components:
       required: [name, kind, trust_mode, enabled, secret_status]
       properties:
         name: { type: string, example: 'generic:dockerhub' }
-        kind: { $ref: '#/components/schemas/ProviderKind' }
+        family: { $ref: '#/components/schemas/ProviderFamily' }
         trust_mode: { $ref: '#/components/schemas/TrustMode' }
         enabled: { type: boolean }
         secret_status: { $ref: '#/components/schemas/SecretStatus' }
@@ -573,7 +578,7 @@ components:
       type: apiKey
       in: query
       name: token
-      description: Non-cryptographic shared token (bozo-filter, not authentication).
+      description: Shared-secret token — authenticates the caller, not the body (ADR-003).
 
 # No global security requirement: webhook auth is per-provider signature verification (above),
 # and UI/SSE/health endpoints are intentionally unauthenticated at the app layer (ADR-001).
