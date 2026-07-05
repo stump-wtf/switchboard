@@ -9,7 +9,7 @@ related: [ADR-003, ADR-007, ADR-012]
 
 ## Context and Problem Statement
 
-Switchboard's ingestion has been described source-by-source: [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) fixes three trust modes (`signed`, `unverified`, `redis`) and the (former) webhook-ingestion spec listed Redis alongside GitHub/Stripe/Slack/Docker Hub/generic as if it were "just another webhook source." But **Redis is not a webhook.** There is no inbound HTTP request and no signature; the app *consumes* from a queue (a **pull** transport), and a queue carries its own **ack / redelivery** semantics that HTTP webhooks simply do not have. Flattening Redis into a "sources" list hides a real structural difference — and it does not generalize to the other queues we will want next (SQS, NATS, AMQP).
+Switchboard's ingestion has been described source-by-source: [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) fixes the trust model (webhook `signed`/`token`/`open`, plus `queue` for pull sources) and the (former) webhook-ingestion spec listed Redis alongside GitHub/Stripe/Slack/Docker Hub/generic as if it were "just another webhook source." But **Redis is not a webhook.** There is no inbound HTTP request and no signature; the app *consumes* from a queue (a **pull** transport), and a queue carries its own **ack / redelivery** semantics that HTTP webhooks simply do not have. Flattening Redis into a "sources" list hides a real structural difference — and it does not generalize to the other queues we will want next (SQS, NATS, AMQP).
 
 This ADR generalizes ingestion into **adapters** with two families — **push** (webhooks) and **pull** (queues) — that share one normalization contract into the durable todo queue ([ADR-007](ADR-007-todos-as-core-primitive.md)), and it pins the one mechanic the pull family needs and the push family does not: **coupling the source ack to the todo.**
 
@@ -40,7 +40,7 @@ An **ingestion adapter** turns an external delivery into a todo. Two families sh
 | | | Docker Hub, generic | shared-secret token (header or `?token=`), required by default | `token` / `open` |
 | **Pull (queue adapters)** | the app consumes a queue | **Redis (lists / streams / pub-sub) — reference**; SQS / NATS / AMQP later | the connection itself (ACL / TLS) | `redis` (queue) |
 
-**Redis is reclassified** from "a webhook source / a third trust-mode sibling" to **"the reference *pull* adapter."** Its `redis` trust mode (trust = connection ACL/TLS) from [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) is unchanged; what changes is the framing — it is a transport *family*, not an HTTP source, and its family generalizes.
+**Redis is reclassified** from "a webhook source / a third trust-mode sibling" to **"the reference *pull* adapter."** Its trust mode (`queue` — trust = connection ACL/TLS) from [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) is unchanged; what changes is the framing — it is a transport *family*, not an HTTP source, and its family generalizes.
 
 ### The ack-coupling mechanic (what pull needs and push does not)
 

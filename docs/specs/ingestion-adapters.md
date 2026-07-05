@@ -59,7 +59,7 @@ at-least-once — and idempotency dedup collapses the retries. There is no sourc
 ## Pull family — queue adapters (the app consumes)
 
 No HTTP request and no signature — **trust is the connection itself** (ACL / TLS), per
-[ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md)'s `redis` trust mode. **Redis is the
+[ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md)'s `queue` trust mode. **Redis is the
 reference implementation**; the same shape extends to **SQS / NATS / AMQP** later
 ([ADR-014](../adr/ADR-014-ingestion-adapters-push-pull.md)).
 

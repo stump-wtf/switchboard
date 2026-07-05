@@ -34,7 +34,7 @@ info:
     (`signed` providers) or a shared-secret token that authenticates the caller (`generic`). See ADR-003.
   license:
     name: MIT
-    url: https://gitea.stump.rocks/joestump/switchboard/src/branch/main/LICENSE
+    url: https://github.com/joestump/switchboard/blob/main/LICENSE
   contact:
     name: Joe Stump
 

@@ -67,7 +67,7 @@ This is marked **decision-to-confirm** with Joe: the alternative is mutable scop
 * Good, because the vended endpoint is a self-contained capability: scope travels with the grant, enforced at the boundary.
 * Good, because revocation is one instant operation with no residue.
 * Good, because agent credentials live (hashed) in switchboard's own PostgreSQL — no external secret-manager dependency to run.
-* Bad, because switchboard now runs its own credential-minting/escrow path (a mini authorization server) it must build and secure — accepted as the cost of not putting bots in the IdP.
+* Bad, because switchboard now runs its own credential-minting/storage path (a mini authorization server) it must build and secure — accepted as the cost of not putting bots in the IdP.
 * Bad (under the proposed immutable default), because a scope change means re-vending and re-configuring the agent with a new URL/credential — more churn than editing in place; mitigated because scope changes should be rare and the re-vend is a single call.
 
 ### Confirmation
@@ -95,7 +95,7 @@ This is marked **decision-to-confirm** with Joe: the alternative is mutable scop
 ### (C) Human principal + per-agent vended endpoints (chosen)
 
 * Good, because accountability, least privilege, clean revocation, and a humans-only IdP all hold at once.
-* Bad, because switchboard must operate its own credential mint/escrow — accepted.
+* Bad, because switchboard must operate its own credential mint/store — accepted.
 
 ## Architecture Diagram
 
@@ -105,13 +105,13 @@ flowchart TB
   subgraph sb[switchboard]
     reg[Agent registry]
     vend[Endpoint vending<br/>+ policy authority]
-    bao[(PostgreSQL<br/>credentials, hashed)]
+    db[(PostgreSQL<br/>credentials, hashed)]
     ep1[[Vended endpoint A<br/>URL + credential<br/>scope: queues+verbs]]
     ep2[[Vended endpoint B<br/>URL + credential<br/>scope: queues+verbs]]
   end
   human -->|registers agents,<br/>sets scope| reg
   reg --> vend
-  vend -->|mints + escrows credential| bao
+  vend -->|mints + stores credential (hashed)| db
   vend --> ep1
   vend --> ep2
   ep1 -->|scoped MCP calls| sb

@@ -9,11 +9,11 @@ related: [ADR-001, ADR-002, ADR-003, ADR-005, ADR-010, ADR-013, ADR-014]
 
 ## Context and Problem Statement
 
-The implementation language was, until now, only *implicit* — the web-stack ADR ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)) originally assumed Python/Starlette from the earliest single-node cut of switchboard. Now that switchboard is a **centrally hosted, managed service**, the language should be an explicit decision and should match the rest of the fleet. **Every other centrally hosted/managed StumpCloud service is Go + HTMX + SSE**, and switchboard is not special: MCP, A2A, and Claude Code Channels are **ordinary wire protocols over HTTP and stdio** — MCP is JSON-RPC (Streamable HTTP or stdio), A2A is HTTP + JSON with SSE streaming, and a Channel is just MCP notifications. A Go/HTMX/SSE service serves all of that natively. Since **no application code exists yet** (docs-first), this is simply the moment to write the house choice down — a language *selection*, not a migration.
+The implementation language was, until now, only *implicit* — the web-stack ADR ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)) originally assumed Python/Starlette from the earliest single-node cut of switchboard. Now that switchboard is a **self-hosted, multi-tenant service**, the language should be an explicit decision and should match the rest of the fleet. **Every other self-hosted StumpCloud service is Go + HTMX + SSE**, and switchboard is not special: MCP, A2A, and Claude Code Channels are **ordinary wire protocols over HTTP and stdio** — MCP is JSON-RPC (Streamable HTTP or stdio), A2A is HTTP + JSON with SSE streaming, and a Channel is just MCP notifications. A Go/HTMX/SSE service serves all of that natively. Since **no application code exists yet** (docs-first), this is simply the moment to write the house choice down — a language *selection*, not a migration.
 
 ## Decision Drivers
 
-* **Fleet consistency.** The centrally hosted/managed StumpCloud services are Go + HTMX + SSE. One stack means shared ops, deploy patterns, CI, and idioms. Deviating for one service needs a *reason*, and there isn't one.
+* **Fleet consistency.** The self-hosted StumpCloud services are Go + HTMX + SSE. One stack means shared ops, deploy patterns, CI, and idioms. Deviating for one service needs a *reason*, and there isn't one.
 * **The agent protocols are just HTTP/stdio.** MCP (JSON-RPC over Streamable HTTP or stdio), A2A (HTTP + JSON + SSE), and Channels (MCP notifications) are wire formats, not a runtime requirement. Go's stdlib `net/http` + JSON + SSE serve them directly; the official Go MCP SDK and A2A Go support exist, but the surface is buildable from the wire spec regardless.
 * **Concurrency fit reinforces it.** The hot path is many long-lived workers draining PostgreSQL queues via `FOR UPDATE SKIP LOCKED` ([ADR-002](ADR-002-postgres-persistence-and-retention.md)), lease/retention timers, pull-adapter consumers ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)), and streaming connections (SSE, Channels). Goroutines map onto that directly — no async coloring, no GIL.
 * **Operational simplicity.** A single statically-linked binary with embedded assets is a tiny container, low memory, fast start, trivially run as several instances against one PostgreSQL — the same ops story as the rest of the fleet.
@@ -22,13 +22,13 @@ The implementation language was, until now, only *implicit* — the web-stack AD
 
 ## Considered Options
 
-* **Go** — the house stack for centrally hosted services (Go + HTMX + SSE); statically typed, goroutine concurrency, single-binary deploys.
+* **Go** — the house stack for self-hosted StumpCloud services (Go + HTMX + SSE); statically typed, goroutine concurrency, single-binary deploys.
 * **Python** — Starlette/`asyncpg`/the `mcp` Python SDK; a mature MCP ecosystem and the language of the existing Channels prototype, but inconsistent with the fleet.
 * **TypeScript / Node** — where the reference channels ship (TS/Bun); also inconsistent with the fleet and buys nothing the wire protocols don't already give Go.
 
 ## Decision Outcome
 
-Chosen option: **Go.** It is the established stack for centrally hosted StumpCloud services, and nothing about MCP/A2A/Channels — all HTTP/stdio wire protocols — argues for treating switchboard differently. Concurrency, single-binary ops, and static typing all reinforce the choice.
+Chosen option: **Go.** It is the established stack for self-hosted StumpCloud services, and nothing about MCP/A2A/Channels — all HTTP/stdio wire protocols — argues for treating switchboard differently. Concurrency, single-binary ops, and static typing all reinforce the choice.
 
 ### What this pins (details in the cited ADRs)
 

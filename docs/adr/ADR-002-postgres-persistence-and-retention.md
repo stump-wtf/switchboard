@@ -9,13 +9,13 @@ related: [ADR-000, ADR-001, ADR-003, ADR-005, ADR-007, ADR-014]
 
 ## Context and Problem Statement
 
-`switchboard` is a **centrally hosted, multi-tenant service**: it verifies inbound events, turns them into a **durable todo work-queue** that many agent workers drain concurrently ([ADR-007](ADR-007-todos-as-core-primitive.md)), and holds the relational metadata behind that — human accounts, registered agents, vended endpoints, friend edges, routing rules — plus an event history the MCP tools (`list`/`get`/`replay`) and web UI read. The hot path is no longer an append-mostly log; it is a **concurrent job queue** (claim → lease → complete/retry) with competing consumers, at-least-once + idempotent dedup, and transactional coupling to ingestion (a pull adapter must store a todo before it acks its source, [ADR-014](ADR-014-ingestion-adapters-push-pull.md)). Redis appears in the architecture only as an *ingestion transport* (a queue the app consumes), never as the system of record ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)/[ADR-014](ADR-014-ingestion-adapters-push-pull.md)). What datastore serves a concurrent multi-worker queue and the tenant metadata correctly, gives the right claim primitive, and supports a hosted service's availability posture — and what schema/retention strategy should the specs and code build against?
+`switchboard` is a **self-hosted, multi-tenant service** (one deployment serving many humans and agents): it verifies inbound events, turns them into a **durable todo work-queue** that many agent workers drain concurrently ([ADR-007](ADR-007-todos-as-core-primitive.md)), and holds the relational metadata behind that — human accounts, registered agents, vended endpoints, friend edges, routing rules — plus an event history the MCP tools (`list`/`get`/`replay`) and web UI read. The hot path is no longer an append-mostly log; it is a **concurrent job queue** (claim → lease → complete/retry) with competing consumers, at-least-once + idempotent dedup, and transactional coupling to ingestion (a pull adapter must store a todo before it acks its source, [ADR-014](ADR-014-ingestion-adapters-push-pull.md)). Redis appears in the architecture only as an *ingestion transport* (a queue the app consumes), never as the system of record ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)/[ADR-014](ADR-014-ingestion-adapters-push-pull.md)). What datastore serves a concurrent multi-worker queue and the tenant metadata correctly, gives the right claim primitive, and supports availability/HA when you want it — and what schema/retention strategy should the specs and code build against?
 
 ## Decision Drivers
 
 * **Concurrent claimers, no herd.** Many agent personas drain the same pool queue at once. Claiming a work-item must be a true concurrent operation — one claimant per todo, others skip to the next — not a global write lock serializing every worker.
 * **Transactional dedup and store-then-ack.** Idempotency-key dedup ([ADR-007](ADR-007-todos-as-core-primitive.md)) and the pull-adapter "store the todo, *then* ack the source" rule ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)) both want an atomic upsert with a clear conflict outcome.
-* **A hosted service's availability.** A central service wants more than one app node and a real durability/failover story — not a single file on a single host that is a single point of failure.
+* **Availability, when you want it.** More than one app node and a real durability/failover story should be *possible* — not blocked by a single file on a single host. A minimal deploy is one binary + one Postgres; Postgres just doesn't cap you there.
 * **Cheap queue scans.** "Give me the next pending todo on this queue" runs constantly; it must hit a small, hot index, not scan a table dominated by terminal rows.
 * **In-DB wakeups.** A lightweight pub/sub inside the datastore lets a worker or the web UI be nudged on new work without polling, complementing the Channels push ([ADR-013](ADR-013-channels-push-delivery.md)) and the UI's SSE.
 * **Rich column types.** JSON payloads/scopes and verb allowlists want first-class JSON and array types, and partial/expression indexes.
@@ -32,7 +32,7 @@ related: [ADR-000, ADR-001, ADR-003, ADR-005, ADR-007, ADR-014]
 
 Chosen options: **PostgreSQL**, accessed through **raw SQL over `pgx` (a thin data-access module, no heavy ORM)**, with **`FOR UPDATE SKIP LOCKED` for todo claims**, **`INSERT … ON CONFLICT` for idempotent dedup**, **partial indexes on the hot queue predicate**, optional **`LISTEN`/`NOTIFY` wakeups**, and a **hybrid retention policy (max-age *and* max-row cap)** enforced by a periodic pruning task.
 
-- **PostgreSQL over SQLite:** SQLite is single-writer and single-node — every claim/heartbeat/complete/ingest serializes through one writer, and one file on one host is a SPOF with no shared app tier. For a *central, multi-tenant, multi-worker queue* that is the wrong shape. Postgres gives concurrent claimers via `SELECT … FOR UPDATE SKIP LOCKED` (the canonical durable-queue primitive), a multi-node app tier against one database, and HA via managed/streaming replication.
+- **PostgreSQL over SQLite:** SQLite is single-writer and single-node — every claim/heartbeat/complete/ingest serializes through one writer, and one file on one host is a SPOF with no shared app tier. For a *multi-tenant, multi-worker queue* that is the wrong shape. Postgres gives concurrent claimers via `SELECT … FOR UPDATE SKIP LOCKED` (the canonical durable-queue primitive), a multi-node app tier against one database, and HA via managed/streaming replication.
 - **PostgreSQL over a dedicated broker:** a broker (Kafka/Temporal/etc.) splits the source of truth away from the durable todo that [ADR-007](ADR-007-todos-as-core-primitive.md) deliberately made authoritative, and re-implements lease/dead-letter/dedup that Postgres gives transactionally. `SKIP LOCKED` carries this workload well past its expected scale; a broker is deferred until Postgres demonstrably is not enough — explicitly **not** now.
 - **PostgreSQL over Redis-as-ledger:** Redis is the ingestion *transport* ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)); making it the ledger too would split the source of truth and conflate transport with storage.
 - **Raw SQL over a heavy ORM:** a thin module of typed functions (`insert_event`, `claim_todo`, `complete_todo`, `create_todo`, `prune`, …) over `pgx` keeps the hot queries auditable and the dependency list short; the queue queries below are hand-tuned SQL, not ORM output.
@@ -145,10 +145,10 @@ Defaults seeded into `settings`: `retention_max_age_days = 30`, `retention_max_r
 
 * Good, because `FOR UPDATE SKIP LOCKED` gives true concurrent claimers with no thundering herd — the queue scales with worker count, not against it.
 * Good, because dedup, store-then-ack, and multi-row state transitions are all transactional and atomic.
-* Good, because a multi-node app tier connects to one database, and HA comes from managed/streaming replication — the availability a hosted service needs.
+* Good, because a multi-node app tier connects to one database, and HA comes from managed/streaming replication — the availability a serious deployment can want.
 * Good, because partial/expression indexes keep the hot queue scan cheap regardless of terminal-row volume, and JSONB/array/`inet` types fit the data.
 * Good, because `LISTEN`/`NOTIFY` offers in-DB wakeups without a second dependency.
-* Neutral, because it is an operated service (a database to run/patch/back up) — expected for a hosted service, and it doubles as the store for switchboard-minted credentials (hashed), so there is no separate secret-manager dependency.
+* Neutral, because it is an operated service (a database to run/patch/back up) — expected for a service you run, and it doubles as the store for switchboard-minted credentials (hashed), so there is no separate secret-manager dependency.
 * Bad, because raw SQL means hand-written queries with no compile-time schema check — mitigated by centralizing them in one small, tested data-access module.
 * Bad, because raw payload rows can be large — mitigated by retention/partitioning and an optional payload-size cap (deferred).
 
@@ -164,7 +164,7 @@ Defaults seeded into `settings`: `retention_max_age_days = 30`, `retention_max_r
 ### PostgreSQL (chosen)
 
 * Good, because concurrent claimers (`SKIP LOCKED`), transactional dedup/upsert, partial indexes, JSONB/arrays, `LISTEN`/`NOTIFY`, and a real HA/replication story.
-* Good, because one database behind a multi-node app tier fits a central, multi-tenant service.
+* Good, because one database behind a multi-node app tier fits a multi-tenant service (many agents, one deployment).
 * Bad, because it is a service to operate — accepted; it matches the hosted posture.
 
 ### SQLite (rejected)

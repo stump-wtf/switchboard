@@ -46,7 +46,7 @@ An agent can stand up, rotate, and tear down its own webhooks all day — but on
 ### Switchboard's non-negotiable ownership
 
 * **Switchboard mints the signing secret** for each created webhook and stores it **hashed in PostgreSQL** ([ADR-002](ADR-002-postgres-persistence-and-retention.md)). The **agent never sees or stores the secret.**
-* **Switchboard owns verification.** A created signed-type webhook is verified exactly as [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) mandates — the agent cannot downgrade a `signed` webhook to unverified, cannot disable signature checks, cannot alter trust mode. A generic-type webhook remains labeled unverified.
+* **Switchboard owns verification.** A created signed-type webhook is verified exactly as [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) mandates — the agent cannot downgrade a `signed` webhook to `token`/`open`, cannot disable signature checks, cannot alter trust mode. A generic-type webhook remains `token` (or `open`).
 * **Switchboard owns idempotency.** Dedup of at-least-once deliveries into one todo ([ADR-007](ADR-007-todos-as-core-primitive.md)) is switchboard's behavior, not the agent's.
 * **The agent receives the URL to hand to the producer** (and, for a signed type, arranges for the producer to be configured with the secret out-of-band via switchboard, never by the agent copying it). Create returns the ingest URL; `rotate` issues a new secret/URL and retires the old.
 

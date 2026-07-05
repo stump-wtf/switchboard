@@ -65,7 +65,7 @@ hide_table_of_contents: true
 import Link from '@docusaurus/Link';
 
 <div className="sb-hero">
-  <div className="sb-hero__eyebrow">MCP server · local web UI · Redis queue</div>
+  <div className="sb-hero__eyebrow">MCP server · durable todo queue · local web UI</div>
   <h1 className="sb-hero__title">Switchboard</h1>
   <p className="sb-hero__tagline"><em>Many lines come in. The operator verifies each caller, and patches it through.</em></p>
   <p className="sb-hero__lead">Switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human‑vended MCP endpoints. One box: receive · verify · patch through.</p>

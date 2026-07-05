@@ -159,8 +159,8 @@ The docs site builds with Docusaurus and deploys to **GitHub Pages** via `.githu
 
 ## Repository hosting
 
-- **Primary (source of truth):** <https://gitea.stump.rocks/joestump/switchboard>
-- **Mirror (backup/reach):** <https://github.com/joestump/switchboard> — a Gitea push-mirror.
+- **Source:** <https://github.com/joestump/switchboard>
+- **Docs:** built with Docusaurus and published to **GitHub Pages** at <https://joestump.github.io/switchboard/> via `.github/workflows/pages.yml`.
 
 ## License
 

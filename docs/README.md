@@ -24,7 +24,7 @@ Two layers:
 | [ADR-000](adr/ADR-000-project-naming-and-scope.md) | Project naming & scope | The project is `switchboard`; MVP scope ratified. |
 | [ADR-001](adr/ADR-001-web-stack-go-htmx-pico.md) | Web stack | Go `net/http` + chi, `html/template`, HTMX + Pico.css; assets embedded via `embed.FS`. |
 | [ADR-002](adr/ADR-002-postgres-persistence-and-retention.md) | PostgreSQL persistence & retention | Postgres queue store: SKIP LOCKED claims, ON CONFLICT dedup, partial pending index, age + row-cap pruning. |
-| [ADR-003](adr/ADR-003-per-provider-ingestion-and-trust-model.md) | Per-provider trust model | Three explicit trust modes (`signed`/`unverified`/`redis`), enforced. |
+| [ADR-003](adr/ADR-003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types & trust | Two families (webhook/queue); webhook trust `signed`/`token`/`open`; queue trust = broker connection. |
 | [ADR-005](adr/ADR-005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay`/`list_providers` + recent-events resource. |
 | [ADR-007](adr/ADR-007-todos-as-core-primitive.md) | **Todos as the core primitive** | Durable work-items (lease/ack/idempotency), not a message inbox. |
 | [ADR-008](adr/ADR-008-human-principal-vended-endpoints.md) | **Human principal + vended endpoints** | Humans authenticate; agents get vended scoped MCP endpoints; IdP holds humans only. |

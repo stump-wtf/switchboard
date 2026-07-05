@@ -22,7 +22,7 @@ info:
     resume with `Last-Event-ID`).
   license:
     name: MIT
-    url: https://gitea.stump.rocks/joestump/switchboard/src/branch/main/LICENSE
+    url: https://github.com/joestump/switchboard/blob/main/LICENSE
 
 defaultContentType: application/json
 
