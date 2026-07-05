@@ -99,8 +99,7 @@ Two-way is opt-in per endpoint and **should be deferred** past the one-way MVP (
 * **Injection break rejection.** A payload containing a `</channel>` sequence is rejected upstream so a
   webhook body cannot break out of the `<channel>` wrapper.
 * **Secrets never cross.** Secret-bearing header values are withheld behind a fetchable `secret-ref`
-  (localhost-only), consistent with [ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md) and
-  the MCP surface's no-secrets rule ([mcp-tools.md](mcp-tools.md)).
+  (localhost-only), consistent with the MCP surface's no-secrets rule ([mcp-tools.md](mcp-tools.md)).
 
 ## Requirements & limits (operational)
 

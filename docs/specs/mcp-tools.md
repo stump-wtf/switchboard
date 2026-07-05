@@ -21,7 +21,7 @@ must not drift.
 - **Trust is always present.** Every event object carries `trust_mode`, `verified`, and (in detail)
   `verify_detail`, so an agent can always tell a signed, verified event from a token- or queue-trust one.
 - **No secrets cross the boundary.** Responses contain **sanitized** headers only; signing secrets and
-  full signature header values are never returned ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)/[ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md)).
+  full signature header values are never returned ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 - **Time:** all timestamps are ISO-8601 UTC strings.
 - **Errors:** tools raise MCP tool errors with a stable `code` and a human `message`. `message` never
   contains secret material. See [Errors](#errors).
@@ -80,7 +80,7 @@ Full record for `get_webhook_event` — `EventSummary` plus:
     "trust_mode":    { "$ref": "#/$defs/TrustMode" },
     "enabled":       { "type": "boolean" },
     "secret_status": { "type": "string", "enum": ["configured", "missing", "none-by-design"],
-                       "description": "Runtime status from OpenBao (ADR-004). Never the secret itself." },
+                       "description": "Runtime secret status (configured/missing/none-by-design). Never the secret itself." },
     "path":          { "type": ["string", "null"], "description": "Webhook route path (HTTP providers)." },
     "channel":       { "type": ["string", "null"], "description": "Redis channel/stream (redis providers)." }
   },

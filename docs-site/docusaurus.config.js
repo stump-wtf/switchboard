@@ -3,15 +3,12 @@
 // Renders the ADRs (docs/adr) and specs (docs/specs) — transformed into docs-generated/ by
 // scripts/build-docs.mjs at build time — with mermaid diagrams and the switchboard-era theme.
 //
-// One build serves both hosts (same baseUrl /switchboard/); only `url` differs:
-//   - Gitea Pages:  https://joestump.pages.stump.rocks/switchboard/   (default)
-//   - GitHub Pages: https://joestump.github.io/switchboard/           (DOCS_URL override)
+// Published to GitHub Pages at https://joestump.github.io/switchboard/ (baseUrl /switchboard/).
 
 const { themes } = require('prism-react-renderer');
 
-const SITE_URL = process.env.DOCS_URL || 'https://joestump.pages.stump.rocks';
+const SITE_URL = process.env.DOCS_URL || 'https://joestump.github.io';
 const BASE_URL = '/switchboard/';
-const GITEA_URL = 'https://gitea.stump.rocks/joestump/switchboard';
 const GITHUB_URL = 'https://github.com/joestump/switchboard';
 
 /** @type {import('@docusaurus/types').Config} */
@@ -66,7 +63,6 @@ const config = {
           { type: 'docSidebar', sidebarId: 'docs', position: 'left', label: 'Documentation' },
           { to: '/decisions', label: 'Decisions', position: 'left' },
           { to: '/specs', label: 'Specs', position: 'left' },
-          { href: GITEA_URL, label: 'Gitea', position: 'right' },
           { href: GITHUB_URL, label: 'GitHub', position: 'right' },
         ],
       },
@@ -83,8 +79,7 @@ const config = {
           {
             title: 'Source',
             items: [
-              { label: 'Gitea (primary)', href: GITEA_URL },
-              { label: 'GitHub (mirror)', href: GITHUB_URL },
+              { label: 'GitHub', href: GITHUB_URL },
             ],
           },
         ],

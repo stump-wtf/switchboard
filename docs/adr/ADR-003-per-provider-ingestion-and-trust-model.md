@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-000, ADR-002, ADR-004, ADR-005, ADR-014]
+related: [ADR-000, ADR-002, ADR-005, ADR-014]
 ---
 
 # ADR-003: Ingestion Provider Types & Trust Model (webhooks vs. queues)
@@ -24,7 +24,7 @@ A single "verify if you can, otherwise trust it" approach would silently launder
 * **Queues have no signature; the connection is the boundary.** For pull adapters the security control is *who may publish to the queue* — broker auth/ACL (+ TLS). That must be documented, not implied.
 * **One pipeline, many front doors.** However an event arrives, it flows through the same `verify → normalize → persist → broadcast → expose` path; the trust level is metadata on the event, not a fork in the pipeline.
 * **Replay resistance where the scheme allows.** Stripe and Slack sign a timestamp; enforce a freshness window. GitHub does not; don't pretend to. A shared-secret token has *no* replay resistance — say so.
-* **No secret leakage.** Signature headers, bearer tokens, and secrets are never logged in full or persisted (cross-ref [ADR-002](ADR-002-postgres-persistence-and-retention.md), [ADR-004](ADR-004-secrets-management-openbao-approle.md)).
+* **No secret leakage.** Signature headers, bearer tokens, and secrets are never logged in full or persisted (cross-ref [ADR-002](ADR-002-postgres-persistence-and-retention.md)).
 
 ## Considered Options
 
@@ -62,9 +62,9 @@ A missing, malformed, or failing signature returns **HTTP 401** and the payload 
 
 For webhook types with **no signing scheme** — Docker Hub, homelab/self-hosted tooling — switchboard requires a **shared secret** the caller presents on every request. This is the answer to "can they set a password?": yes, a token, with a clear caveat about what it does and doesn't buy.
 
-* **How it's presented.** Preferred: an HTTP header — `Authorization: Bearer <token>` (or a dedicated `X-Switchboard-Token`). Fallback: a **URL token** (`/webhooks/generic/{name}?token=…`) for senders that can *only* be configured with a URL (Docker Hub is exactly this). The comparison is constant-time; the secret is stored in OpenBao ([ADR-004](ADR-004-secrets-management-openbao-approle.md)), never in the repo.
+* **How it's presented.** Preferred: an HTTP header — `Authorization: Bearer <token>` (or a dedicated `X-Switchboard-Token`). Fallback: a **URL token** (`/webhooks/generic/{name}?token=…`) for senders that can *only* be configured with a URL (Docker Hub is exactly this). The comparison is constant-time; the token is injected via environment/config, never committed.
 * **What it proves — and doesn't.** A shared-secret token authenticates the **caller** (they know the secret) but does **not** verify the **body**: unlike HMAC signing it cannot detect a tampered payload, and because the same token rides every request it offers **no replay protection**. It is therefore a **distinct, weaker tier** than `signed`, labeled `token` and never shown as signed. `verify_detail` reads e.g. `token ok (caller authenticated; body not verified)`.
-* **Default-on for unsigned types.** An unsigned webhook provider **requires** a token by default and is **disabled until one is set** — so a homelab endpoint isn't silently world-writable. Rotating the token is a config change (new secret in OpenBao).
+* **Default-on for unsigned types.** An unsigned webhook provider **requires** a token by default and is **disabled until one is set** — so a homelab endpoint isn't silently world-writable. Rotating the token is a config change (a new value in the environment/config).
 
 ### `open` — no verification (explicit, discouraged)
 
@@ -81,7 +81,7 @@ A pull adapter *consumes* from a broker and feeds messages into the same pipelin
 | **Redis** (streams/lists/pub-sub) | reference | connection auth (`requirepass`/ACL user) + TLS |
 | **SQS / NATS / AMQP** | later | the broker's IAM/auth + TLS |
 
-The security control is **who is allowed to publish** to the consumed queue — enforced by the broker's ACL, not by switchboard. Events carry `family='queue'`, `trust_mode='queue'`, `verified=false`, and `verify_detail` naming the broker/ACL identity (e.g. `redis acl: deploy-bot`). The connection secret (URL/DSN/credentials) is pulled from OpenBao like any other ([ADR-004](ADR-004-secrets-management-openbao-approle.md)). The pull-side **store-then-ack** coupling and the pub/sub-vs-stream decision live in [ADR-014](ADR-014-ingestion-adapters-push-pull.md).
+The security control is **who is allowed to publish** to the consumed queue — enforced by the broker's ACL, not by switchboard. Events carry `family='queue'`, `trust_mode='queue'`, `verified=false`, and `verify_detail` naming the broker/ACL identity (e.g. `redis acl: deploy-bot`). The connection secret (URL/DSN/credentials) is injected via environment/config like any other. The pull-side **store-then-ack** coupling and the pub/sub-vs-stream decision live in [ADR-014](ADR-014-ingestion-adapters-push-pull.md).
 
 ## Cross-cutting rules (all types)
 
@@ -172,5 +172,5 @@ flowchart TD
 * Adapter model this aligns with (push=webhook, pull=queue) and the pull-side ack coupling: [ADR-014](ADR-014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](../specs/ingestion-adapters.md).
 * Signature references: GitHub <https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries>, Stripe <https://docs.stripe.com/webhooks#verify-events>, Slack <https://api.slack.com/authentication/verifying-requests-from-slack>, Docker Hub (no native signing) <https://docs.docker.com/docker-hub/webhooks/>.
 * Queue trust references: `go-redis` <https://github.com/redis/go-redis>, Redis ACL <https://redis.io/docs/latest/operate/oss_and_stack/management/security/acl/>.
-* Secret sourcing (HMAC secrets, shared-secret tokens, queue DSNs): [ADR-004](ADR-004-secrets-management-openbao-approle.md). Storage of `family`/`trust_mode`/`verified`/`verify_detail` + redaction: [ADR-002](ADR-002-postgres-persistence-and-retention.md).
+* Secret sourcing: HMAC secrets, shared-secret tokens, and queue DSNs are injected via environment/config (never committed). Storage of `family`/`trust_mode`/`verified`/`verify_detail` + redaction: [ADR-002](ADR-002-postgres-persistence-and-retention.md).
 * Realized by the push/pull adapters (`internal/adapters/{github,stripe,slack,generic,redis}.go`) in the code session; this ADR governs the ingestion half of `docs/specs/openapi.yaml`.

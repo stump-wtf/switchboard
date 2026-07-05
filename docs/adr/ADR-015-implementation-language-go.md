@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-001, ADR-002, ADR-003, ADR-005, ADR-006, ADR-010, ADR-013, ADR-014]
+related: [ADR-001, ADR-002, ADR-003, ADR-005, ADR-010, ADR-013, ADR-014]
 ---
 
 # ADR-015: Implementation Language & Runtime — Go
@@ -13,7 +13,7 @@ The implementation language was, until now, only *implicit* — the web-stack AD
 
 ## Decision Drivers
 
-* **Fleet consistency.** The centrally hosted/managed StumpCloud services are Go + HTMX + SSE. One stack means shared ops, deploy patterns, CI (reduit's Go gate, [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)), and idioms. Deviating for one service needs a *reason*, and there isn't one.
+* **Fleet consistency.** The centrally hosted/managed StumpCloud services are Go + HTMX + SSE. One stack means shared ops, deploy patterns, CI, and idioms. Deviating for one service needs a *reason*, and there isn't one.
 * **The agent protocols are just HTTP/stdio.** MCP (JSON-RPC over Streamable HTTP or stdio), A2A (HTTP + JSON + SSE), and Channels (MCP notifications) are wire formats, not a runtime requirement. Go's stdlib `net/http` + JSON + SSE serve them directly; the official Go MCP SDK and A2A Go support exist, but the surface is buildable from the wire spec regardless.
 * **Concurrency fit reinforces it.** The hot path is many long-lived workers draining PostgreSQL queues via `FOR UPDATE SKIP LOCKED` ([ADR-002](ADR-002-postgres-persistence-and-retention.md)), lease/retention timers, pull-adapter consumers ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)), and streaming connections (SSE, Channels). Goroutines map onto that directly — no async coloring, no GIL.
 * **Operational simplicity.** A single statically-linked binary with embedded assets is a tiny container, low memory, fast start, trivially run as several instances against one PostgreSQL — the same ops story as the rest of the fleet.
@@ -40,8 +40,8 @@ Chosen option: **Go.** It is the established stack for centrally hosted StumpClo
 | Pull-adapter queue client | a Go Redis client (`redis/go-redis`), streams + consumer groups | [ADR-014](ADR-014-ingestion-adapters-push-pull.md) |
 | MCP server + tools/resources | the official **Go MCP SDK** (`github.com/modelcontextprotocol/go-sdk`), or the wire protocol directly | [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) |
 | A2A discovery / agent cards | `net/http` + JSON (+ SSE for streaming) | [ADR-010](ADR-010-a2a-discovery-human-vended-friending.md) |
-| Secrets (OpenBao AppRole) | the Vault/OpenBao Go HTTP API client | [ADR-004](ADR-004-secrets-management-openbao-approle.md) |
-| Build & CI | `go build` / `go test` / `go vet` + `golangci-lint`; a single static binary | [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md) |
+| Secrets | env/config-injected; switchboard-minted credentials hashed in Postgres | [ADR-002](ADR-002-postgres-persistence-and-retention.md) |
+| Build & CI | `go build` / `go test` / `go vet` + `golangci-lint`; a single static binary | — |
 
 A pinned modern Go toolchain (Go 1.23+); the exact minor version and dependency set are the code session's to lock in `go.mod`.
 
@@ -66,7 +66,7 @@ Either way it is Go, and the durable todo queue remains the ledger. The Python p
 ### Confirmation
 
 * The repo is a Go module (`go.mod`), not a Python package; there is no `pyproject.toml`/`requirements` for the service.
-* CI runs the Go toolchain (`build`/`test`/`vet` + `golangci-lint`) and produces a static binary ([ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
+* CI runs the Go toolchain (`build`/`test`/`vet` + `golangci-lint`) and produces a static binary.
 * The MCP surface is served over Go `net/http`/stdio (via the Go MCP SDK or directly); a smoke test exercises a tool call and the recent-events resource ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
 * A concurrency test exercises N goroutine workers claiming one Postgres queue with `SKIP LOCKED` and no double-claim ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
 
@@ -93,5 +93,5 @@ Either way it is Go, and the durable todo queue remains the ledger. The Python p
 * Web/UI stack this decides the language for: [ADR-001](ADR-001-web-stack-go-htmx-pico.md).
 * Persistence & queue mechanics that are idiomatic in Go: [ADR-002](ADR-002-postgres-persistence-and-retention.md).
 * MCP surface (Go SDK or the wire protocol directly): [ADR-005](ADR-005-mcp-tool-and-resource-contract.md). Go MCP SDK: <https://github.com/modelcontextprotocol/go-sdk>.
-* Signature verification primitives: [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md). CI & build: [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md).
+* Signature verification primitives: [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md).
 * Channels transport (HTTP vs. stdio) — language-independent: [ADR-013](ADR-013-channels-push-delivery.md), [channel-delivery spec](../specs/channel-delivery.md).

@@ -449,7 +449,7 @@ components:
 
     SecretStatus:
       type: string
-      description: Runtime secret status from OpenBao (ADR-004). Never the secret value.
+      description: Runtime secret status (configured/missing/none-by-design). Never the secret value.
       enum: [configured, missing, none-by-design]
 
     EventSummary:
@@ -542,7 +542,7 @@ components:
         status: { type: string, enum: [ok, degraded, error] }
         db: { type: string, enum: [ok, error] }
         redis: { type: string, enum: [ok, disabled, error] }
-        vault: { type: string, enum: [ok, error] }
+        database: { type: string, enum: [ok, error] }
         version: { type: string }
 
     Problem:

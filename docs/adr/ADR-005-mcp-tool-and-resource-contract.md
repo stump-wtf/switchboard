@@ -19,7 +19,7 @@ related: [ADR-000, ADR-002, ADR-003]
 * **Deterministic pagination.** Filtering by provider/type/time with a stable order and a cursor so an agent can page without duplicates or gaps.
 * **Replay is the one dangerous verb.** It performs an outbound HTTP POST. It must be explicit about its target, constrained, and never a hidden side effect of reading.
 * **SDK-idiomatic.** Tool names, input schemas, and structured output follow the Go MCP SDK conventions; resources use the SDK's resource/URI model.
-* **Secrets never cross the boundary.** MCP responses contain sanitized headers only ([ADR-002](ADR-002-postgres-persistence-and-retention.md)/[ADR-004](ADR-004-secrets-management-openbao-approle.md)) — no signing secrets, no raw signature header values.
+* **Secrets never cross the boundary.** MCP responses contain sanitized headers only ([ADR-002](ADR-002-postgres-persistence-and-retention.md)) — no signing secrets, no raw signature header values.
 
 ## Considered Options
 
@@ -44,7 +44,7 @@ Chosen: **tools + a recent-events resource (B)**, **compact `list` summaries wit
 
 * **`EventSummary`** (compact, for `list`): `id`, `provider`, `event_type`, `trust_mode`, `verified`, `payload_size`, `received_at`. No payload, no headers — keeps agent context small.
 * **`EventDetail`** (full, for `get`): all summary fields plus `verify_detail`, sanitized `headers` (object), raw `payload`, `content_type`, `source_ip`, `external_id`.
-* **`ProviderStatus`**: `name`, `family` (`webhook`/`queue`), `trust_mode`, `enabled`, `secret_status` (`configured`/`missing`/`none-by-design`), and the route path or Redis channel. Never the secret value ([ADR-004](ADR-004-secrets-management-openbao-approle.md)).
+* **`ProviderStatus`**: `name`, `family` (`webhook`/`queue`), `trust_mode`, `enabled`, `secret_status` (`configured`/`missing`/`none-by-design`), and the route path or Redis channel. Never the secret value.
 
 Every event object includes `trust_mode` + `verified` + `verify_detail` so an agent can distinguish a signed, verified event from an unverified/Redis one — the MCP surface is held to the same honesty bar as the UI ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)).
 

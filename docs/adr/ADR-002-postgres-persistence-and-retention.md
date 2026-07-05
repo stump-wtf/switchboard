@@ -19,7 +19,7 @@ related: [ADR-000, ADR-001, ADR-003, ADR-005, ADR-007, ADR-014]
 * **Cheap queue scans.** "Give me the next pending todo on this queue" runs constantly; it must hit a small, hot index, not scan a table dominated by terminal rows.
 * **In-DB wakeups.** A lightweight pub/sub inside the datastore lets a worker or the web UI be nudged on new work without polling, complementing the Channels push ([ADR-013](ADR-013-channels-push-delivery.md)) and the UI's SSE.
 * **Rich column types.** JSON payloads/scopes and verb allowlists want first-class JSON and array types, and partial/expression indexes.
-* **Central posture, secrets external.** The datastore is operated like the rest of the hosted stack; its connection string is a secret pulled from OpenBao ([ADR-004](ADR-004-secrets-management-openbao-approle.md)), and no signing secret ever lands in a row ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)).
+* **Config-injected secrets; minted secrets hashed here.** The datastore's connection string (DSN) is injected via environment/deployment config, never committed; no signing secret ever lands in an event row ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)); and switchboard-minted credentials/secrets are stored **hashed** in this database.
 * **Bounded growth.** An always-on receiver plus a busy queue accrue rows forever unless terminal todos and old events are pruned.
 
 ## Considered Options
@@ -120,7 +120,7 @@ CREATE TABLE todos (
 CREATE INDEX idx_todos_pending ON todos (queue, created_at) WHERE state = 'pending';
 CREATE UNIQUE INDEX idx_todos_dedupe ON todos (queue, idempotency_key) WHERE state <> 'done' AND state <> 'failed';
 
--- Adapter registry (runtime enable/disable + NON-SECRET config; secrets in OpenBao, ADR-004).
+-- Adapter registry (runtime enable/disable + NON-SECRET config; provider secrets are env/config-injected, never stored plaintext).
 CREATE TABLE adapters (
   name       text PRIMARY KEY,             -- 'github' | 'generic:homelab' | 'redis:deploys'
   family     text NOT NULL,                -- 'webhook' | 'queue' (ADR-003; push=webhook, pull=queue per ADR-014)
@@ -148,7 +148,7 @@ Defaults seeded into `settings`: `retention_max_age_days = 30`, `retention_max_r
 * Good, because a multi-node app tier connects to one database, and HA comes from managed/streaming replication — the availability a hosted service needs.
 * Good, because partial/expression indexes keep the hot queue scan cheap regardless of terminal-row volume, and JSONB/array/`inet` types fit the data.
 * Good, because `LISTEN`/`NOTIFY` offers in-DB wakeups without a second dependency.
-* Neutral, because it is an operated service (a database to run/patch/back up) — but that matches the central posture already assumed for OpenBao ([ADR-004](ADR-004-secrets-management-openbao-approle.md)) and the rest of the hosted stack.
+* Neutral, because it is an operated service (a database to run/patch/back up) — expected for a hosted service, and it doubles as the store for switchboard-minted credentials (hashed), so there is no separate secret-manager dependency.
 * Bad, because raw SQL means hand-written queries with no compile-time schema check — mitigated by centralizing them in one small, tested data-access module.
 * Bad, because raw payload rows can be large — mitigated by retention/partitioning and an optional payload-size cap (deferred).
 
@@ -205,5 +205,5 @@ flowchart LR
 * Todo object and lifecycle this schema backs: [ADR-007](ADR-007-todos-as-core-primitive.md), [todos spec](../specs/todos.md).
 * Store-then-ack coupling the transactional insert enables: [ADR-014](ADR-014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](../specs/ingestion-adapters.md).
 * Multi-tenant tables (accounts, endpoints, edges): [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md).
-* Trust columns and header redaction: [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md). Connection secret in OpenBao: [ADR-004](ADR-004-secrets-management-openbao-approle.md). Read surfaces: [ADR-005](ADR-005-mcp-tool-and-resource-contract.md).
+* Trust columns and header redaction: [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md). Read surfaces: [ADR-005](ADR-005-mcp-tool-and-resource-contract.md).
 * `pgx`: <https://github.com/jackc/pgx>. `SKIP LOCKED` queue pattern: <https://www.postgresql.org/docs/current/sql-select.html>. `LISTEN`/`NOTIFY`: <https://www.postgresql.org/docs/current/sql-notify.html>.

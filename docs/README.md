@@ -6,7 +6,7 @@ documents*. The published site renders this tree via `docs-site/scripts/build-do
 
 Two layers:
 
-- **Event-store core (ADR-000–006)** — receive, verify, persist, and expose inbound webhooks/queue
+- **Event-store core (ADR-000–005)** — receive, verify, persist, and expose inbound webhooks/queue
   events to MCP clients and a local web UI.
 - **Agent layer (ADR-007–014)** — inbound events become durable **todos**; humans register agents and
   are vended scoped MCP endpoints; personas are A2A Agent Cards; cross-agent work is granted by
@@ -22,9 +22,7 @@ Two layers:
 | [ADR-001](adr/ADR-001-web-stack-go-htmx-pico.md) | Web stack | Go `net/http` + chi, `html/template`, HTMX + Pico.css; assets embedded via `embed.FS`. |
 | [ADR-002](adr/ADR-002-postgres-persistence-and-retention.md) | PostgreSQL persistence & retention | Postgres queue store: SKIP LOCKED claims, ON CONFLICT dedup, partial pending index, age + row-cap pruning. |
 | [ADR-003](adr/ADR-003-per-provider-ingestion-and-trust-model.md) | Per-provider trust model | Three explicit trust modes (`signed`/`unverified`/`redis`), enforced. |
-| [ADR-004](adr/ADR-004-secrets-management-openbao-approle.md) | Secrets via OpenBao AppRole | Machine identity; `secret/switchboard/*`; nothing on disk. |
 | [ADR-005](adr/ADR-005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay`/`list_providers` + recent-events resource. |
-| [ADR-006](adr/ADR-006-gitea-primary-github-mirror-and-ci.md) | Gitea primary + GitHub mirror + CI | Gitea is canonical; GitHub mirrors; CI on the act_runner. |
 | [ADR-007](adr/ADR-007-todos-as-core-primitive.md) | **Todos as the core primitive** | Durable work-items (lease/ack/idempotency), not a message inbox. |
 | [ADR-008](adr/ADR-008-human-principal-vended-endpoints.md) | **Human principal + vended endpoints** | Humans authenticate; agents get vended scoped MCP endpoints; IdP holds humans only. |
 | [ADR-009](adr/ADR-009-personas-as-scoped-agent-cards.md) | **Personas as scoped Agent Cards** | One agent → many personas; a persona is a verb-subset, advertised as an A2A card. |

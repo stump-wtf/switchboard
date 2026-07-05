@@ -18,8 +18,8 @@ const SPEC_SRC = join(REPO, 'docs', 'specs');
 const OUT = join(SITE, 'docs-generated');
 const STATIC_SPECS = join(SITE, 'static', 'specs');
 
-const GITEA = 'https://gitea.stump.rocks/joestump/switchboard';
-const GITEA_RAW = `${GITEA}/raw/branch/main`;
+const GITHUB = 'https://github.com/joestump/switchboard';
+const GITHUB_RAW = 'https://raw.githubusercontent.com/joestump/switchboard/main';
 
 // ---- discover sources (also used for the intro counts) ----
 const adrFiles = readdirSync(ADR_SRC).filter((f) => /^ADR-\d+.*\.md$/.test(f)).sort();
@@ -48,9 +48,9 @@ function fmValue(fm, key) {
 function sanitizeMdx(s) {
   return s.replace(/<((?:https?):\/\/[^>\s]+)>/g, '[$1]($1)');
 }
-// docs/README.md (the ADR/spec index + open-questions) has no page in the site; point at Gitea.
+// docs/README.md (the ADR/spec index + open-questions) has no page in the site; point at GitHub.
 function rewriteRepoLinks(s) {
-  return s.replace(/\]\(\.\.\/README\.md([^)]*)\)/g, `](${GITEA}/src/branch/main/docs/README.md$1)`);
+  return s.replace(/\]\(\.\.\/README\.md([^)]*)\)/g, `](${GITHUB}/blob/main/docs/README.md$1)`);
 }
 
 // ---- landing page ----
@@ -92,7 +92,7 @@ import Link from '@docusaurus/Link';
   <Link className="sb-tile" to="/decisions/ADR-008-human-principal-vended-endpoints">
     <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="4"/><path d="M10.8 10.8L20 20"/><path d="M17 17l2-2"/><path d="M14.5 14.5l2-2"/></svg>
     <div className="sb-tile__title">Per‑agent vended MCP endpoints</div>
-    <p className="sb-tile__body">Humans are the accountable principals; each agent is vended a scoped MCP endpoint (queues + verb allowlist). The credential lives in OpenBao, short‑lived and revocable — revoke = kill the endpoint.</p>
+    <p className="sb-tile__body">Humans are the accountable principals; each agent is vended a scoped MCP endpoint (queues + verb allowlist). The credential is stored hashed in Postgres, short‑lived and revocable — revoke = kill the endpoint.</p>
   </Link>
 
   <Link className="sb-tile" to="/decisions/ADR-009-personas-as-scoped-agent-cards">
@@ -142,7 +142,7 @@ oxblood, and patch‑cable tones.
 ## Start here
 
 - **[Decisions (ADRs)](/decisions)** — why switchboard is built the way it is: the stack, the PostgreSQL
-  persistence, the three‑mode trust model, secrets via OpenBao, the MCP contract, the repo/CI setup,
+  persistence, the trust model, the MCP contract,
   and the todo/agent‑vending/A2A layer.
 - **[Specifications](/specs)** — the HTTP surface (OpenAPI), the live SSE stream (AsyncAPI), the MCP
   tool + resource contracts, the todo object/state‑machine, webhook ingestion, personas/Agent Cards,
@@ -161,7 +161,7 @@ for (const f of adrFiles) {
   // Rewrite the one app-asset link (tokens.css lives in the app, not the docs).
   let content = body.replace(
     /\]\(\.\.\/\.\.\/static\/tokens\.css\)/g,
-    `](${GITEA_RAW}/static/tokens.css)`,
+    `](${GITHUB_RAW}/static/tokens.css)`,
   );
   content = rewriteRepoLinks(content);
 
@@ -228,7 +228,7 @@ function specPage(slug, title, pos, file, blurb) {
     join(OUT, 'specs', `${slug}.md`),
     `---\nsidebar_position: ${pos}\ntitle: ${title}\n---\n\n# ${title}\n\n${blurb}\n\n` +
       `[⬇ Download the raw \`${file}\`](pathname:///switchboard/specs/${file}) · ` +
-      `[view on Gitea](${GITEA}/src/branch/main/docs/specs/${file})\n\n` +
+      `[view on GitHub](${GITHUB}/blob/main/docs/specs/${file})\n\n` +
       `\`\`\`\`yaml\n${yaml}\n\`\`\`\`\n`,
   );
 }

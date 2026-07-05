@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-004, ADR-007, ADR-009, ADR-010, ADR-011, ADR-012]
+related: [ADR-007, ADR-009, ADR-010, ADR-011, ADR-012]
 ---
 
 # ADR-008: Human Principal + Per-Agent Vended MCP Endpoints
@@ -11,7 +11,7 @@ related: [ADR-004, ADR-007, ADR-009, ADR-010, ADR-011, ADR-012]
 
 Once switchboard's core object is a durable todo ([ADR-007](ADR-007-todos-as-core-primitive.md)) that agents claim and complete, we must answer *who* an agent is, *who is accountable* for what it does, and *how* it is granted access to a scoped slice of switchboard. Agents are numerous, disposable, and untrusted; humans are few, durable, and accountable. Modeling a bot as a first-class account in the identity provider produces orphaned bot identities, IdP bloat, and murky accountability when a bot misbehaves.
 
-This ADR decides the identity and access-granting model for the agent layer: **who the principal is, how agents are represented, and what the unit of access is.** It builds on the OpenBao/AppRole posture already chosen for provider secrets ([ADR-004](ADR-004-secrets-management-openbao-approle.md)).
+This ADR decides the identity and access-granting model for the agent layer: **who the principal is, how agents are represented, and what the unit of access is.** It also decides where the credentials switchboard mints are stored.
 
 ## Decision Drivers
 
@@ -19,14 +19,14 @@ This ADR decides the identity and access-granting model for the agent layer: **w
 * **Bots do not belong in the IdP.** The identity provider should hold **humans only**. Minting a passkey/OIDC identity per bot bloats the directory and creates long-lived credentials no human is watching.
 * **Access is a capability, not a role lookup.** An agent should get exactly the slice of switchboard its owner granted — specific queues, specific verbs — and nothing else, enforced at the boundary.
 * **Revocation must be instant and total.** Killing an agent's access should be one operation with no residue: no orphaned identity, no lingering token elsewhere.
-* **Credentials are short-lived and revocable.** Agent credentials must be rotatable/expirable independently of the human, stored in the secret manager, never committed ([ADR-004](ADR-004-secrets-management-openbao-approle.md)).
+* **Credentials are short-lived and revocable.** Agent credentials must be rotatable/expirable independently of the human, stored **hashed** in PostgreSQL ([ADR-002](ADR-002-postgres-persistence-and-retention.md)), never committed.
 * **Simple to reason about beats maximally flexible.** The access model should be legible enough that a human can look at a grant and know exactly what it permits.
 
 ## Considered Options
 
 * **(A) Agents as accounts / OIDC identities** — each agent is a principal in Pocket ID (its own login/credential), authorizes like a user.
 * **(B) One shared service token** — agents share a single switchboard credential, distinguished (if at all) by convention.
-* **(C) Human principal + per-agent vended MCP endpoints** — humans authenticate via OIDC and are the accountable tenants; a human **registers** agents; switchboard **vends** each agent a scoped MCP endpoint (URL + credential) that *is* the capability grant; agent credentials are switchboard-minted, stored in OpenBao, short-lived and revocable. *(chosen)*
+* **(C) Human principal + per-agent vended MCP endpoints** — humans authenticate via OIDC and are the accountable tenants; a human **registers** agents; switchboard **vends** each agent a scoped MCP endpoint (URL + credential) that *is* the capability grant; agent credentials are switchboard-minted, stored **hashed** in PostgreSQL, short-lived and revocable. *(chosen)*
 
 ## Decision Outcome
 
@@ -44,14 +44,14 @@ Chosen option: **"(C) human principal + per-agent vended endpoints."**
 | Holds | Where | Lifetime |
 |-------|-------|----------|
 | **Humans** (principals) | Pocket ID (OIDC) | durable, person-managed |
-| **Agent endpoint credentials** | **switchboard-minted**, stored in **OpenBao** under `secret/switchboard/agents/…` | short-lived, revocable |
+| **Agent endpoint credentials** | **switchboard-minted**, stored **hashed in PostgreSQL** ([ADR-002](ADR-002-postgres-persistence-and-retention.md)) | short-lived, revocable |
 
-The IdP **never holds bots.** Agent credentials are tokens switchboard mints and escrows in OpenBao (extending the [ADR-004](ADR-004-secrets-management-openbao-approle.md) secret layout), so they can be rotated or revoked without touching the human's identity and without polluting the directory.
+The IdP **never holds bots.** Agent credentials are tokens switchboard mints and stores **hashed** in its own PostgreSQL, so they can be rotated or revoked without touching the human's identity and without polluting the directory.
 
 ### Properties this buys
 
 * **Traceability:** every vended endpoint belongs to exactly one agent, which belongs to exactly one human. Every todo/webhook/friend action carries that chain.
-* **Revocation = kill the vended endpoint.** Revoking an endpoint invalidates its credential in OpenBao and unroutes its URL. The agent instantly loses all access; nothing lingers in the IdP because the bot was never there.
+* **Revocation = kill the vended endpoint.** Revoking an endpoint invalidates its stored credential and unroutes its URL. The agent instantly loses all access; nothing lingers in the IdP because the bot was never there.
 * **Least privilege by construction:** an endpoint can only do what its verb allowlist and queue grant permit.
 
 ### Proposed default — immutable + revocable scope (decision to confirm)
@@ -66,7 +66,7 @@ This is marked **decision-to-confirm** with Joe: the alternative is mutable scop
 * Good, because the IdP stays humans-only; no orphan bot identities, no directory bloat.
 * Good, because the vended endpoint is a self-contained capability: scope travels with the grant, enforced at the boundary.
 * Good, because revocation is one instant operation with no residue.
-* Good, because agent credentials live in OpenBao with the rest of switchboard's secrets — one secret posture ([ADR-004](ADR-004-secrets-management-openbao-approle.md)).
+* Good, because agent credentials live (hashed) in switchboard's own PostgreSQL — no external secret-manager dependency to run.
 * Bad, because switchboard now runs its own credential-minting/escrow path (a mini authorization server) it must build and secure — accepted as the cost of not putting bots in the IdP.
 * Bad (under the proposed immutable default), because a scope change means re-vending and re-configuring the agent with a new URL/credential — more churn than editing in place; mitigated because scope changes should be rare and the re-vend is a single call.
 
@@ -74,7 +74,7 @@ This is marked **decision-to-confirm** with Joe: the alternative is mutable scop
 
 * The [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md) defines the human-account, agent-registration, and vend/revoke flows and the scope shape (queues + verb allowlist).
 * A test asserts a vended endpoint can exercise only its allowlisted verbs on its granted queues, and is denied outside them.
-* A test asserts revoking an endpoint invalidates its OpenBao credential and unroutes its URL (subsequent calls fail).
+* A test asserts revoking an endpoint invalidates its stored credential and unroutes its URL (subsequent calls fail).
 * A test asserts no agent identity is ever created in Pocket ID.
 * The immutable-vs-mutable scope default is confirmed with Joe before the code session implements vend.
 
@@ -105,7 +105,7 @@ flowchart TB
   subgraph sb[switchboard]
     reg[Agent registry]
     vend[Endpoint vending<br/>+ policy authority]
-    bao[(OpenBao<br/>secret/switchboard/agents/*)]
+    bao[(PostgreSQL<br/>credentials, hashed)]
     ep1[[Vended endpoint A<br/>URL + credential<br/>scope: queues+verbs]]
     ep2[[Vended endpoint B<br/>URL + credential<br/>scope: queues+verbs]]
   end
@@ -125,4 +125,4 @@ flowchart TB
 * Cross-agent access is granted by human approval of a friend request, which *is* a vend: [ADR-010](ADR-010-a2a-discovery-human-vended-friending.md).
 * Identity/assurance posture (why Pocket ID, what is deferred): [ADR-011](ADR-011-identity-assurance-oidc-passkey-deferred.md).
 * Webhook self-management within a vended ceiling: [ADR-012](ADR-012-agents-self-manage-webhooks.md).
-* Secret storage layout this extends: [ADR-004](ADR-004-secrets-management-openbao-approle.md).
+* Where minted credentials are stored (hashed): [ADR-002](ADR-002-postgres-persistence-and-retention.md).

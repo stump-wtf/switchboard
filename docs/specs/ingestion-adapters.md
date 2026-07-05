@@ -6,7 +6,7 @@ contract into the durable todo queue ([ADR-007](../adr/ADR-007-todos-as-core-pri
 abstraction and the pull-side ack coupling are decided in
 [ADR-014](../adr/ADR-014-ingestion-adapters-push-pull.md); trust semantics are in
 [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md); secrets/connection strings come
-from OpenBao ([ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md)); agent-managed webhooks
+from environment/config; agent-managed webhooks
 (the push family) are bounded by a ceiling ([ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md)).
 
 ## The shared contract (both families)
@@ -171,5 +171,5 @@ order; each match produces one todo (fan-out allowed).
 - Trust modes & per-source verification (authoritative): [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md).
 - Todo object, dedup, lease/ack lifecycle: [todos spec](todos.md), [ADR-007](../adr/ADR-007-todos-as-core-primitive.md).
 - Agent-created webhooks (push family) & the ceiling: [ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md), [agent-mcp-tools spec](agent-mcp-tools.md).
-- Secrets (webhook signing secrets, queue connection URLs): [ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md).
+- Secrets: injected via environment/config; switchboard-minted secrets stored hashed in PostgreSQL ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 - Delivery/history surface: [ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md), [ADR-005](../adr/ADR-005-mcp-tool-and-resource-contract.md), [`openapi.yaml`](openapi.yaml).

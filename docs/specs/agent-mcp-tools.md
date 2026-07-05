@@ -88,7 +88,7 @@ create_for(target_queue: string, title: string, kind?: string,
 
 Bounded by the endpoint's **ceiling** — max count, allowed source types, allowed target queues
 ([ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md)). Switchboard mints the signing secret,
-stores it in OpenBao ([ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md)), and owns
+stores it **hashed** in PostgreSQL ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)), and owns
 verification + idempotency ([ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md)). The
 agent receives **only the URL**, never the secret.
 

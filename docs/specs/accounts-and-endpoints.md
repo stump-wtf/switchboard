@@ -4,8 +4,7 @@ The identity and access model: the human OIDC account, agent registration, endpo
 credential), the scope shape, and the immutable-by-default posture. Decisions are in
 [ADR-008](../adr/ADR-008-human-principal-vended-endpoints.md) (vending),
 [ADR-011](../adr/ADR-011-identity-assurance-oidc-passkey-deferred.md) (identity/assurance),
-[ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md) (webhook ceiling); secret storage extends
-[ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md).
+[ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md) (webhook ceiling). Switchboard-minted credentials are stored **hashed** in PostgreSQL ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 
 ## Human account (principal / tenant)
 
@@ -57,7 +56,7 @@ Registration **grants nothing** on its own — access comes only from a vended e
     "agent_id":       { "type": "string" },
     "persona_id":     { "type": ["string", "null"], "description": "Persona this endpoint serves (ADR-009); null for an agent-level endpoint." },
     "url":            { "type": "string", "format": "uri", "description": "The vended MCP endpoint URL. URL + credential = the capability (ADR-008)." },
-    "credential_ref": { "type": "string", "description": "OpenBao path for the minted credential — e.g. secret/switchboard/agents/{agent_id}/endpoints/{id}. The value is NEVER returned after the one-time issue." },
+    "credential_ref": { "type": "string", "description": "Reference to the stored credential HASH in PostgreSQL. The plaintext is NEVER returned after the one-time issue." },
     "scope":          { "$ref": "#/$defs/Scope" },
     "webhook_ceiling":{ "$ref": "#/$defs/WebhookCeiling" },
     "mutability":     { "type": "string", "enum": ["immutable", "mutable"], "default": "immutable",
@@ -101,25 +100,26 @@ register agent → (human sets scope + ceiling) → VEND ──▶ active
                                                    └─ revoke ─▶ revoked (credential invalidated, URL unrouted)
 ```
 
-- **Vend** mints a credential, escrows it in OpenBao at `credential_ref`, returns **the URL and the
+- **Vend** mints a credential, stores its **hash** in PostgreSQL (`credential_ref`), returns **the URL and the
   credential once** (never retrievable again), and marks the endpoint `active`
   ([ADR-008](../adr/ADR-008-human-principal-vended-endpoints.md)).
 - **Approval-is-vend:** a friend approval mints a vended endpoint the same way
   ([ADR-010](../adr/ADR-010-a2a-discovery-human-vended-friending.md), [friend-requests spec](friend-requests.md)).
-- **Revoke** invalidates the OpenBao credential and unroutes the URL — instant, total, no residue
+- **Revoke** invalidates the stored credential and unroutes the URL — instant, total, no residue
   (nothing in the IdP because the bot was never there).
 - Credentials are **short-lived** and rotatable independently of the human
-  ([ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md)).
+  ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 
-## OpenBao layout (extends ADR-004)
+## Credential storage
 
-| Path | Field(s) | Purpose |
-|------|----------|---------|
-| `secret/switchboard/agents/{agent_id}/endpoints/{endpoint_id}` | `credential` | Vended endpoint credential (short-lived, revocable). |
-| `secret/switchboard/agents/{agent_id}/webhooks/{webhook_id}` | `signing_secret` | Secret for an agent-created webhook — minted & held by switchboard; never returned to the agent ([ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md)). |
+Switchboard-minted secrets live **hashed** in switchboard's own PostgreSQL ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)) — no external secret manager:
 
-The AppRole policy grants the service `read`/`write` on `secret/switchboard/agents/*` in addition to
-the provider paths of [ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md).
+| Stored (hashed) | Column | Notes |
+|-----------------|--------|-------|
+| Vended endpoint credential | `endpoints.credential_hash` | short-lived, revocable; plaintext shown once at vend, never again. |
+| Agent-created webhook signing secret | `agent_webhooks.secret_hash` | minted & held by switchboard; never returned to the agent ([ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md)). |
+
+Config-injected secrets — provider HMAC secrets, shared-secret tokens, the Postgres/Redis DSNs, the OIDC client secret — come from the **environment/deployment config**, never committed and never stored in plaintext.
 
 ## Immutable-by-default (open question)
 
@@ -150,4 +150,4 @@ the provider paths of [ADR-004](../adr/ADR-004-secrets-management-openbao-approl
 - Approval-is-vend (cross-agent grants): [ADR-010](../adr/ADR-010-a2a-discovery-human-vended-friending.md), [friend-requests spec](friend-requests.md).
 - Identity/assurance: [ADR-011](../adr/ADR-011-identity-assurance-oidc-passkey-deferred.md).
 - Webhook ceiling: [ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md).
-- Secret storage: [ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md).
+- Where minted credentials are stored (hashed): [ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md).

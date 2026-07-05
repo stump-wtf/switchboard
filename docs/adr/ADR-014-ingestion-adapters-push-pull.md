@@ -121,4 +121,4 @@ flowchart TB
 * The durable todo, dedup, and lease/ack the adapters normalize into: [ADR-007](ADR-007-todos-as-core-primitive.md), [todos spec](../specs/todos.md).
 * Agent-managed webhooks are the push family under a ceiling: [ADR-012](ADR-012-agents-self-manage-webhooks.md).
 * Full adapter contract, per-family detail, routing rules: [ingestion-adapters spec](../specs/ingestion-adapters.md).
-* Secrets (webhook signing secrets, queue connection URLs): [ADR-004](ADR-004-secrets-management-openbao-approle.md).
+* Secrets: webhook signing secrets and queue connection URLs are injected via environment/config; switchboard-minted secrets are stored hashed in PostgreSQL ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
