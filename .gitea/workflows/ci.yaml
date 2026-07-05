@@ -45,6 +45,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Trust workspace (git refuses "dubious ownership" inside a container job)
+        run: git config --global --add safe.directory '*'
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -64,7 +66,9 @@ jobs:
           VER=8.21.2
           curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
             | tar -xzf - gitleaks
-          ./gitleaks detect --source . --redact --no-banner
+          # --no-git scans the working tree as a directory, avoiding any dependence on git
+          # history/ownership inside the container.
+          ./gitleaks detect --source . --no-git --redact --no-banner
       - name: semgrep (code rulesets)
         run: |
           pip install semgrep

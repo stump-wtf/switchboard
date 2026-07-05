@@ -42,15 +42,21 @@ Chosen: **Gitea-primary + GitHub push-mirror (A)**, **dual CI with a Gitea fast+
 
 Two workflow trees, deliberately kept in lockstep by hand (Dependabot only watches `.github/`, so pinned versions in `.gitea/` are bumped manually — a documented house caveat):
 
-**`.gitea/workflows/ci.yaml` — fast + security gate (the brief's §5.3 gate).** Triggers on push to `main` and on pull requests; `permissions: contents: read`; concurrency group `${{ gitea.workflow }}-${{ gitea.ref }}` with `cancel-in-progress: true`; `runs-on: ubuntu-latest`. Jobs:
-  * **lint** — `ruff check` + `ruff format --check`
-  * **types** — `mypy`
-  * **security** — `bandit` (source), `pip-audit` (dependencies), **Gitleaks** (pinned `docker://ghcr.io/gitleaks/gitleaks` image, `detect --source . --redact`, `fetch-depth: 0`), **Semgrep** (`--config auto --error`)
-  * **tests** — `pytest` (httpx `AsyncClient` against the Starlette app, once code exists)
+**`.gitea/workflows/ci.yaml` — fast + security gate (the brief's §5.3 gate).** Triggers on push to `main` and on pull requests; `permissions: contents: read`; concurrency group `${{ gitea.workflow }}-${{ gitea.ref }}` with `cancel-in-progress: true`; `runs-on: ubuntu-latest`. A **single sequential job** (reduit's house pattern — the `act_runner` is contended, so one job) running inside **`container: python:3.12-slim-bookworm`** and executing: `ruff check` + `ruff format --check` → `mypy` → `bandit` → `pip-audit` → **Gitleaks** (pinned release binary) → **Semgrep** (scoped rulesets) → `pytest`.
 
-**`.github/workflows/ci.yml` — comprehensive gate on the mirror.** Same suite, plus a **Python version matrix** (3.12 and 3.13) so cross-version breakage is caught on the less-contended GitHub hosted runners, per the house "canonical comprehensive gate lives on GitHub" convention.
+**`.github/workflows/ci.yml` — comprehensive gate on the mirror.** The same checks, restructured as parallel jobs plus a **Python version matrix** (3.12 and 3.13) so cross-version breakage is caught on the less-contended GitHub hosted runners, per the house "canonical comprehensive gate lives on GitHub" convention.
 
-Runner label is `ubuntu-latest` on both (the only `act_runner` label on this instance). Python is set up with `actions/setup-python`; checkout with `actions/checkout`.
+Runner label is `ubuntu-latest` on both (the only `act_runner` label on this instance).
+
+### Runner constraints discovered (why the two workflows provision differently)
+
+The first CI run surfaced two `act_runner` realities that shaped the final Gitea workflow. These are the *only* places the two trees legitimately diverge; the *checks* they run are identical.
+
+* **`actions/setup-python` is not reliable on this `act_runner`.** The first run failed all jobs within ~20s at the Python-setup step, while the identical checks passed on the GitHub matrix. The robust fix is to pin the interpreter via `container: python:3.12-slim-bookworm` (which also guarantees the 3.12 floor) rather than provision Python with `setup-python`. The GitHub mirror keeps `actions/setup-python` (where it works and supplies the version matrix). This mirrors how the house `dotfiles` repo uses the runner's system `python3` directly rather than `setup-python`.
+* **Gitleaks runs from a pinned release binary, not a `docker://` action-step**, because a container-action step cannot run inside a container job. This is the `dotfiles` house pattern. The GitHub job (not containerized) keeps the `docker://ghcr.io/gitleaks/gitleaks` pinned image.
+* **Semgrep is scoped to code rulesets** (`p/python`, `p/security-audit`) on both hosts rather than `--config auto`. `auto` additionally enforces SHA-pinned action refs, a policy the StumpCloud convention deliberately does not follow (it pins actions to *tags* and lets Dependabot bump them — see the lockstep note above). Scoping semgrep to code keeps it a meaningful SAST gate on the application without imposing a CI-pinning policy that conflicts with house style.
+
+Note also: this Gitea instance does **not** expose the Actions runs/jobs/logs API (`/api/v1/.../actions/runs` and the log endpoints 404); only `/api/v1/.../actions/tasks` is available for run status. Diagnosing a failed Gitea run means reading logs in the web UI, not via API/MCP.
 
 ### Why inline, not shared
 
