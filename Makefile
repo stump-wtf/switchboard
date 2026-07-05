@@ -1,30 +1,25 @@
-# switchboard — local dev entry points.
-# `make ci` runs the same lint/type/security/test gate CI does (ADR-006), so you can reproduce the
-# gate before opening a PR. (Gitleaks + Semgrep run in CI only — they need Docker / an extra install.)
+# switchboard — local dev entry points. `make ci` runs the gate you can reproduce before a PR.
+.PHONY: build run fmt vet lint test tidy ci
 
-.PHONY: install fmt lint types security test ci
+build:  ## Compile the switchboard binary (assets embedded)
+	go build -o bin/switchboard ./cmd/switchboard
 
-install:  ## Install the package + dev tooling (editable)
-	python -m pip install --upgrade pip
-	pip install -e '.[dev]'
-	pre-commit install || true
+run: build  ## Build and run
+	./bin/switchboard
 
-fmt:  ## Auto-format
-	ruff format .
-	ruff check --fix .
+fmt:  ## Format
+	gofmt -w .
 
-lint:  ## Lint + format check
-	ruff check .
-	ruff format --check .
+vet:  ## go vet
+	go vet ./...
 
-types:  ## Type-check
-	mypy app
+lint:  ## golangci-lint (install: https://golangci-lint.run)
+	golangci-lint run
 
-security:  ## Static security + dependency audit
-	bandit -c pyproject.toml -r app
-	pip-audit --skip-editable
+test:  ## Run tests
+	go test ./...
 
-test:  ## Run the test suite
-	pytest
+tidy:  ## Sync go.mod/go.sum
+	go mod tidy
 
-ci: lint types security test  ## The full local gate (mirrors CI)
+ci: vet test build  ## The gate: vet + test + build
