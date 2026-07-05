@@ -181,6 +181,6 @@ revoke(edge_id: string) → { edge_id, revoked: true }
 
 - Todo object & state machine: [todos spec](todos.md), [ADR-007](../adr/ADR-007-todos-as-core-primitive.md).
 - Endpoint scope (queues + verb allowlist), vend/revoke: [accounts-and-endpoints spec](accounts-and-endpoints.md), [ADR-008](../adr/ADR-008-human-principal-vended-endpoints.md).
-- Webhook ceiling & verification: [ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md), [webhook-ingestion spec](webhook-ingestion.md), [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md).
+- Webhook ceiling & verification (push family of the adapter model): [ADR-012](../adr/ADR-012-agents-self-manage-webhooks.md), [ingestion-adapters spec](ingestion-adapters.md), [ADR-014](../adr/ADR-014-ingestion-adapters-push-pull.md), [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md).
 - Friending flow & provenance: [friend-requests spec](friend-requests.md), [ADR-010](../adr/ADR-010-a2a-discovery-human-vended-friending.md), [ADR-011](../adr/ADR-011-identity-assurance-oidc-passkey-deferred.md).
 - Read-only event-history surface (separate): [`mcp-tools.md`](mcp-tools.md), [ADR-005](../adr/ADR-005-mcp-tool-and-resource-contract.md).

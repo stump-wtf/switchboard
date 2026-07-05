@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-003, ADR-004, ADR-007, ADR-008]
+related: [ADR-003, ADR-004, ADR-007, ADR-008, ADR-014]
 ---
 
 # ADR-012: Agents Self-Manage Their Own Webhooks (within a vended ceiling)
@@ -109,7 +109,7 @@ flowchart TB
 ## More Information
 
 * Webhooks as todo producers, and idempotency-key dedup: [ADR-007](ADR-007-todos-as-core-primitive.md).
-* Verification per source type (what switchboard enforces regardless of who created the webhook): [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) and the [webhook-ingestion spec](../specs/webhook-ingestion.md).
+* Verification per source type (what switchboard enforces regardless of who created the webhook): [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) and the [ingestion-adapters spec](../specs/ingestion-adapters.md). Webhooks are the **push** family of the adapter model ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)); agent self-management of **pull** (queue) adapters is a natural future extension of this ceiling, not covered here.
 * The vended endpoint and scope this extends: [ADR-008](ADR-008-human-principal-vended-endpoints.md).
 * Secret storage: [ADR-004](ADR-004-secrets-management-openbao-approle.md).
 * Verb signatures + the ceiling fields: [agent-mcp-tools spec](../specs/agent-mcp-tools.md), [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md).

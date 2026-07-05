@@ -6,7 +6,9 @@ producer (a webhook, the Redis consumer, another agent, or switchboard itself), 
 by a consumer (an agent persona draining its queue).
 
 The verbs that drive this state machine are in the [agent-mcp-tools spec](agent-mcp-tools.md). How
-webhooks become todos is in the [webhook-ingestion spec](webhook-ingestion.md). Todos are persisted in
+push (webhook) and pull (queue) adapters normalize deliveries into todos is in the
+[ingestion-adapters spec](ingestion-adapters.md) ([ADR-014](../adr/ADR-014-ingestion-adapters-push-pull.md)).
+Todos are persisted in
 the same SQLite layer as events ([ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md)) and
 subject to the same retention posture.
 
@@ -125,6 +127,6 @@ todo transitions back to `pending` with `attempt` incremented (until `max_attemp
 
 - Primitive rationale & lifecycle decision: [ADR-007](../adr/ADR-007-todos-as-core-primitive.md).
 - Verbs driving the machine (`list_todos`/`claim`/`complete`/`fail`/`create_for`): [agent-mcp-tools spec](agent-mcp-tools.md).
-- Producers → todos (routing, idempotency-key derivation): [webhook-ingestion spec](webhook-ingestion.md), [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md).
+- Producers → todos (push/pull adapters, routing, idempotency-key derivation, pull ack-coupling): [ingestion-adapters spec](ingestion-adapters.md), [ADR-014](../adr/ADR-014-ingestion-adapters-push-pull.md), [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md).
 - Who may drain which queue (scope), and how ownership traces to a human: [ADR-008](../adr/ADR-008-human-principal-vended-endpoints.md), [accounts-and-endpoints spec](accounts-and-endpoints.md).
 - Persistence & retention of terminal todos: [ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md).

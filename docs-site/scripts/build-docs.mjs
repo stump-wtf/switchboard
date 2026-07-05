@@ -77,10 +77,10 @@ import Link from '@docusaurus/Link';
 
 <div className="sb-tiles">
 
-  <Link className="sb-tile" to="/decisions/ADR-003-per-provider-ingestion-and-trust-model">
+  <Link className="sb-tile" to="/decisions/ADR-014-ingestion-adapters-push-pull">
     <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 13v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/><path d="M8 9l4 4 4-4"/><path d="M12 2v11"/></svg>
-    <div className="sb-tile__title">Per‑source verified ingestion</div>
-    <p className="sb-tile__body">GitHub, Stripe, Slack, Docker Hub, a generic endpoint, and a Redis queue — each with an explicit, enforced trust mode. A bad signature is a 401, never stored as if it were real.</p>
+    <div className="sb-tile__title">Push &amp; pull ingestion adapters</div>
+    <p className="sb-tile__body">Push webhooks (GitHub, Stripe, Slack, Docker Hub, generic) and pull queue adapters (Redis, with SQS/NATS/AMQP to follow) normalize into the same todo — each with an enforced trust mode. Pull adapters ack the source only after the todo is durably stored, so nothing is lost at the boundary.</p>
   </Link>
 
   <Link className="sb-tile" to="/decisions/ADR-007-todos-as-core-primitive">
@@ -194,7 +194,7 @@ const SPEC_META = {
   'mcp-tools.md':                { pos: 3, title: 'MCP tools & resources' },
   'todos.md':                    { pos: 4, title: 'Todos — object & state machine' },
   'agent-mcp-tools.md':          { pos: 5, title: 'Agent MCP tool surface' },
-  'webhook-ingestion.md':        { pos: 6, title: 'Webhook ingestion & routing' },
+  'ingestion-adapters.md':       { pos: 6, title: 'Ingestion adapters (push & pull)' },
   'personas-and-agent-cards.md': { pos: 7, title: 'Personas & Agent Cards' },
   'friend-requests.md':          { pos: 8, title: 'Friend-request & approval flow' },
   'accounts-and-endpoints.md':   { pos: 9, title: 'Accounts & vended endpoints' },

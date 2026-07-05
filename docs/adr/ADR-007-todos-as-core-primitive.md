@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-003, ADR-005, ADR-008, ADR-012, ADR-013]
+related: [ADR-003, ADR-005, ADR-008, ADR-012, ADR-013, ADR-014]
 ---
 
 # ADR-007: Todos as the Core Primitive (not a message inbox)
@@ -61,7 +61,7 @@ Chosen option: **"(C) durable todo/work-item."** Switchboard's core agent-facing
 
 ### Relationship to the event store (ADR-005)
 
-The event log and the todo model are complementary, not competing: **an event is a record of what arrived; a todo is a unit of work derived from it.** A verified GitHub push is stored as an event (ADR-002/003) *and* fans out to one or more todos via routing rules ([webhook-ingestion spec](../specs/webhook-ingestion.md)). The `list/get/replay` event tools of [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) remain the audit/history surface; the todo tools ([agent-mcp-tools spec](../specs/agent-mcp-tools.md)) are the work surface. See **Open questions** for the one unresolved seam.
+The event log and the todo model are complementary, not competing: **an event is a record of what arrived; a todo is a unit of work derived from it.** A verified GitHub push is stored as an event (ADR-002/003) *and* fans out to one or more todos via routing rules ([ingestion-adapters spec](../specs/ingestion-adapters.md)). The `list/get/replay` event tools of [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) remain the audit/history surface; the todo tools ([agent-mcp-tools spec](../specs/agent-mcp-tools.md)) are the work surface. See **Open questions** for the one unresolved seam.
 
 ### Consequences
 
@@ -133,6 +133,6 @@ flowchart LR
 
 * Object schema + full state machine: [todos spec](../specs/todos.md).
 * The MCP verbs that drive the lifecycle (`list_todos`, `claim`, `complete`, `fail`, `create_for`): [agent-mcp-tools spec](../specs/agent-mcp-tools.md).
-* How webhooks become todos (routing rules, idempotency-key derivation): [webhook-ingestion spec](../specs/webhook-ingestion.md) and [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md).
+* How push (webhook) and pull (queue) adapters become todos — routing rules, idempotency-key derivation, and the pull-side store-then-ack coupling: [ingestion-adapters spec](../specs/ingestion-adapters.md), [ADR-014](ADR-014-ingestion-adapters-push-pull.md), [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md).
 * Ownership tracing to a human, and per-agent scoping of which queues an endpoint may drain: [ADR-008](ADR-008-human-principal-vended-endpoints.md).
 * **Open question — event/todo seam:** whether the ADR-005 event tools and the todo tools remain two surfaces indefinitely, or whether events become a pure sub-record of todos, is left to confirm with Joe. Recorded in [docs/README.md](../README.md) open-questions.

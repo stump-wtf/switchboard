@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-000, ADR-002, ADR-004, ADR-005]
+related: [ADR-000, ADR-002, ADR-004, ADR-005, ADR-014]
 ---
 
 # ADR-003: Per-Provider Ingestion and Trust Model (Signed / Generic-Unverified / Redis)
@@ -60,6 +60,8 @@ A catch-all endpoint `/webhooks/generic/{name}` for senders with **no signature 
 Docker Hub is routed here rather than through a fake "signed" adapter, because inventing verification where the provider offers none would be dishonest and would undermine the meaning of the `signed` badge for every other provider.
 
 ### Mode 3 — `redis` (queue consumer, not HTTP receiver)
+
+> **Later generalization ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)):** this "redis mode" is reframed as the reference **pull adapter** of the ingestion-adapter model — the `signed`/`unverified` HTTP webhooks are the **push** family; Redis (and later SQS/NATS/AMQP) is the **pull** family. The `redis` *trust* semantics below (trust = the connection) are unchanged; ADR-014 adds the pull-side **store-then-ack** coupling and decides the pub/sub-vs-stream sub-decision below in favor of an ack-capable mode.
 
 An in-process task subscribes to a Redis channel/stream and feeds messages into the same pipeline. There is **no HTTP request and no signature header**, so HTTP-style verification does not apply. The trust boundary is the **Redis connection itself**: authentication (`requirepass`/ACL user), ACLs constraining *who can publish* to the subscribed channel, and TLS if the Redis instance supports it. Events carry `trust_mode='redis'`, `verified=0`, and `verify_detail` naming the ACL user (e.g. `redis acl: deploy-bot`). The security control is "who is allowed to publish to this channel," and this assumption is documented here rather than left implicit. The Redis connection secret (URL/password) is pulled from OpenBao like any other ([ADR-004](ADR-004-secrets-management-openbao-approle.md)).
 

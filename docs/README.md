@@ -8,7 +8,7 @@ Two layers:
 
 - **Event-store core (ADR-000–006)** — receive, verify, persist, and expose inbound webhooks/queue
   events to MCP clients and a local web UI.
-- **Agent layer (ADR-007–013)** — inbound events become durable **todos**; humans register agents and
+- **Agent layer (ADR-007–014)** — inbound events become durable **todos**; humans register agents and
   are vended scoped MCP endpoints; personas are A2A Agent Cards; cross-agent work is granted by
   human-approved friending; and todos are pushed into live harness sessions over Claude Code Channels,
   with the durable queue staying the ledger.
@@ -31,6 +31,7 @@ Two layers:
 | [ADR-011](adr/ADR-011-identity-assurance-oidc-passkey-deferred.md) | **Identity & assurance** | Simple OIDC (Pocket ID) now; passkey `amr`/`acr` step-up deferred. |
 | [ADR-012](adr/ADR-012-agents-self-manage-webhooks.md) | **Agents self-manage webhooks** | Webhook CRUD within a human-vended ceiling; switchboard owns verification. |
 | [ADR-013](adr/ADR-013-channels-push-delivery.md) | **Channels push-delivery** | Claude Code Channels pushes into a live session as a notify layer; the durable todo queue stays the ledger. |
+| [ADR-014](adr/ADR-014-ingestion-adapters-push-pull.md) | **Ingestion adapters (push/pull)** | Push (webhook) + pull (queue) families → todos; Redis is the reference pull adapter; store-then-ack couples the source ack to the todo. |
 
 ## Specifications
 
@@ -41,7 +42,7 @@ Two layers:
 | [mcp-tools.md](specs/mcp-tools.md) | Event-history MCP contract (`list`/`get`/`replay`/`list_providers`). |
 | [todos.md](specs/todos.md) | Todo object schema + state machine (ADR-007). |
 | [agent-mcp-tools.md](specs/agent-mcp-tools.md) | Vended-endpoint MCP tools: todos, webhook CRUD, friending verbs (ADR-008/010/012). |
-| [webhook-ingestion.md](specs/webhook-ingestion.md) | Sources, per-source verification, routing rules → todos (ADR-003/007). |
+| [ingestion-adapters.md](specs/ingestion-adapters.md) | Push (webhook) + pull (queue) adapters, shared verification/idempotency/normalization → todos, pull store-then-ack coupling, routing rules (ADR-014/003/007). |
 | [personas-and-agent-cards.md](specs/personas-and-agent-cards.md) | Persona record, verb→skill derivation, A2A Agent Card + well-known (ADR-009). |
 | [friend-requests.md](specs/friend-requests.md) | Discover → request → approval-todo → approve(=vend) flow (ADR-010). |
 | [accounts-and-endpoints.md](specs/accounts-and-endpoints.md) | Human OIDC account, agent registration, vend/scope/ceiling (ADR-008/011/012). |
@@ -86,6 +87,12 @@ Decisions recorded as *proposed* that Joe should confirm before the code session
    Channels needs a local stdio subprocess but switchboard is a central service; the thin local adapter
    authenticates with the vended credential and bridges pull + push. The exact adapter/auth shape is a
    code-session detail to confirm.
+
+7. **Pull-adapter ack timing: ack-on-store vs. ack-on-complete** *(proposed: ack-on-store)* —
+   [ADR-014](adr/ADR-014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](specs/ingestion-adapters.md).
+   A pull adapter acks the source message once the todo is **durably stored** (the durability boundary);
+   optionally it could defer the ack until the todo is **completed** for stronger end-to-end coupling at
+   the cost of holding redelivery state longer. **Confirm.**
 
 ## Conventions
 
