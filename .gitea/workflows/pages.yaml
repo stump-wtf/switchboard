@@ -37,6 +37,11 @@ jobs:
         working-directory: docs-site
         run: npm run build
       - name: Deploy to Gitea Pages
+        # Skips (instead of failing red) until the Garage S3 secrets are provisioned — the build
+        # above still validates the site on every push. Once PAGES_ACCESS_KEY_ID is set, this runs.
+        env:
+          PAGES_KEY: ${{ secrets.PAGES_ACCESS_KEY_ID }}
+        if: ${{ env.PAGES_KEY != '' }}
         uses: https://gitea.stump.rocks/stumpcloud/garage-pages-deploy@v1
         with:
           source_dir: docs-site/build
