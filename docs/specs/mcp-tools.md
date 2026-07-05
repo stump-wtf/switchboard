@@ -1,8 +1,8 @@
 # switchboard — MCP Tool & Resource Contract
 
-Authoritative contract for the MCP surface of **switchboard**, served by the official `mcp` Python
-SDK from the same Starlette process as the web UI ([ADR-001](../adr/ADR-001-web-stack-starlette-htmx-pico.md))
-and reading the same SQLite layer ([ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md)).
+Authoritative contract for the MCP surface of **switchboard**, served by the official Go MCP
+SDK from the same Go HTTP server as the web UI ([ADR-001](../adr/ADR-001-web-stack-go-htmx-pico.md))
+and reading the same PostgreSQL layer ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 
 This document is the source of truth for tool/resource **schemas**. The *shape* decisions behind it
 are in [ADR-005](../adr/ADR-005-mcp-tool-and-resource-contract.md); the trust semantics are in
@@ -15,13 +15,13 @@ must not drift.
 
 - **Server name:** `switchboard`.
 - **Transport:** whatever the code session wires (stdio and/or the SDK's Streamable HTTP mount inside
-  the Starlette app). Out of scope for this contract.
+  the Go HTTP server). Out of scope for this contract.
 - **Structured output:** every tool declares an input JSON Schema and returns SDK **structured
   output** validated against the output schemas below — not free-form text.
 - **Trust is always present.** Every event object carries `trust_mode`, `verified`, and (in detail)
-  `verify_detail`, so an agent can always tell a signed, verified event from an unverified/Redis one.
+  `verify_detail`, so an agent can always tell a signed, verified event from a token- or queue-trust one.
 - **No secrets cross the boundary.** Responses contain **sanitized** headers only; signing secrets and
-  full signature header values are never returned ([ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md)/[ADR-004](../adr/ADR-004-secrets-management-openbao-approle.md)).
+  full signature header values are never returned ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 - **Time:** all timestamps are ISO-8601 UTC strings.
 - **Errors:** tools raise MCP tool errors with a stable `code` and a human `message`. `message` never
   contains secret material. See [Errors](#errors).
@@ -30,7 +30,7 @@ must not drift.
 
 ### `TrustMode`
 ```json
-{ "type": "string", "enum": ["signed", "unverified", "redis"] }
+{ "type": "string", "enum": ["signed", "token", "open", "queue"] }
 ```
 
 ### `EventSummary`
@@ -58,7 +58,7 @@ Full record for `get_webhook_event` — `EventSummary` plus:
 {
   "allOf": [{ "$ref": "#/$defs/EventSummary" }],
   "properties": {
-    "verify_detail": { "type": ["string", "null"], "description": "e.g. 'hmac-sha256 ok', 'unverified by design', 'redis acl: deploy-bot'." },
+    "verify_detail": { "type": ["string", "null"], "description": "e.g. 'hmac-sha256 ok', 'token ok (caller authenticated; body not verified)', 'redis acl: deploy-bot'." },
     "external_id":   { "type": ["string", "null"], "description": "Provider delivery id (idempotency key)." },
     "content_type":  { "type": ["string", "null"] },
     "source_ip":     { "type": ["string", "null"], "description": "null for Redis-ingested events." },
@@ -73,14 +73,14 @@ Full record for `get_webhook_event` — `EventSummary` plus:
 ```json
 {
   "type": "object",
-  "required": ["name", "kind", "trust_mode", "enabled", "secret_status"],
+  "required": ["name", "family", "trust_mode", "enabled", "secret_status"],
   "properties": {
     "name":          { "type": "string" },
-    "kind":          { "type": "string", "enum": ["signed", "generic", "redis"] },
+    "family":        { "type": "string", "enum": ["webhook", "queue"] },
     "trust_mode":    { "$ref": "#/$defs/TrustMode" },
     "enabled":       { "type": "boolean" },
     "secret_status": { "type": "string", "enum": ["configured", "missing", "none-by-design"],
-                       "description": "Runtime status from OpenBao (ADR-004). Never the secret itself." },
+                       "description": "Runtime secret status (configured/missing/none-by-design). Never the secret itself." },
     "path":          { "type": ["string", "null"], "description": "Webhook route path (HTTP providers)." },
     "channel":       { "type": ["string", "null"], "description": "Redis channel/stream (redis providers)." }
   },
@@ -171,7 +171,7 @@ result.
 // → get_webhook_event({ "id": 4214 })
 {
   "id": 4214, "provider": "generic:dockerhub", "event_type": null,
-  "trust_mode": "unverified", "verified": false, "verify_detail": "unverified by design",
+  "trust_mode": "token", "verified": false, "verify_detail": "token ok (caller authenticated; body not verified)",
   "external_id": null, "content_type": "application/json", "source_ip": "10.0.4.12",
   "payload_size": 512, "received_at": "2026-07-05T18:04:02.101Z",
   "headers": { "content-type": "application/json", "x-hub-signature-256": "«redacted»" },
@@ -254,11 +254,11 @@ Configured providers with type, enable state, and secret status. The secret valu
 // → list_providers({})
 {
   "providers": [
-    { "name": "github", "kind": "signed", "trust_mode": "signed", "enabled": true,
+    { "name": "github", "family": "webhook", "trust_mode": "signed", "enabled": true,
       "secret_status": "configured", "path": "/webhooks/github", "channel": null },
-    { "name": "generic:dockerhub", "kind": "generic", "trust_mode": "unverified", "enabled": true,
+    { "name": "generic:dockerhub", "family": "webhook", "trust_mode": "token", "enabled": true,
       "secret_status": "none-by-design", "path": "/webhooks/generic/dockerhub", "channel": null },
-    { "name": "redis:deploys", "kind": "redis", "trust_mode": "redis", "enabled": true,
+    { "name": "redis:deploys", "family": "queue", "trust_mode": "queue", "enabled": true,
       "secret_status": "none-by-design", "path": null, "channel": "deploys" }
   ]
 }
@@ -295,7 +295,7 @@ secrets):
 
 - Shape decisions & rationale: [ADR-005](../adr/ADR-005-mcp-tool-and-resource-contract.md).
 - Trust semantics (`trust_mode`/`verified`/`verify_detail`): [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md).
-- Storage schema behind these shapes: [ADR-002](../adr/ADR-002-sqlite-persistence-and-retention.md).
+- Storage schema behind these shapes: [ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md).
 - HTTP + SSE surfaces sharing these shapes: [`openapi.yaml`](openapi.yaml), [`asyncapi.yaml`](asyncapi.yaml).
-- MCP Python SDK: <https://github.com/modelcontextprotocol/python-sdk> · MCP spec: <https://modelcontextprotocol.io/>.
+- Go MCP SDK: <https://github.com/modelcontextprotocol/go-sdk> · MCP spec: <https://modelcontextprotocol.io/>.
 ```

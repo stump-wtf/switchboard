@@ -22,7 +22,7 @@ info:
     resume with `Last-Event-ID`).
   license:
     name: MIT
-    url: https://gitea.stump.rocks/joestump/switchboard/src/branch/main/LICENSE
+    url: https://github.com/joestump/switchboard/blob/main/LICENSE
 
 defaultContentType: application/json
 
@@ -102,7 +102,7 @@ components:
             id: 4214
             provider: 'generic:dockerhub'
             event_type: null
-            trust_mode: unverified
+            trust_mode: token
             verified: false
             payload_size: 512
             received_at: '2026-07-05T18:04:02.101Z'
@@ -127,12 +127,12 @@ components:
                 recent_count: 12
                 last_event_at: '2026-07-05T18:03:21.442Z'
               - name: 'generic:dockerhub'
-                trust_mode: unverified
+                trust_mode: token
                 enabled: true
                 recent_count: 1
                 last_event_at: '2026-07-05T18:04:02.101Z'
               - name: 'redis:deploys'
-                trust_mode: redis
+                trust_mode: queue
                 enabled: true
                 recent_count: 3
                 last_event_at: '2026-07-05T17:58:40.000Z'
@@ -141,7 +141,7 @@ components:
     TrustMode:
       type: string
       description: How the event's authenticity is established (ADR-003).
-      enum: [signed, unverified, redis]
+      enum: [signed, token, open, queue]
 
     EventSummary:
       type: object

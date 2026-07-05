@@ -1,10 +1,8 @@
-# Dependabot runs on the GitHub mirror only (it cannot watch the Gitea primary). It PRs bumps for
-# Python deps and GitHub Actions here; mirror any action-version bumps into .gitea/workflows/ci.yaml
-# by hand (the documented lockstep caveat — ADR-006).
+# Dependabot keeps the docs-site (npm) and the GitHub Actions workflows up to date.
 version: 2
 updates:
-  - package-ecosystem: pip
-    directory: "/"
+  - package-ecosystem: npm
+    directory: "/docs-site"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
