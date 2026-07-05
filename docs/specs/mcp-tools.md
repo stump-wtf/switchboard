@@ -1,7 +1,7 @@
 # switchboard — MCP Tool & Resource Contract
 
-Authoritative contract for the MCP surface of **switchboard**, served by the official `mcp` Python
-SDK from the same Starlette process as the web UI ([ADR-001](../adr/ADR-001-web-stack-go-htmx-pico.md))
+Authoritative contract for the MCP surface of **switchboard**, served by the official Go MCP
+SDK from the same Go HTTP server as the web UI ([ADR-001](../adr/ADR-001-web-stack-go-htmx-pico.md))
 and reading the same PostgreSQL layer ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 
 This document is the source of truth for tool/resource **schemas**. The *shape* decisions behind it
@@ -15,7 +15,7 @@ must not drift.
 
 - **Server name:** `switchboard`.
 - **Transport:** whatever the code session wires (stdio and/or the SDK's Streamable HTTP mount inside
-  the Starlette app). Out of scope for this contract.
+  the Go HTTP server). Out of scope for this contract.
 - **Structured output:** every tool declares an input JSON Schema and returns SDK **structured
   output** validated against the output schemas below — not free-form text.
 - **Trust is always present.** Every event object carries `trust_mode`, `verified`, and (in detail)
@@ -297,5 +297,5 @@ secrets):
 - Trust semantics (`trust_mode`/`verified`/`verify_detail`): [ADR-003](../adr/ADR-003-per-provider-ingestion-and-trust-model.md).
 - Storage schema behind these shapes: [ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md).
 - HTTP + SSE surfaces sharing these shapes: [`openapi.yaml`](openapi.yaml), [`asyncapi.yaml`](asyncapi.yaml).
-- MCP Python SDK: <https://github.com/modelcontextprotocol/python-sdk> · MCP spec: <https://modelcontextprotocol.io/>.
+- Go MCP SDK: <https://github.com/modelcontextprotocol/go-sdk> · MCP spec: <https://modelcontextprotocol.io/>.
 ```

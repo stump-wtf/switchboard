@@ -25,17 +25,17 @@ related: [ADR-000, ADR-001, ADR-003, ADR-005, ADR-007, ADR-014]
 ## Considered Options
 
 * **Storage engine:** **PostgreSQL** · SQLite · a dedicated broker (Kafka/NATS/RabbitMQ) in front of a relational store · Redis as the system-of-record.
-* **Access layer:** raw SQL behind a thin async module (`asyncpg`) · a heavy ORM.
+* **Access layer:** raw SQL over `pgx` (a thin data-access module) · a heavy ORM.
 * **Retention policy:** none · age-only · row-cap only · **hybrid age + row-cap** (with optional time-partitioning for the event log).
 
 ## Decision Outcome
 
-Chosen options: **PostgreSQL**, accessed through **raw SQL behind a thin async data-access module (`asyncpg`, no heavy ORM)**, with **`FOR UPDATE SKIP LOCKED` for todo claims**, **`INSERT … ON CONFLICT` for idempotent dedup**, **partial indexes on the hot queue predicate**, optional **`LISTEN`/`NOTIFY` wakeups**, and a **hybrid retention policy (max-age *and* max-row cap)** enforced by a periodic pruning task.
+Chosen options: **PostgreSQL**, accessed through **raw SQL over `pgx` (a thin data-access module, no heavy ORM)**, with **`FOR UPDATE SKIP LOCKED` for todo claims**, **`INSERT … ON CONFLICT` for idempotent dedup**, **partial indexes on the hot queue predicate**, optional **`LISTEN`/`NOTIFY` wakeups**, and a **hybrid retention policy (max-age *and* max-row cap)** enforced by a periodic pruning task.
 
 - **PostgreSQL over SQLite:** SQLite is single-writer and single-node — every claim/heartbeat/complete/ingest serializes through one writer, and one file on one host is a SPOF with no shared app tier. For a *central, multi-tenant, multi-worker queue* that is the wrong shape. Postgres gives concurrent claimers via `SELECT … FOR UPDATE SKIP LOCKED` (the canonical durable-queue primitive), a multi-node app tier against one database, and HA via managed/streaming replication.
 - **PostgreSQL over a dedicated broker:** a broker (Kafka/Temporal/etc.) splits the source of truth away from the durable todo that [ADR-007](ADR-007-todos-as-core-primitive.md) deliberately made authoritative, and re-implements lease/dead-letter/dedup that Postgres gives transactionally. `SKIP LOCKED` carries this workload well past its expected scale; a broker is deferred until Postgres demonstrably is not enough — explicitly **not** now.
 - **PostgreSQL over Redis-as-ledger:** Redis is the ingestion *transport* ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)); making it the ledger too would split the source of truth and conflate transport with storage.
-- **Raw SQL over a heavy ORM:** a thin module of typed functions (`insert_event`, `claim_todo`, `complete_todo`, `create_todo`, `prune`, …) over `asyncpg` keeps the hot queries auditable and the dependency list short; the queue queries below are hand-tuned SQL, not ORM output.
+- **Raw SQL over a heavy ORM:** a thin module of typed functions (`insert_event`, `claim_todo`, `complete_todo`, `create_todo`, `prune`, …) over `pgx` keeps the hot queries auditable and the dependency list short; the queue queries below are hand-tuned SQL, not ORM output.
 
 ### Queue mechanics (the hot path)
 
@@ -206,4 +206,4 @@ flowchart LR
 * Store-then-ack coupling the transactional insert enables: [ADR-014](ADR-014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](../specs/ingestion-adapters.md).
 * Multi-tenant tables (accounts, endpoints, edges): [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md).
 * Trust columns and header redaction: [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md). Connection secret in OpenBao: [ADR-004](ADR-004-secrets-management-openbao-approle.md). Read surfaces: [ADR-005](ADR-005-mcp-tool-and-resource-contract.md).
-* `asyncpg`: <https://github.com/MagicStack/asyncpg>. `SKIP LOCKED` queue pattern: <https://www.postgresql.org/docs/current/sql-select.html>. `LISTEN`/`NOTIFY`: <https://www.postgresql.org/docs/current/sql-notify.html>.
+* `pgx`: <https://github.com/jackc/pgx>. `SKIP LOCKED` queue pattern: <https://www.postgresql.org/docs/current/sql-select.html>. `LISTEN`/`NOTIFY`: <https://www.postgresql.org/docs/current/sql-notify.html>.

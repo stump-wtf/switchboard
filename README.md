@@ -50,19 +50,19 @@ were the same thing. See [ADR-003](docs/adr/ADR-003-per-provider-ingestion-and-t
 Provider (GitHub/Stripe/Slack/Docker/…)        Redis (pub/sub or stream)
       │  HTTPS POST + signature header               │  in-process consumer subscribes
       ▼                                               ▼
-[Starlette app: /webhooks/{provider}]        [Redis consumer task, in-process]
+[Go app: /webhooks/{provider}]        [Redis consumer task, in-process]
       │  verify signature → normalize                │  normalize (trust = Redis ACL/TLS,
       │  (or: generic/no-verify path)                │   no HTTP signature concept)
       ▼                                               ▼
    PostgreSQL (events + todo queue) ◄─────────────────────┘
       │
       ├──► MCP tools/resources  (list / get / replay / list_providers)
-      ├──► SSE broadcast (/events) ──► Web UI (Jinja2 + HTMX + Pico.css)
+      ├──► SSE broadcast (/events) ──► Web UI (html/template + HTMX + Pico.css)
       └──► retention pruning (age + row-cap)
 ```
 
-One service, single repo. The MCP server and the web server share the same Starlette app
-(different route groups) and the same PostgreSQL layer. Stack rationale — Starlette over FastAPI, HTMX
+One service, single repo. The MCP server and the web server share the same Go HTTP server
+(different route groups) and the same PostgreSQL layer. Stack rationale — net/http + chi over a framework, HTMX
 over a SPA, Pico over Tailwind, inline SVG over icon fonts — is in
 [ADR-001](docs/adr/ADR-001-web-stack-go-htmx-pico.md).
 
@@ -104,8 +104,8 @@ meaningless for every other provider.
 
 ```bash
 # Once the code session lands:
-make install          # editable install + dev tooling + pre-commit
-uvicorn app.main:app  # serves the UI, /webhooks/*, /events (SSE), and the MCP mount on 127.0.0.1
+make build            # compile the switchboard binary (assets embedded)
+./switchboard         # serves the UI, /webhooks/*, /events (SSE), and the MCP mount on 127.0.0.1
 ```
 
 The service is **loopback-bound by default and ships no in-app auth**. If you ever expose it on the
@@ -132,7 +132,7 @@ or the signed endpoint will (correctly) 401.
 
 ## Adding a new provider (intended shape)
 
-1. **Signed provider:** add an adapter under `app/providers/<name>.py` implementing the verification
+1. **Signed provider:** add an adapter (`<name>.go`) implementing the verification
    for its signature scheme (raw-body HMAC, constant-time compare, timestamp window if the scheme
    signs one), register it with `trust_mode=signed`, and store its secret in OpenBao at
    `secret/switchboard/providers/<name>`.
@@ -147,13 +147,13 @@ The trust mode is always declared per provider and shown in the UI — never sil
 ## Development
 
 ```bash
-make ci     # ruff + mypy + bandit + pip-audit + pytest — the local mirror of CI
+make ci     # gofmt + go vet + golangci-lint + govulncheck + go test — the local mirror of CI
 make fmt    # auto-format
-make test   # pytest
+make test   # go test ./...
 ```
 
 CI runs on **Gitea** (primary, `.gitea/workflows/ci.yaml` — the fast + security gate) and on the
-**GitHub mirror** (`.github/workflows/ci.yml` — the same suite across a Python 3.12/3.13 matrix). See
+**GitHub mirror** (`.github/workflows/ci.yml` — the same suite across a Go version matrix). See
 [ADR-006](docs/adr/ADR-006-gitea-primary-github-mirror-and-ci.md).
 
 ## Repository hosting

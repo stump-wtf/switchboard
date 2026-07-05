@@ -36,7 +36,7 @@ Every provider config declares exactly one `trust_mode`, and the mode is stored 
 
 ### Mode 1 — `signed` (verification mandatory)
 
-Signature verification is required, not optional. On a signed provider, a request whose signature is **missing, malformed, or fails** returns **HTTP 401** and the payload is **not written to the database**; only a redacted rejection line is logged (provider, event type if known, reason, source IP — never the secret or the full signature). A verified request is persisted with `verified=1` and `verify_detail` like `hmac-sha256 ok`. All HMAC comparisons use a constant-time compare (`hmac.compare_digest`). The raw request body is read and verified **before** any parsing (a JSON re-serialize would change the bytes and break the HMAC).
+Signature verification is required, not optional. On a signed provider, a request whose signature is **missing, malformed, or fails** returns **HTTP 401** and the payload is **not written to the database**; only a redacted rejection line is logged (provider, event type if known, reason, source IP — never the secret or the full signature). A verified request is persisted with `verified=1` and `verify_detail` like `hmac-sha256 ok`. All HMAC comparisons use a constant-time compare (`hmac.Equal` from `crypto/hmac`). The raw request body is read and verified **before** any parsing (a JSON re-serialize would change the bytes and break the HMAC).
 
 MVP signed providers and their schemes:
 
@@ -65,7 +65,7 @@ Docker Hub is routed here rather than through a fake "signed" adapter, because i
 
 An in-process task subscribes to a Redis channel/stream and feeds messages into the same pipeline. There is **no HTTP request and no signature header**, so HTTP-style verification does not apply. The trust boundary is the **Redis connection itself**: authentication (`requirepass`/ACL user), ACLs constraining *who can publish* to the subscribed channel, and TLS if the Redis instance supports it. Events carry `trust_mode='redis'`, `verified=0`, and `verify_detail` naming the ACL user (e.g. `redis acl: deploy-bot`). The security control is "who is allowed to publish to this channel," and this assumption is documented here rather than left implicit. The Redis connection secret (URL/password) is pulled from OpenBao like any other ([ADR-004](ADR-004-secrets-management-openbao-approle.md)).
 
-**pub/sub vs. consumer-group stream — deferred sub-decision.** Whether the Redis path uses plain pub/sub (fire-and-forget, no redelivery) or a consumer-group stream (`XREADGROUP`, acked, redelivery on restart) is left to the code session. Recommendation captured here: **prefer a consumer-group stream** so events survive an app restart and are not silently lost, at the cost of managing consumer-group offsets. If pub/sub is chosen for simplicity, the README must state that events published while the app is down are lost. Either way the client is `redis.asyncio` (`redis-py`).
+**pub/sub vs. consumer-group stream — deferred sub-decision.** Whether the Redis path uses plain pub/sub (fire-and-forget, no redelivery) or a consumer-group stream (`XREADGROUP`, acked, redelivery on restart) is left to the code session. Recommendation captured here: **prefer a consumer-group stream** so events survive an app restart and are not silently lost, at the cost of managing consumer-group offsets. If pub/sub is chosen for simplicity, the README must state that events published while the app is down are lost. Either way the client is a Go Redis client (`redis/go-redis`).
 
 ### Cross-cutting rules (all modes)
 
@@ -91,7 +91,7 @@ An in-process task subscribes to a Redis channel/stream and feeds messages into 
 * A test asserts persisted `headers` have signature/secret headers redacted, and that logs contain no full signature value.
 * A test asserts the generic endpoint is not present until explicitly configured and is labeled `unverified` in both the API and the rendered UI.
 * A test asserts Redis-ingested events carry `trust_mode='redis'`, `verified=0`.
-* HMAC comparisons use `hmac.compare_digest` (constant-time) — verified by code review and a lint/grep check for `==` on signature bytes.
+* HMAC comparisons use `hmac.Equal` (`crypto/hmac`, constant-time) — verified by code review and a lint/grep check for `==` on signature bytes.
 
 ## Pros and Cons of the Options
 
@@ -162,7 +162,7 @@ flowchart TD
 ## More Information
 
 * Provider signature references: GitHub <https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries>, Stripe <https://docs.stripe.com/webhooks#verify-events>, Slack <https://api.slack.com/authentication/verifying-requests-from-slack>, Docker Hub (no native signing) <https://docs.docker.com/docker-hub/webhooks/>.
-* Redis trust references: `redis-py` asyncio <https://redis-py.readthedocs.io/en/stable/examples/asyncio_examples.html>, Redis ACL <https://redis.io/docs/latest/operate/oss_and_stack/management/security/acl/>.
+* Redis trust references: `go-redis` <https://github.com/redis/go-redis>, Redis ACL <https://redis.io/docs/latest/operate/oss_and_stack/management/security/acl/>.
 * Secret sourcing for all provider secrets and the Redis URL: [ADR-004](ADR-004-secrets-management-openbao-approle.md).
 * Storage of `trust_mode`/`verified`/`verify_detail` and header redaction: [ADR-002](ADR-002-postgres-persistence-and-retention.md).
-* This ADR governs the ingestion half of `docs/specs/openapi.yaml` (webhook endpoints, 401 responses) and is realized by the provider adapters (`app/providers/{github,stripe,slack,generic,redis}.py`) in the code session.
+* This ADR governs the ingestion half of `docs/specs/openapi.yaml` (webhook endpoints, 401 responses) and is realized by the push/pull adapters (`internal/adapters/{github,stripe,slack,generic,redis}.go`) in the code session.

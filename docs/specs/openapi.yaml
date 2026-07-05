@@ -22,7 +22,7 @@ info:
     - **Webhook ingestion** (`/webhooks/*`): providers POST here. Signed providers are
       verified-or-rejected (401, not persisted); the generic endpoint is unverified by design.
     - **Web UI** (`/`, `/log`, `/providers`, `/settings`) + the SSE stream (`/events`):
-      server-rendered HTML (Jinja2 + HTMX) plus a `text/event-stream` for live updates.
+      server-rendered HTML (html/template + HTMX) plus a `text/event-stream` for live updates.
 
     ## Authentication posture (ADR-001, brief §8)
     The service is **localhost-bound by default and ships no in-app auth for the UI**. If it is
@@ -48,7 +48,7 @@ tags:
   - name: ingestion
     description: Inbound webhook receivers. See ADR-003 for the trust model.
   - name: ui
-    description: Server-rendered web UI (Jinja2 + HTMX). HTML responses.
+    description: Server-rendered web UI (html/template + HTMX). HTML responses.
   - name: sse
     description: Live-update event stream (Server-Sent Events). Payload schema in asyncapi.yaml.
   - name: ops

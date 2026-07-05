@@ -9,7 +9,7 @@ related: [ADR-000, ADR-002, ADR-003]
 
 ## Context and Problem Statement
 
-`switchboard` exposes its stored events to MCP clients (Claude Code and other agents) through the official `mcp` Python SDK, running as a server mounted in the same Starlette process as the web UI ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)) and reading the same PostgreSQL layer ([ADR-002](ADR-002-postgres-persistence-and-retention.md)). The brief fixes the minimum tool set — `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, `list_providers` — plus a resource stream of recent events (§7). This ADR pins the *shape* of that contract: naming, input/output schemas at a design level, pagination and filtering semantics, how the one side-effecting tool (`replay`) is made safe, and the tools-vs-resources split. The exact JSON schemas live in `docs/specs/mcp-tools.md`; this ADR records the decisions that spec must reflect. What contract makes the event log queryable and replayable by an agent while staying honest about trust ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) and safe about outbound side effects?
+`switchboard` exposes its stored events to MCP clients (Claude Code and other agents) through the official `mcp` Python SDK, running as a server mounted in the same Go HTTP server as the web UI ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)) and reading the same PostgreSQL layer ([ADR-002](ADR-002-postgres-persistence-and-retention.md)). The brief fixes the minimum tool set — `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, `list_providers` — plus a resource stream of recent events (§7). This ADR pins the *shape* of that contract: naming, input/output schemas at a design level, pagination and filtering semantics, how the one side-effecting tool (`replay`) is made safe, and the tools-vs-resources split. The exact JSON schemas live in `docs/specs/mcp-tools.md`; this ADR records the decisions that spec must reflect. What contract makes the event log queryable and replayable by an agent while staying honest about trust ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) and safe about outbound side effects?
 
 ## Decision Drivers
 
@@ -18,7 +18,7 @@ related: [ADR-000, ADR-002, ADR-003]
 * **Cheap list, full detail on demand.** `list` returns compact summaries (no full payload/headers) for fast scans and small context; `get` returns the complete record. This keeps agent context lean.
 * **Deterministic pagination.** Filtering by provider/type/time with a stable order and a cursor so an agent can page without duplicates or gaps.
 * **Replay is the one dangerous verb.** It performs an outbound HTTP POST. It must be explicit about its target, constrained, and never a hidden side effect of reading.
-* **SDK-idiomatic.** Tool names, input schemas, and structured output follow `mcp` Python SDK conventions; resources use the SDK's resource/URI model.
+* **SDK-idiomatic.** Tool names, input schemas, and structured output follow the Go MCP SDK conventions; resources use the SDK's resource/URI model.
 * **Secrets never cross the boundary.** MCP responses contain sanitized headers only ([ADR-002](ADR-002-postgres-persistence-and-retention.md)/[ADR-004](ADR-004-secrets-management-openbao-approle.md)) — no signing secrets, no raw signature header values.
 
 ## Considered Options
@@ -143,7 +143,7 @@ flowchart LR
 
 ## More Information
 
-* Minimum tool set and the recent-events resource are from brief §7. MCP Python SDK: <https://github.com/modelcontextprotocol/python-sdk>; MCP spec: <https://modelcontextprotocol.io/>.
+* Minimum tool set and the recent-events resource are from brief §7. Go MCP SDK: <https://github.com/modelcontextprotocol/go-sdk>; MCP spec: <https://modelcontextprotocol.io/>.
 * Event shape and trust fields derive from [ADR-002](ADR-002-postgres-persistence-and-retention.md) (schema) and [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md) (trust semantics).
 * Exact schemas: `docs/specs/mcp-tools.md` (this session). The AsyncAPI SSE contract (`docs/specs/asyncapi.yaml`) shares the same `EventSummary` shape for the UI's live stream.
 * `replay` SSRF constraints (scheme validation, localhost/trusted default, allowlist) are flagged here as a code-session implementation requirement.

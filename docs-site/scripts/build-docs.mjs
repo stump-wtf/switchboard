@@ -113,10 +113,10 @@ import Link from '@docusaurus/Link';
     <p className="sb-tile__body">When a harness is attached, switchboard pushes new todos straight into the session over the open Claude Code Channels standard — a doorbell, not the ledger. Offline? The durable queue keeps the work until it's pulled.</p>
   </Link>
 
-  <Link className="sb-tile" to="/decisions/ADR-001-web-stack-starlette-htmx-pico">
+  <Link className="sb-tile" to="/decisions/ADR-001-web-stack-go-htmx-pico">
     <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 8h18"/><circle cx="5.8" cy="6" r="0.5"/><circle cx="7.8" cy="6" r="0.5"/></svg>
     <div className="sb-tile__title">Local live web UI</div>
-    <p className="sb-tile__body">A small, local‑only operator board — four screens on Starlette + HTMX + Pico.css, updating live over Server‑Sent Events, with the same trust badges the API and MCP surfaces carry.</p>
+    <p className="sb-tile__body">A small, local‑only operator board — four screens on Go (net/http) + HTMX + Pico.css, updating live over Server‑Sent Events, with the same trust badges the API and MCP surfaces carry.</p>
   </Link>
 
 </div>

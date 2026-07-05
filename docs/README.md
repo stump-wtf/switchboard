@@ -12,13 +12,14 @@ Two layers:
   are vended scoped MCP endpoints; personas are A2A Agent Cards; cross-agent work is granted by
   human-approved friending; and todos are pushed into live harness sessions over Claude Code Channels,
   with the durable queue staying the ledger.
+- **Cross-cutting** — [ADR-015](adr/ADR-015-implementation-language-go.md) pins the implementation language (**Go**).
 
 ## Architecture Decision Records (MADR)
 
 | ADR | Title | One-line |
 |-----|-------|----------|
 | [ADR-000](adr/ADR-000-project-naming-and-scope.md) | Project naming & scope | The project is `switchboard`; MVP scope ratified. |
-| [ADR-001](adr/ADR-001-web-stack-go-htmx-pico.md) | Web stack | Starlette + HTMX + Pico.css over FastAPI/SPA/Tailwind. |
+| [ADR-001](adr/ADR-001-web-stack-go-htmx-pico.md) | Web stack | Go `net/http` + chi, `html/template`, HTMX + Pico.css; assets embedded via `embed.FS`. |
 | [ADR-002](adr/ADR-002-postgres-persistence-and-retention.md) | PostgreSQL persistence & retention | Postgres queue store: SKIP LOCKED claims, ON CONFLICT dedup, partial pending index, age + row-cap pruning. |
 | [ADR-003](adr/ADR-003-per-provider-ingestion-and-trust-model.md) | Per-provider trust model | Three explicit trust modes (`signed`/`unverified`/`redis`), enforced. |
 | [ADR-004](adr/ADR-004-secrets-management-openbao-approle.md) | Secrets via OpenBao AppRole | Machine identity; `secret/switchboard/*`; nothing on disk. |
@@ -32,6 +33,7 @@ Two layers:
 | [ADR-012](adr/ADR-012-agents-self-manage-webhooks.md) | **Agents self-manage webhooks** | Webhook CRUD within a human-vended ceiling; switchboard owns verification. |
 | [ADR-013](adr/ADR-013-channels-push-delivery.md) | **Channels push-delivery** | Claude Code Channels pushes into a live session as a notify layer; the durable todo queue stays the ledger. |
 | [ADR-014](adr/ADR-014-ingestion-adapters-push-pull.md) | **Ingestion adapters (push/pull)** | Push (webhook) + pull (queue) families → todos; Redis is the reference pull adapter; store-then-ack couples the source ack to the todo. |
+| [ADR-015](adr/ADR-015-implementation-language-go.md) | **Implementation language = Go** | Go for the concurrent queue service: goroutine workers, single static binary, official Go MCP/A2A SDKs, `pgx` + `SKIP LOCKED`. |
 
 ## Specifications
 

@@ -55,7 +55,7 @@ This ADR also ratifies the scope the rest of the documents assume:
 
 **The canonical design record** is the ADRs (`docs/adr/`) and specs (`docs/specs/`) under `docs/`, plus the repo + CI scaffolding ([ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
 
-**Application code** is written *fresh from these documents*; there is none yet beyond empty `__init__.py` placeholders under `app/`.
+**Application code** is written *fresh from these documents*; there is none yet beyond placeholder package files under the service tree.
 
 ### Consequences
 
@@ -71,7 +71,7 @@ This ADR also ratifies the scope the rest of the documents assume:
 * The repo is `joestump/switchboard` on Gitea (primary) and GitHub (mirror) ([ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
 * Every subsequent ADR and spec refers to the project as `switchboard` and cites the scope statement above.
 * The MCP server name, the resource URI scheme (`switchboard://`), the OpenBao secret path (`secret/switchboard/*`), and the distribution name are all `switchboard`.
-* No file under `app/` beyond `__init__.py` placeholders exists at the end of this session.
+* No application code beyond placeholder package files exists yet; it is written fresh from these documents.
 
 ## Pros and Cons of the Options
 
