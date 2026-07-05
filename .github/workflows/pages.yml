@@ -13,8 +13,7 @@ on:
     branches: [main]
     paths:
       - 'docs-site/**'
-      - 'docs/adr/**'
-      - 'docs/specs/**'
+      - 'docs/**'
       - 'static/tokens.css'
       - '.github/workflows/pages.yml'
 

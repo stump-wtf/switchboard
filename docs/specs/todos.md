@@ -42,7 +42,7 @@ subject to the same retention posture.
     "assignee":        { "type": ["string", "null"], "description": "Persona/endpoint id this todo is directly assigned to. Null ⇒ pool/topic queue drained competitively." },
     "state":           { "$ref": "#/$defs/TodoState" },
     "owner":           { "type": ["string", "null"], "description": "Endpoint/persona id currently holding the lease. Null unless state=claimed." },
-    "lease_expires_at":{ "type": ["string", "null"], "format": "date-time", "description": "When the current lease lapses; null unless claimed." },
+    "lease_expires_at":{ "type": ["string", "null"], "format": "date-time", "description": "The visibility deadline: until this time the todo is invisible to other claimants; after it, the todo becomes visible again (pops back to pending). Null unless claimed." },
     "attempt":         { "type": "integer", "minimum": 0, "description": "Times this todo has entered 'claimed'." },
     "max_attempts":    { "type": "integer", "minimum": 1, "description": "Attempt cap; beyond it a failed todo dead-letters." },
     "result":          { "type": ["object", "null"], "description": "Consumer-supplied completion/failure detail (set on done/failed)." },
@@ -87,12 +87,25 @@ todo transitions back to `pending` with `attempt` incremented (until `max_attemp
 |------|-------|----|------------------|
 | — | `create` | `pending` | Dedup on `idempotency_key`: if a non-terminal todo with the same key+queue exists, **no new todo** — the existing one is returned. |
 | `pending` | `claim` | `claimed` | Atomic. Sets `owner`, `lease_expires_at = now + lease_ttl`, `claimed_at`, `attempt++`. Fails if already claimed (lost race). Respects `assignee` (only the assignee may claim a directly-assigned todo). |
-| `claimed` | `heartbeat` | `claimed` | Owner extends `lease_expires_at`. Only the lease owner may heartbeat. |
+| `claimed` | `heartbeat` | `claimed` | Owner **extends the visibility window** (`lease_expires_at`) — SQS `ChangeMessageVisibility`. Only the lease owner. |
 | `claimed` | `complete` | `done` | Owner acks success. Sets `result`, `completed_at`. Only the lease owner. |
 | `claimed` | `fail` | `pending` or `failed` | Owner reports failure. If `attempt < max_attempts` → `pending` (retry); else → `failed` (dead-letter). Sets `result`. |
 | `claimed` | `release` | `pending` | Owner voluntarily gives up the lease (does not consume an attempt beyond the one already counted). |
 | `claimed` | `lease expiry` | `pending` or `failed` | Detected lazily (on next claim scan) or by a sweeper. If `attempt < max_attempts` → `pending` (re-claimable — **crash safety**); else → `failed`. |
 | `failed` | `retry` (operator/agent) | `pending` | Manual re-queue of a dead-lettered todo; resets/raises the attempt budget per policy. |
+
+### Visibility window (SQS-style)
+
+`claim` is a **receive with a visibility timeout**: `lease_expires_at = now + lease_ttl` sets how long the todo stays **invisible** to other consumers. The parallel to Amazon SQS is exact:
+
+| SQS | switchboard |
+|-----|-------------|
+| `ReceiveMessage` (visibility timeout starts) | `claim` (sets `lease_expires_at`) |
+| `ChangeMessageVisibility` (extend the window) | `heartbeat` (extend `lease_expires_at`) |
+| `DeleteMessage` | `complete` |
+| visibility timeout expires → message reappears | lease expires → todo **pops back to `pending`** (re-claimable), bounded by `max_attempts` |
+
+`lease_ttl_seconds` (the visibility window) is set per `claim`, defaulting to a configurable server value. A worker that needs longer than its window **must** `heartbeat` before it expires — otherwise the todo reappears and may be claimed by another worker (at-least-once; handlers stay idempotent). Beyond `max_attempts` a repeatedly-expiring todo dead-letters to `failed` rather than reappearing forever.
 
 ### Guarantees
 

@@ -61,6 +61,7 @@ const config = {
         logo: { alt: 'Switchboard jack', src: 'img/logo.svg' },
         items: [
           { type: 'docSidebar', sidebarId: 'docs', position: 'left', label: 'Documentation' },
+          { to: '/prfaq', label: 'PRFAQ', position: 'left' },
           { to: '/decisions', label: 'Decisions', position: 'left' },
           { to: '/specs', label: 'Specs', position: 'left' },
           { href: GITHUB_URL, label: 'GitHub', position: 'right' },
@@ -72,6 +73,7 @@ const config = {
           {
             title: 'Docs',
             items: [
+              { label: 'PRFAQ', to: '/prfaq' },
               { label: 'Decisions (ADRs)', to: '/decisions' },
               { label: 'Specifications', to: '/specs' },
             ],

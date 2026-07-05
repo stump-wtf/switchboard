@@ -47,14 +47,14 @@ Chosen option: **"(C) durable todo/work-item."** Switchboard's core agent-facing
 ```
 
 * **pending** — created and unclaimed; visible to any consumer whose scope covers its queue.
-* **claimed** — a consumer holds a **lease** (owner + expiry). Others cannot claim it. If the lease expires (the worker crashed or hung), the todo returns to **pending** and is re-claimable — this is the crash-safety guarantee.
+* **claimed** — a consumer holds a **lease**, i.e. a **visibility timeout** (owner + expiry): the todo goes *invisible* to every other consumer for the **visibility window**. If the window lapses before completion (the worker crashed, hung, or dropped off the network), the todo **pops back into the queue** — it becomes visible (`pending`) and re-claimable. This is the crash-safety guarantee, and it is exactly SQS's visibility-timeout model.
 * **done** — the consumer **acked** completion. Terminal; persists as an audit record subject to retention ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
 * **failed** — the consumer reported failure (or attempts were exhausted). Terminal unless retried.
 * **retry** — a failed/expired todo re-enters **pending** with an incremented attempt count, up to a max; beyond the max it stays **failed** (a dead-letter state).
 
 ### Mechanics
 
-* **Claim / lease.** Claiming is atomic and sets `owner` + `lease_expires_at`. A lease has a TTL; the owner may extend (heartbeat) or it expires. Expiry ⇒ re-claimable. This prevents two consumers from processing one todo at once *and* prevents a crashed consumer from stranding it.
+* **Claim / lease = a visibility window.** Claiming is atomic and sets `owner` + `lease_expires_at`; for the duration of that **visibility timeout** the todo is invisible to other consumers. The owner can **extend the window** while it works (heartbeat — SQS's `ChangeMessageVisibility`) or let it lapse; on lapse the todo **reappears** in the queue for another worker. This prevents two consumers processing one todo at once *and* prevents a crashed consumer from stranding it. (It is the SQS receive → visibility-timeout → delete pattern: `claim` ≈ receive, extend ≈ change-visibility, `complete` ≈ delete.)
 * **Ack / complete.** A todo persists until explicitly `complete`d or `fail`ed. There is no "read = consumed." A crash between claim and complete leaves the todo re-claimable once the lease lapses — **at-least-once processing**, which is why handlers should be idempotent.
 * **Idempotency keys.** Every producer supplies (or switchboard derives) an idempotency key — for webhooks, the provider delivery id (`X-GitHub-Delivery`, Stripe event `id`, etc., see [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)). Creating a todo with a key that already exists in a non-terminal state is a **no-op that returns the existing todo**, collapsing duplicate deliveries into one work-item.
 * **Assignee vs. pool/topic queues.** A todo targets either a specific **assignee** (a persona/endpoint) or a **pool/topic queue** that many consumers drain competitively. Direct assignment is point-to-point; pool queues are work-sharing.

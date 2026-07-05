@@ -4,6 +4,9 @@ Switchboard is **docs-first**: these architecture decision records (`docs/adr/`)
 (`docs/specs/`) are the canonical design record. Application code is written *fresh from these
 documents*. The published site renders this tree via `docs-site/scripts/build-docs.mjs`.
 
+New here? Start with the **[PRFAQ](prfaq.md)** (working-backwards press release + FAQ) for what
+Switchboard is and why, then dive into the decisions below.
+
 Two layers:
 
 - **Event-store core (ADR-000–005)** — receive, verify, persist, and expose inbound webhooks/queue

@@ -72,6 +72,7 @@ import Link from '@docusaurus/Link';
   <div className="sb-hero__cta">
     <Link className="button button--primary button--lg" to="/decisions">Read the decisions →</Link>
     <Link className="button button--secondary button--lg" to="/specs">Browse the specs</Link>
+    <Link className="button button--outline button--lg" to="/prfaq">Read the PRFAQ</Link>
   </div>
 </div>
 
@@ -148,6 +149,16 @@ oxblood, and patch‑cable tones.
   tool + resource contracts, the todo object/state‑machine, webhook ingestion, personas/Agent Cards,
   friending, and the account/vended‑endpoint model.
 `);
+
+// ---- PRFAQ -> /prfaq ----
+{
+  const raw = readFileSync(join(REPO, 'docs', 'prfaq.md'), 'utf8');
+  const content = sanitizeMdx(rewriteRepoLinks(raw));
+  writeFileSync(
+    join(OUT, 'prfaq.md'),
+    `---\nslug: /prfaq\ntitle: PRFAQ\nsidebar_label: PRFAQ\nsidebar_position: 1\n---\n\n${content}`,
+  );
+}
 
 // ---- ADRs -> decisions/ ----
 for (const f of adrFiles) {
