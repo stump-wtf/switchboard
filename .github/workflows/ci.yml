@@ -66,6 +66,9 @@ jobs:
         with:
           args: detect --source . --redact --verbose
       - name: semgrep
+        # Scoped to code rulesets (not `--config auto`, which also blocks on mutable action tags —
+        # a policy the StumpCloud tag+Dependabot convention does not follow). Kept in sync with
+        # .gitea/workflows/ci.yaml.
         run: |
           pip install semgrep
-          semgrep scan --config auto --error --skip-unknown-extensions
+          semgrep scan --config p/python --config p/security-audit --error

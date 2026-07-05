@@ -1,12 +1,23 @@
 # webhook-mcp — Gitea CI (PRIMARY host: gitea.stump.rocks/joestump/webhook-mcp).
 #
 # Gitea is the source of truth (ADR-006). This is the fast + security gate the brief (§5.3) mandates:
-# ruff, mypy, bandit, pip-audit, Gitleaks, Semgrep, pytest. Reproduce locally with `make ci` before
-# opening a PR.
+# ruff, mypy, bandit, pip-audit, Gitleaks, Semgrep, pytest. Reproduce locally with `make ci`.
 #
-# LOCKSTEP: .github/workflows/ci.yml on the GitHub mirror runs the same suite across a Python matrix.
-# Dependabot only watches .github/, so bump the pinned versions HERE by hand to match (documented
-# house caveat — see ADR-006).
+# Runner notes (why this differs from .github/workflows/ci.yml):
+#   - This job runs inside `container: python:3.12-slim-bookworm` rather than using
+#     actions/setup-python. This instance's act_runner does not reliably provision Python via
+#     setup-python; pinning the interpreter via a container image is the house-robust approach and
+#     guarantees the 3.12 floor (ADR-001).
+#   - Gitleaks is run from a pinned release binary (the dotfiles house pattern) instead of a
+#     `docker://` action-step, which cannot run inside a container job.
+#   - Single sequential job (not the parallel matrix of the GitHub mirror), matching reduit: the
+#     act_runner is more contended, so we keep it to one job.
+#   - Semgrep is scoped to code rulesets (p/python, p/security-audit) rather than `--config auto`,
+#     which additionally enforces SHA-pinned action tags — a policy the StumpCloud convention does
+#     not follow (it pins to tags + Dependabot). Same scope on the GitHub mirror.
+#
+# LOCKSTEP: keep the checks here in sync with .github/workflows/ci.yml. Dependabot only watches
+# .github/, so bump pinned versions here (gitleaks, action refs) BY HAND (ADR-006).
 name: ci
 
 on:
@@ -22,13 +33,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  checks:
+    name: ruff + mypy + bandit + pip-audit + gitleaks + semgrep + pytest
     runs-on: ubuntu-latest
+    container: python:3.12-slim-bookworm
     steps:
+      - name: System deps (git for checkout/gitleaks, curl for the gitleaks binary)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git curl ca-certificates
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          fetch-depth: 0
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -39,43 +55,19 @@ jobs:
           ruff format --check .
       - name: mypy
         run: mypy app
-
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e '.[dev]'
       - name: bandit
         run: bandit -c pyproject.toml -r app
       - name: pip-audit
         run: pip-audit --skip-editable
-      - name: gitleaks
-        uses: docker://ghcr.io/gitleaks/gitleaks:v8.21.2
-        with:
-          args: detect --source . --redact --verbose
-      - name: semgrep
+      - name: gitleaks (pinned release binary)
+        run: |
+          VER=8.21.2
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xzf - gitleaks
+          ./gitleaks detect --source . --redact --no-banner
+      - name: semgrep (code rulesets)
         run: |
           pip install semgrep
-          semgrep scan --config auto --error --skip-unknown-extensions
-
-  tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e '.[dev]'
+          semgrep scan --config p/python --config p/security-audit --error
       - name: pytest
         run: pytest
