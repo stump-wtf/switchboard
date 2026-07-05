@@ -9,14 +9,14 @@ related: [ADR-003, ADR-006]
 
 ## Context and Problem Statement
 
-`switchboard` needs several secrets at runtime: the HMAC signing secrets for each signed provider (GitHub, Stripe, Slack — see [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)), the shared tokens for any generic endpoints, and the Redis connection URL/password for the queue consumer. The brief is explicit that these must come from **OpenBao** (`vault.stump.rocks`) via **AppRole**, not from `.env` files or hardcoded config (§8). This is also the StumpCloud house pattern — services authenticate to OpenBao as machines, not with long-lived human tokens. How does a single-process service authenticate to OpenBao without a bootstrap secret that is itself a `.env` secret, fetch its per-provider secrets, keep them off disk, and re-authenticate as tokens expire?
+`switchboard` needs several secrets at runtime: the HMAC signing secrets for each signed provider (GitHub, Stripe, Slack — see [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)), the shared tokens for any generic endpoints, the Redis connection URL/password for the pull adapter ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)), and the **PostgreSQL** connection string ([ADR-002](ADR-002-postgres-persistence-and-retention.md)). The brief is explicit that these must come from **OpenBao** (`vault.stump.rocks`) via **AppRole**, not from `.env` files or hardcoded config (§8). This is also the StumpCloud house pattern — services authenticate to OpenBao as machines, not with long-lived human tokens. How does a single-process service authenticate to OpenBao without a bootstrap secret that is itself a `.env` secret, fetch its per-provider secrets, keep them off disk, and re-authenticate as tokens expire?
 
 ## Decision Drivers
 
 * **No secrets in the repo, config, or a committed `.env`.** Secrets are fetched at runtime from OpenBao. The repo contains *paths and role references*, never secret material.
 * **Machine identity, not a human token.** A service should authenticate as itself (AppRole) with a scoped policy, so its access can be rotated/revoked independently of any person.
 * **Least privilege.** The service's policy grants read on only its own KV path (`secret/switchboard/*`), nothing else.
-* **Secrets stay in memory.** Fetched secrets are held in process memory only; they are never written to disk, never logged, and never persisted to SQLite ([ADR-002](ADR-002-postgres-persistence-and-retention.md) stores only a non-secret "configured / missing / none-by-design" status).
+* **Secrets stay in memory.** Fetched secrets are held in process memory only; they are never written to disk, never logged, and never persisted to PostgreSQL ([ADR-002](ADR-002-postgres-persistence-and-retention.md) stores only a non-secret "configured / missing / none-by-design" status).
 * **Token lifecycle.** The AppRole login yields a short-lived token; the app must renew or re-login before expiry so long-running ingestion never stalls on an expired token.
 * **Homelab-consistent.** Uses the same `vault.stump.rocks` + AppRole flow the rest of StumpCloud uses, so operational knowledge transfers.
 
@@ -48,7 +48,8 @@ Chosen option: **"(D) OpenBao AppRole."** The service authenticates to `vault.st
 | `secret/switchboard/providers/stripe` | `signing_secret` | Stripe signature verification |
 | `secret/switchboard/providers/slack` | `signing_secret` | Slack signature verification |
 | `secret/switchboard/generic/<name>` | `token` | Generic endpoint shared-token bozo-filter |
-| `secret/switchboard/redis` | `url` (may embed password), optional `ca_cert` | Redis consumer connection |
+| `secret/switchboard/redis` | `url` (may embed password), optional `ca_cert` | Redis pull-adapter connection ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)) |
+| `secret/switchboard/postgres` | `dsn` (may embed password), optional `ca_cert` | PostgreSQL connection ([ADR-002](ADR-002-postgres-persistence-and-retention.md)) |
 
 The Vault **policy** for the AppRole grants `read` on `secret/data/switchboard/*` and `secret/metadata/switchboard/*` and nothing else.
 
@@ -65,7 +66,7 @@ Production and homelab always use OpenBao. For local development/testing without
 * Good, because no secret material is ever committed; the repo holds only paths and a (non-secret) role reference.
 * Good, because the service has its own scoped identity — its access is rotated/revoked without touching anyone's personal Vault token.
 * Good, because least-privilege policy confines the blast radius of a compromised token to `secret/switchboard/*`.
-* Good, because secrets live only in memory and are excluded from logs and SQLite, so a leaked log or a stolen DB file contains no signing secrets.
+* Good, because secrets live only in memory and are excluded from logs and PostgreSQL, so a leaked log or a stolen DB file contains no signing secrets.
 * Bad, because there is still one bootstrap secret (the SecretID) that must reach the process out-of-band — mitigated by response-wrapping and tight file permissions; this is inherent to any machine-auth scheme.
 * Bad, because it adds an OpenBao dependency to run the service — accepted, since it is already core StumpCloud infrastructure and the dev override covers laptop testing.
 * Bad, because token renewal is one more background task to get right — mitigated by re-login-on-failure and covered by the brief's testing requirements.
@@ -123,7 +124,7 @@ sequenceDiagram
     loop before TTL expiry
         App->>Bao: renew token (re-login on failure)
     end
-    Note over App: secrets never written to disk, logs, or SQLite
+    Note over App: secrets never written to disk, logs, or PostgreSQL
 ```
 
 ## More Information

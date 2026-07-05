@@ -140,7 +140,7 @@ oxblood, and patch‑cable tones.
 
 ## Start here
 
-- **[Decisions (ADRs)](/decisions)** — why switchboard is built the way it is: the stack, the SQLite
+- **[Decisions (ADRs)](/decisions)** — why switchboard is built the way it is: the stack, the PostgreSQL
   persistence, the three‑mode trust model, secrets via OpenBao, the MCP contract, the repo/CI setup,
   and the todo/agent‑vending/A2A layer.
 - **[Specifications](/specs)** — the HTTP surface (OpenAPI), the live SSE stream (AsyncAPI), the MCP

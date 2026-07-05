@@ -84,7 +84,7 @@ Chosen option: **"(C) Channels as a notify layer over the durable queue."** This
 
 ```mermaid
 flowchart LR
-  wh[Webhook / Redis / agent] -->|verified, attributed| q[(durable todos<br/>SQLite — the ledger)]
+  wh[Webhook / Redis / agent] -->|verified, attributed| q[(durable todos<br/>PostgreSQL — the ledger)]
   q -->|todo created/assigned| notify{harness<br/>attached?}
   notify -- yes --> ch[[notifications/claude/channel<br/>content + meta.todo_id]]
   ch --> sess[live Claude Code / harness session]

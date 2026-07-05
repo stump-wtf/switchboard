@@ -71,7 +71,7 @@ A pull adapter **must not ack/remove the source message until the resulting todo
 consume message
    → derive idempotency key FROM the source message id
    → create todo (dedup)
-   → todo durably in SQLite (ADR-002)        ← the durability boundary
+   → todo durably in PostgreSQL (ADR-002)        ← the durability boundary
    → THEN ack/remove the source message
 ```
 

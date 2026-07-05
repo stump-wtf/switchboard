@@ -13,10 +13,10 @@ related: [ADR-000, ADR-002, ADR-005]
 
 ## Decision Drivers
 
-* **One process, three surfaces.** Webhook endpoints, MCP server, and web UI share an event pipeline and a SQLite connection. The web layer must compose cleanly with a long-lived MCP server and background tasks (SSE broadcast, Redis consumer, retention pruning).
+* **One process, three surfaces.** Webhook endpoints, MCP server, and web UI share an event pipeline and a PostgreSQL connection. The web layer must compose cleanly with a long-lived MCP server and background tasks (SSE broadcast, Redis consumer, retention pruning).
 * **Live updates are a first-class requirement.** Screen 1 (status strip) and screen 2 (event log) update in real time. SSE is the transport (brief §3, §6); the stack must make SSE + partial HTML updates trivial.
 * **Minimal weight, minimal build.** This is a homelab tool. A Node build pipeline, a bundler, or a SPA framework is overhead we do not want to own. Vendored assets over CDNs (offline-friendly, CSP-friendly, no external dependency at runtime).
-* **Server-rendered is the natural shape.** The data lives in SQLite on the same box; there is no API-first/mobile-client story. Rendering HTML on the server and swapping fragments is simpler than shipping JSON to a client-side framework that re-renders it.
+* **Server-rendered is the natural shape.** The data lives in PostgreSQL behind the same service; there is no API-first/mobile-client story. Rendering HTML on the server and swapping fragments is simpler than shipping JSON to a client-side framework that re-renders it.
 * **Accessibility and theming for near-zero effort.** `currentColor`-driven icons, a classless CSS base, and semantic HTML get us a usable, themeable, accessible UI without a design system.
 * **Don't relitigate.** The design discussion already rejected FastAPI, Flask+Redis SSE, Tailwind, Bootstrap, Heroicons, and icon fonts/Nerd Fonts. This ADR's job is to make those rejections durable.
 
@@ -38,7 +38,7 @@ The reasoning per layer:
 
 - **Starlette over FastAPI:** FastAPI's value is Pydantic-modeled request/response validation and OpenAPI generation for JSON APIs. Our HTTP surface is *webhook receivers* (raw body + signature verification — we deliberately read the raw bytes *before* parsing, which fights FastAPI's model-binding grain) and *server-rendered HTML*, neither of which benefits from FastAPI's machinery. FastAPI *is* Starlette underneath; taking Starlette directly removes a dependency layer without losing anything we use. We author the OpenAPI spec by hand (`docs/specs/openapi.yaml`) precisely because the endpoints are not model-driven.
 - **Starlette over Flask/stdlib:** the MCP SDK, SSE, the Redis consumer, and retention pruning are all naturally async and long-lived. An ASGI app hosts them in one event loop; WSGI Flask would need a separate async story bolted on, and stdlib `http.server` would mean hand-rolling routing, lifespan, and concurrency.
-- **HTMX over a SPA:** the screens are server-rendered tables and status strips backed by SQLite on the same host. HTMX swaps HTML fragments and, via `htmx-ext-sse`, subscribes DOM elements directly to the `/events` stream — live updates with zero client-side state management and no build step. A SPA would add a bundler, a JSON API surface we otherwise do not need, and client/server state duplication.
+- **HTMX over a SPA:** the screens are server-rendered tables and status strips backed by PostgreSQL. HTMX swaps HTML fragments and, via `htmx-ext-sse`, subscribes DOM elements directly to the `/events` stream — live updates with zero client-side state management and no build step. A SPA would add a bundler, a JSON API surface we otherwise do not need, and client/server state duplication.
 - **Pico.css over Tailwind/Bootstrap:** Pico is classless — semantic HTML (`<table>`, `<nav>`, `<article>`) is styled out of the box, so templates stay clean and there is no utility-class churn or CSS build. A tiny `tokens.css` layer overrides the palette with the project's switchboard-era visual identity — bakelite, brass, operator-cream, oxblood, and patch-cable tones (bakelite-dark by default, operator-cream light), mapped onto Pico's `--pico-*` variables plus trust-mode badge tokens (`signed`/`unverified`/`redis`, [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) and the dashboard status lamp. This palette is already committed at [`static/tokens.css`](../../static/tokens.css) and is shared with the docs site ([ADR-000](ADR-000-project-naming-and-scope.md), [ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)). Tailwind requires a build toolchain and litters markup with utility classes; Bootstrap pulls in a heavier component/JS framework we would barely use.
 - **Inline SVG over icon fonts:** inline `<svg>` themes via `currentColor`, has no flash-of-unstyled-content, is individually cacheable as a static file, and is accessible (`role="img"` + `<title>`) in a way glyph fonts are not. Nerd Fonts in particular are a terminal/editor glyph-patching tool, wrong for browser rendering. The pack split is deliberate: **Simple Icons** carries brand marks (this is a webhook receiver — provider identity is meaningful UI), **Lucide** carries UI chrome (settings, activity, plug). Not interchangeable, not redundant.
 
@@ -123,7 +123,7 @@ flowchart TB
       sse[/events → sse-starlette/]
       mcpm[MCP server mount]
     end
-    pipe[[normalize → SQLite → broadcast]]
+    pipe[[normalize → PostgreSQL → broadcast]]
     wh --> pipe
     pipe --> sse
     pipe --> mcpm
@@ -140,4 +140,4 @@ flowchart TB
 * Rejected alternatives are drawn directly from the brief §4 ("Explicitly rejected alternatives — already litigated, don't relitigate") and §13 (key learnings on Nerd Fonts and the icon-pack split).
 * Icon sourcing: Lucide (<https://lucide.dev/>) for chrome, Simple Icons (<https://simpleicons.org/>) for brands.
 * Stack references: Starlette <https://www.starlette.io/>, uvicorn <https://www.uvicorn.org/>, sse-starlette <https://github.com/sysid/sse-starlette>, Jinja2 <https://jinja.palletsprojects.com/>, HTMX <https://htmx.org/>, `htmx-ext-sse` <https://github.com/bigskysoftware/htmx-extensions/tree/main/src/sse>, Pico.css <https://picocss.com/>.
-* Related: [ADR-002](ADR-002-postgres-persistence-and-retention.md) (the SQLite layer the UI reads), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) (the MCP surface sharing this process).
+* Related: [ADR-002](ADR-002-postgres-persistence-and-retention.md) (the PostgreSQL layer the UI reads), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) (the MCP surface sharing this process).

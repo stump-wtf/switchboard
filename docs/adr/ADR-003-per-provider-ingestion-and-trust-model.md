@@ -149,7 +149,7 @@ flowchart TD
 
   rc -->|trust = Redis ACL/TLS| norm
 
-  norm[normalize → set trust_mode/verified] --> db[(SQLite events)]
+  norm[normalize → set trust_mode/verified] --> db[(PostgreSQL events)]
   db --> sse[SSE broadcast]
   db --> mcp[MCP tools]
 

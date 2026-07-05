@@ -30,7 +30,7 @@ the vended credential and bridges both directions —
 harness (Claude Code / other)
    │ spawns stdio subprocess
    ▼
-local channel adapter  ──auth: vended credential──▶  central switchboard  ──▶ durable todos (SQLite)
+local channel adapter  ──auth: vended credential──▶  central switchboard  ──▶ durable todos (PostgreSQL)
    ▲  notifications/claude/channel (server→session push)      │
    └──────────────────── todo created/assigned ◀──────────────┘
 ```

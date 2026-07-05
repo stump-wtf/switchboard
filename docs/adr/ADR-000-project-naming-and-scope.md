@@ -9,7 +9,7 @@ related: [ADR-001, ADR-003, ADR-005, ADR-006]
 
 ## Context and Problem Statement
 
-This repository was bootstrapped from a design-discussion handoff under the placeholder working name `webhook-mcp`, which the brief explicitly flagged as provisional — "rename if a better name lands during ADR-000." Before the specs and code solidify around a name, two things need to be pinned down: **what is this project called**, and **what is in and out of scope** — for the MVP and for the docs-only bootstrap session. What name best captures what this system *is* — a hub that receives inbound lines from many sources and patches each one through to where it needs to go — while staying legible in the StumpCloud org?
+Before the specs solidify around a name, two things need pinning down: **what this project is called**, and **what is in and out of scope**. `switchboard` began under the placeholder name `webhook-mcp`; this ADR settles the permanent name and ratifies the scope the rest of the documents assume. What name best captures what this system *is* — a hub that receives inbound lines from many sources and patches each one through to where it needs to go — while staying legible in the StumpCloud org?
 
 ## Decision Drivers
 
@@ -44,18 +44,18 @@ This ADR also ratifies the scope the rest of the documents assume:
 * Prove all three trust models: one signed provider, the generic/unverified endpoint (Docker Hub routed through it), and the Redis queue consumer ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)).
 * MCP tool surface exposing history / detail / replay ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
 * A local-only, 4-screen web UI updating live via SSE.
-* SQLite persistence, no external database ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
+* PostgreSQL persistence and retention ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
 
 **Out of scope for the MVP:**
 
 * Outbound webhook delivery/retries (the `replay` tool re-emits on demand; it is not a delivery scheduler).
 * Multi-user auth / RBAC on the web UI — localhost-bound, behind Caddy `forward_auth` if ever exposed ([ADR-001](ADR-001-web-stack-starlette-htmx-pico.md)).
-* Horizontal scaling / multi-instance — single node, single process.
+* Standing up PostgreSQL's own HA/replication — the app tier can run multiple instances against one PostgreSQL ([ADR-002](ADR-002-postgres-persistence-and-retention.md)), but operating Postgres in HA is deferred.
 * Provider-side webhook management (registering webhooks via provider APIs).
 
-**In scope for *this* session (docs only):** the seven ADRs, the three specs (`docs/specs/openapi.yaml`, `asyncapi.yaml`, `mcp-tools.md`), and repo + CI scaffolding ([ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
+**The canonical design record** is the ADRs (`docs/adr/`) and specs (`docs/specs/`) under `docs/`, plus the repo + CI scaffolding ([ADR-006](ADR-006-gitea-primary-github-mirror-and-ci.md)).
 
-**Explicitly deferred to the follow-up session:** all application code under `app/` beyond empty `__init__.py` placeholders. Implementation is written *fresh from these documents*.
+**Application code** is written *fresh from these documents*; there is none yet beyond empty `__init__.py` placeholders under `app/`.
 
 ### Consequences
 

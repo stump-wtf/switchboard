@@ -9,7 +9,7 @@ related: [ADR-003, ADR-005, ADR-008, ADR-012, ADR-013, ADR-014]
 
 ## Context and Problem Statement
 
-ADR-000–006 defined switchboard's MVP as a **webhook event store**: receive, verify, persist, and expose events to MCP clients and a web UI ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)). That model answers *"what happened?"* but not *"what still needs doing, by whom, and did it get done?"* An agent that reads an event stream has no durable notion of ownership, completion, or retry — if it crashes mid-work the event has already been read, and nothing re-surfaces it.
+The foundation ADRs (000–006) define switchboard's **event store**: receive, verify, persist, and expose events to MCP clients and a web UI ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)). That layer answers *"what happened?"* but not *"what still needs doing, by whom, and did it get done?"* An agent that reads an event stream has no durable notion of ownership, completion, or retry — if it crashes mid-work the event has already been read, and nothing re-surfaces it.
 
 This ADR establishes the primitive the agent-facing layer of switchboard is built on. The question is: **what is the core object an agent interacts with — a message it reads once, or a durable unit of work with a lifecycle?** Inbound webhooks are at-least-once and duplicate-prone; agents are unreliable workers that crash, restart, and run concurrently; MCP has no server→client push. The primitive has to be correct under all three of those facts.
 
@@ -113,7 +113,7 @@ flowchart LR
     ag[Other agents<br/>via create_for]
     sb[switchboard itself<br/>e.g. friend-approval todos]
   end
-  subgraph core[switchboard todo store — SQLite]
+  subgraph core[switchboard todo store — PostgreSQL]
     q[(todos:<br/>pending / claimed /<br/>done / failed)]
   end
   subgraph consumers[Consumers — worker loops]

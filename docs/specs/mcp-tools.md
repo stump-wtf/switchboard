@@ -2,7 +2,7 @@
 
 Authoritative contract for the MCP surface of **switchboard**, served by the official `mcp` Python
 SDK from the same Starlette process as the web UI ([ADR-001](../adr/ADR-001-web-stack-starlette-htmx-pico.md))
-and reading the same SQLite layer ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
+and reading the same PostgreSQL layer ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)).
 
 This document is the source of truth for tool/resource **schemas**. The *shape* decisions behind it
 are in [ADR-005](../adr/ADR-005-mcp-tool-and-resource-contract.md); the trust semantics are in

@@ -9,7 +9,7 @@ The verbs that drive this state machine are in the [agent-mcp-tools spec](agent-
 push (webhook) and pull (queue) adapters normalize deliveries into todos is in the
 [ingestion-adapters spec](ingestion-adapters.md) ([ADR-014](../adr/ADR-014-ingestion-adapters-push-pull.md)).
 Todos are persisted in
-the same SQLite layer as events ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)) and
+the same PostgreSQL layer as events ([ADR-002](../adr/ADR-002-postgres-persistence-and-retention.md)) and
 subject to the same retention posture.
 
 ## Conventions
