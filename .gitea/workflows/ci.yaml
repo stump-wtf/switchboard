@@ -1,0 +1,81 @@
+# webhook-mcp — Gitea CI (PRIMARY host: gitea.stump.rocks/joestump/webhook-mcp).
+#
+# Gitea is the source of truth (ADR-006). This is the fast + security gate the brief (§5.3) mandates:
+# ruff, mypy, bandit, pip-audit, Gitleaks, Semgrep, pytest. Reproduce locally with `make ci` before
+# opening a PR.
+#
+# LOCKSTEP: .github/workflows/ci.yml on the GitHub mirror runs the same suite across a Python matrix.
+# Dependabot only watches .github/, so bump the pinned versions HERE by hand to match (documented
+# house caveat — see ADR-006).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ gitea.workflow }}-${{ gitea.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: ruff (lint + format check)
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: mypy
+        run: mypy app
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: bandit
+        run: bandit -c pyproject.toml -r app
+      - name: pip-audit
+        run: pip-audit --skip-editable
+      - name: gitleaks
+        uses: docker://ghcr.io/gitleaks/gitleaks:v8.21.2
+        with:
+          args: detect --source . --redact --verbose
+      - name: semgrep
+        run: |
+          pip install semgrep
+          semgrep scan --config auto --error --skip-unknown-extensions
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: pytest
+        run: pytest

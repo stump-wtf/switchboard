@@ -1,0 +1,71 @@
+# webhook-mcp — GitHub CI (MIRROR host: github.com/joestump/webhook-mcp).
+#
+# GitHub is a push-mirror of the canonical Gitea repo (ADR-006). Per the house convention, the
+# COMPREHENSIVE gate lives here: the same lint/type/security/test suite as .gitea/workflows/ci.yaml,
+# run across a Python version MATRIX on the less-contended GitHub hosted runners.
+#
+# LOCKSTEP: keep this in sync with .gitea/workflows/ci.yaml. Dependabot watches this file (only), so
+# it will PR bumps here; mirror those bumps into the .gitea workflow by hand.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: ruff (lint + format check)
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: mypy
+        run: mypy app
+      - name: bandit
+        run: bandit -c pyproject.toml -r app
+      - name: pytest
+        run: pytest
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: pip-audit
+        run: pip-audit --skip-editable
+      - name: gitleaks
+        uses: docker://ghcr.io/gitleaks/gitleaks:v8.21.2
+        with:
+          args: detect --source . --redact --verbose
+      - name: semgrep
+        run: |
+          pip install semgrep
+          semgrep scan --config auto --error --skip-unknown-extensions
