@@ -21,6 +21,12 @@ const STATIC_SPECS = join(SITE, 'static', 'specs');
 const GITEA = 'https://gitea.stump.rocks/joestump/switchboard';
 const GITEA_RAW = `${GITEA}/raw/branch/main`;
 
+// ---- discover sources (also used for the intro counts) ----
+const adrFiles = readdirSync(ADR_SRC).filter((f) => /^ADR-\d+.*\.md$/.test(f)).sort();
+const yamlSpecs = ['openapi.yaml', 'asyncapi.yaml'];
+const specMdFiles = readdirSync(SPEC_SRC).filter((f) => f.endsWith('.md')).sort();
+const specCount = yamlSpecs.length + specMdFiles.length;
+
 // ---- clean + scaffold ----
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(join(OUT, 'decisions'), { recursive: true });
@@ -42,6 +48,10 @@ function fmValue(fm, key) {
 function sanitizeMdx(s) {
   return s.replace(/<((?:https?):\/\/[^>\s]+)>/g, '[$1]($1)');
 }
+// docs/README.md (the ADR/spec index + open-questions) has no page in the site; point at Gitea.
+function rewriteRepoLinks(s) {
+  return s.replace(/\]\(\.\.\/README\.md([^)]*)\)/g, `](${GITEA}/src/branch/main/docs/README.md$1)`);
+}
 
 // ---- landing page ----
 writeFileSync(join(OUT, 'intro.mdx'), `---
@@ -62,23 +72,30 @@ backend — **MCP clients** (Claude Code and other agents) and a **human** at a 
 UI that updates live over Server-Sent Events. A fourth incoming line, a **Redis queue consumer**,
 feeds the same pipeline with no HTTP endpoint at all.
 
+On top of that event-store core, switchboard adds an **agent layer**: inbound events become durable
+**todos** that agents claim and complete; humans register agents and are vended scoped MCP endpoints;
+personas are advertised as A2A Agent Cards; and cross-agent work is granted by human-approved
+friending. See the todo/agent-vending/A2A decisions (ADR-007 onward).
+
 The name is the architecture: a manual telephone exchange took many incoming lines, an operator
 verified the caller, and patched the line through to its destination. That is exactly this — and it
 is why these pages wear a switchboard-era palette of brass, bakelite, operator-cream, oxblood, and
 patch-cable tones.
 
 :::note Docs-first bootstrap
-This site documents the **design** of switchboard — seven architecture decision records and three
-API/stream/tool specs. Application code is written *fresh from these documents* in a follow-up
-session; there is no runnable build yet.
+This site documents the **design** of switchboard — ${adrFiles.length} architecture decision records and
+${specCount} API/stream/tool specs. Application code is written *fresh from these documents* in a
+follow-up session; there is no runnable build yet.
 :::
 
 ## Start here
 
 - **[Decisions (ADRs)](/decisions)** — why switchboard is built the way it is: the stack, the SQLite
-  persistence, the three-mode trust model, secrets via OpenBao, the MCP contract, and the repo/CI setup.
-- **[Specifications](/specs)** — the HTTP surface (OpenAPI), the live SSE stream (AsyncAPI), and the
-  exact MCP tool + resource contract.
+  persistence, the three-mode trust model, secrets via OpenBao, the MCP contract, the repo/CI setup,
+  and the todo/agent-vending/A2A layer.
+- **[Specifications](/specs)** — the HTTP surface (OpenAPI), the live SSE stream (AsyncAPI), the MCP
+  tool + resource contracts, the todo object/state-machine, webhook ingestion, personas/Agent Cards,
+  friending, and the account/vended-endpoint model.
 
 ## The trust model in one glance
 
@@ -92,7 +109,6 @@ See **[ADR-003](/decisions/ADR-003-per-provider-ingestion-and-trust-model)** for
 `);
 
 // ---- ADRs -> decisions/ ----
-const adrFiles = readdirSync(ADR_SRC).filter((f) => /^ADR-\d+.*\.md$/.test(f)).sort();
 for (const f of adrFiles) {
   const num = parseInt(f.match(/ADR-(\d+)/)[1], 10);
   const raw = readFileSync(join(ADR_SRC, f), 'utf8');
@@ -106,6 +122,7 @@ for (const f of adrFiles) {
     /\]\(\.\.\/\.\.\/static\/tokens\.css\)/g,
     `](${GITEA_RAW}/static/tokens.css)`,
   );
+  content = rewriteRepoLinks(content);
 
   // Inject a status line right after the H1 (plain markdown blockquote — safe under MDX).
   content = content.replace(
@@ -130,18 +147,36 @@ writeFileSync(
   ),
 );
 
-// ---- specs -> specs/ ----
-// mcp-tools.md (has no frontmatter): copy with sidebar order + cross-link rewrites.
-{
-  const raw = readFileSync(join(SPEC_SRC, 'mcp-tools.md'), 'utf8');
+// ---- markdown specs -> specs/ ----
+// Every *.md in docs/specs becomes a page. Known specs get an explicit order + title;
+// any new one falls back to alphabetical order after the known set and an H1-derived title.
+const SPEC_META = {
+  'mcp-tools.md':                { pos: 3, title: 'MCP tools & resources' },
+  'todos.md':                    { pos: 4, title: 'Todos — object & state machine' },
+  'agent-mcp-tools.md':          { pos: 5, title: 'Agent MCP tool surface' },
+  'webhook-ingestion.md':        { pos: 6, title: 'Webhook ingestion & routing' },
+  'personas-and-agent-cards.md': { pos: 7, title: 'Personas & Agent Cards' },
+  'friend-requests.md':          { pos: 8, title: 'Friend-request & approval flow' },
+  'accounts-and-endpoints.md':   { pos: 9, title: 'Accounts & vended endpoints' },
+};
+function deriveTitle(raw, file) {
+  const h1 = raw.match(/^#\s+(.+)$/m);
+  return h1 ? h1[1].replace(/^switchboard\s+[—-]\s+/i, '').trim() : file.replace(/\.md$/, '');
+}
+specMdFiles.forEach((file, i) => {
+  const raw = readFileSync(join(SPEC_SRC, file), 'utf8');
+  const meta = SPEC_META[file] || { pos: 100 + i, title: deriveTitle(raw, file) };
   const content = sanitizeMdx(
-    raw
+    rewriteRepoLinks(raw)
       .replace(/\]\(\.\.\/adr\//g, '](../decisions/')
       .replace(/\]\(openapi\.yaml\)/g, '](./openapi)')
       .replace(/\]\(asyncapi\.yaml\)/g, '](./asyncapi)'),
   );
-  writeFileSync(join(OUT, 'specs', 'mcp-tools.md'), `---\nsidebar_position: 3\ntitle: MCP tools & resources\n---\n\n${content}`);
-}
+  writeFileSync(
+    join(OUT, 'specs', file),
+    `---\nsidebar_position: ${meta.pos}\ntitle: ${meta.title}\n---\n\n${content}`,
+  );
+});
 
 // openapi.yaml / asyncapi.yaml: copy raw into static/ (downloadable) and wrap each in a page.
 function specPage(slug, title, pos, file, blurb) {
@@ -171,11 +206,11 @@ writeFileSync(
     {
       label: 'Specifications',
       position: 3,
-      link: { type: 'generated-index', slug: '/specs', title: 'Specifications', description: 'The HTTP surface (OpenAPI), the live SSE stream (AsyncAPI), and the MCP tool/resource contract.' },
+      link: { type: 'generated-index', slug: '/specs', title: 'Specifications', description: 'The HTTP surface (OpenAPI), the live SSE stream (AsyncAPI), the MCP tool/resource contracts, and the todo/agent/A2A specs.' },
     },
     null,
     2,
   ),
 );
 
-console.log(`build-docs: ${adrFiles.length} ADRs + 3 specs -> docs-generated/`);
+console.log(`build-docs: ${adrFiles.length} ADRs + ${specCount} specs -> docs-generated/`);

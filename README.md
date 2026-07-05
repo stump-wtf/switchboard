@@ -25,7 +25,17 @@ patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
 > There is **no application code yet** beyond empty package placeholders under `app/` — it is written
 > *fresh from these documents* in a follow-up session. The "Running it" and "Usage" sections below
 > describe the **intended** behavior these specs define, not something you can `pip install` and run
-> today.
+> today. Start at the design index: [`docs/README.md`](docs/README.md).
+
+## Two layers
+
+- **Event-store core (ADR-000–006):** receive, verify, persist, and expose inbound webhooks/queue
+  events — the pipeline described in this README.
+- **Agent layer (ADR-007–012):** inbound events become durable **todos** that agents claim and
+  complete; humans register agents and are vended scoped MCP endpoints; personas are advertised as A2A
+  Agent Cards; and cross-agent work is granted by human-approved friending. See
+  [ADR-007](docs/adr/ADR-007-todos-as-core-primitive.md) and the
+  [design index](docs/README.md).
 
 ## Why this exists
 
