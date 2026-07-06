@@ -59,6 +59,7 @@ slug: /
 title: Switchboard
 sidebar_label: Overview
 sidebar_position: 0
+hide_title: true
 hide_table_of_contents: true
 ---
 

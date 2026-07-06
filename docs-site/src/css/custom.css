@@ -221,3 +221,31 @@
   font-size: 0.85rem;
   color: var(--ifm-color-content-secondary, #6f6149);
 }
+
+/* ============================================================
+ * Homepage = a clean marketing page. Scoped to the landing doc via its stable
+ * page class so every other docs page keeps its sidebar. Hides the docs chrome
+ * (left sidebar, breadcrumb, right TOC) and lets the hero + tiles use the full width.
+ * ============================================================ */
+html.docs-doc-id-intro .theme-doc-sidebar-container,
+html.docs-doc-id-intro .theme-doc-breadcrumbs,
+html.docs-doc-id-intro .theme-doc-toc-desktop,
+html.docs-doc-id-intro .theme-doc-toc-mobile {
+  display: none !important;
+}
+html.docs-doc-id-intro main {
+  max-width: none !important;
+}
+html.docs-doc-id-intro main > .container {
+  max-width: 1120px;
+}
+html.docs-doc-id-intro main .row > .col {
+  --ifm-col-width: 100% !important;
+  max-width: 100% !important;
+  flex: 0 0 100% !important;
+  margin-left: 0 !important;
+}
+/* The hero already provides its own top spacing — drop the article's default padding. */
+html.docs-doc-id-intro article {
+  padding-top: 0;
+}
