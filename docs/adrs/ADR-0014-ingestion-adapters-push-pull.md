@@ -32,7 +32,7 @@ Chosen option: **"(B) ingestion adapters, push and pull families."**
 
 ### The model
 
-An **ingestion adapter** turns an external delivery into a todo. Two families share the **same back half** — `verify → derive idempotency key → normalize → create todo (dedup) → persist event for history` ([ingestion-adapters spec](../specs/ingestion-adapters.md)) — and differ only in the **front half** (the transport):
+An **ingestion adapter** turns an external delivery into a todo. Two families share the **same back half** — `verify → derive idempotency key → normalize → create todo (dedup) → persist event for history` ([ingestion-adapters spec](../openspec/specs/webhook-ingestion/spec.md)) — and differ only in the **front half** (the transport):
 
 | Family | Transport | Members | Verified by | Trust ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)) |
 |--------|-----------|---------|-------------|-------|
@@ -71,10 +71,10 @@ The result: **the todo's durability (and thereafter its lease/ack, [ADR-0007](AD
 
 ### Confirmation
 
-* The [ingestion-adapters spec](../specs/ingestion-adapters.md) defines the shared contract, the push family (sources + verification), the pull family (Redis reference + ack coupling), and the routing rules.
+* The [ingestion-adapters spec](../openspec/specs/webhook-ingestion/spec.md) defines the shared contract, the push family (sources + verification), the pull family (Redis reference + ack coupling), and the routing rules.
 * A test asserts a pull adapter that crashes **after consume but before todo-store** redelivers and dedups to **one** todo — no loss, no duplicate.
 * A test asserts the source message is **not** ack'd/removed until the todo is durably stored.
-* A test asserts a push delivery and a pull delivery of "the same logical event" produce the **identical** todo shape ([todos spec](../specs/todos.md)).
+* A test asserts a push delivery and a pull delivery of "the same logical event" produce the **identical** todo shape ([todos spec](../openspec/specs/todo-queue/spec.md)).
 
 ## Pros and Cons of the Options
 
@@ -118,7 +118,7 @@ flowchart TB
 ## More Information
 
 * Trust modes & per-source verification (authoritative): [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md).
-* The durable todo, dedup, and lease/ack the adapters normalize into: [ADR-0007](ADR-0007-todos-as-core-primitive.md), [todos spec](../specs/todos.md).
+* The durable todo, dedup, and lease/ack the adapters normalize into: [ADR-0007](ADR-0007-todos-as-core-primitive.md), [todos spec](../openspec/specs/todo-queue/spec.md).
 * Agent-managed webhooks are the push family under a ceiling: [ADR-0012](ADR-0012-agents-self-manage-webhooks.md).
-* Full adapter contract, per-family detail, routing rules: [ingestion-adapters spec](../specs/ingestion-adapters.md).
+* Full adapter contract, per-family detail, routing rules: [ingestion-adapters spec](../openspec/specs/webhook-ingestion/spec.md).
 * Secrets: webhook signing secrets and queue connection URLs are injected via environment/config; switchboard-minted secrets are stored hashed in PostgreSQL ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)).

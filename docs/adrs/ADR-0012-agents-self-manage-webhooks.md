@@ -33,7 +33,7 @@ Chosen option: **"(C) agents self-manage within a vended ceiling."** This can be
 
 ### The split — humans own policy, agents own ops
 
-**The vended MCP endpoint includes webhook CRUD verbs** — `create_webhook`, `list_webhooks`, `rotate_webhook`, `delete_webhook` ([agent-mcp-tools spec](../specs/agent-mcp-tools.md)) — that operate **within the human's vended ceiling**:
+**The vended MCP endpoint includes webhook CRUD verbs** — `create_webhook`, `list_webhooks`, `rotate_webhook`, `delete_webhook` ([agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md)) — that operate **within the human's vended ceiling**:
 
 | The ceiling (human sets, per agent/endpoint) | The ops (agent does, within the ceiling) |
 |---|---|
@@ -56,12 +56,12 @@ An agent can stand up, rotate, and tear down its own webhooks all day — but on
 * Good, because least privilege holds: the ceiling caps count, types, and target queues per agent.
 * Good, because trust integrity is preserved — switchboard still verifies and dedups; self-management cannot open a trust hole ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)).
 * Good, because secrets never leave switchboard — the agent handles URLs, not signing keys.
-* Bad, because the ceiling is another policy surface to define, store, and enforce per endpoint — captured in the [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md).
+* Bad, because the ceiling is another policy surface to define, store, and enforce per endpoint — captured in the [accounts-and-endpoints spec](../openspec/specs/vended-endpoints/spec.md).
 * Bad, because an agent could churn webhooks (create/rotate/delete) noisily within its ceiling — mitigated by count caps, rate limits, and the fact that all such actions are logged and attributable to the owning human ([ADR-0008](ADR-0008-human-principal-vended-endpoints.md)).
 
 ### Confirmation
 
-* The [agent-mcp-tools spec](../specs/agent-mcp-tools.md) defines the four webhook verbs and their ceiling-bounded behavior; the [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md) defines the ceiling fields.
+* The [agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md) defines the four webhook verbs and their ceiling-bounded behavior; the [accounts-and-endpoints spec](../openspec/specs/vended-endpoints/spec.md) defines the ceiling fields.
 * A test asserts `create_webhook` is refused beyond `max` count, for a disallowed source type, or targeting an ungranted queue.
 * A test asserts the created webhook's signing secret is stored (hashed) by switchboard and is **never** returned to the agent; `create`/`rotate` return only the URL.
 * A test asserts a self-created `signed`-type webhook is verified per [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md) and its trust mode cannot be altered by the agent.
@@ -109,7 +109,7 @@ flowchart TB
 ## More Information
 
 * Webhooks as todo producers, and idempotency-key dedup: [ADR-0007](ADR-0007-todos-as-core-primitive.md).
-* Verification per source type (what switchboard enforces regardless of who created the webhook): [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md) and the [ingestion-adapters spec](../specs/ingestion-adapters.md). Webhooks are the **push** family of the adapter model ([ADR-0014](ADR-0014-ingestion-adapters-push-pull.md)); agent self-management of **pull** (queue) adapters is a natural future extension of this ceiling, not covered here.
+* Verification per source type (what switchboard enforces regardless of who created the webhook): [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md) and the [ingestion-adapters spec](../openspec/specs/webhook-ingestion/spec.md). Webhooks are the **push** family of the adapter model ([ADR-0014](ADR-0014-ingestion-adapters-push-pull.md)); agent self-management of **pull** (queue) adapters is a natural future extension of this ceiling, not covered here.
 * The vended endpoint and scope this extends: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
 * Where minted secrets are stored (hashed): [ADR-0002](ADR-0002-postgres-persistence-and-retention.md).
-* Verb signatures + the ceiling fields: [agent-mcp-tools spec](../specs/agent-mcp-tools.md), [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md).
+* Verb signatures + the ceiling fields: [agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md), [accounts-and-endpoints spec](../openspec/specs/vended-endpoints/spec.md).

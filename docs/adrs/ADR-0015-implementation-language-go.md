@@ -50,7 +50,7 @@ A pinned modern Go toolchain (Go 1.23+); the exact minor version and dependency 
 A Channel is an MCP server ([ADR-0013](ADR-0013-channels-push-delivery.md)); Go serves it like any other MCP surface. The only open detail is **transport**, and it is language-independent:
 
 * If Claude Code Channels can use the **Streamable HTTP MCP transport**, switchboard serves channels **directly over HTTP** alongside its vended MCP endpoints and the web UI's SSE — no separate process, maximally consistent with the rest of the fleet.
-* If Channels remains a **local stdio subprocess** of the harness, a small **Go** stdio binary bridges to central switchboard with a vended credential ([channel-delivery spec](../specs/channel-delivery.md)) — still Go, still the same binary/toolchain.
+* If Channels remains a **local stdio subprocess** of the harness, a small **Go** stdio binary bridges to central switchboard with a vended credential ([channel-delivery spec](../openspec/specs/channels/spec.md)) — still Go, still the same binary/toolchain.
 
 Either way it is Go, and the durable todo queue remains the ledger. The Python prototype under `~/src/switchboard` is a **behavioral reference** for what a channel emits, not a codebase to carry forward.
 
@@ -94,4 +94,4 @@ Either way it is Go, and the durable todo queue remains the ledger. The Python p
 * Persistence & queue mechanics that are idiomatic in Go: [ADR-0002](ADR-0002-postgres-persistence-and-retention.md).
 * MCP surface (Go SDK or the wire protocol directly): [ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md). Go MCP SDK: <https://github.com/modelcontextprotocol/go-sdk>.
 * Signature verification primitives: [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md).
-* Channels transport (HTTP vs. stdio) — language-independent: [ADR-0013](ADR-0013-channels-push-delivery.md), [channel-delivery spec](../specs/channel-delivery.md).
+* Channels transport (HTTP vs. stdio) — language-independent: [ADR-0013](ADR-0013-channels-push-delivery.md), [channel-delivery spec](../openspec/specs/channels/spec.md).

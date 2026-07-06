@@ -47,7 +47,7 @@ A persona's **advertised skills are derived from what is actually vended to it**
 
 ### Expressed as A2A Agent Cards
 
-Each persona is published as an **[A2A](https://a2a-protocol.org/) Agent Card** served at the well-known path **`/.well-known/agent-card.json`** (per-persona; see the [personas-and-agent-cards spec](../specs/personas-and-agent-cards.md) for how multiple personas map to well-known URLs). The Agent Card is the interoperable, standard-shaped advertisement other agents discover during friending ([ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md)). Its `skills` array is the derived set above; its identity/provenance ties back to the owning human.
+Each persona is published as an **[A2A](https://a2a-protocol.org/) Agent Card** served at the well-known path **`/.well-known/agent-card.json`** (per-persona; see the [personas-and-agent-cards spec](../openspec/specs/personas/spec.md) for how multiple personas map to well-known URLs). The Agent Card is the interoperable, standard-shaped advertisement other agents discover during friending ([ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md)). Its `skills` array is the derived set above; its identity/provenance ties back to the owning human.
 
 ### Consequences
 
@@ -60,7 +60,7 @@ Each persona is published as an **[A2A](https://a2a-protocol.org/) Agent Card** 
 
 ### Confirmation
 
-* The [personas-and-agent-cards spec](../specs/personas-and-agent-cards.md) defines the persona record (agent + prompt + verb subset), the verb→skill derivation, and the Agent Card mapping + well-known endpoint(s).
+* The [personas-and-agent-cards spec](../openspec/specs/personas/spec.md) defines the persona record (agent + prompt + verb subset), the verb→skill derivation, and the Agent Card mapping + well-known endpoint(s).
 * A test asserts a persona's advertised `skills` are a function of its vended verb subset — adding/removing a verb changes the card; a skill requiring an ungranted verb never appears.
 * A test asserts two personas of one agent enforce their *own* scopes independently (reviewer denied deploy verbs, and vice-versa).
 * A test asserts `/.well-known/agent-card.json` serves a schema-valid A2A Agent Card for a persona.
@@ -106,4 +106,4 @@ flowchart TB
 
 * Personas are the discoverable units in the friending flow: [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md).
 * The vended-verb pool a persona draws its subset from: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
-* A2A Agent Card format and the `agent-card.json` well-known convention: <https://a2a-protocol.org/> and the [personas-and-agent-cards spec](../specs/personas-and-agent-cards.md).
+* A2A Agent Card format and the `agent-card.json` well-known convention: <https://a2a-protocol.org/> and the [personas-and-agent-cards spec](../openspec/specs/personas/spec.md).

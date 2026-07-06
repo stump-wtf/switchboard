@@ -63,7 +63,7 @@ When step-up *is* implemented, note that **there is no standard `amr` value that
 ### Confirmation
 
 * Consent actions today succeed with a valid Pocket ID token and **do not** check `amr`/`acr` (a test asserts the absence of step-up enforcement is intentional, referencing this ADR).
-* The deferred-hardening requirement appears in [docs/README.md](../README.md) open-questions and in the [friend-requests spec](../specs/friend-requests.md) provenance section.
+* The deferred-hardening requirement appears in [docs/README.md](../README.md) open-questions and in the [friend-requests spec](../openspec/specs/friending/spec.md) provenance section.
 * A code-level guard/comment at the IdP-trust-set configuration point references this ADR, so adding a non-passkey issuer forces a reviewer to confront the step-up requirement.
 
 ## Pros and Cons of the Options
@@ -87,5 +87,5 @@ When step-up *is* implemented, note that **there is no standard `amr` value that
 ## More Information
 
 * Human principal & OIDC posture: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
-* Where provenance is consumed (friend-request approvals): [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md) and the [friend-requests spec](../specs/friend-requests.md).
+* Where provenance is consumed (friend-request approvals): [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md) and the [friend-requests spec](../openspec/specs/friending/spec.md).
 * Pocket ID: <https://pocket-id.org/> (passkey-only OIDC provider). `amr` values: [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176). `acr`/`amr` in OIDC core: <https://openid.net/specs/openid-connect-core-1_0.html>.

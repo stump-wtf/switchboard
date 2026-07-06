@@ -36,7 +36,7 @@ Chosen option: **"(C) human principal + per-agent vended endpoints."**
 
 1. **Humans are the principals/tenants.** A human authenticates to switchboard via **OIDC against Pocket ID** ([ADR-0011](ADR-0011-identity-assurance-oidc-passkey-deferred.md)). The human is the accountable owner and the **policy authority** — they decide which queues and verbs any of their agents may touch.
 2. **Humans register agents.** An agent is a lightweight record owned by a human (name, description, optional base-runtime metadata). Registration alone grants nothing.
-3. **Switchboard vends a scoped MCP endpoint per agent.** Vending produces **(a) an endpoint URL** and **(b) a credential**. Together they *are* the capability grant — possessing the vended endpoint is the access. The endpoint is scoped: a set of allowed **queues** and a **verb allowlist** (a subset of the todo/webhook/friending verbs, [agent-mcp-tools spec](../specs/agent-mcp-tools.md)).
+3. **Switchboard vends a scoped MCP endpoint per agent.** Vending produces **(a) an endpoint URL** and **(b) a credential**. Together they *are* the capability grant — possessing the vended endpoint is the access. The endpoint is scoped: a set of allowed **queues** and a **verb allowlist** (a subset of the todo/webhook/friending verbs, [agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md)).
 4. **The human is the policy authority.** Scope is set by the human at vend time. The agent cannot widen its own scope; it can only exercise verbs within the allowlist and touch queues within its grant.
 
 ### Identity split
@@ -58,7 +58,7 @@ The IdP **never holds bots.** Agent credentials are tokens switchboard mints and
 
 **Proposed:** a vended endpoint's scope is **immutable**. To change what an agent can do, you **revoke and re-vend** a new endpoint with the new scope, rather than mutating the existing grant in place. Rationale: an immutable capability is far simpler to reason about and audit — a given URL+credential always means one fixed set of powers, forever; there is no "when did this scope change and who changed it" question. Revocation remains always available.
 
-This is marked **decision-to-confirm** with Joe: the alternative is mutable scope (edit a live endpoint's queues/verbs). Mutable is more convenient for incremental permission tweaks but reintroduces the audit ambiguity immutability removes. Recorded as an open question in [docs/README.md](../README.md) and the [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md).
+This is marked **decision-to-confirm** with Joe: the alternative is mutable scope (edit a live endpoint's queues/verbs). Mutable is more convenient for incremental permission tweaks but reintroduces the audit ambiguity immutability removes. Recorded as an open question in [docs/README.md](../README.md) and the [accounts-and-endpoints spec](../openspec/specs/vended-endpoints/spec.md).
 
 ### Consequences
 
@@ -72,7 +72,7 @@ This is marked **decision-to-confirm** with Joe: the alternative is mutable scop
 
 ### Confirmation
 
-* The [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md) defines the human-account, agent-registration, and vend/revoke flows and the scope shape (queues + verb allowlist).
+* The [accounts-and-endpoints spec](../openspec/specs/vended-endpoints/spec.md) defines the human-account, agent-registration, and vend/revoke flows and the scope shape (queues + verb allowlist).
 * A test asserts a vended endpoint can exercise only its allowlisted verbs on its granted queues, and is denied outside them.
 * A test asserts revoking an endpoint invalidates its stored credential and unroutes its URL (subsequent calls fail).
 * A test asserts no agent identity is ever created in Pocket ID.

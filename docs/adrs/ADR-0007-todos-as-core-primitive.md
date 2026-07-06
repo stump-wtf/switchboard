@@ -61,7 +61,7 @@ Chosen option: **"(C) durable todo/work-item."** Switchboard's core agent-facing
 
 ### Relationship to the event store (ADR-0005)
 
-The event log and the todo model are complementary, not competing: **an event is a record of what arrived; a todo is a unit of work derived from it.** A verified GitHub push is stored as an event (ADR-0002/003) *and* fans out to one or more todos via routing rules ([ingestion-adapters spec](../specs/ingestion-adapters.md)). The `list/get/replay` event tools of [ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md) remain the audit/history surface; the todo tools ([agent-mcp-tools spec](../specs/agent-mcp-tools.md)) are the work surface. See **Open questions** for the one unresolved seam.
+The event log and the todo model are complementary, not competing: **an event is a record of what arrived; a todo is a unit of work derived from it.** A verified GitHub push is stored as an event (ADR-0002/003) *and* fans out to one or more todos via routing rules ([ingestion-adapters spec](../openspec/specs/webhook-ingestion/spec.md)). The `list/get/replay` event tools of [ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md) remain the audit/history surface; the todo tools ([agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md)) are the work surface. See **Open questions** for the one unresolved seam.
 
 ### Consequences
 
@@ -76,7 +76,7 @@ The event log and the todo model are complementary, not competing: **an event is
 
 ### Confirmation
 
-* The [todos spec](../specs/todos.md) defines the object schema and state-machine transitions; tests assert every transition (claim, lease-expiry re-claim, complete, fail, retry, dead-letter).
+* The [todos spec](../openspec/specs/todo-queue/spec.md) defines the object schema and state-machine transitions; tests assert every transition (claim, lease-expiry re-claim, complete, fail, retry, dead-letter).
 * A test asserts that creating two todos with the same idempotency key yields **one** todo (the second returns the first).
 * A test asserts a claimed-but-not-completed todo becomes re-claimable after lease expiry, and that a second claimant cannot claim it *before* expiry.
 * A test asserts a webhook delivery produces a todo (producer relationship) and that a duplicate delivery does not produce a second.
@@ -131,8 +131,8 @@ flowchart LR
 
 ## More Information
 
-* Object schema + full state machine: [todos spec](../specs/todos.md).
-* The MCP verbs that drive the lifecycle (`list_todos`, `claim`, `complete`, `fail`, `create_for`): [agent-mcp-tools spec](../specs/agent-mcp-tools.md).
-* How push (webhook) and pull (queue) adapters become todos — routing rules, idempotency-key derivation, and the pull-side store-then-ack coupling: [ingestion-adapters spec](../specs/ingestion-adapters.md), [ADR-0014](ADR-0014-ingestion-adapters-push-pull.md), [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md).
+* Object schema + full state machine: [todos spec](../openspec/specs/todo-queue/spec.md).
+* The MCP verbs that drive the lifecycle (`list_todos`, `claim`, `complete`, `fail`, `create_for`): [agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md).
+* How push (webhook) and pull (queue) adapters become todos — routing rules, idempotency-key derivation, and the pull-side store-then-ack coupling: [ingestion-adapters spec](../openspec/specs/webhook-ingestion/spec.md), [ADR-0014](ADR-0014-ingestion-adapters-push-pull.md), [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md).
 * Ownership tracing to a human, and per-agent scoping of which queues an endpoint may drain: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
 * **Open question — event/todo seam:** whether the ADR-0005 event tools and the todo tools remain two surfaces indefinitely, or whether events become a pure sub-record of todos, is left to confirm with Joe. Recorded in [docs/README.md](../README.md) open-questions.

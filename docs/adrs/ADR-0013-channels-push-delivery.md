@@ -36,7 +36,7 @@ Chosen option: **"(C) Channels as a notify layer over the durable queue."** This
 
 ### Mechanics (grounded in the standard)
 
-* **The vended endpoint speaks `claude/channel`.** The same MCP endpoint that exposes the todo/webhook/friending verbs ([agent-mcp-tools spec](../specs/agent-mcp-tools.md)) advertises `capabilities.experimental['claude/channel'] = {}`. The only open detail is **transport**, and it is language-independent: if Channels can use the **Streamable HTTP** MCP transport, switchboard serves channels **directly over HTTP** alongside its vended endpoints and the web UI's SSE — no separate process; if Channels remains a **local stdio subprocess** of the harness, a thin **Go** stdio adapter bridges to central switchboard with the vended credential ([ADR-0008](ADR-0008-human-principal-vended-endpoints.md)). Either way it is the same Go binary/toolchain, and the durable queue stays the ledger (see [channel-delivery spec](../specs/channel-delivery.md) and Open questions).
+* **The vended endpoint speaks `claude/channel`.** The same MCP endpoint that exposes the todo/webhook/friending verbs ([agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md)) advertises `capabilities.experimental['claude/channel'] = {}`. The only open detail is **transport**, and it is language-independent: if Channels can use the **Streamable HTTP** MCP transport, switchboard serves channels **directly over HTTP** alongside its vended endpoints and the web UI's SSE — no separate process; if Channels remains a **local stdio subprocess** of the harness, a thin **Go** stdio adapter bridges to central switchboard with the vended credential ([ADR-0008](ADR-0008-human-principal-vended-endpoints.md)). Either way it is the same Go binary/toolchain, and the durable queue stays the ledger (see [channel-delivery spec](../openspec/specs/channels/spec.md) and Open questions).
 * **Notify shape.** On todo create/assign to a channel-attached consumer, emit `notifications/claude/channel` with `content` = a legible one-line summary (e.g. *"switchboard: todo #4213 on `reviews` — PR #482 opened in joestump/switchboard"*) and `meta` = routing identifiers (`todo_id`, `queue`, `kind`, `source`). Per the standard, `meta` keys must be identifiers (letters/digits/underscore) — hyphenated keys are silently dropped — so switchboard uses snake_case keys.
 * **Lossy by design ⇒ degrade to pull.** Because Channels drops events when no session is attached, the todo simply stays `pending` and the worker loop ([ADR-0007](ADR-0007-todos-as-core-primitive.md)) drains it when the harness returns. **Push never gates correctness.** Notify is at-least-once; duplicates are harmless (idempotency-key dedup + idempotent `claim`).
 * **Two-way (optional).** Expose a **reply tool** so a chat-sourced todo can be answered inline, and/or opt into **permission relay** so a human can approve/deny a consent prompt — e.g. a friend approval ([ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md)) or a scoped tool use — from their own channel, applying the first verdict to arrive. Consent still lands as a durable approval-todo; relay is the fast path, not a bypass of human vending.
@@ -56,7 +56,7 @@ Chosen option: **"(C) Channels as a notify layer over the durable queue."** This
 
 ### Confirmation
 
-* The [channel-delivery spec](../specs/channel-delivery.md) defines the binding, the todo→notification mapping, delivery semantics, and the two-way (reply/permission) mapping.
+* The [channel-delivery spec](../openspec/specs/channels/spec.md) defines the binding, the todo→notification mapping, delivery semantics, and the two-way (reply/permission) mapping.
 * A test asserts a created/assigned todo to a channel-attached consumer emits exactly one `notifications/claude/channel` whose `meta.todo_id` matches, and that `meta` keys are identifier-safe.
 * A test asserts that with **no** attached session the todo remains `pending` and is later drained by pull — **no loss** (push failure is non-fatal).
 * A test asserts duplicate notifies do not cause double-processing (dedup + idempotent claim).
@@ -100,5 +100,5 @@ flowchart LR
 * The vended endpoint that carries the `claude/channel` capability: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
 * Human consent that permission-relay accelerates (still durable todos): [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md).
 * The human-side push analogue (SSE web UI): [ADR-0001](ADR-0001-web-stack-go-htmx-pico.md).
-* Delivery contract, message mapping, two-way + limits: [channel-delivery spec](../specs/channel-delivery.md).
+* Delivery contract, message mapping, two-way + limits: [channel-delivery spec](../openspec/specs/channels/spec.md).
 * Claude Code Channels reference: <https://code.claude.com/docs/en/channels-reference>. MCP: <https://modelcontextprotocol.io/>.

@@ -135,7 +135,7 @@ CREATE TABLE adapters (
 CREATE TABLE settings ( key text PRIMARY KEY, value text NOT NULL );
 ```
 
-The multi-tenant tables — human accounts, agents, vended endpoints (scope + webhook ceiling), and friend edges — are detailed in the [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md); they live in this same database so a vended endpoint's scope, an agent's owner, and a todo's queue are joinable and enforced transactionally.
+The multi-tenant tables — human accounts, agents, vended endpoints (scope + webhook ceiling), and friend edges — are detailed in the [accounts-and-endpoints spec](../openspec/specs/vended-endpoints/spec.md); they live in this same database so a vended endpoint's scope, an agent's owner, and a todo's queue are joinable and enforced transactionally.
 
 ### Retention
 
@@ -202,8 +202,8 @@ flowchart LR
 
 ## More Information
 
-* Todo object and lifecycle this schema backs: [ADR-0007](ADR-0007-todos-as-core-primitive.md), [todos spec](../specs/todos.md).
-* Store-then-ack coupling the transactional insert enables: [ADR-0014](ADR-0014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](../specs/ingestion-adapters.md).
-* Multi-tenant tables (accounts, endpoints, edges): [accounts-and-endpoints spec](../specs/accounts-and-endpoints.md).
+* Todo object and lifecycle this schema backs: [ADR-0007](ADR-0007-todos-as-core-primitive.md), [todos spec](../openspec/specs/todo-queue/spec.md).
+* Store-then-ack coupling the transactional insert enables: [ADR-0014](ADR-0014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](../openspec/specs/webhook-ingestion/spec.md).
+* Multi-tenant tables (accounts, endpoints, edges): [accounts-and-endpoints spec](../openspec/specs/vended-endpoints/spec.md).
 * Trust columns and header redaction: [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md). Read surfaces: [ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md).
 * `pgx`: <https://github.com/jackc/pgx>. `SKIP LOCKED` queue pattern: <https://www.postgresql.org/docs/current/sql-select.html>. `LISTEN`/`NOTIFY`: <https://www.postgresql.org/docs/current/sql-notify.html>.

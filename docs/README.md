@@ -1,108 +1,120 @@
 # switchboard — Design Docs Index
 
-Switchboard is **docs-first**: these architecture decision records (`docs/adr/`) and specs
-(`docs/specs/`) are the canonical design record. Application code is written *fresh from these
-documents*. The published site renders this tree via `docs-site/scripts/build-docs.mjs`.
+Switchboard's design record is **SDD-canonical**: [Architecture Decision Records](adrs/) in
+`docs/adrs/` capture the *decisions*; [OpenSpec specifications](openspec/specs/) in
+`docs/openspec/specs/` formalize the *requirements* (RFC 2119 + WHEN/THEN scenarios) that realize
+those decisions; and machine-readable [reference contracts](reference/) live in `docs/reference/`.
+The published site renders this tree via `docs-site/scripts/build-docs.mjs`.
 
 New here? Start with the **[PRFAQ](prfaq.md)** (working-backwards press release + FAQ) for what
-Switchboard is and why, then dive into the decisions below.
+Switchboard is and why, then read the decisions and specs below.
 
 Two layers:
 
-- **Event-store core (ADR-0000–005)** — receive, verify, persist, and expose inbound webhooks/queue
-  events to MCP clients and a local web UI.
-- **Agent layer (ADR-0007–014)** — inbound events become durable **todos**; humans register agents and
-  are vended scoped MCP endpoints; personas are A2A Agent Cards; cross-agent work is granted by
-  human-approved friending; and todos are pushed into live harness sessions over Claude Code Channels,
-  with the durable queue staying the ledger.
-- **Cross-cutting** — [ADR-0015](adr/ADR-0015-implementation-language-go.md) pins the implementation language (**Go**).
+- **Event-store core** — receive, verify, persist, and expose inbound webhooks/queue events to MCP
+  clients and a local web UI.
+- **Agent layer** — inbound events become durable **todos**; humans register agents and are vended
+  scoped MCP endpoints; personas are A2A Agent Cards; cross-agent work is granted by human-approved
+  friending; and todos are pushed into live harness sessions over Claude Code Channels, with the
+  durable queue staying the ledger.
+- **Cross-cutting** — [ADR-0015](adrs/ADR-0015-implementation-language-go.md) pins the
+  implementation language (**Go**).
 
 ## Architecture Decision Records (MADR)
 
 | ADR | Title | One-line |
 |-----|-------|----------|
-| [ADR-0000](adr/ADR-0000-project-naming-and-scope.md) | Project naming & scope | The project is `switchboard`; MVP scope ratified. |
-| [ADR-0001](adr/ADR-0001-web-stack-go-htmx-pico.md) | Web stack | Go `net/http` + chi, `html/template`, HTMX + Pico.css; assets embedded via `embed.FS`. |
-| [ADR-0002](adr/ADR-0002-postgres-persistence-and-retention.md) | PostgreSQL persistence & retention | Postgres queue store: SKIP LOCKED claims, ON CONFLICT dedup, partial pending index, age + row-cap pruning. |
-| [ADR-0003](adr/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types & trust | Two families (webhook/queue); webhook trust `signed`/`token`/`open`; queue trust = broker connection. |
-| [ADR-0005](adr/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay`/`list_providers` + recent-events resource. |
-| [ADR-0007](adr/ADR-0007-todos-as-core-primitive.md) | **Todos as the core primitive** | Durable work-items (lease/ack/idempotency), not a message inbox. |
-| [ADR-0008](adr/ADR-0008-human-principal-vended-endpoints.md) | **Human principal + vended endpoints** | Humans authenticate; agents get vended scoped MCP endpoints; IdP holds humans only. |
-| [ADR-0009](adr/ADR-0009-personas-as-scoped-agent-cards.md) | **Personas as scoped Agent Cards** | One agent → many personas; a persona is a verb-subset, advertised as an A2A card. |
-| [ADR-0010](adr/ADR-0010-a2a-discovery-human-vended-friending.md) | **A2A discovery + human-vended friending** | A2A discovers; MCP tools; todo-queue transports; approval-is-vend. |
-| [ADR-0011](adr/ADR-0011-identity-assurance-oidc-passkey-deferred.md) | **Identity & assurance** | Simple OIDC (Pocket ID) now; passkey `amr`/`acr` step-up deferred. |
-| [ADR-0012](adr/ADR-0012-agents-self-manage-webhooks.md) | **Agents self-manage webhooks** | Webhook CRUD within a human-vended ceiling; switchboard owns verification. |
-| [ADR-0013](adr/ADR-0013-channels-push-delivery.md) | **Channels push-delivery** | Claude Code Channels pushes into a live session as a notify layer; the durable todo queue stays the ledger. |
-| [ADR-0014](adr/ADR-0014-ingestion-adapters-push-pull.md) | **Ingestion adapters (push/pull)** | Push (webhook) + pull (queue) families → todos; Redis is the reference pull adapter; store-then-ack couples the source ack to the todo. |
-| [ADR-0015](adr/ADR-0015-implementation-language-go.md) | **Implementation language = Go** | Go for the concurrent queue service: goroutine workers, single static binary, official Go MCP/A2A SDKs, `pgx` + `SKIP LOCKED`. |
+| [ADR-0000](adrs/ADR-0000-project-naming-and-scope.md) | Project naming & scope | The project is `switchboard`; MVP scope ratified. |
+| [ADR-0001](adrs/ADR-0001-web-stack-go-htmx-pico.md) | Web stack | Go `net/http` + chi, `html/template`, HTMX + Pico.css; assets embedded via `embed.FS`. |
+| [ADR-0002](adrs/ADR-0002-postgres-persistence-and-retention.md) | PostgreSQL persistence & retention | Postgres queue store: SKIP LOCKED claims, ON CONFLICT dedup, partial pending index, age + row-cap pruning. |
+| [ADR-0003](adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types & trust | Two families (webhook/queue); webhook trust `signed`/`token`/`open`; queue trust = broker connection. |
+| [ADR-0005](adrs/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay`/`list_providers` + recent-events resource. |
+| [ADR-0007](adrs/ADR-0007-todos-as-core-primitive.md) | **Todos as the core primitive** | Durable work-items (lease/ack/idempotency), not a message inbox. |
+| [ADR-0008](adrs/ADR-0008-human-principal-vended-endpoints.md) | **Human principal + vended endpoints** | Humans authenticate; agents get vended scoped MCP endpoints; IdP holds humans only. |
+| [ADR-0009](adrs/ADR-0009-personas-as-scoped-agent-cards.md) | **Personas as scoped Agent Cards** | One agent → many personas; a persona is a verb-subset, advertised as an A2A card. |
+| [ADR-0010](adrs/ADR-0010-a2a-discovery-human-vended-friending.md) | **A2A discovery + human-vended friending** | A2A discovers; MCP tools; todo-queue transports; approval-is-vend. |
+| [ADR-0011](adrs/ADR-0011-identity-assurance-oidc-passkey-deferred.md) | **Identity & assurance** | Simple OIDC (Pocket ID) now; passkey `amr`/`acr` step-up deferred. |
+| [ADR-0012](adrs/ADR-0012-agents-self-manage-webhooks.md) | **Agents self-manage webhooks** | Webhook CRUD within a human-vended ceiling; switchboard owns verification. |
+| [ADR-0013](adrs/ADR-0013-channels-push-delivery.md) | **Channels push-delivery** | Claude Code Channels pushes into a live session as a notify layer; the durable todo queue stays the ledger. |
+| [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) | **Ingestion adapters (push/pull)** | Push (webhook) + pull (queue) families → todos; Redis is the reference pull adapter; store-then-ack couples the source ack to the todo. |
+| [ADR-0015](adrs/ADR-0015-implementation-language-go.md) | **Implementation language = Go** | Go for the concurrent queue service: goroutine workers, single static binary, official Go MCP/A2A SDKs, `pgx` + `SKIP LOCKED`. |
 
-## Specifications
+## OpenSpec Specifications
 
-| Spec | Covers |
-|------|--------|
-| [openapi.yaml](specs/openapi.yaml) | HTTP surface: webhook ingestion endpoints + web-UI routes. |
-| [asyncapi.yaml](specs/asyncapi.yaml) | SSE stream for the live web UI. |
-| [mcp-tools.md](specs/mcp-tools.md) | Event-history MCP contract (`list`/`get`/`replay`/`list_providers`). |
-| [todos.md](specs/todos.md) | Todo object schema + state machine (ADR-0007). |
-| [agent-mcp-tools.md](specs/agent-mcp-tools.md) | Vended-endpoint MCP tools: todos, webhook CRUD, friending verbs (ADR-0008/010/012). |
-| [ingestion-adapters.md](specs/ingestion-adapters.md) | Push (webhook) + pull (queue) adapters, shared verification/idempotency/normalization → todos, pull store-then-ack coupling, routing rules (ADR-0014/003/007). |
-| [personas-and-agent-cards.md](specs/personas-and-agent-cards.md) | Persona record, verb→skill derivation, A2A Agent Card + well-known (ADR-0009). |
-| [friend-requests.md](specs/friend-requests.md) | Discover → request → approval-todo → approve(=vend) flow (ADR-0010). |
-| [accounts-and-endpoints.md](specs/accounts-and-endpoints.md) | Human OIDC account, agent registration, vend/scope/ceiling (ADR-0008/011/012). |
-| [channel-delivery.md](specs/channel-delivery.md) | Channels push: todo→notification mapping, lossy/degrade-to-pull semantics, two-way reply/permission relay (ADR-0013). |
+Each capability is a paired artifact: `spec.md` (requirements) + `design.md` (architecture &
+rationale). Grouped by layer, in dependency order.
+
+| SPEC | Capability | Realizes | Covers |
+|------|-----------|----------|--------|
+| [SPEC-0004](openspec/specs/persistence/spec.md) | Persistence | ADR-0002 | PostgreSQL as sole ledger, pgx pool lifecycle, migrations, schema/indexes, LISTEN/NOTIFY, retention. |
+| [SPEC-0003](openspec/specs/todo-queue/spec.md) | Todo work-queue | ADR-0007 | Four-state lifecycle, SKIP LOCKED claim, visibility window + heartbeat, lease reaper, idempotent enqueue. |
+| [SPEC-0001](openspec/specs/webhook-ingestion/spec.md) | Webhook ingestion (push) | ADR-0003, 0014 | Signed/token/open verification, replay window, idempotency-key extraction, enqueue-as-todo. |
+| [SPEC-0002](openspec/specs/queue-adapters/spec.md) | Queue adapters (pull) | ADR-0014, 0003 | Adapter interface, poll-loop lifecycle, store-then-ack, Redis reference adapter. |
+| [SPEC-0005](openspec/specs/mcp-tools/spec.md) | MCP tool contract | ADR-0005 | Tool/resource shape, JSON schemas, transport, event-history surface. |
+| [SPEC-0006](openspec/specs/agent-tools/spec.md) | Agent-facing MCP tools | ADR-0012, 0005 | Todo drain (claim/complete/fail/heartbeat) + webhook self-management within a vended ceiling. |
+| [SPEC-0007](openspec/specs/vended-endpoints/spec.md) | Vended MCP endpoints | ADR-0008 | (URL + credential) = scoped capability, hashed at rest, immutable scope, revoke = kill. |
+| [SPEC-0008](openspec/specs/identity/spec.md) | Human identity & assurance | ADR-0011 | OIDC (Pocket ID) login, session establishment, deferred passkey step-up. |
+| [SPEC-0009](openspec/specs/personas/spec.md) | Personas as Agent Cards | ADR-0009 | Persona record, verb→skill derivation, A2A Agent Card + well-known endpoint. |
+| [SPEC-0010](openspec/specs/friending/spec.md) | A2A friending | ADR-0010 | Discover → request → approval-todo → approve(=vend); per-direction, revocable, non-transitive. |
+| [SPEC-0011](openspec/specs/channels/spec.md) | Channels push delivery | ADR-0013 | `claude/channel` capability + notification, best-effort/lossy, degrade-to-pull. |
+| [SPEC-0012](openspec/specs/web-ui/spec.md) | Web UI | ADR-0001 | Server-rendered dashboard (html/template + HTMX + Pico.css + SSE), embedded assets. |
+
+## Reference Contracts
+
+Machine-readable interface definitions in `docs/reference/`:
+
+| Contract | Covers |
+|----------|--------|
+| [openapi.yaml](reference/openapi.yaml) | HTTP surface: webhook ingestion endpoints + web-UI routes. |
+| [asyncapi.yaml](reference/asyncapi.yaml) | SSE stream for the live web UI. |
 
 ## Open questions / to confirm
 
-Decisions recorded as *proposed* that Joe should confirm before the code session locks them in:
+Decisions recorded as *proposed* that Joe should confirm before the code hardens them in. Each is
+also tracked in the relevant spec's `design.md` **Open Questions** section.
 
 1. **Immutable vs. mutable vended scope** *(proposed: immutable)* —
-   [ADR-0008](adr/ADR-0008-human-principal-vended-endpoints.md), [accounts-and-endpoints spec](specs/accounts-and-endpoints.md).
-   A vended endpoint's scope is proposed **immutable**: change access by revoke + re-vend, not in-place
-   edit. Simpler to audit (a URL+credential always means one fixed power set); the alternative (mutable
-   scope) is more convenient but reintroduces "when/who changed this scope" ambiguity. **Confirm.**
+   [ADR-0008](adrs/ADR-0008-human-principal-vended-endpoints.md),
+   [SPEC-0007](openspec/specs/vended-endpoints/spec.md). A vended endpoint's scope is proposed
+   **immutable**: change access by revoke + re-vend, not in-place edit. **Confirm.**
 
 2. **Passkey `amr`/`acr` step-up — deferred hardening (must not be crossed silently)** —
-   [ADR-0011](adr/ADR-0011-identity-assurance-oidc-passkey-deferred.md), [friend-requests spec](specs/friend-requests.md).
-   Today switchboard trusts the passkey-only Pocket ID issuer and does **not** enforce a
-   phishing-resistant `amr`/`acr` claim on consent actions. **Before federating to / accepting
-   provenance from any non-passkey IdP**, it MUST require such a claim on friend approvals. Note there
-   is **no standard `amr` value for "passkey"** (RFC 8176: `hwk`/`swk`/`pop`/`mfa`; passkey ≈ `hwk`+`pop`,
-   a `phr` marker, or an agreed `acr`) — the exact value/level is TBD at that time.
+   [ADR-0011](adrs/ADR-0011-identity-assurance-oidc-passkey-deferred.md),
+   [SPEC-0008](openspec/specs/identity/spec.md). Before federating to / accepting provenance from any
+   non-passkey IdP, switchboard MUST require a phishing-resistant `amr`/`acr` claim on friend
+   approvals. Exact value/level TBD (RFC 8176 has no standard "passkey" `amr`). **Confirm.**
 
-3. **Event/todo seam** —
-   [ADR-0007](adr/ADR-0007-todos-as-core-primitive.md).
-   The ADR-0005 event tools (history/audit) and the todo tools (work) are currently two surfaces sharing
-   one PostgreSQL layer, with events as todo producers. Whether they remain two surfaces indefinitely, or
-   whether events collapse into a pure sub-record of todos, is left to confirm.
+3. **Event/todo seam** — [ADR-0007](adrs/ADR-0007-todos-as-core-primitive.md),
+   [SPEC-0003](openspec/specs/todo-queue/spec.md). The event tools (history/audit) and the todo tools
+   (work) are two surfaces over one PostgreSQL layer, events as todo producers. Whether they stay two
+   surfaces or events collapse into a sub-record of todos is left to confirm.
 
 4. **Channels push: notification-only vs. inline payload** *(proposed: notification-only)* —
-   [ADR-0013](adr/ADR-0013-channels-push-delivery.md), [channel-delivery spec](specs/channel-delivery.md).
-   A Channels wake carries the todo id + summary and the agent claims via the queue; whether to also
-   inline a small payload in the push is left to confirm.
+   [ADR-0013](adrs/ADR-0013-channels-push-delivery.md),
+   [SPEC-0011](openspec/specs/channels/spec.md). **Confirm.**
 
 5. **Channels two-way (reply tool + permission relay): MVP or defer** *(proposed: defer)* —
-   [ADR-0013](adr/ADR-0013-channels-push-delivery.md).
-   One-way notify first; the reply tool and human-consent permission relay (mapping onto todo
-   completion and friend approvals) are recommended for a later phase. **Confirm.**
+   [ADR-0013](adrs/ADR-0013-channels-push-delivery.md),
+   [SPEC-0011](openspec/specs/channels/spec.md). **Confirm.**
 
 6. **Channels transport: HTTP-direct vs. local stdio adapter** —
-   [ADR-0013](adr/ADR-0013-channels-push-delivery.md), [channel-delivery spec](specs/channel-delivery.md).
-   If Claude Code Channels can use the Streamable HTTP MCP transport, switchboard serves channels
-   directly over HTTP (no separate process). If Channels stays stdio-subprocess-only, a thin Go stdio
-   adapter bridges to central switchboard with the vended credential. Language-independent (Go either
-   way); the transport + handshake shape is a code-session detail to confirm.
+   [ADR-0013](adrs/ADR-0013-channels-push-delivery.md),
+   [SPEC-0011](openspec/specs/channels/spec.md). Language-independent (Go either way); handshake shape
+   is a code-session detail. **Confirm.**
 
 7. **Pull-adapter ack timing: ack-on-store vs. ack-on-complete** *(proposed: ack-on-store)* —
-   [ADR-0014](adr/ADR-0014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](specs/ingestion-adapters.md).
-   A pull adapter acks the source message once the todo is **durably stored** (the durability boundary);
-   optionally it could defer the ack until the todo is **completed** for stronger end-to-end coupling at
-   the cost of holding redelivery state longer. **Confirm.**
+   [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md),
+   [SPEC-0002](openspec/specs/queue-adapters/spec.md). **Confirm.**
 
 ## Conventions
 
-- **ADRs:** MADR format, `docs/adr/ADR-NNN-kebab-title.md`, front-matter `status`/`date`/
-  `decision-makers`/`related`. Numbering is monotonic; new ADRs append.
-- **Specs:** `docs/specs/*.md` (+ the two OpenAPI/AsyncAPI YAML files). Cross-reference the ADR(s) they
-  implement; ADRs cross-reference the spec(s) that realize them.
-- **Rendering:** `docs-site/scripts/build-docs.mjs` auto-discovers all `ADR-*.md` and all `*.md` specs;
-  new files appear on the site without further wiring.
+- **ADRs:** MADR format, `docs/adrs/ADR-XXXX-kebab-title.md` (4-digit), front-matter `status`/`date`/
+  `decision-makers`/`related`. Numbering is monotonic; new ADRs append (retired numbers keep their gap).
+- **Specs:** OpenSpec pairs at `docs/openspec/specs/{capability}/{spec.md,design.md}`, numbered
+  `SPEC-XXXX`. `spec.md` uses RFC 2119 + `#### Scenario` WHEN/THEN; `design.md` carries the Mermaid
+  architecture. Frontmatter `implements: [ADR-XXXX]` links each spec to the ADR(s) it realizes.
+- **Reference:** machine-readable contracts at `docs/reference/*.yaml`.
+- **Rendering:** `docs-site/scripts/build-docs.mjs` auto-discovers all `ADR-*.md`, every
+  `openspec/specs/*/` pair, and the reference YAMLs; new files appear on the site without further wiring.
+- **Tooling:** managed with the [SDD plugin](https://github.com/joestump/claude-plugin-sdd)
+  (`/sdd:adr`, `/sdd:spec`, `/sdd:plan`, …). See the repo `CLAUDE.md`.

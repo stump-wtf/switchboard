@@ -1,0 +1,196 @@
+asyncapi: 3.0.0
+
+# switchboard — SSE event schema.
+# The `/events` endpoint (defined as an HTTP GET in docs/specs/openapi.yaml) is a
+# text/event-stream. This document specifies the *messages* that flow over it: the named
+# SSE events the browser subscribes to via htmx-ext-sse, and their payload shapes.
+#
+# Direction: the application (server) SENDS; the browser (and any other SSE client) RECEIVES.
+# The `x-sse-event-name` on each message is the value of the SSE `event:` field an
+# `hx-ext="sse"` element targets with `sse-swap="..."`.
+#
+# Payload shapes intentionally mirror docs/specs/openapi.yaml #/components/schemas so the
+# HTTP, SSE, and MCP (docs/specs/mcp-tools.md) surfaces never drift.
+
+info:
+  title: switchboard SSE stream
+  version: 0.1.0
+  description: |
+    Server-Sent Events broadcast to the local web UI when switchboard accepts a new event or
+    when the status strip needs refreshing. Transport is SSE over the HTTP `/events` endpoint;
+    reconnection is standard SSE (the server advertises `retry:` = `sse_retry_ms`, and clients may
+    resume with `Last-Event-ID`).
+  license:
+    name: MIT
+    url: https://github.com/joestump/switchboard/blob/main/LICENSE
+
+defaultContentType: application/json
+
+servers:
+  local:
+    host: 127.0.0.1:8080
+    protocol: http
+    description: |
+      Loopback-bound default (MVP). The SSE stream is served at `GET /events` (see openapi.yaml).
+      If exposed on the LAN it MUST sit behind Caddy forward_auth (ADR-001).
+
+channels:
+  events:
+    address: /events
+    title: Live event stream (SSE)
+    description: |
+      A single `text/event-stream`. The server emits named SSE events (`event-received`, `status`)
+      and periodic keep-alive comments. DOM elements subscribe to individual event names via
+      `htmx-ext-sse` (`sse-swap="event-received"`, `sse-swap="status"`).
+    messages:
+      eventReceived:
+        $ref: '#/components/messages/EventReceived'
+      statusSnapshot:
+        $ref: '#/components/messages/StatusSnapshot'
+    bindings:
+      http:
+        # SSE has no dedicated AsyncAPI binding; it is GET-established and long-lived.
+        method: GET
+        bindingVersion: '0.3.0'
+
+operations:
+  broadcastEventReceived:
+    action: send
+    title: Broadcast a newly accepted event
+    description: |
+      Emitted once per accepted event (from ANY ingestion path — signed HTTP, generic HTTP, or the
+      Redis consumer) immediately after it is persisted. The log screen prepends a row; the
+      dashboard updates its per-provider counters.
+    channel:
+      $ref: '#/channels/events'
+    messages:
+      - $ref: '#/channels/events/messages/eventReceived'
+
+  broadcastStatus:
+    action: send
+    title: Broadcast a status-strip snapshot
+    description: |
+      Emitted on a heartbeat interval and whenever ingestion activity transitions the connection
+      indicator between `receiving` and `idle`. Drives the dashboard health strip.
+    channel:
+      $ref: '#/channels/events'
+    messages:
+      - $ref: '#/channels/events/messages/statusSnapshot'
+
+components:
+  messages:
+    EventReceived:
+      name: event-received
+      title: New event accepted
+      summary: A webhook/queue event was accepted and persisted.
+      contentType: application/json
+      x-sse-event-name: event-received
+      payload:
+        $ref: '#/components/schemas/EventSummary'
+      examples:
+        - name: githubPush
+          payload:
+            id: 4213
+            provider: github
+            event_type: push
+            trust_mode: signed
+            verified: true
+            payload_size: 8421
+            received_at: '2026-07-05T18:03:21.442Z'
+        - name: dockerhubUnverified
+          payload:
+            id: 4214
+            provider: 'generic:dockerhub'
+            event_type: null
+            trust_mode: token
+            verified: false
+            payload_size: 512
+            received_at: '2026-07-05T18:04:02.101Z'
+
+    StatusSnapshot:
+      name: status
+      title: Status-strip snapshot
+      summary: Connection state + per-provider recent counts and last-seen timestamps.
+      contentType: application/json
+      x-sse-event-name: status
+      payload:
+        $ref: '#/components/schemas/StatusSnapshot'
+      examples:
+        - name: receiving
+          payload:
+            connection: receiving
+            generated_at: '2026-07-05T18:04:05.000Z'
+            providers:
+              - name: github
+                trust_mode: signed
+                enabled: true
+                recent_count: 12
+                last_event_at: '2026-07-05T18:03:21.442Z'
+              - name: 'generic:dockerhub'
+                trust_mode: token
+                enabled: true
+                recent_count: 1
+                last_event_at: '2026-07-05T18:04:02.101Z'
+              - name: 'redis:deploys'
+                trust_mode: queue
+                enabled: true
+                recent_count: 3
+                last_event_at: '2026-07-05T17:58:40.000Z'
+
+  schemas:
+    TrustMode:
+      type: string
+      description: How the event's authenticity is established (ADR-003).
+      enum: [signed, token, open, queue]
+
+    EventSummary:
+      type: object
+      description: |
+        Compact event row. Identical to openapi.yaml #/components/schemas/EventSummary and to the
+        MCP `EventSummary` (mcp-tools.md). No payload/headers on the stream — the detail view /
+        MCP `get` fetches those on demand.
+      required: [id, provider, trust_mode, verified, payload_size, received_at]
+      properties:
+        id: { type: integer, format: int64 }
+        provider: { type: string }
+        event_type:
+          type: [string, 'null']
+        trust_mode:
+          $ref: '#/components/schemas/TrustMode'
+        verified:
+          type: boolean
+          description: true ONLY for a signed provider whose signature passed.
+        payload_size:
+          type: integer
+          description: Raw body size in bytes.
+        received_at:
+          type: string
+          format: date-time
+
+    StatusSnapshot:
+      type: object
+      description: Dashboard health-strip payload.
+      required: [connection, generated_at, providers]
+      properties:
+        connection:
+          type: string
+          enum: [receiving, idle]
+          description: '`receiving` if events arrived within the activity window, else `idle`.'
+        generated_at:
+          type: string
+          format: date-time
+        providers:
+          type: array
+          items:
+            type: object
+            required: [name, trust_mode, enabled, recent_count]
+            properties:
+              name: { type: string }
+              trust_mode: { $ref: '#/components/schemas/TrustMode' }
+              enabled: { type: boolean }
+              recent_count:
+                type: integer
+                description: Count of events in the recent window (e.g. last 24h).
+              last_event_at:
+                type: [string, 'null']
+                format: date-time

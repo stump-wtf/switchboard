@@ -1,7 +1,8 @@
 // @ts-check
 // Docusaurus config for the switchboard docs site.
-// Renders the ADRs (docs/adr) and specs (docs/specs) — transformed into docs-generated/ by
-// scripts/build-docs.mjs at build time — with mermaid diagrams and the switchboard-era theme.
+// Renders the ADRs (docs/adrs), OpenSpec specs (docs/openspec/specs), and reference contracts
+// (docs/reference) — transformed into docs-generated/ by scripts/build-docs.mjs at build time —
+// with mermaid diagrams and the switchboard-era theme.
 //
 // Published to GitHub Pages at https://joestump.github.io/switchboard/ (baseUrl /switchboard/).
 
@@ -64,6 +65,7 @@ const config = {
           { to: '/prfaq', label: 'PRFAQ', position: 'left' },
           { to: '/decisions', label: 'Decisions', position: 'left' },
           { to: '/specs', label: 'Specs', position: 'left' },
+          { to: '/reference', label: 'Reference', position: 'left' },
           { href: GITHUB_URL, label: 'GitHub', position: 'right' },
         ],
       },
@@ -76,6 +78,7 @@ const config = {
               { label: 'PRFAQ', to: '/prfaq' },
               { label: 'Decisions (ADRs)', to: '/decisions' },
               { label: 'Specifications', to: '/specs' },
+              { label: 'Reference', to: '/reference' },
             ],
           },
           {

@@ -49,7 +49,7 @@ A2A is the **outward-facing** face (discovery/announcement). The **inward-facing
 2. **Request (a pending edge that grants nothing).** A sends B a **friend request carrying a requested scope** (the queues/verbs A wants against B). This creates a **pending edge**: it confers **no access** until approved.
 3. **Approval lands as a todo.** The approval request is delivered as a **todo in the target human's own queue** — switchboard dogfooding its own primitive ([ADR-0007](ADR-0007-todos-as-core-primitive.md)). The todo carries a crisp **who / why / requested-scope** summary.
 4. **Approval is the vend.** The target **human** approves — and may **narrow** — the requested scope. That act of approval **mints the scoped MCP endpoint** ([ADR-0008](ADR-0008-human-principal-vended-endpoints.md)) granting A the approved (possibly narrowed) access to B. Approval *is* vending; there is no separate step.
-5. **Work flows as todos.** Thereafter, A hands B work by **creating todos** in B's granted queue (`create_for`, [agent-mcp-tools spec](../specs/agent-mcp-tools.md)) — durable, owned, dedup'd, leaseable. **Not** via A2A's direct peer task transport.
+5. **Work flows as todos.** Thereafter, A hands B work by **creating todos** in B's granted queue (`create_for`, [agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md)) — durable, owned, dedup'd, leaseable. **Not** via A2A's direct peer task transport.
 
 ### Rules on the edge
 
@@ -82,7 +82,7 @@ A2A *can* carry a task straight from A to B. Switchboard deliberately **does not
 
 ### Confirmation
 
-* The [friend-requests spec](../specs/friend-requests.md) defines the end-to-end sequence, the pending-edge state, the approval-todo shape, per-direction/revocation/non-transitivity, and the provenance requirement.
+* The [friend-requests spec](../openspec/specs/friending/spec.md) defines the end-to-end sequence, the pending-edge state, the approval-todo shape, per-direction/revocation/non-transitivity, and the provenance requirement.
 * A test asserts a friend request creates a pending edge that grants **no** access until approved.
 * A test asserts approval mints a scoped endpoint whose scope is `requested ∩ human-narrowing` (never wider than requested, never wider than the human allows).
 * A test asserts A→B approval does not grant B→A (per-direction) and that revocation of one edge leaves the other intact.
@@ -136,5 +136,5 @@ sequenceDiagram
 * Why approval-is-vend and endpoints are the capability: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
 * What is discovered (personas as Agent Cards): [ADR-0009](ADR-0009-personas-as-scoped-agent-cards.md).
 * Provenance/assurance posture and the deferred hardening for cross-IdP federation: [ADR-0011](ADR-0011-identity-assurance-oidc-passkey-deferred.md).
-* Full flow, states, and message shapes: [friend-requests spec](../specs/friend-requests.md); the verbs (`send_friend_request`, `list_pending_approvals`, `approve`/`deny`, `revoke`): [agent-mcp-tools spec](../specs/agent-mcp-tools.md).
+* Full flow, states, and message shapes: [friend-requests spec](../openspec/specs/friending/spec.md); the verbs (`send_friend_request`, `list_pending_approvals`, `approve`/`deny`, `revoke`): [agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md).
 * A2A protocol: <https://a2a-protocol.org/>.
