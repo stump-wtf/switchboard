@@ -2,10 +2,10 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-001, ADR-003, ADR-005]
+related: [ADR-0001, ADR-0003, ADR-0005]
 ---
 
-# ADR-000: Project Naming and Scope Confirmation
+# ADR-0000: Project Naming and Scope Confirmation
 
 ## Context and Problem Statement
 
@@ -28,11 +28,11 @@ Before the specs solidify around a name, two things need pinning down: **what th
 
 ## Decision Outcome
 
-Chosen option: **"Option 2 — `switchboard`."** An operator switchboard is precisely this system's job: many incoming lines arrive at one place, an operator verifies each caller, and patches the line through to its destination. Here the "lines" are webhooks and queue events, the "operator" is the per-provider verification and normalization layer ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)), and the "destinations" are the MCP tools/resources ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)) and the live web UI. The name is both accurate and memorable, which is rare enough to be worth choosing over the literal-but-forgettable placeholder.
+Chosen option: **"Option 2 — `switchboard`."** An operator switchboard is precisely this system's job: many incoming lines arrive at one place, an operator verifies each caller, and patches the line through to its destination. Here the "lines" are webhooks and queue events, the "operator" is the per-provider verification and normalization layer ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)), and the "destinations" are the MCP tools/resources ([ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md)) and the live web UI. The name is both accurate and memorable, which is rare enough to be worth choosing over the literal-but-forgettable placeholder.
 
 This reverses the instinct to default to the `<domain>-mcp` convention (`paperless-mcp`): that convention optimizes for legibility, but `switchboard` delivers legibility *through* metaphor while also being distinctive. The `-mcp` suffix is dropped deliberately — MCP is one interface this project exposes, not its identity (it also serves a web UI and consumes a Redis queue). The descriptive hyphenated names (Option 3) are longer without adding information the metaphor doesn't already carry.
 
-The metaphor also gives the project a coherent **visual identity**: the UI palette and docs-site theme draw on the era of manual telephone exchanges — brass, bakelite, operator-cream, oxblood, and patch-cable tones (see [ADR-001](ADR-001-web-stack-go-htmx-pico.md) and `static/tokens.css`).
+The metaphor also gives the project a coherent **visual identity**: the UI palette and docs-site theme draw on the era of manual telephone exchanges — brass, bakelite, operator-cream, oxblood, and patch-cable tones (see [ADR-0001](ADR-0001-web-stack-go-htmx-pico.md) and `static/tokens.css`).
 
 ### Scope confirmation
 
@@ -41,16 +41,16 @@ This ADR also ratifies the scope the rest of the documents assume:
 **In scope for the MVP:**
 
 * Receive and persist events from at least two *signed* providers end-to-end (GitHub + one other) to prove the abstraction.
-* Prove all three trust models: one signed provider, the generic/unverified endpoint (Docker Hub routed through it), and the Redis queue consumer ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)).
-* MCP tool surface exposing history / detail / replay ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
+* Prove all three trust models: one signed provider, the generic/unverified endpoint (Docker Hub routed through it), and the Redis queue consumer ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)).
+* MCP tool surface exposing history / detail / replay ([ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md)).
 * A local-only, 4-screen web UI updating live via SSE.
-* PostgreSQL persistence and retention ([ADR-002](ADR-002-postgres-persistence-and-retention.md)).
+* PostgreSQL persistence and retention ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)).
 
 **Out of scope for the MVP:**
 
 * Outbound webhook delivery/retries (the `replay` tool re-emits on demand; it is not a delivery scheduler).
-* Multi-user auth / RBAC on the web UI — localhost-bound, behind Caddy `forward_auth` if ever exposed ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)).
-* Standing up PostgreSQL's own HA/replication — the app tier can run multiple instances against one PostgreSQL ([ADR-002](ADR-002-postgres-persistence-and-retention.md)), but operating Postgres in HA is deferred.
+* Multi-user auth / RBAC on the web UI — localhost-bound, behind Caddy `forward_auth` if ever exposed ([ADR-0001](ADR-0001-web-stack-go-htmx-pico.md)).
+* Standing up PostgreSQL's own HA/replication — the app tier can run multiple instances against one PostgreSQL ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)), but operating Postgres in HA is deferred.
 * Provider-side webhook management (registering webhooks via provider APIs).
 
 **The canonical design record** is the ADRs (`docs/adr/`) and specs (`docs/specs/`) under `docs/`.
@@ -113,7 +113,7 @@ flowchart LR
 
 ## More Information
 
-* The `webhook-mcp` working name is from the project brief §1; the "rename if a better name lands during ADR-000" instruction is honored here by choosing `switchboard`.
+* The `webhook-mcp` working name is from the project brief §1; the "rename if a better name lands during ADR-0000" instruction is honored here by choosing `switchboard`.
 * Scope statement consolidates brief §2 (goals/non-goals) and the §5/§13 "docs-only this session" instruction.
-* Visual identity (throwback switchboard-era palette): [ADR-001](ADR-001-web-stack-go-htmx-pico.md), `static/tokens.css`.
-* Related decisions: [ADR-001](ADR-001-web-stack-go-htmx-pico.md), [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md).
+* Visual identity (throwback switchboard-era palette): [ADR-0001](ADR-0001-web-stack-go-htmx-pico.md), `static/tokens.css`.
+* Related decisions: [ADR-0001](ADR-0001-web-stack-go-htmx-pico.md), [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md), [ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md).

@@ -2,18 +2,18 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-000, ADR-002, ADR-005, ADR-015]
+related: [ADR-0000, ADR-0002, ADR-0005, ADR-0015]
 ---
 
-# ADR-001: Web/UI Stack — Go net/http + chi, html/template, HTMX + Pico.css, Inline-SVG Icons
+# ADR-0001: Web/UI Stack — Go net/http + chi, html/template, HTMX + Pico.css, Inline-SVG Icons
 
 ## Context and Problem Statement
 
-`switchboard` is implemented in **Go** ([ADR-015](ADR-015-implementation-language-go.md)) and serves several surfaces from one binary: HTTP webhook ingestion endpoints, an MCP server, and a small local-only web UI (4 screens) that updates live via Server-Sent Events. Given Go, the remaining choices are the HTTP router, templating, frontend-interactivity, CSS, and icon approach. This ADR records the chosen web/UI stack and — more importantly — the reasoning behind each rejection, so the code session (and future readers) do not re-argue net/http-vs-a-framework or Tailwind-vs-Pico from scratch. What gives us live-updating screens and clean webhook endpoints with the least weight and the fewest moving parts?
+`switchboard` is implemented in **Go** ([ADR-0015](ADR-0015-implementation-language-go.md)) and serves several surfaces from one binary: HTTP webhook ingestion endpoints, an MCP server, and a small local-only web UI (4 screens) that updates live via Server-Sent Events. Given Go, the remaining choices are the HTTP router, templating, frontend-interactivity, CSS, and icon approach. This ADR records the chosen web/UI stack and — more importantly — the reasoning behind each rejection, so the code session (and future readers) do not re-argue net/http-vs-a-framework or Tailwind-vs-Pico from scratch. What gives us live-updating screens and clean webhook endpoints with the least weight and the fewest moving parts?
 
 ## Decision Drivers
 
-* **One binary, several surfaces.** Webhook endpoints, the MCP server, and the web UI share the event/todo pipeline and a PostgreSQL pool ([ADR-002](ADR-002-postgres-persistence-and-retention.md)). The web layer must compose cleanly with a long-lived MCP server and background goroutines (SSE broadcast, pull-adapter consumers, lease reaper, retention pruning).
+* **One binary, several surfaces.** Webhook endpoints, the MCP server, and the web UI share the event/todo pipeline and a PostgreSQL pool ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)). The web layer must compose cleanly with a long-lived MCP server and background goroutines (SSE broadcast, pull-adapter consumers, lease reaper, retention pruning).
 * **Live updates are first-class.** The status strip and event log update in real time. SSE is the transport; the stack must make SSE + partial HTML updates trivial.
 * **Minimal weight, no Node build.** A bundler or SPA framework is overhead we do not want to own. Assets are **vendored and embedded in the binary** (`embed.FS`) — offline-friendly, CSP-friendly, no runtime CDN.
 * **Server-rendered is the natural shape.** The data lives in PostgreSQL behind the same service; there is no API-first/mobile-client story. Rendering HTML on the server and swapping fragments beats shipping JSON to a client-side framework.
@@ -32,23 +32,23 @@ Grouped by layer (each row is an independent choice):
 
 ## Decision Outcome
 
-Chosen stack: **`net/http` + chi** (router/middleware), **stdlib `html/template`**, **HTMX core + `htmx-ext-sse`** (vendored, not CDN), **Pico.css classless + a small `tokens.css` override**, and **inline SVG icons** (Lucide for UI chrome, Simple Icons for provider/brand marks). SSE is a plain `net/http` handler using **`http.Flusher`** — no extra dependency. All static assets and templates are **embedded via `embed.FS`**, so the whole UI ships inside the single binary ([ADR-015](ADR-015-implementation-language-go.md)).
+Chosen stack: **`net/http` + chi** (router/middleware), **stdlib `html/template`**, **HTMX core + `htmx-ext-sse`** (vendored, not CDN), **Pico.css classless + a small `tokens.css` override**, and **inline SVG icons** (Lucide for UI chrome, Simple Icons for provider/brand marks). SSE is a plain `net/http` handler using **`http.Flusher`** — no extra dependency. All static assets and templates are **embedded via `embed.FS`**, so the whole UI ships inside the single binary ([ADR-0015](ADR-0015-implementation-language-go.md)).
 
 The reasoning per layer:
 
-- **`net/http` + chi over a full framework:** the HTTP surface is *webhook receivers* (raw body + HMAC — we read the raw bytes *before* parsing, [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) and *server-rendered HTML*. `net/http` handles both directly; chi adds only lightweight routing, URL params, and middleware (request id, recovery, timeouts) without imposing a framework's request/response model. Gin/Echo/Fiber bring binding/validation and their own context types that a non-JSON, receiver-shaped service does not need — and Fiber's fasthttp base complicates streaming (SSE) and stdlib-`net/http` interop (which the MCP SDK expects). We hand-author the OpenAPI spec (`docs/specs/openapi.yaml`) precisely because the endpoints are not model-driven.
-- **Goroutines host the long-lived parts.** The MCP server, SSE broadcast, pull-adapter consumers, lease reaper, and pruning run as goroutines under one process — no event-loop or worker-manager gymnastics ([ADR-015](ADR-015-implementation-language-go.md)).
+- **`net/http` + chi over a full framework:** the HTTP surface is *webhook receivers* (raw body + HMAC — we read the raw bytes *before* parsing, [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)) and *server-rendered HTML*. `net/http` handles both directly; chi adds only lightweight routing, URL params, and middleware (request id, recovery, timeouts) without imposing a framework's request/response model. Gin/Echo/Fiber bring binding/validation and their own context types that a non-JSON, receiver-shaped service does not need — and Fiber's fasthttp base complicates streaming (SSE) and stdlib-`net/http` interop (which the MCP SDK expects). We hand-author the OpenAPI spec (`docs/specs/openapi.yaml`) precisely because the endpoints are not model-driven.
+- **Goroutines host the long-lived parts.** The MCP server, SSE broadcast, pull-adapter consumers, lease reaper, and pruning run as goroutines under one process — no event-loop or worker-manager gymnastics ([ADR-0015](ADR-0015-implementation-language-go.md)).
 - **SSE via `http.Flusher`, no library.** Go streams Server-Sent Events with a handler that writes `data:` frames and calls `Flush()`; a broadcast hub fans todo/event updates to subscribed clients. This is a few dozen lines of stdlib, so there is no SSE dependency to vendor.
 - **stdlib `html/template` over a third-party engine:** contextual auto-escaping, zero dependency, and it composes with `embed.FS`. Fragment responses for HTMX swaps are just named templates. A compile-time engine (templ) is nice but adds a codegen step we do not need at this screen count.
 - **HTMX over a SPA:** the screens are server-rendered tables and status strips. HTMX swaps HTML fragments and, via `htmx-ext-sse`, subscribes DOM elements directly to the `/events` stream — live updates with zero client-side state and no build step. A SPA would add a bundler, a JSON API surface we otherwise do not need, and client/server state duplication.
-- **Pico.css over Tailwind/Bootstrap:** Pico is classless — semantic HTML (`<table>`, `<nav>`, `<article>`) is styled out of the box, so templates stay clean and there is no CSS build. A tiny `tokens.css` layer overrides the palette with the project's switchboard-era visual identity — bakelite, brass, operator-cream, oxblood, and patch-cable tones (bakelite-dark by default, operator-cream light), mapped onto Pico's `--pico-*` variables plus trust badge tokens (`signed`/`token`/`open`/`queue`, [ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)). This palette is already committed at [`static/tokens.css`](../../static/tokens.css) and shared with the docs site ([ADR-000](ADR-000-project-naming-and-scope.md)). Tailwind needs a build toolchain and litters markup with utility classes; Bootstrap drags in a component/JS framework we would barely use.
+- **Pico.css over Tailwind/Bootstrap:** Pico is classless — semantic HTML (`<table>`, `<nav>`, `<article>`) is styled out of the box, so templates stay clean and there is no CSS build. A tiny `tokens.css` layer overrides the palette with the project's switchboard-era visual identity — bakelite, brass, operator-cream, oxblood, and patch-cable tones (bakelite-dark by default, operator-cream light), mapped onto Pico's `--pico-*` variables plus trust badge tokens (`signed`/`token`/`open`/`queue`, [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)). This palette is already committed at [`static/tokens.css`](../../static/tokens.css) and shared with the docs site ([ADR-0000](ADR-0000-project-naming-and-scope.md)). Tailwind needs a build toolchain and litters markup with utility classes; Bootstrap drags in a component/JS framework we would barely use.
 - **Inline SVG over icon fonts:** inline `<svg>` themes via `currentColor`, has no flash-of-unstyled-content, is embeddable via `embed.FS`, and is accessible (`role="img"` + `<title>`) in a way glyph fonts are not. The pack split is deliberate: **Simple Icons** carries brand marks (provider identity is meaningful UI on a webhook receiver), **Lucide** carries UI chrome (settings, activity, plug). Not interchangeable, not redundant.
 
 ### Consequences
 
 * Good, because the whole UI — templates, vendored HTMX + Pico + `tokens.css`, inline SVGs — is **embedded in the single binary**; there is no Node/bundler step and nothing to serve from disk or a CDN.
 * Good, because SSE + fragment swaps make the live screens a handful of templates plus one broadcast goroutine, not a client-side app.
-* Good, because reading the raw request body for signature verification ([ADR-003](ADR-003-per-provider-ingestion-and-trust-model.md)) is the natural `net/http` idiom.
+* Good, because reading the raw request body for signature verification ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)) is the natural `net/http` idiom.
 * Good, because icons theme with the palette for free and stay accessible.
 * Bad, because we hand-author the OpenAPI/AsyncAPI specs instead of generating them — accepted; the endpoints are receivers and HTML routes that would not model cleanly, and hand-authoring is the point of a docs-first design.
 * Bad, because HTMX is less familiar to a React-first contributor than a SPA — accepted for a single-maintainer service where simplicity wins.
@@ -126,7 +126,7 @@ flowchart TB
 
 ## More Information
 
-* Language & runtime this stack sits on: [ADR-015](ADR-015-implementation-language-go.md).
+* Language & runtime this stack sits on: [ADR-0015](ADR-0015-implementation-language-go.md).
 * Icon sourcing: Lucide (<https://lucide.dev/>) for chrome, Simple Icons (<https://simpleicons.org/>) for brands.
 * Stack references: `net/http` <https://pkg.go.dev/net/http>, chi <https://github.com/go-chi/chi>, `html/template` <https://pkg.go.dev/html/template>, `embed` <https://pkg.go.dev/embed>, HTMX <https://htmx.org/>, `htmx-ext-sse` <https://github.com/bigskysoftware/htmx-extensions/tree/main/src/sse>, Pico.css <https://picocss.com/>.
-* Related: [ADR-002](ADR-002-postgres-persistence-and-retention.md) (the PostgreSQL layer the UI reads), [ADR-005](ADR-005-mcp-tool-and-resource-contract.md) (the MCP surface sharing this process).
+* Related: [ADR-0002](ADR-0002-postgres-persistence-and-retention.md) (the PostgreSQL layer the UI reads), [ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md) (the MCP surface sharing this process).

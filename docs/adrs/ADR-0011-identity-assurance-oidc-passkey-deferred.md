@@ -2,14 +2,14 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-008, ADR-010]
+related: [ADR-0008, ADR-0010]
 ---
 
-# ADR-011: Identity & Assurance — Simple OIDC Now, Passkey Step-Up Deferred
+# ADR-0011: Identity & Assurance — Simple OIDC Now, Passkey Step-Up Deferred
 
 ## Context and Problem Statement
 
-The friending model ([ADR-010](ADR-010-a2a-discovery-human-vended-friending.md)) turns on a human making a **consent decision** — approving (and vending) another agent's access. Consent decisions are high-consequence: an approval mints a capability. In a mature federated world you would want assurance that the approving human authenticated in a **phishing-resistant** way (a passkey), and you would want the *requesting* human's assurance level attested too. OIDC can express this via the **`amr`** (authentication methods references, [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176)) and **`acr`** (authentication context class reference) claims.
+The friending model ([ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md)) turns on a human making a **consent decision** — approving (and vending) another agent's access. Consent decisions are high-consequence: an approval mints a capability. In a mature federated world you would want assurance that the approving human authenticated in a **phishing-resistant** way (a passkey), and you would want the *requesting* human's assurance level attested too. OIDC can express this via the **`amr`** (authentication methods references, [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176)) and **`acr`** (authentication context class reference) claims.
 
 The question is how much of that assurance machinery to build **now**, for a single-tenant, single-IdP switchboard, versus defer — and to make sure the deferral is a *recorded, deliberate gap* rather than a silent one.
 
@@ -19,7 +19,7 @@ The question is how much of that assurance machinery to build **now**, for a sin
 * **Don't build assurance plumbing with no consumer.** Enforcing `amr`/`acr` step-up when there is exactly one IdP and it is already passkey-only adds code and failure modes for zero marginal security today.
 * **Trust the issuer, for now.** With a single trusted passkey-only issuer, "the token came from Pocket ID" is a sufficient assurance signal for consent actions in the current deployment.
 * **The deferral must not be silent.** The moment switchboard federates to a *non-passkey* IdP, issuer-trust stops being sufficient — a consent action could be authorized by a phished password login at the other IdP. That future requirement must be written down now as a known gap with a hard trigger, not discovered later.
-* **Provenance still required now.** Independent of step-up, friend requests must already carry OIDC-signed provenance of the requesting human ([ADR-010](ADR-010-a2a-discovery-human-vended-friending.md)); this ADR is about *assurance level*, not *whether* identity is attested.
+* **Provenance still required now.** Independent of step-up, friend requests must already carry OIDC-signed provenance of the requesting human ([ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md)); this ADR is about *assurance level*, not *whether* identity is attested.
 
 ## Considered Options
 
@@ -33,8 +33,8 @@ Chosen option: **"(B) simple OIDC now, passkey step-up explicitly deferred."**
 
 ### Now
 
-* The human principal is a **Pocket ID OIDC identity** ([ADR-008](ADR-008-human-principal-vended-endpoints.md)). Switchboard **trusts the issuer**.
-* Friend requests carry the **signed identity** of the requesting human; the target human approves ([ADR-010](ADR-010-a2a-discovery-human-vended-friending.md)).
+* The human principal is a **Pocket ID OIDC identity** ([ADR-0008](ADR-0008-human-principal-vended-endpoints.md)). Switchboard **trusts the issuer**.
+* Friend requests carry the **signed identity** of the requesting human; the target human approves ([ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md)).
 * **No `amr`/`acr` enforcement.** Switchboard does not require or check a specific authentication-method/assurance claim on consent actions.
 * **Rationale:** Pocket ID is **passkey-only**, so within this tenant authentication is passkey-backed by construction. Issuer-trust is therefore an adequate proxy for "this human authenticated phishing-resistantly" *today*.
 
@@ -86,6 +86,6 @@ When step-up *is* implemented, note that **there is no standard `amr` value that
 
 ## More Information
 
-* Human principal & OIDC posture: [ADR-008](ADR-008-human-principal-vended-endpoints.md).
-* Where provenance is consumed (friend-request approvals): [ADR-010](ADR-010-a2a-discovery-human-vended-friending.md) and the [friend-requests spec](../specs/friend-requests.md).
+* Human principal & OIDC posture: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
+* Where provenance is consumed (friend-request approvals): [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md) and the [friend-requests spec](../specs/friend-requests.md).
 * Pocket ID: <https://pocket-id.org/> (passkey-only OIDC provider). `amr` values: [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176). `acr`/`amr` in OIDC core: <https://openid.net/specs/openid-connect-core-1_0.html>.

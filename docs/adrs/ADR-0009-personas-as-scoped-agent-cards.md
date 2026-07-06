@@ -2,16 +2,16 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-008, ADR-010]
+related: [ADR-0008, ADR-0010]
 ---
 
-# ADR-009: Personas as Scoped Agent Cards
+# ADR-0009: Personas as Scoped Agent Cards
 
 ## Context and Problem Statement
 
-[ADR-008](ADR-008-human-principal-vended-endpoints.md) gives each registered agent a vended MCP endpoint scoped to a set of queues and verbs. But a single agent runtime is often used for several *different jobs* — the same base model might act as a code **reviewer** in one context and a **deployer** in another. Those jobs want different system prompts, advertise different skills, and — critically — should carry **different access**. Granting one broad endpoint that can do everything violates least privilege; registering a separate agent per job duplicates the runtime and loses the "same agent, different hats" relationship.
+[ADR-0008](ADR-0008-human-principal-vended-endpoints.md) gives each registered agent a vended MCP endpoint scoped to a set of queues and verbs. But a single agent runtime is often used for several *different jobs* — the same base model might act as a code **reviewer** in one context and a **deployer** in another. Those jobs want different system prompts, advertise different skills, and — critically — should carry **different access**. Granting one broad endpoint that can do everything violates least privilege; registering a separate agent per job duplicates the runtime and loses the "same agent, different hats" relationship.
 
-This ADR decides how a single agent presents multiple scoped faces, and how those faces are advertised to peers for the A2A discovery layer ([ADR-010](ADR-010-a2a-discovery-human-vended-friending.md)).
+This ADR decides how a single agent presents multiple scoped faces, and how those faces are advertised to peers for the A2A discovery layer ([ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md)).
 
 ## Decision Drivers
 
@@ -35,7 +35,7 @@ Chosen option: **"(C) personas as scoped Agent Cards."**
 
 A **persona** is a named, scoped face of a single registered agent, composed of exactly three things:
 
-1. **Base agent runtime** — the underlying registered agent ([ADR-008](ADR-008-human-principal-vended-endpoints.md)).
+1. **Base agent runtime** — the underlying registered agent ([ADR-0008](ADR-0008-human-principal-vended-endpoints.md)).
 2. **A human-authored system prompt** — the persona's intent/behavior, written by the owning human.
 3. **A subset of that agent's vended tools/verbs** — the persona's capability slice. This subset is **the unit of capability scoping.**
 
@@ -47,7 +47,7 @@ A persona's **advertised skills are derived from what is actually vended to it**
 
 ### Expressed as A2A Agent Cards
 
-Each persona is published as an **[A2A](https://a2a-protocol.org/) Agent Card** served at the well-known path **`/.well-known/agent-card.json`** (per-persona; see the [personas-and-agent-cards spec](../specs/personas-and-agent-cards.md) for how multiple personas map to well-known URLs). The Agent Card is the interoperable, standard-shaped advertisement other agents discover during friending ([ADR-010](ADR-010-a2a-discovery-human-vended-friending.md)). Its `skills` array is the derived set above; its identity/provenance ties back to the owning human.
+Each persona is published as an **[A2A](https://a2a-protocol.org/) Agent Card** served at the well-known path **`/.well-known/agent-card.json`** (per-persona; see the [personas-and-agent-cards spec](../specs/personas-and-agent-cards.md) for how multiple personas map to well-known URLs). The Agent Card is the interoperable, standard-shaped advertisement other agents discover during friending ([ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md)). Its `skills` array is the derived set above; its identity/provenance ties back to the owning human.
 
 ### Consequences
 
@@ -104,6 +104,6 @@ flowchart TB
 
 ## More Information
 
-* Personas are the discoverable units in the friending flow: [ADR-010](ADR-010-a2a-discovery-human-vended-friending.md).
-* The vended-verb pool a persona draws its subset from: [ADR-008](ADR-008-human-principal-vended-endpoints.md).
+* Personas are the discoverable units in the friending flow: [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md).
+* The vended-verb pool a persona draws its subset from: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
 * A2A Agent Card format and the `agent-card.json` well-known convention: <https://a2a-protocol.org/> and the [personas-and-agent-cards spec](../specs/personas-and-agent-cards.md).

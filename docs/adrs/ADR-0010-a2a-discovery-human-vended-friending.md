@@ -2,22 +2,22 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-007, ADR-008, ADR-009, ADR-011]
+related: [ADR-0007, ADR-0008, ADR-0009, ADR-0011]
 ---
 
-# ADR-010: A2A for Discovery + Human-Vended Friending; MCP for Tools; Todo-Queue for Transport
+# ADR-0010: A2A for Discovery + Human-Vended Friending; MCP for Tools; Todo-Queue for Transport
 
 ## Context and Problem Statement
 
-Switchboard has two protocols in play and they are easy to conflate. **MCP** connects an agent to *tools* (switchboard's todo/webhook verbs, [ADR-008](ADR-008-human-principal-vended-endpoints.md)). **[A2A](https://a2a-protocol.org/)** (Agent-to-Agent) connects an agent to *other agents* — discovery, announcement, and, in its full form, direct peer-to-peer task delegation. Personas are already published as A2A Agent Cards ([ADR-009](ADR-009-personas-as-scoped-agent-cards.md)). The open question: **when agent A wants agent B to do work, how does that happen — and who authorizes it?**
+Switchboard has two protocols in play and they are easy to conflate. **MCP** connects an agent to *tools* (switchboard's todo/webhook verbs, [ADR-0008](ADR-0008-human-principal-vended-endpoints.md)). **[A2A](https://a2a-protocol.org/)** (Agent-to-Agent) connects an agent to *other agents* — discovery, announcement, and, in its full form, direct peer-to-peer task delegation. Personas are already published as A2A Agent Cards ([ADR-0009](ADR-0009-personas-as-scoped-agent-cards.md)). The open question: **when agent A wants agent B to do work, how does that happen — and who authorizes it?**
 
-A2A ships a direct peer task-transport: A discovers B's card and sends B a task over A2A. If switchboard used that path, one agent could hand another agent work with no human in the loop and no durable record — exactly the accountability hole [ADR-008](ADR-008-human-principal-vended-endpoints.md) was built to close. This ADR decides how the two protocols divide labor and how cross-agent work is actually authorized and transported.
+A2A ships a direct peer task-transport: A discovers B's card and sends B a task over A2A. If switchboard used that path, one agent could hand another agent work with no human in the loop and no durable record — exactly the accountability hole [ADR-0008](ADR-0008-human-principal-vended-endpoints.md) was built to close. This ADR decides how the two protocols divide labor and how cross-agent work is actually authorized and transported.
 
 ## Decision Drivers
 
 * **MCP and A2A are complementary, not competing.** MCP = agent→tools; A2A = agent→agent discovery. Each should do what it is good at; neither should be forced to do the other's job.
-* **Human vending must remain the access gate.** Cross-agent access must be granted by a human, consistent with [ADR-008](ADR-008-human-principal-vended-endpoints.md) — no agent grants another agent access to itself autonomously.
-* **Work intake must be durable and accountable.** When another agent hands work in, it should land as a **todo** ([ADR-007](ADR-007-todos-as-core-primitive.md)) — owned, dedup'd, leaseable, traceable — not as an ephemeral peer RPC that vanishes on crash.
+* **Human vending must remain the access gate.** Cross-agent access must be granted by a human, consistent with [ADR-0008](ADR-0008-human-principal-vended-endpoints.md) — no agent grants another agent access to itself autonomously.
+* **Work intake must be durable and accountable.** When another agent hands work in, it should land as a **todo** ([ADR-0007](ADR-0007-todos-as-core-primitive.md)) — owned, dedup'd, leaseable, traceable — not as an ephemeral peer RPC that vanishes on crash.
 * **Provenance must be verifiable.** A friend request must prove *which human* is behind the requesting agent — not accept the agent's self-assertion.
 * **Least authority, per direction.** A granting B access to A must not imply B grants A access. Grants are directional and revocable.
 * **Non-transitive trust.** Friending B must reveal nothing about B's other friends or B's other personas. No transitive graph traversal.
@@ -37,8 +37,8 @@ Chosen option: **"(C) split by strength."**
 
 | Concern | Protocol / mechanism | Direction |
 |---|---|---|
-| "Who I am / what I do" (announce, discover) | **A2A Agent Cards** ([ADR-009](ADR-009-personas-as-scoped-agent-cards.md)) | **outward** |
-| "Who may actually hand me work, durably" | **todo-queue + human vend** ([ADR-007](ADR-007-todos-as-core-primitive.md)/[ADR-008](ADR-008-human-principal-vended-endpoints.md)) | **inward** |
+| "Who I am / what I do" (announce, discover) | **A2A Agent Cards** ([ADR-0009](ADR-0009-personas-as-scoped-agent-cards.md)) | **outward** |
+| "Who may actually hand me work, durably" | **todo-queue + human vend** ([ADR-0007](ADR-0007-todos-as-core-primitive.md)/[ADR-0008](ADR-0008-human-principal-vended-endpoints.md)) | **inward** |
 | "Use switchboard's verbs" (todos, webhooks) | **MCP** on the vended endpoint | agent→tools |
 
 A2A is the **outward-facing** face (discovery/announcement). The **inward-facing** intake — who may actually give me work — is governed by human vending and lands in the durable todo queue. **A2A discovery does not grant anything.**
@@ -47,15 +47,15 @@ A2A is the **outward-facing** face (discovery/announcement). The **inward-facing
 
 1. **Discover.** Agent A finds persona/agent B via A2A — B's Agent Card in a bounded, known directory (see *Anti-spam*).
 2. **Request (a pending edge that grants nothing).** A sends B a **friend request carrying a requested scope** (the queues/verbs A wants against B). This creates a **pending edge**: it confers **no access** until approved.
-3. **Approval lands as a todo.** The approval request is delivered as a **todo in the target human's own queue** — switchboard dogfooding its own primitive ([ADR-007](ADR-007-todos-as-core-primitive.md)). The todo carries a crisp **who / why / requested-scope** summary.
-4. **Approval is the vend.** The target **human** approves — and may **narrow** — the requested scope. That act of approval **mints the scoped MCP endpoint** ([ADR-008](ADR-008-human-principal-vended-endpoints.md)) granting A the approved (possibly narrowed) access to B. Approval *is* vending; there is no separate step.
+3. **Approval lands as a todo.** The approval request is delivered as a **todo in the target human's own queue** — switchboard dogfooding its own primitive ([ADR-0007](ADR-0007-todos-as-core-primitive.md)). The todo carries a crisp **who / why / requested-scope** summary.
+4. **Approval is the vend.** The target **human** approves — and may **narrow** — the requested scope. That act of approval **mints the scoped MCP endpoint** ([ADR-0008](ADR-0008-human-principal-vended-endpoints.md)) granting A the approved (possibly narrowed) access to B. Approval *is* vending; there is no separate step.
 5. **Work flows as todos.** Thereafter, A hands B work by **creating todos** in B's granted queue (`create_for`, [agent-mcp-tools spec](../specs/agent-mcp-tools.md)) — durable, owned, dedup'd, leaseable. **Not** via A2A's direct peer task transport.
 
 ### Rules on the edge
 
 * **Approval is the vend** — narrowing at approval time is first-class; the human is never forced to accept the requested scope verbatim.
 * **Per-direction.** A→B is a **separate grant** from B→A. Approving A's request to hand *you* work does not let you hand *A* work; that needs its own request/approval.
-* **Revocable.** Either grant can be revoked at any time (= kill the vended endpoint, [ADR-008](ADR-008-human-principal-vended-endpoints.md)); revocation is instant and one-sided.
+* **Revocable.** Either grant can be revoked at any time (= kill the vended endpoint, [ADR-0008](ADR-0008-human-principal-vended-endpoints.md)); revocation is instant and one-sided.
 * **Non-transitive.** Friending B tells A nothing about B's friends, B's other personas, or B's queues beyond the granted one. There is no graph traversal; each edge is opaque to every other.
 
 ### Do **not** use A2A's direct peer task transport for delegation
@@ -67,7 +67,7 @@ A2A *can* carry a task straight from A to B. Switchboard deliberately **does not
 * **Bounded discovery.** Only a **bounded set of discoverable directories** is consulted — not the open internet. An agent cannot be friend-requested by an arbitrary unknown party at will.
 * **Request quotas / rate limits.** Friend requests are quota'd and rate-limited per requester to blunt flooding.
 * **Legible approval.** Every approval todo carries a crisp **who / why / scope** summary so the human decides with full context, not a raw blob.
-* **Verifiable, OIDC-signed provenance.** A friend request must carry **verifiable, OIDC-signed provenance of the requesting *human*** ([ADR-011](ADR-011-identity-assurance-oidc-passkey-deferred.md)) — **not** the agent's self-assertion of who owns it. The target human is approving a request from *a known human's agent*, and that human's identity is cryptographically attested by the issuer, not claimed by the bot.
+* **Verifiable, OIDC-signed provenance.** A friend request must carry **verifiable, OIDC-signed provenance of the requesting *human*** ([ADR-0011](ADR-0011-identity-assurance-oidc-passkey-deferred.md)) — **not** the agent's self-assertion of who owns it. The target human is approving a request from *a known human's agent*, and that human's identity is cryptographically attested by the issuer, not claimed by the bot.
 
 ### Consequences
 
@@ -132,9 +132,9 @@ sequenceDiagram
 
 ## More Information
 
-* The durable object cross-agent work becomes: [ADR-007](ADR-007-todos-as-core-primitive.md).
-* Why approval-is-vend and endpoints are the capability: [ADR-008](ADR-008-human-principal-vended-endpoints.md).
-* What is discovered (personas as Agent Cards): [ADR-009](ADR-009-personas-as-scoped-agent-cards.md).
-* Provenance/assurance posture and the deferred hardening for cross-IdP federation: [ADR-011](ADR-011-identity-assurance-oidc-passkey-deferred.md).
+* The durable object cross-agent work becomes: [ADR-0007](ADR-0007-todos-as-core-primitive.md).
+* Why approval-is-vend and endpoints are the capability: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
+* What is discovered (personas as Agent Cards): [ADR-0009](ADR-0009-personas-as-scoped-agent-cards.md).
+* Provenance/assurance posture and the deferred hardening for cross-IdP federation: [ADR-0011](ADR-0011-identity-assurance-oidc-passkey-deferred.md).
 * Full flow, states, and message shapes: [friend-requests spec](../specs/friend-requests.md); the verbs (`send_friend_request`, `list_pending_approvals`, `approve`/`deny`, `revoke`): [agent-mcp-tools spec](../specs/agent-mcp-tools.md).
 * A2A protocol: <https://a2a-protocol.org/>.

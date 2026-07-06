@@ -2,17 +2,17 @@
 status: proposed
 date: 2026-07-05
 decision-makers: Joe Stump
-related: [ADR-000, ADR-002, ADR-005, ADR-014]
+related: [ADR-0000, ADR-0002, ADR-0005, ADR-0014]
 ---
 
-# ADR-003: Ingestion Provider Types & Trust Model (webhooks vs. queues)
+# ADR-0003: Ingestion Provider Types & Trust Model (webhooks vs. queues)
 
 ## Context and Problem Statement
 
 `switchboard` ingests events through **two provider families**, and they have fundamentally different security stories:
 
 1. **Webhooks (push)** — inbound HTTP. A webhook *type* either **can be cryptographically validated** (GitHub, Stripe, Slack each sign with a *different* HMAC scheme) or **cannot** (Docker Hub and homelab/self-hosted senders ship no signing scheme).
-2. **Queues (pull)** — the app *consumes* from a broker (Redis is the reference; SQS, NATS, AMQP later, [ADR-014](ADR-014-ingestion-adapters-push-pull.md)). There is no HTTP request and no per-message signature at all; the trust boundary is the broker connection.
+2. **Queues (pull)** — the app *consumes* from a broker (Redis is the reference; SQS, NATS, AMQP later, [ADR-0014](ADR-0014-ingestion-adapters-push-pull.md)). There is no HTTP request and no per-message signature at all; the trust boundary is the broker connection.
 
 A single "verify if you can, otherwise trust it" approach would silently launder unverified payloads as if they were authenticated. The system must make each event's trust level **explicit, per-type, enforced, and shown** in the UI and API, so a human never has to guess whether an event was authenticated. Two questions this ADR must answer crisply: **for a webhook type that can't be signed, what is the auth pattern** (a shared secret? a password?), and **what actually protects a queue** when there is no signature to check?
 
@@ -24,7 +24,7 @@ A single "verify if you can, otherwise trust it" approach would silently launder
 * **Queues have no signature; the connection is the boundary.** For pull adapters the security control is *who may publish to the queue* — broker auth/ACL (+ TLS). That must be documented, not implied.
 * **One pipeline, many front doors.** However an event arrives, it flows through the same `verify → normalize → persist → broadcast → expose` path; the trust level is metadata on the event, not a fork in the pipeline.
 * **Replay resistance where the scheme allows.** Stripe and Slack sign a timestamp; enforce a freshness window. GitHub does not; don't pretend to. A shared-secret token has *no* replay resistance — say so.
-* **No secret leakage.** Signature headers, bearer tokens, and secrets are never logged in full or persisted (cross-ref [ADR-002](ADR-002-postgres-persistence-and-retention.md)).
+* **No secret leakage.** Signature headers, bearer tokens, and secrets are never logged in full or persisted (cross-ref [ADR-0002](ADR-0002-postgres-persistence-and-retention.md)).
 
 ## Considered Options
 
@@ -35,7 +35,7 @@ A single "verify if you can, otherwise trust it" approach would silently launder
 
 ## Decision Outcome
 
-Two provider families, an ordered webhook trust level, and connection-trust for queues. Every provider declares a **`family`** (`webhook` | `queue`) and a **`trust_mode`**; the mode is stored on every event ([ADR-002](ADR-002-postgres-persistence-and-retention.md): `trust_mode` + `verified` + `verify_detail`) and shown everywhere.
+Two provider families, an ordered webhook trust level, and connection-trust for queues. Every provider declares a **`family`** (`webhook` | `queue`) and a **`trust_mode`**; the mode is stored on every event ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md): `trust_mode` + `verified` + `verify_detail`) and shown everywhere.
 
 | `family` | `trust_mode` | What it means | `verified` |
 |----------|--------------|---------------|-----------|
@@ -74,20 +74,20 @@ For senders that genuinely cannot present any secret, an operator may *explicitl
 
 ## Queue family (pull)
 
-A pull adapter *consumes* from a broker and feeds messages into the same pipeline ([ADR-014](ADR-014-ingestion-adapters-push-pull.md)). There is **no HTTP request and no signature**, so HTTP-style verification does not apply. Queue *types*:
+A pull adapter *consumes* from a broker and feeds messages into the same pipeline ([ADR-0014](ADR-0014-ingestion-adapters-push-pull.md)). There is **no HTTP request and no signature**, so HTTP-style verification does not apply. Queue *types*:
 
 | Queue type | Status | Trust boundary |
 |------------|--------|----------------|
 | **Redis** (streams/lists/pub-sub) | reference | connection auth (`requirepass`/ACL user) + TLS |
 | **SQS / NATS / AMQP** | later | the broker's IAM/auth + TLS |
 
-The security control is **who is allowed to publish** to the consumed queue — enforced by the broker's ACL, not by switchboard. Events carry `family='queue'`, `trust_mode='queue'`, `verified=false`, and `verify_detail` naming the broker/ACL identity (e.g. `redis acl: deploy-bot`). The connection secret (URL/DSN/credentials) is injected via environment/config like any other. The pull-side **store-then-ack** coupling and the pub/sub-vs-stream decision live in [ADR-014](ADR-014-ingestion-adapters-push-pull.md).
+The security control is **who is allowed to publish** to the consumed queue — enforced by the broker's ACL, not by switchboard. Events carry `family='queue'`, `trust_mode='queue'`, `verified=false`, and `verify_detail` naming the broker/ACL identity (e.g. `redis acl: deploy-bot`). The connection secret (URL/DSN/credentials) is injected via environment/config like any other. The pull-side **store-then-ack** coupling and the pub/sub-vs-stream decision live in [ADR-0014](ADR-0014-ingestion-adapters-push-pull.md).
 
 ## Cross-cutting rules (all types)
 
 * **Header/token sanitization before persist.** Signature/secret-bearing values (`X-Hub-Signature-256`, `Stripe-Signature`, `X-Slack-Signature`, `Authorization`, any `?token=`) are redacted to `«redacted»` before `headers` is written. Full signatures/tokens are never logged.
 * **Disabled providers reject fast.** A provider toggled off returns 404/403 without processing.
-* **Same downstream pipeline.** Regardless of family, accepted events normalize to the common shape, persist, broadcast over SSE, and become visible to the MCP tools ([ADR-005](ADR-005-mcp-tool-and-resource-contract.md)).
+* **Same downstream pipeline.** Regardless of family, accepted events normalize to the common shape, persist, broadcast over SSE, and become visible to the MCP tools ([ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md)).
 
 ## Consequences
 
@@ -97,7 +97,7 @@ The security control is **who is allowed to publish** to the consumed queue — 
 * Good, because queues' real boundary (the broker connection/ACL) is documented, so operators know what protects a channel.
 * Good, because one pipeline with trust-as-metadata keeps code, schema, and specs uniform across every front door.
 * Bad, because operators must understand four trust values rather than "webhooks are secure" — mitigated by prominent UI labeling and this ADR.
-* Bad, because `open` is a genuine foot-gun off a trusted network — mitigated by default-off, explicit opt-in, the loudest label, and the localhost/Caddy posture ([ADR-001](ADR-001-web-stack-go-htmx-pico.md)).
+* Bad, because `open` is a genuine foot-gun off a trusted network — mitigated by default-off, explicit opt-in, the loudest label, and the localhost/Caddy posture ([ADR-0001](ADR-0001-web-stack-go-htmx-pico.md)).
 
 ## Confirmation
 
@@ -169,8 +169,8 @@ flowchart TD
 
 ## More Information
 
-* Adapter model this aligns with (push=webhook, pull=queue) and the pull-side ack coupling: [ADR-014](ADR-014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](../specs/ingestion-adapters.md).
+* Adapter model this aligns with (push=webhook, pull=queue) and the pull-side ack coupling: [ADR-0014](ADR-0014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](../specs/ingestion-adapters.md).
 * Signature references: GitHub <https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries>, Stripe <https://docs.stripe.com/webhooks#verify-events>, Slack <https://api.slack.com/authentication/verifying-requests-from-slack>, Docker Hub (no native signing) <https://docs.docker.com/docker-hub/webhooks/>.
 * Queue trust references: `go-redis` <https://github.com/redis/go-redis>, Redis ACL <https://redis.io/docs/latest/operate/oss_and_stack/management/security/acl/>.
-* Secret sourcing: HMAC secrets, shared-secret tokens, and queue DSNs are injected via environment/config (never committed). Storage of `family`/`trust_mode`/`verified`/`verify_detail` + redaction: [ADR-002](ADR-002-postgres-persistence-and-retention.md).
+* Secret sourcing: HMAC secrets, shared-secret tokens, and queue DSNs are injected via environment/config (never committed). Storage of `family`/`trust_mode`/`verified`/`verify_detail` + redaction: [ADR-0002](ADR-0002-postgres-persistence-and-retention.md).
 * Realized by the push/pull adapters (`internal/adapters/{github,stripe,slack,generic,redis}.go`) in the code session; this ADR governs the ingestion half of `docs/specs/openapi.yaml`.
