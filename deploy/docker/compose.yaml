@@ -32,7 +32,8 @@ services:
       SWITCHBOARD_GITHUB_SECRET: ${SWITCHBOARD_GITHUB_SECRET:-}
       # SWITCHBOARD_DEV_LOGIN: "1"   # dev only — bypasses OIDC
     ports:
-      # Bind to loopback on the host; front with Caddy forward_auth for any non-loopback exposure (ADR-001).
+      # Bind to loopback on the host. switchboard is a self-contained OIDC relying party (ADR-011),
+      # so any non-loopback exposure just needs a plain Caddy reverse_proxy — no forward_auth.
       - "127.0.0.1:8080:8080"
 
 volumes:

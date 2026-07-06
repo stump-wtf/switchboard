@@ -2,7 +2,10 @@
 # Built and pushed by .gitea/workflows/build.yaml to gitea.stump.rocks/joestump/switchboard.
 #
 # Runtime needs: PostgreSQL (SWITCHBOARD_DATABASE_URL) and, for real login, a Pocket ID OIDC client
-# (SWITCHBOARD_OIDC_*). The container binds 0.0.0.0:8080 — put it behind Caddy forward_auth (ADR-001).
+# (SWITCHBOARD_OIDC_*). The container binds 0.0.0.0:8080 — switchboard is a complete, self-contained
+# OIDC relying party (ADR-011: its own /auth/callback, PKCE, session cookies), so put a plain Caddy
+# reverse_proxy in front. No forward_auth: it would be redundant with the app's own login and could
+# conflict with the OIDC redirect flow.
 
 FROM golang:1.23-alpine AS build
 WORKDIR /src
