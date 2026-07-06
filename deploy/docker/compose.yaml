@@ -1,0 +1,39 @@
+# Reference compose for switchboard (service + PostgreSQL). StumpCloud deploys via Ansible; this
+# documents the runtime shape and is runnable locally. For a real login, set the OIDC env; or set
+# SWITCHBOARD_DEV_LOGIN=1 to exercise the vend → Channels loop without Pocket ID.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: switchboard
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: switchboard
+    volumes:
+      - switchboard-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U switchboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  switchboard:
+    image: gitea.stump.rocks/joestump/switchboard:latest
+    pull_policy: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SWITCHBOARD_ADDR: 0.0.0.0:8080
+      SWITCHBOARD_BASE_URL: ${SWITCHBOARD_BASE_URL:-https://switchboard.stump.rocks}
+      SWITCHBOARD_DATABASE_URL: postgres://switchboard:change-me@db:5432/switchboard?sslmode=disable
+      SWITCHBOARD_OIDC_ISSUER: ${SWITCHBOARD_OIDC_ISSUER:-}
+      SWITCHBOARD_OIDC_CLIENT_ID: ${SWITCHBOARD_OIDC_CLIENT_ID:-}
+      SWITCHBOARD_OIDC_CLIENT_SECRET: ${SWITCHBOARD_OIDC_CLIENT_SECRET:-}
+      SWITCHBOARD_GITHUB_SECRET: ${SWITCHBOARD_GITHUB_SECRET:-}
+      # SWITCHBOARD_DEV_LOGIN: "1"   # dev only — bypasses OIDC
+    ports:
+      # Bind to loopback on the host; front with Caddy forward_auth for any non-loopback exposure (ADR-001).
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  switchboard-db:
