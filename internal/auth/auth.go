@@ -1,8 +1,8 @@
-// Package auth is the OIDC relying-party login (ADR-011) and session layer.
+// Package auth is the OIDC relying-party login (ADR-0011) and session layer.
 //
 // Switchboard is an RP against Pocket ID (a passkey-only IdP that holds HUMANS ONLY). It trusts the
 // issuer and deliberately does NOT enforce an amr/acr assurance claim — passkey step-up is deferred
-// (ADR-011). Before adding any non-passkey issuer, that guard MUST be added; this is called out at
+// (ADR-0011). Before adding any non-passkey issuer, that guard MUST be added; this is called out at
 // the provider-init site below so a reviewer confronts it.
 package auth
 
@@ -51,7 +51,7 @@ type Authenticator struct {
 func New(ctx context.Context, cfg config.Config, st *store.Store, log *slog.Logger) (*Authenticator, error) {
 	a := &Authenticator{cfg: cfg, store: st, log: log, secure: strings.HasPrefix(cfg.BaseURL, "https://")}
 	if cfg.OIDCConfigured() {
-		// ADR-011: we trust this issuer wholesale and enforce NO amr/acr assurance claim. That is
+		// ADR-0011: we trust this issuer wholesale and enforce NO amr/acr assurance claim. That is
 		// acceptable ONLY because Pocket ID is passkey-only. Adding a non-passkey issuer here MUST be
 		// paired with an amr/acr step-up check on consent actions (friend approvals). Do not cross silently.
 		provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuer)

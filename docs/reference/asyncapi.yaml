@@ -32,7 +32,7 @@ servers:
     protocol: http
     description: |
       Loopback-bound default (MVP). The SSE stream is served at `GET /events` (see openapi.yaml).
-      If exposed on the LAN it MUST sit behind Caddy forward_auth (ADR-001).
+      If exposed on the LAN it MUST sit behind Caddy forward_auth (ADR-0001).
 
 channels:
   events:
@@ -140,7 +140,7 @@ components:
   schemas:
     TrustMode:
       type: string
-      description: How the event's authenticity is established (ADR-003).
+      description: How the event's authenticity is established (ADR-0003).
       enum: [signed, token, open, queue]
 
     EventSummary:

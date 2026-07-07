@@ -12,7 +12,7 @@ import (
 // ErrConflict is returned when a state transition loses a race (e.g. claim an already-claimed todo).
 var ErrConflict = errors.New("store: conflict")
 
-// Todo is a durable work-item (ADR-007). States: pending → claimed → done|failed.
+// Todo is a durable work-item (ADR-0007). States: pending → claimed → done|failed.
 type Todo struct {
 	ID             string
 	Queue          string
@@ -58,7 +58,7 @@ type CreateTodoParams struct {
 }
 
 // CreateTodo inserts a todo, deduping on (queue, idempotency_key) among non-terminal rows. The bool
-// reports whether a new row was created (false = an existing non-terminal todo already covers it). ADR-007.
+// reports whether a new row was created (false = an existing non-terminal todo already covers it). ADR-0007.
 func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool, error) {
 	id := "td_" + uuid.NewString()
 	row := s.pool.QueryRow(ctx, `
@@ -87,7 +87,7 @@ func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool,
 	return t, false, err
 }
 
-// ClaimTodo atomically claims a specific pending todo for owner, setting a lease. ADR-007 claim.
+// ClaimTodo atomically claims a specific pending todo for owner, setting a lease. ADR-0007 claim.
 // Returns ErrConflict if the todo exists but is not claimable (already claimed / wrong assignee),
 // ErrNotFound if it does not exist.
 func (s *Store) ClaimTodo(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
@@ -104,7 +104,7 @@ func (s *Store) ClaimTodo(ctx context.Context, id, owner string, ttl time.Durati
 }
 
 // ClaimNext claims the oldest pending todo across the allowed queues using FOR UPDATE SKIP LOCKED
-// (ADR-002), so concurrent workers never collide. Returns ErrNotFound when no work is available.
+// (ADR-0002), so concurrent workers never collide. Returns ErrNotFound when no work is available.
 func (s *Store) ClaimNext(ctx context.Context, queues []string, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='claimed', owner=$1, lease_expires_at=now()+$2::interval,
@@ -124,7 +124,7 @@ func (s *Store) ClaimNext(ctx context.Context, queues []string, owner string, tt
 	return t, err
 }
 
-// CompleteTodo acks a claimed todo owned by owner. ADR-007 complete.
+// CompleteTodo acks a claimed todo owned by owner. ADR-0007 complete.
 func (s *Store) CompleteTodo(ctx context.Context, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='done', result=$3, completed_at=now(), updated_at=now()
@@ -138,7 +138,7 @@ func (s *Store) CompleteTodo(ctx context.Context, id, owner string, result []byt
 }
 
 // FailTodo fails a claimed todo: retry (→pending) while attempt < max_attempts, else dead-letter
-// (→failed). ADR-007 fail.
+// (→failed). ADR-0007 fail.
 func (s *Store) FailTodo(ctx context.Context, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET
@@ -187,7 +187,7 @@ func (s *Store) GetTodo(ctx context.Context, id string) (Todo, error) {
 	return t, err
 }
 
-// ReapExpired requeues (or dead-letters) todos whose lease has expired — crash safety (ADR-002 reaper).
+// ReapExpired requeues (or dead-letters) todos whose lease has expired — crash safety (ADR-0002 reaper).
 // Returns the number of todos reaped.
 func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 	ct, err := s.pool.Exec(ctx, `

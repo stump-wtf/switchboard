@@ -1,4 +1,4 @@
-// Package store is the raw-SQL data-access layer over PostgreSQL (ADR-002): a thin set of typed
+// Package store is the raw-SQL data-access layer over PostgreSQL (ADR-0002): a thin set of typed
 // functions, no ORM. It owns humans/sessions/agents/endpoints, the durable todo queue, and events.
 package store
 
@@ -20,7 +20,7 @@ type Store struct{ pool *pgxpool.Pool }
 // New builds a Store over the given pool.
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-// Human is an OIDC-authenticated principal (Pocket ID subject). ADR-008/011.
+// Human is an OIDC-authenticated principal (Pocket ID subject). ADR-0008/011.
 type Human struct {
 	ID          string
 	OIDCSubject string

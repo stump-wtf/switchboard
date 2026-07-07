@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Agent is a lightweight owned record; registration grants nothing. ADR-008.
+// Agent is a lightweight owned record; registration grants nothing. ADR-0008.
 type Agent struct {
 	ID           string
 	OwnerHumanID string
@@ -17,7 +17,7 @@ type Agent struct {
 	CreatedAt    time.Time
 }
 
-// Endpoint is a vended capability: URL + credential = the grant, scope is immutable. ADR-008.
+// Endpoint is a vended capability: URL + credential = the grant, scope is immutable. ADR-0008.
 type Endpoint struct {
 	ID               string
 	AgentID          string
@@ -85,7 +85,7 @@ func (s *Store) GetAgentOwned(ctx context.Context, id, ownerHumanID string) (Age
 }
 
 // CreateEndpoint vends a scoped endpoint for an agent. The caller supplies the credential hash + prefix
-// (the plaintext is shown to the human once and never stored). Scope is immutable (ADR-008).
+// (the plaintext is shown to the human once and never stored). Scope is immutable (ADR-0008).
 func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefix string, queues, verbs []string) (Endpoint, error) {
 	var e Endpoint
 	err := s.pool.QueryRow(ctx, `
@@ -118,7 +118,7 @@ func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, 
 }
 
 // RevokeEndpoint marks an endpoint revoked, but only if it belongs to the given human (via its agent).
-// Revoke = invalidate credential + unroute; instant and total (ADR-008).
+// Revoke = invalidate credential + unroute; instant and total (ADR-0008).
 func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID string) error {
 	ct, err := s.pool.Exec(ctx, `
 		UPDATE endpoints SET state = 'revoked', revoked_at = now()

@@ -1,4 +1,4 @@
-// Package ingest turns inbound deliveries into verified events + durable todos (ADR-003/007/014).
+// Package ingest turns inbound deliveries into verified events + durable todos (ADR-0003/007/014).
 //
 // The GitHub adapter is the reference `signed` webhook: HMAC-SHA256 over the raw body, verified in
 // constant time; a bad or missing signature is a 401 and the payload is NOT persisted (only a
@@ -22,7 +22,7 @@ import (
 
 const maxBody = 5 << 20 // 5 MiB
 
-// sensitiveHeaders are redacted before an event's headers are persisted (ADR-002/003).
+// sensitiveHeaders are redacted before an event's headers are persisted (ADR-0002/003).
 var sensitiveHeaders = map[string]bool{
 	"x-hub-signature": true, "x-hub-signature-256": true, "authorization": true,
 	"cookie": true, "x-slack-signature": true, "stripe-signature": true, "x-api-key": true,

@@ -95,7 +95,7 @@ CREATE INDEX idx_events_source_time ON events (source, received_at DESC);
 CREATE INDEX idx_events_type_time   ON events (event_type, received_at DESC);
 CREATE UNIQUE INDEX idx_events_dedupe ON events (source, external_id) WHERE external_id IS NOT NULL;
 
--- Durable todo work-queue (ADR-0007; full field list in docs/specs/todos.md).
+-- Durable todo work-queue (ADR-0007; full field list in docs/openspec/specs/todo-queue/spec.md).
 CREATE TABLE todos (
   id               text PRIMARY KEY,          -- ULID/uuid
   queue            text        NOT NULL,

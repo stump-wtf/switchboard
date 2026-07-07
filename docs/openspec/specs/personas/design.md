@@ -18,7 +18,7 @@ vended verb subset so it can never claim a capability it does not hold.
 
 The current codebase implements the agent/endpoint substrate but not personas: the `endpoints` table
 carries a nullable `persona_id uuid` column (`internal/db/migrations/0001_init.sql`, commented
-"ADR-009; null = agent-level endpoint"), but there is **no `personas` table, no persona store code, no
+"ADR-0009; null = agent-level endpoint"), but there is **no `personas` table, no persona store code, no
 Agent Card route, and no `/.well-known/agent-card.json` handler**. This spec is therefore grounded
 primarily in the ADR and the contract doc `docs/specs/personas-and-agent-cards.md`, and it records the
 implementation gap explicitly in Open Questions.

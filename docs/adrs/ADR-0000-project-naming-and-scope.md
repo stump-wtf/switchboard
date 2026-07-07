@@ -53,7 +53,7 @@ This ADR also ratifies the scope the rest of the documents assume:
 * Standing up PostgreSQL's own HA/replication — the app tier can run multiple instances against one PostgreSQL ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)), but operating Postgres in HA is deferred.
 * Provider-side webhook management (registering webhooks via provider APIs).
 
-**The canonical design record** is the ADRs (`docs/adr/`) and specs (`docs/specs/`) under `docs/`.
+**The canonical design record** is the ADRs (`docs/adrs/`) and specs (`docs/openspec/specs/`) under `docs/`.
 
 **Application code** is written *fresh from these documents*; there is none yet beyond placeholder package files under the service tree.
 

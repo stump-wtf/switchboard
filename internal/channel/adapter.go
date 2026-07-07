@@ -1,5 +1,5 @@
 // Package channel is the local stdio adapter that bridges a Claude Code session to central
-// switchboard (ADR-013). Claude Code spawns `switchboard channel` as a stdio MCP subprocess (via
+// switchboard (ADR-0013). Claude Code spawns `switchboard channel` as a stdio MCP subprocess (via
 // .mcp.json) with a vended credential in the environment. The adapter:
 //
 //   - speaks newline-delimited JSON-RPC (MCP stdio transport) with Claude Code;
@@ -9,7 +9,7 @@
 //   - subscribes to the agent SSE stream and, for each new todo, emits notifications/claude/channel,
 //     which lands in the session as <channel source="switchboard" …>…</channel>.
 //
-// The durable queue is the ledger; a push is a doorbell (ADR-013). One-way for the MVP — the reply
+// The durable queue is the ledger; a push is a doorbell (ADR-0013). One-way for the MVP — the reply
 // tool + permission relay are deferred.
 package channel
 
@@ -271,7 +271,7 @@ func (a *adapter) pushTodo(dataJSON string) {
 	if json.Unmarshal([]byte(dataJSON), &t) != nil || t.ID == "" {
 		return
 	}
-	// Breakout guard: never let payload content close the <channel> wrapper (ADR-013).
+	// Breakout guard: never let payload content close the <channel> wrapper (ADR-0013).
 	title := strings.ReplaceAll(t.Title, "</channel>", "«/channel»")
 	content := fmt.Sprintf("switchboard: todo %s on queue %q — %s", t.ID, t.Queue, title)
 	meta := map[string]any{"todo_id": t.ID, "queue": t.Queue}

@@ -1,4 +1,4 @@
-// Package cred mints and hashes vended endpoint credentials (ADR-008).
+// Package cred mints and hashes vended endpoint credentials (ADR-0008).
 //
 // A credential is a high-entropy bearer token `sbk_<base64url(32 bytes)>`. Only its SHA-256 hash is
 // stored; the plaintext is shown to the human exactly once at vend time. High-entropy tokens don't

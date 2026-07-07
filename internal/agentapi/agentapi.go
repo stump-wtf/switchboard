@@ -1,10 +1,10 @@
-// Package agentapi is the vended-endpoint surface an agent calls with its credential (ADR-008).
+// Package agentapi is the vended-endpoint surface an agent calls with its credential (ADR-0008).
 //
 // Every request is authenticated by the bearer credential (resolved to an endpoint + its immutable
 // scope) and enforced at the boundary: a verb outside scope.verbs or a queue outside scope.queues is
 // forbidden. It exposes the todo work verbs (list/claim/complete/fail) as JSON, plus an SSE stream of
 // newly-created todos in the endpoint's queues — the signal the Channels stdio adapter turns into
-// `notifications/claude/channel` pushes (ADR-013). The durable queue remains the ledger; the stream
+// `notifications/claude/channel` pushes (ADR-0013). The durable queue remains the ledger; the stream
 // is a lossy doorbell.
 package agentapi
 

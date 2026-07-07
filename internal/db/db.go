@@ -2,7 +2,7 @@
 //
 // Migrations are plain .sql files embedded into the binary and applied on startup in filename order,
 // each in its own transaction, tracked in schema_migrations. No external migration tool — this keeps
-// switchboard a single static binary (ADR-015) with raw SQL (ADR-002).
+// switchboard a single static binary (ADR-0015) with raw SQL (ADR-0002).
 package db
 
 import (

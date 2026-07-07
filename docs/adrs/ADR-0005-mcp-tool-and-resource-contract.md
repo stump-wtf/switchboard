@@ -9,7 +9,7 @@ related: [ADR-0000, ADR-0002, ADR-0003]
 
 ## Context and Problem Statement
 
-`switchboard` exposes its stored events to MCP clients (Claude Code and other agents) through the official `mcp` Python SDK, running as a server mounted in the same Go HTTP server as the web UI ([ADR-0001](ADR-0001-web-stack-go-htmx-pico.md)) and reading the same PostgreSQL layer ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)). The brief fixes the minimum tool set — `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, `list_providers` — plus a resource stream of recent events (§7). This ADR pins the *shape* of that contract: naming, input/output schemas at a design level, pagination and filtering semantics, how the one side-effecting tool (`replay`) is made safe, and the tools-vs-resources split. The exact JSON schemas live in `docs/specs/mcp-tools.md`; this ADR records the decisions that spec must reflect. What contract makes the event log queryable and replayable by an agent while staying honest about trust ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)) and safe about outbound side effects?
+`switchboard` exposes its stored events to MCP clients (Claude Code and other agents) through the official `mcp` Python SDK, running as a server mounted in the same Go HTTP server as the web UI ([ADR-0001](ADR-0001-web-stack-go-htmx-pico.md)) and reading the same PostgreSQL layer ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)). The brief fixes the minimum tool set — `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, `list_providers` — plus a resource stream of recent events (§7). This ADR pins the *shape* of that contract: naming, input/output schemas at a design level, pagination and filtering semantics, how the one side-effecting tool (`replay`) is made safe, and the tools-vs-resources split. The exact JSON schemas live in `docs/openspec/specs/mcp-tools/spec.md`; this ADR records the decisions that spec must reflect. What contract makes the event log queryable and replayable by an agent while staying honest about trust ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)) and safe about outbound side effects?
 
 ## Decision Drivers
 
@@ -68,7 +68,7 @@ Recent events are also exposed as a **read-only MCP resource** (e.g. URI `switch
 
 ### Structured output
 
-Tools declare input JSON Schemas and return SDK structured output with the `EventSummary`/`EventDetail`/`ProviderStatus` shapes above, so clients get typed, validated results rather than parsing free-form text. The authoritative schemas live in `docs/specs/mcp-tools.md` and are kept in sync with this ADR and the `events` schema ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)).
+Tools declare input JSON Schemas and return SDK structured output with the `EventSummary`/`EventDetail`/`ProviderStatus` shapes above, so clients get typed, validated results rather than parsing free-form text. The authoritative schemas live in `docs/openspec/specs/mcp-tools/spec.md` and are kept in sync with this ADR and the `events` schema ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)).
 
 ### Consequences
 
@@ -82,7 +82,7 @@ Tools declare input JSON Schemas and return SDK structured output with the `Even
 
 ### Confirmation
 
-* `docs/specs/mcp-tools.md` documents exact input/output JSON Schemas matching the shapes above; a test asserts tool responses validate against them.
+* `docs/openspec/specs/mcp-tools/spec.md` documents exact input/output JSON Schemas matching the shapes above; a test asserts tool responses validate against them.
 * Tests cover: `list` filtering by provider/type/since, cursor round-trip (no duplicate/gap across pages), `get` returning full sanitized detail, `list_providers` reporting correct `secret_status`, and `replay` posting the stored payload to a target and reporting the downstream status.
 * A test asserts every event object over MCP includes `trust_mode`/`verified`/`verify_detail` and that no secret/full-signature value is present.
 * A test asserts `replay` with neither `target_url` nor a configured default returns an error rather than performing a request.
@@ -145,5 +145,5 @@ flowchart LR
 
 * Minimum tool set and the recent-events resource are from brief §7. Go MCP SDK: <https://github.com/modelcontextprotocol/go-sdk>; MCP spec: <https://modelcontextprotocol.io/>.
 * Event shape and trust fields derive from [ADR-0002](ADR-0002-postgres-persistence-and-retention.md) (schema) and [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md) (trust semantics).
-* Exact schemas: `docs/specs/mcp-tools.md` (this session). The AsyncAPI SSE contract (`docs/specs/asyncapi.yaml`) shares the same `EventSummary` shape for the UI's live stream.
+* Exact schemas: `docs/openspec/specs/mcp-tools/spec.md` (this session). The AsyncAPI SSE contract (`docs/reference/asyncapi.yaml`) shares the same `EventSummary` shape for the UI's live stream.
 * `replay` SSRF constraints (scheme validation, localhost/trusted default, allowlist) are flagged here as a code-session implementation requirement.

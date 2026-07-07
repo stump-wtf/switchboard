@@ -1,15 +1,15 @@
 openapi: 3.1.0
 
 # switchboard — HTTP surface: webhook ingestion + local web UI.
-# Authored by hand (see ADR-001): the endpoints are webhook receivers (raw body + HMAC)
+# Authored by hand (see ADR-0001): the endpoints are webhook receivers (raw body + HMAC)
 # and server-rendered HTML, neither of which is model-driven, so there is no framework
 # generating this spec. It is the contract the code session implements against.
 #
-# Trust model (ADR-003): signed providers are verified-or-401; the generic endpoint is
+# Trust model (ADR-0003): signed providers are verified-or-401; the generic endpoint is
 # a shared-secret token (or open); Redis is a separate pull ingestion path (see
-# docs/specs/asyncapi.yaml, not here — it has no HTTP endpoint).
+# docs/reference/asyncapi.yaml, not here — it has no HTTP endpoint).
 #
-# Live-update stream schema (SSE): docs/specs/asyncapi.yaml.
+# Live-update stream schema (SSE): docs/reference/asyncapi.yaml.
 # MCP tool contract: docs/specs/mcp-tools.md.
 
 info:
@@ -24,14 +24,14 @@ info:
     - **Web UI** (`/`, `/log`, `/providers`, `/settings`) + the SSE stream (`/events`):
       server-rendered HTML (html/template + HTMX) plus a `text/event-stream` for live updates.
 
-    ## Authentication posture (ADR-001, brief §8)
+    ## Authentication posture (ADR-0001, brief §8)
     The service is **localhost-bound by default and ships no in-app auth for the UI**. If it is
     ever exposed on the homelab LAN it MUST sit behind Caddy `forward_auth` — auth is provided by
     the reverse proxy, not built into this app for the MVP. The UI/SSE/health endpoints below are
     therefore marked `security: []` (no in-app auth) **by design**, not by oversight.
 
     For **webhook** endpoints, "authentication" means per-provider signature verification
-    (`signed` providers) or a shared-secret token that authenticates the caller (`generic`). See ADR-003.
+    (`signed` providers) or a shared-secret token that authenticates the caller (`generic`). See ADR-0003.
   license:
     name: MIT
     url: https://github.com/joestump/switchboard/blob/main/LICENSE
@@ -42,11 +42,11 @@ servers:
   - url: http://127.0.0.1:8080
     description: Local, loopback-bound default (MVP)
   - url: https://webhooks.stump.rocks
-    description: Optional homelab exposure — MUST be behind Caddy forward_auth (ADR-001)
+    description: Optional homelab exposure — MUST be behind Caddy forward_auth (ADR-0001)
 
 tags:
   - name: ingestion
-    description: Inbound webhook receivers. See ADR-003 for the trust model.
+    description: Inbound webhook receivers. See ADR-0003 for the trust model.
   - name: ui
     description: Server-rendered web UI (html/template + HTMX). HTML responses.
   - name: sse
@@ -65,7 +65,7 @@ paths:
         signature is verified **before any parsing** (a re-serialize would break the HMAC).
 
         - **Verification is mandatory.** A missing, malformed, or failing signature returns **401**
-          and the payload is **NOT persisted** — only a redacted rejection is logged (ADR-003).
+          and the payload is **NOT persisted** — only a redacted rejection is logged (ADR-0003).
         - On success the event is normalized, persisted (`verified=true`, `trust_mode=signed`),
           broadcast over SSE, and exposed to the MCP tools.
         - Signature comparison is constant-time; Stripe/Slack additionally enforce a timestamp
@@ -146,13 +146,13 @@ paths:
 
         - **Shared-secret token (or open).** Events are persisted with `verified=false`,
           `trust_mode=token`, `verify_detail="token ok"`, and are labeled
-          per their trust level everywhere in the UI and API (ADR-003).
+          per their trust level everywhere in the UI and API (ADR-0003).
         - **Opt-in and disabled by default.** A generic provider does not exist until an operator
           explicitly creates one; an unknown `{name}` returns 404.
         - Requires a configured **shared-secret token** the caller presents — `Authorization: Bearer`
           (or a header) preferred, `?token=`/path token as a URL fallback (Docker Hub). It authenticates
           the caller but **not** the body; constant-time compare; required by default. A bad/missing
-          token returns 403 (ADR-003).
+          token returns 403 (ADR-0003).
         - Appropriate **only on a trusted network** already isolated by Caddy `forward_auth` /
           UniFi segmentation.
       security: []
@@ -220,7 +220,7 @@ paths:
       description: |
         `text/event-stream` consumed by the browser via `htmx-ext-sse`. Emits named SSE events
         (`event-received`, `status`) plus keep-alive comments. **Message payload schemas are
-        defined in `docs/specs/asyncapi.yaml`**, not here. Reconnection cadence is advertised via
+        defined in `docs/reference/asyncapi.yaml`**, not here. Reconnection cadence is advertised via
         the SSE `retry:` field (configurable — `sse_retry_ms`, Settings screen).
       security: []
       parameters:
@@ -268,7 +268,7 @@ paths:
       summary: Event detail (UI screen 2, row → detail)
       description: |
         Full detail for one event: raw payload, **sanitized** headers (signature/secret headers
-        redacted — ADR-002/ADR-003), and verification result. Rendered as HTML.
+        redacted — ADR-0002/ADR-0003), and verification result. Rendered as HTML.
       security: []
       parameters:
         - name: id
@@ -437,14 +437,14 @@ components:
     TrustMode:
       type: string
       description: >-
-        How the event's trust is established (ADR-003). `signed` = HMAC-verified webhook;
+        How the event's trust is established (ADR-0003). `signed` = HMAC-verified webhook;
         `token` = shared-secret-authenticated webhook (caller, not body); `open` = unchecked
         webhook (trusted-network only); `queue` = pull adapter, trust = broker connection.
       enum: [signed, token, open, queue]
 
     ProviderFamily:
       type: string
-      description: Ingestion family (ADR-003) — webhook (push) or queue (pull).
+      description: Ingestion family (ADR-0003) — webhook (push) or queue (pull).
       enum: [webhook, queue]
 
     SecretStatus:
@@ -557,7 +557,7 @@ components:
 
   securitySchemes:
     # Documented for clarity only — these are per-provider signature headers, verified by the app
-    # (ADR-003), NOT bearer credentials the client obtains. UI/SSE endpoints have no in-app auth
+    # (ADR-0003), NOT bearer credentials the client obtains. UI/SSE endpoints have no in-app auth
     # by design (localhost + Caddy forward_auth). See the info.description security posture.
     githubSignature:
       type: apiKey
@@ -578,8 +578,8 @@ components:
       type: apiKey
       in: query
       name: token
-      description: Shared-secret token — authenticates the caller, not the body (ADR-003).
+      description: Shared-secret token — authenticates the caller, not the body (ADR-0003).
 
 # No global security requirement: webhook auth is per-provider signature verification (above),
-# and UI/SSE/health endpoints are intentionally unauthenticated at the app layer (ADR-001).
+# and UI/SSE/health endpoints are intentionally unauthenticated at the app layer (ADR-0001).
 security: []
