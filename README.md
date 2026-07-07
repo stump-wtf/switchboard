@@ -17,7 +17,7 @@ The name is the architecture: a manual telephone exchange took many incoming lin
 verified the caller, and patched the line through to its destination. That's exactly this — and it's
 why the UI and docs wear a switchboard-era palette (brass, bakelite, operator-cream, oxblood, and
 patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
-[ADR-000](docs/adr/ADR-000-project-naming-and-scope.md)).
+[ADR-0000](docs/adr/ADR-0000-project-naming-and-scope.md)).
 
 > [!IMPORTANT]
 > **Status: MVP working.** The design record — the **architecture decision records** (`docs/adr/`) and
@@ -32,12 +32,12 @@ patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
 
 ## Two layers
 
-- **Event-store core (ADR-000–005):** receive, verify, persist, and expose inbound webhooks/queue
+- **Event-store core (ADR-0000–005):** receive, verify, persist, and expose inbound webhooks/queue
   events — the pipeline described in this README.
-- **Agent layer (ADR-007–015):** inbound events become durable **todos** that agents claim and
+- **Agent layer (ADR-0007–015):** inbound events become durable **todos** that agents claim and
   complete; humans register agents and are vended scoped MCP endpoints; personas are advertised as A2A
   Agent Cards; and cross-agent work is granted by human-approved friending. See
-  [ADR-007](docs/adr/ADR-007-todos-as-core-primitive.md) and the
+  [ADR-0007](docs/adr/ADR-0007-todos-as-core-primitive.md) and the
   [design index](docs/README.md).
 
 ## Why this exists
@@ -45,7 +45,7 @@ patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
 Different providers have wildly different security stories, and pretending otherwise is a security
 bug. `switchboard` makes each source's trust level **explicit, per-provider, enforced, and visible** —
 a signed GitHub event and a token-authenticated Docker Hub event are never displayed or exposed as if they
-were the same thing. See [ADR-003](docs/adr/ADR-003-per-provider-ingestion-and-trust-model.md).
+were the same thing. See [ADR-0003](docs/adr/ADR-0003-per-provider-ingestion-and-trust-model.md).
 
 ## Architecture
 
@@ -67,9 +67,9 @@ Provider (GitHub/Stripe/Slack/Docker/…)        Redis (pub/sub or stream)
 One service, single repo. The MCP server and the web server share the same Go HTTP server
 (different route groups) and the same PostgreSQL layer. Stack rationale — net/http + chi over a framework, HTMX
 over a SPA, Pico over Tailwind, inline SVG over icon fonts — is in
-[ADR-001](docs/adr/ADR-001-web-stack-go-htmx-pico.md).
+[ADR-0001](docs/adr/ADR-0001-web-stack-go-htmx-pico.md).
 
-## Trust model at a glance (ADR-003)
+## Trust model at a glance (ADR-0003)
 
 Two provider families — **webhook** (push) and **queue** (pull) — and every event's trust level is
 explicit and shown.
@@ -90,11 +90,11 @@ the caller knows a secret, but unlike HMAC it can't attest the payload.
 
 | Doc | What it covers |
 |-----|----------------|
-| [ADR-000](docs/adr/ADR-000-project-naming-and-scope.md) | Project name + MVP/session scope |
-| [ADR-001](docs/adr/ADR-001-web-stack-go-htmx-pico.md) | Web/UI stack (Go net/http + chi, html/template, HTMX + Pico) — and why not a framework / Tailwind / icon fonts |
-| [ADR-002](docs/adr/ADR-002-postgres-persistence-and-retention.md) | PostgreSQL persistence, queue mechanics, schema sketch, retention |
-| [ADR-003](docs/adr/ADR-003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types (webhook / queue) & the trust model (signed / token / open / queue) |
-| [ADR-005](docs/adr/ADR-005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract shape |
+| [ADR-0000](docs/adr/ADR-0000-project-naming-and-scope.md) | Project name + MVP/session scope |
+| [ADR-0001](docs/adr/ADR-0001-web-stack-go-htmx-pico.md) | Web/UI stack (Go net/http + chi, html/template, HTMX + Pico) — and why not a framework / Tailwind / icon fonts |
+| [ADR-0002](docs/adr/ADR-0002-postgres-persistence-and-retention.md) | PostgreSQL persistence, queue mechanics, schema sketch, retention |
+| [ADR-0003](docs/adr/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types (webhook / queue) & the trust model (signed / token / open / queue) |
+| [ADR-0005](docs/adr/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract shape |
 | [openapi.yaml](docs/specs/openapi.yaml) | HTTP surface: webhook ingestion + UI endpoints |
 | [asyncapi.yaml](docs/specs/asyncapi.yaml) | SSE event/message schema |
 | [mcp-tools.md](docs/specs/mcp-tools.md) | Exact MCP tool + resource JSON Schemas |
@@ -137,7 +137,7 @@ Migrations apply on startup. For a local spin without a real Pocket ID, set `SWI
 
 The service is **loopback-bound by default and ships no in-app auth**. If you ever expose it on the
 homelab LAN it **must** sit behind Caddy `forward_auth`, like everything else in the stack — auth is
-the reverse proxy's job, not this app's (ADR-001, brief §8).
+the reverse proxy's job, not this app's (ADR-0001, brief §8).
 
 Secrets (provider HMAC secrets, the Postgres/Redis DSNs, generic tokens, the OIDC client secret) are
 injected via **environment/deployment config** — never committed. Switchboard-*minted* secrets (agent
@@ -169,7 +169,7 @@ or the signed endpoint will (correctly) 401.
    channel's Redis ACL.
 
 The trust mode is always declared per provider and shown in the UI — never silently assumed. See
-[ADR-003](docs/adr/ADR-003-per-provider-ingestion-and-trust-model.md).
+[ADR-0003](docs/adr/ADR-0003-per-provider-ingestion-and-trust-model.md).
 
 ## Development
 

@@ -1,0 +1,204 @@
+---
+status: draft
+date: 2026-07-06
+implements: [ADR-0007]
+requires: [SPEC-0004]
+---
+
+# SPEC-0003: Todo Work-Queue
+
+## Overview
+
+This capability defines switchboard's core agent-facing primitive: the **todo**, a durable
+work-item with an explicit lifecycle (`pending → claimed → done | failed`, with `retry` as a
+transition back to `pending`). It realizes
+[ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md), which established that the object an
+agent interacts with is not a message it reads once but a durable unit of work that survives crashes,
+deduplicates at-least-once ingestion, and is safe under concurrent consumers.
+
+The queue mechanics — atomic claim, SQS-style visibility windows, lease heartbeat, lease-expiry
+requeue, bounded retries, and idempotent enqueue — are backed by the PostgreSQL persistence layer
+([SPEC-0004](../persistence/spec.md)); this capability depends on it. The model is deliberately an
+exact analogue of Amazon SQS's visibility-timeout mechanism: `claim` ≈ `ReceiveMessage`,
+`heartbeat` ≈ `ChangeMessageVisibility`, `complete` ≈ `DeleteMessage`, and lease expiry ≈ the
+message reappearing on the queue.
+
+The reference implementation is `internal/store/todos.go` (the `Todo` type, `CreateTodo`,
+`ClaimTodo`, `ClaimNext`, `CompleteTodo`, `FailTodo`, `ListTodos`, `GetTodo`, `ReapExpired`) over the
+`todos` table in `internal/db/migrations/0001_init.sql`.
+
+## Requirements
+
+### Requirement: Todo Lifecycle State Machine
+
+A todo MUST occupy exactly one of four states: `pending`, `claimed`, `done`, `failed`. `done` and
+`failed` are terminal. `retry` is a transition, not a state — a failed or lease-expired todo
+transitions back to `pending` with `attempt` incremented. The permitted transitions are:
+
+- `create → pending`
+- `pending → claimed` (atomic claim, sets owner + lease + `claimed_at`, `attempt++`)
+- `claimed → claimed` (heartbeat extends the lease)
+- `claimed → done` (complete)
+- `claimed → pending | failed` (fail: retry while `attempt < max_attempts`, else dead-letter)
+- `claimed → pending | failed` (lease expiry: requeue while `attempt < max_attempts`, else
+  dead-letter)
+- `failed → pending` (operator/agent retry of a dead-lettered todo)
+
+Any transition not in this set MUST be rejected. Terminal todos MUST persist as audit records subject
+to retention ([SPEC-0004](../persistence/spec.md)).
+
+#### Scenario: Only defined transitions are honored
+
+- **WHEN** a caller attempts to complete a todo that is `pending` (never claimed)
+- **THEN** the store MUST NOT mark it `done`; the conditional update matches no row and the caller
+  MUST receive a conflict signal (`ErrConflict`)
+
+#### Scenario: Terminal states are final
+
+- **WHEN** a todo is `done` or `failed`
+- **THEN** it MUST NOT be claimed again by a normal claim, and it MAY only re-enter `pending` through
+  an explicit operator/agent retry of a dead-lettered (`failed`) todo
+
+### Requirement: Atomic Claim with FOR UPDATE SKIP LOCKED
+
+Claiming a todo MUST be atomic and single-owner. When many workers drain the same pool queue, each
+concurrent claimant MUST receive a *different* pending row and MUST NOT block on another — the store
+MUST select the next pending row with `FOR UPDATE SKIP LOCKED` ordered by `created_at`, then set
+`state='claimed'`, `owner`, `lease_expires_at = now() + ttl`, `claimed_at = now()`, and increment
+`attempt`. A claim MUST respect assignment: a directly-assigned todo (`assignee` set) MUST be
+claimable only by that assignee; a pool todo (`assignee IS NULL`) MAY be claimed by any worker whose
+scope covers the queue. Claiming a specific todo that exists but is not claimable (already claimed, or
+wrong assignee) MUST return `ErrConflict`; claiming a nonexistent todo MUST return `ErrNotFound`;
+claiming when no pending work exists MUST return `ErrNotFound`.
+
+#### Scenario: Concurrent claimants get distinct todos
+
+- **WHEN** N workers call claim on the same queue simultaneously and N pending todos exist
+- **THEN** each worker MUST receive a distinct todo, no todo MUST be claimed twice, and the claims
+  MUST NOT serialize behind a global lock
+
+#### Scenario: Direct assignment is respected
+
+- **WHEN** a todo has `assignee` set and a worker that is not that assignee attempts to claim it
+- **THEN** the claim MUST fail (the row is not selected / `ErrConflict`), and only the named assignee
+  MUST be able to claim it
+
+### Requirement: Visibility Window, Lease, and Heartbeat
+
+Claiming MUST behave as an SQS-style receive with a visibility timeout: for the duration of the
+lease (`lease_expires_at`), the todo MUST be invisible to every other consumer. A worker that needs
+more time than its window MUST be able to extend the lease via a heartbeat
+(`ChangeMessageVisibility`) that updates `lease_expires_at`; only the current lease owner MAY
+heartbeat. `complete` and `fail` MUST likewise be permitted only for the current lease owner
+(guarded by `state='claimed' AND owner=$owner`). The lease TTL MUST be set per claim, defaulting to
+a configurable server value.
+
+#### Scenario: Claimed todo is invisible to other consumers
+
+- **WHEN** a todo is `claimed` with a live (unexpired) lease
+- **THEN** no other consumer MUST be able to claim it until the lease expires or the owner releases
+  it
+
+#### Scenario: Only the lease owner may complete or fail
+
+- **WHEN** a worker that is not the current `owner` attempts to complete or fail a claimed todo
+- **THEN** the transition MUST NOT apply, and the caller MUST receive `ErrConflict` (row exists but
+  not owned)
+
+### Requirement: Lease-Expiry Requeue and Reaper (Crash Safety)
+
+A todo whose lease lapses before completion MUST become re-claimable — this is the crash-safety
+guarantee. A periodic reaper MUST scan for todos in `state='claimed'` with `lease_expires_at < now()`
+and requeue them: if `attempt < max_attempts` the todo MUST return to `pending` with `owner` and
+`lease_expires_at` cleared; if `attempt >= max_attempts` it MUST dead-letter to `failed`. Requeue
+MUST NOT be lost merely because no reaper has run yet — a lapsed lease MUST also be safe to detect on
+the next claim scan. Because a crashed worker's todo is re-delivered, processing is **at-least-once**
+and consumers MUST be idempotent.
+
+#### Scenario: Crashed worker's todo is re-claimable
+
+- **WHEN** a worker claims a todo and dies without completing it, and the lease then expires
+- **THEN** the reaper MUST return the todo to `pending` (below the attempt cap) so another worker can
+  claim it, and no work MUST be silently dropped
+
+#### Scenario: Repeated expiry dead-letters at the cap
+
+- **WHEN** a todo has been claimed and expired such that `attempt >= max_attempts`
+- **THEN** the reaper MUST move it to `failed` (dead-letter) rather than requeuing it forever
+
+### Requirement: Bounded Retries via max_attempts
+
+Every todo MUST carry an `attempt` counter (incremented on each claim) and a `max_attempts` cap
+(default 5). On `fail`, if `attempt < max_attempts` the todo MUST return to `pending` for retry;
+otherwise it MUST transition to `failed` (dead-letter). Retries MUST NOT loop unbounded. A
+dead-lettered (`failed`) todo MAY be re-queued only by an explicit operator/agent retry.
+
+#### Scenario: Fail below cap retries, at cap dead-letters
+
+- **WHEN** the owner fails a claimed todo whose `attempt < max_attempts`
+- **THEN** the todo MUST return to `pending` with `owner`/`lease_expires_at` cleared; **but WHEN**
+  `attempt >= max_attempts`, it MUST transition to `failed`
+
+### Requirement: Idempotent Enqueue and Dedup
+
+Creating a todo MUST be idempotent on `(queue, idempotency_key)` among non-terminal rows. When a
+producer creates a todo whose `(queue, idempotency_key)` already matches a non-terminal
+(`state <> 'done' AND state <> 'failed'`) todo, the store MUST NOT create a second row — it MUST
+return the existing todo and signal that no new row was created. This MUST be implemented with an
+atomic `INSERT … ON CONFLICT … DO NOTHING` against the partial unique dedupe index, so that
+at-least-once ingestion (e.g. a webhook delivered twice with the same provider delivery id) collapses
+into exactly one work-item. A null `idempotency_key` MUST NOT participate in dedup.
+
+#### Scenario: Duplicate delivery collapses to one todo
+
+- **WHEN** two create calls arrive with the same `queue` and `idempotency_key` while the first todo
+  is still non-terminal
+- **THEN** exactly one todo MUST exist, the second call MUST return that same todo, and the call MUST
+  report that no new row was created
+
+#### Scenario: A terminal todo does not block a new one
+
+- **WHEN** a create arrives with a `(queue, idempotency_key)` that matches only a `done` or `failed`
+  todo
+- **THEN** a new `pending` todo MUST be created (terminal rows are excluded from the dedupe index)
+
+### Requirement: Concurrency Safety of Queue Workers
+
+The reaper and any background pollers MUST propagate a `context.Context` for cancellation and
+timeout, MUST have an explicit lifecycle (clean startup and graceful shutdown), and MUST achieve race
+safety through the database's atomic transitions (`FOR UPDATE SKIP LOCKED`, conditional `UPDATE …
+WHERE state=… AND owner=…`) rather than in-process locking of shared todo state. The race detector
+MUST be enabled in CI for the queue packages.
+
+#### Scenario: Graceful shutdown drains cleanly
+
+- **WHEN** the service receives a shutdown signal while workers hold leases
+- **THEN** the reaper/pollers MUST stop on context cancellation, in-flight leased todos MUST simply
+  expire and be requeued by crash safety, and no todo MUST be left in an inconsistent state
+
+### Requirement: Error Handling Standards
+
+Queue operations MUST surface domain failures as sentinel errors — `ErrNotFound` for an absent todo,
+`ErrConflict` for a lost state-transition race — and MUST NOT silently swallow them. After a
+conditional update that affects zero rows, the store MUST distinguish "row absent" (`ErrNotFound`)
+from "row present but not in the expected state / not owned" (`ErrConflict`). Errors crossing the
+store boundary MUST be wrapped with context or returned as typed sentinels, and MUST be
+observable via structured logging.
+
+#### Scenario: Zero-row update is classified, not swallowed
+
+- **WHEN** a claim/complete/fail conditional update affects no rows
+- **THEN** the store MUST look up whether the todo exists and return `ErrConflict` if it does or
+  `ErrNotFound` if it does not — never a nil error with an empty todo
+
+### Requirement: Database Operation Standards
+
+All queue state transitions MUST use parameterized SQL (no string interpolation of caller input) and
+MUST be atomic single-statement conditional updates or transactions. The claim scan MUST be served by
+the partial index on pending rows so it never scans the terminal backlog. Multi-step mutations MUST
+be transactional. Every store function MUST accept and honor a `context.Context`.
+
+#### Scenario: Claim never scans terminal rows
+
+- **WHEN** the queue holds a large backlog of `done`/`failed` todos and a few `pending` ones
+- **THEN** the claim scan MUST be served by the partial pending index and MUST NOT scan terminal rows

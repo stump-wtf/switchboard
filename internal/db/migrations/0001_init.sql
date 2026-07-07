@@ -1,9 +1,9 @@
 -- 0001_init — switchboard core schema.
 -- Humans (OIDC principals) + agents + vended endpoints + the durable todo queue + events, all in one
 -- database so a vended endpoint's scope, an agent's owner, and a todo's queue are joinable and
--- enforced transactionally (ADR-002, ADR-007, ADR-008).
+-- enforced transactionally (ADR-0002, ADR-0007, ADR-0008).
 
--- Humans: the accountable principals. The IdP (Pocket ID) holds HUMANS ONLY — never agents. ADR-008/011.
+-- Humans: the accountable principals. The IdP (Pocket ID) holds HUMANS ONLY — never agents. ADR-0008/011.
 CREATE TABLE humans (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     oidc_subject text UNIQUE NOT NULL,
@@ -21,7 +21,7 @@ CREATE TABLE sessions (
 );
 CREATE INDEX idx_sessions_human ON sessions (human_id);
 
--- Agents: lightweight owned records. Registration grants nothing; power comes only from a vend. ADR-008.
+-- Agents: lightweight owned records. Registration grants nothing; power comes only from a vend. ADR-0008.
 CREATE TABLE agents (
     id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_human_id uuid NOT NULL REFERENCES humans(id) ON DELETE CASCADE,
@@ -33,19 +33,19 @@ CREATE TABLE agents (
 CREATE INDEX idx_agents_owner ON agents (owner_human_id);
 
 -- Endpoints: the vended capability. URL + credential together ARE the grant; scope is immutable
--- (change access by revoke + re-vend). The plaintext credential is shown once; only its hash is stored. ADR-008.
+-- (change access by revoke + re-vend). The plaintext credential is shown once; only its hash is stored. ADR-0008.
 CREATE TABLE endpoints (
     id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_id             uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    persona_id           uuid,                                  -- ADR-009; null = agent-level endpoint
+    persona_id           uuid,                                  -- ADR-0009; null = agent-level endpoint
     credential_hash      text NOT NULL,                         -- SHA-256(token); never reversible
     credential_prefix    text NOT NULL,                         -- non-secret display hint, e.g. "sbk_ab12cd"
     scope_queues         text[] NOT NULL DEFAULT '{}',
     scope_verbs          text[] NOT NULL DEFAULT '{}',
-    webhook_max          int NOT NULL DEFAULT 0,                -- ceiling (ADR-012)
+    webhook_max          int NOT NULL DEFAULT 0,                -- ceiling (ADR-0012)
     webhook_source_types text[] NOT NULL DEFAULT '{}',
     webhook_queues       text[] NOT NULL DEFAULT '{}',
-    mutability           text NOT NULL DEFAULT 'immutable',     -- ADR-008 open question, proposed immutable
+    mutability           text NOT NULL DEFAULT 'immutable',     -- ADR-0008 open question, proposed immutable
     state                text NOT NULL DEFAULT 'active',        -- active|revoked
     created_at           timestamptz NOT NULL DEFAULT now(),
     revoked_at           timestamptz
@@ -53,7 +53,7 @@ CREATE TABLE endpoints (
 CREATE UNIQUE INDEX idx_endpoints_credhash ON endpoints (credential_hash);
 CREATE INDEX idx_endpoints_agent ON endpoints (agent_id);
 
--- Events: one row per accepted inbound delivery. Headers are sanitized; payload kept for replay. ADR-002/003.
+-- Events: one row per accepted inbound delivery. Headers are sanitized; payload kept for replay. ADR-0002/003.
 CREATE TABLE events (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source        text NOT NULL,
@@ -73,7 +73,7 @@ CREATE TABLE events (
 CREATE INDEX idx_events_source_time ON events (source, received_at DESC);
 CREATE UNIQUE INDEX idx_events_dedupe ON events (source, external_id) WHERE external_id IS NOT NULL;
 
--- Todos: the durable work-queue. SQS-style visibility model: pending → claimed(lease) → done|failed. ADR-007/002.
+-- Todos: the durable work-queue. SQS-style visibility model: pending → claimed(lease) → done|failed. ADR-0007/002.
 CREATE TABLE todos (
     id               text PRIMARY KEY,
     queue            text NOT NULL,
@@ -101,7 +101,7 @@ CREATE INDEX idx_todos_pending ON todos (queue, created_at) WHERE state = 'pendi
 CREATE UNIQUE INDEX idx_todos_dedupe ON todos (queue, idempotency_key)
     WHERE idempotency_key IS NOT NULL AND state <> 'done' AND state <> 'failed';
 
--- Adapters: ingestion adapter registry — runtime enable/disable + NON-SECRET config. ADR-014.
+-- Adapters: ingestion adapter registry — runtime enable/disable + NON-SECRET config. ADR-0014.
 CREATE TABLE adapters (
     name       text PRIMARY KEY,
     family     text NOT NULL,               -- webhook|queue

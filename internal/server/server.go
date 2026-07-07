@@ -62,21 +62,21 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 
-	// Inbound ingestion (verified per-provider; ADR-003).
+	// Inbound ingestion (verified per-provider; ADR-0003).
 	r.Post("/webhooks/github", ing.GitHub)
 	r.Post("/dev/todos", ing.DevCreateTodo)
 
-	// Vended agent API (bearer-credential auth inside; ADR-008).
+	// Vended agent API (bearer-credential auth inside; ADR-0008).
 	r.Mount("/agent", api.Routes())
 
-	// Auth (OIDC RP against Pocket ID; ADR-011).
+	// Auth (OIDC RP against Pocket ID; ADR-0011).
 	r.Get("/login", webh.Login)
 	r.Get("/auth/login", authr.Login)
 	r.Get("/auth/callback", authr.Callback)
 	r.Post("/auth/dev-login", authr.DevLogin)
 	r.Get("/logout", authr.Logout)
 
-	// Human web UI (requires an authenticated human; ADR-001/008).
+	// Human web UI (requires an authenticated human; ADR-0001/008).
 	r.Group(func(pr chi.Router) {
 		pr.Use(authr.RequireHuman)
 		pr.Get("/", webh.Dashboard)
@@ -104,7 +104,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	return nil
 }
 
-// reaper periodically requeues (or dead-letters) todos with expired leases — crash safety (ADR-002).
+// reaper periodically requeues (or dead-letters) todos with expired leases — crash safety (ADR-0002).
 func reaper(ctx context.Context, st *store.Store, log *slog.Logger) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()

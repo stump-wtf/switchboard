@@ -1,4 +1,4 @@
-// Package web is the human-facing UI (ADR-001: html/template, themed with the switchboard palette):
+// Package web is the human-facing UI (ADR-0001: html/template, themed with the switchboard palette):
 // log in, register agents, and vend/revoke scoped MCP endpoints. Handlers marked "requires human"
 // read the authenticated principal from context (the server wraps them in auth.RequireHuman).
 package web
