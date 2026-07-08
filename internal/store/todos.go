@@ -221,6 +221,24 @@ func (s *Store) FailTodo(ctx context.Context, id, owner string, result []byte) (
 	return t, err
 }
 
+// RetryTodo re-enqueues a dead-lettered (failed) todo: the only sanctioned way a terminal todo
+// re-enters pending (SPEC-0003 lifecycle: failed → pending, operator/agent retry). It resets the
+// attempt budget and clears owner/lease/result so the todo gets a fresh set of tries. Returns
+// ErrConflict if the todo exists but is not failed (terminal states are otherwise final), ErrNotFound
+// if absent.
+func (s *Store) RetryTodo(ctx context.Context, id string) (Todo, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, attempt=0,
+			result=NULL, claimed_at=NULL, completed_at=NULL, updated_at=now()
+		WHERE id=$1 AND state='failed'
+		RETURNING `+todoCols, id)
+	t, err := scanTodo(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Todo{}, s.classifyMiss(ctx, id)
+	}
+	return t, err
+}
+
 // ListTodos returns todos in the allowed queues, optionally filtered by state, newest first.
 func (s *Store) ListTodos(ctx context.Context, queues []string, state string, limit int) ([]Todo, error) {
 	if limit <= 0 || limit > 200 {
