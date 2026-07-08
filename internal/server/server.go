@@ -84,17 +84,20 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	r.Get("/auth/login", authr.Login)
 	r.Get("/auth/callback", authr.Callback)
 	r.Post("/auth/dev-login", authr.DevLogin)
-	r.Get("/logout", authr.Logout)
 
-	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB.
+	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB;
+	// RequireCSRF guards every state-changing form with a per-session synchronizer token (SPEC-0008).
+	// Logout is a session-gated POST — never a GET — so it cannot be triggered cross-site.
 	r.Group(func(pr chi.Router) {
 		pr.Use(maxBytes(1 << 20))
 		pr.Use(authr.RequireHuman)
+		pr.Use(authr.RequireCSRF)
 		pr.Get("/", webh.Dashboard)
 		pr.Post("/agents", webh.CreateAgent)
 		pr.Get("/agents/{id}", webh.Agent)
 		pr.Post("/agents/{id}/vend", webh.Vend)
 		pr.Post("/endpoints/{id}/revoke", webh.Revoke)
+		pr.Post("/logout", authr.Logout)
 	})
 
 	go reaper(ctx, st, log)

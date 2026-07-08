@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -35,7 +36,10 @@ const (
 
 type ctxKey int
 
-const humanKey ctxKey = 0
+const (
+	humanKey ctxKey = iota
+	csrfKey
+)
 
 // Authenticator holds the OIDC provider + session store.
 type Authenticator struct {
@@ -79,6 +83,22 @@ type Human = store.Human
 func FromContext(ctx context.Context) (Human, bool) {
 	h, ok := ctx.Value(humanKey).(Human)
 	return h, ok
+}
+
+// CSRFFromContext returns the per-session CSRF token for the current request, if authenticated.
+// Handlers embed it as a hidden field in state-changing forms; RequireCSRF validates it. (SPEC-0008.)
+func CSRFFromContext(ctx context.Context) string {
+	t, _ := ctx.Value(csrfKey).(string)
+	return t
+}
+
+// csrfToken derives a per-session CSRF synchronizer token from the (secret, HttpOnly) session token.
+// It is bound to the session, safe to embed in HTML (preimage-resistant; leaks nothing about the
+// session token), and needs no server-side storage. An attacker cannot forge it without reading the
+// victim's session cookie, which SameSite=Lax + HttpOnly + the same-origin policy prevent.
+func csrfToken(sessionToken string) string {
+	sum := sha256.Sum256([]byte("switchboard-csrf:" + sessionToken))
+	return hex.EncodeToString(sum[:])
 }
 
 // oidcState is the short-lived per-login state stashed in a cookie across the redirect.
@@ -210,6 +230,7 @@ func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWri
 }
 
 // RequireHuman is middleware that admits only authenticated humans; others are redirected to login.
+// It also stashes the per-session CSRF token so downstream handlers can embed it in forms.
 func (a *Authenticator) RequireHuman(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, ok := a.human(r)
@@ -217,7 +238,40 @@ func (a *Authenticator) RequireHuman(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), humanKey, h)))
+		ctx := context.WithValue(r.Context(), humanKey, h)
+		if c, err := r.Cookie(sessionCookie); err == nil {
+			ctx = context.WithValue(ctx, csrfKey, csrfToken(c.Value))
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// RequireCSRF rejects unsafe (state-changing) requests whose CSRF token does not match the one
+// derived from the caller's session. Safe methods pass through untouched. The token is read from the
+// csrf_token form field or the X-CSRF-Token header. Governing: SPEC-0008 REQ CSRF synchronizer tokens.
+func (a *Authenticator) RequireCSRF(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+			next.ServeHTTP(w, r)
+			return
+		}
+		c, err := r.Cookie(sessionCookie)
+		if err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		expected := csrfToken(c.Value)
+		got := r.FormValue("csrf_token")
+		if got == "" {
+			got = r.Header.Get("X-CSRF-Token")
+		}
+		if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+			a.log.Warn("csrf token mismatch", "path", r.URL.Path, "remote", r.RemoteAddr)
+			http.Error(w, "invalid CSRF token", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

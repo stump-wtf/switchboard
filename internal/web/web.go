@@ -49,6 +49,7 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 type view struct {
 	Title          string
 	Human          *store.Human
+	CSRF           string
 	OIDCConfigured bool
 	DevLogin       bool
 	Agents         []store.Agent
@@ -72,7 +73,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	h.render(w, "dashboard", view{Title: "Agents", Human: &human, Agents: agents})
+	h.render(w, "dashboard", view{Title: "Agents", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Agents: agents})
 }
 
 // CreateAgent registers an agent. Requires human.
@@ -104,7 +105,7 @@ func (h *Handler) Agent(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	h.render(w, "agent", view{Title: ag.Name, Human: &human, Agent: &ag, Endpoints: eps})
+	h.render(w, "agent", view{Title: ag.Name, Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Agent: &ag, Endpoints: eps})
 }
 
 // Vend mints a scoped endpoint credential and shows it once with wiring instructions. Requires human.
@@ -132,7 +133,7 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.render(w, "vended", view{
-		Title: "Vended", Human: &human, Agent: &ag, Endpoint: &ep,
+		Title: "Vended", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Agent: &ag, Endpoint: &ep,
 		Token: token, MCPJSON: buildMCPJSON(h.cfg.BaseURL, token),
 	})
 }
