@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -120,7 +121,11 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "queues and verbs are required", http.StatusBadRequest)
 		return
 	}
-	token, hash, prefix := cred.Mint()
+	token, hash, prefix, err := cred.Mint()
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	ep, err := h.store.CreateEndpoint(r.Context(), ag.ID, hash, prefix, queues, verbs)
 	if err != nil {
 		h.fail(w, err)
@@ -139,7 +144,38 @@ func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	http.Redirect(w, r, r.Header.Get("Referer"), http.StatusSeeOther)
+	// Governing: SPEC-0007/0012 REQ open-redirect defense. Never redirect to a raw attacker-supplied
+	// Referer; return to a same-origin in-app PATH only, defaulting to the dashboard.
+	http.Redirect(w, r, h.safeRedirectTarget(r, "/"), http.StatusSeeOther)
+}
+
+// safeRedirectTarget returns a same-origin, path-only redirect target derived from the request's
+// Referer, or fallback when the Referer is absent, cross-origin, or not an in-app path. It strips
+// any scheme/host so the response can never bounce a user to another origin (open redirect).
+func (h *Handler) safeRedirectTarget(r *http.Request, fallback string) string {
+	ref := r.Header.Get("Referer")
+	if ref == "" {
+		return fallback
+	}
+	u, err := url.Parse(ref)
+	if err != nil {
+		return fallback
+	}
+	// If the Referer names a host, it must match our own origin (configured base URL or request host).
+	if u.Host != "" {
+		base, _ := url.Parse(h.cfg.BaseURL)
+		if (base == nil || u.Host != base.Host) && u.Host != r.Host {
+			return fallback
+		}
+	}
+	if !strings.HasPrefix(u.Path, "/") {
+		return fallback
+	}
+	target := u.Path
+	if u.RawQuery != "" {
+		target += "?" + u.RawQuery
+	}
+	return target
 }
 
 func (h *Handler) render(w http.ResponseWriter, page string, v view) {

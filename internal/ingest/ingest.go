@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/joestump/switchboard/internal/agentapi"
@@ -175,6 +176,10 @@ func summarizeGitHub(event string, body []byte) string {
 	}
 }
 
+// urlSecretParam matches a secret carried in a URL query string (e.g. a `?token=…` webhook URL that
+// shows up in a Referer/Location/Link header). The value is redacted so it is never persisted.
+var urlSecretParam = regexp.MustCompile(`(?i)([?&](?:token|access_token|api[_-]?key|apikey|secret|signature|sig)=)[^&#\s]+`)
+
 func sanitizeHeaders(h http.Header) []byte {
 	out := map[string]string{}
 	for k, v := range h {
@@ -182,7 +187,7 @@ func sanitizeHeaders(h http.Header) []byte {
 			out[k] = "«redacted»"
 			continue
 		}
-		out[k] = strings.Join(v, ", ")
+		out[k] = urlSecretParam.ReplaceAllString(strings.Join(v, ", "), "${1}«redacted»")
 	}
 	b, _ := json.Marshal(out)
 	return b

@@ -11,17 +11,21 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 )
 
 const prefix = "sbk_"
 
 // Mint returns a new credential: the plaintext token (shown once), its stored hash, and a
-// non-secret display prefix.
-func Mint() (token, hash, display string) {
+// non-secret display prefix. A crypto/rand failure is returned, never swallowed — vending a
+// low-entropy (or all-zero) credential would be a silent security hole. Governing: SPEC-0007.
+func Mint() (token, hash, display string, err error) {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", "", fmt.Errorf("cred: read random: %w", err)
+	}
 	token = prefix + base64.RawURLEncoding.EncodeToString(b)
-	return token, Hash(token), Display(token)
+	return token, Hash(token), Display(token), nil
 }
 
 // Hash returns the SHA-256 hex of a token (stored + used for lookup).

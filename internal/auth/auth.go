@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -93,7 +94,19 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OIDC not configured (set SWITCHBOARD_OIDC_* or SWITCHBOARD_DEV_LOGIN=1)", http.StatusServiceUnavailable)
 		return
 	}
-	st := oidcState{State: randToken(), Nonce: randToken(), Verifier: oauth2.GenerateVerifier()}
+	state, err := randToken()
+	if err != nil {
+		a.log.Error("login: generate state", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	nonce, err := randToken()
+	if err != nil {
+		a.log.Error("login: generate nonce", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	st := oidcState{State: state, Nonce: nonce, Verifier: oauth2.GenerateVerifier()}
 	raw, _ := json.Marshal(st)
 	http.SetCookie(w, a.cookie(stateCookie, base64.RawURLEncoding.EncodeToString(raw), 10*time.Minute))
 	url := a.oauth.AuthCodeURL(st.State, oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier))
@@ -185,7 +198,10 @@ func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWri
 	if err != nil {
 		return err
 	}
-	tok := randToken()
+	tok, err := randToken()
+	if err != nil {
+		return err
+	}
 	if err := a.store.CreateSession(ctx, hashToken(tok), h.ID, sessionTTL); err != nil {
 		return err
 	}
@@ -243,10 +259,15 @@ func (a *Authenticator) cookie(name, value string, ttl time.Duration) *http.Cook
 	}
 }
 
-func randToken() string {
+// randToken returns a 256-bit URL-safe random string. A crypto/rand failure is surfaced, never
+// swallowed — a silent low-entropy state/nonce/session token would defeat CSRF/replay protection
+// and session unguessability. Governing: SPEC-0008.
+func randToken() (string, error) {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("auth: read random: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func hashToken(s string) string {

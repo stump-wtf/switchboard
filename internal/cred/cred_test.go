@@ -6,7 +6,10 @@ import (
 )
 
 func TestMint(t *testing.T) {
-	tok, hash, disp := Mint()
+	tok, hash, disp, err := Mint()
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
 	if !strings.HasPrefix(tok, "sbk_") {
 		t.Fatalf("token prefix: %q", tok)
 	}
@@ -20,7 +23,7 @@ func TestMint(t *testing.T) {
 		t.Fatalf("display: %q", disp)
 	}
 	// Distinct each time.
-	tok2, _, _ := Mint()
+	tok2, _, _, _ := Mint()
 	if tok == tok2 {
 		t.Fatal("tokens must be unique")
 	}
