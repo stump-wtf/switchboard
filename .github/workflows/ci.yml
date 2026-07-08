@@ -41,7 +41,9 @@ jobs:
           cache: true
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          # Exclude vendor/: third-party sources (e.g. google/uuid) are not gofmt-clean and
+          # are not ours to reformat. go vet/build/test already ignore vendor in module mode.
+          unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^vendor/'))
           if [ -n "$unformatted" ]; then echo "unformatted:"; echo "$unformatted"; exit 1; fi
       - name: go vet
         run: go vet ./...
