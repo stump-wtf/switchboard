@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-07-05
 decision-makers: Joe Stump
 related: [ADR-0000, ADR-0002, ADR-0005, ADR-0014]
@@ -169,7 +169,7 @@ flowchart TD
 
 ## More Information
 
-* Adapter model this aligns with (push=webhook, pull=queue) and the pull-side ack coupling: [ADR-0014](ADR-0014-ingestion-adapters-push-pull.md), [ingestion-adapters spec](../openspec/specs/webhook-ingestion/spec.md).
+* Adapter model this aligns with (push=webhook, pull=queue) and the pull-side ack coupling: [ADR-0014](ADR-0014-ingestion-adapters-push-pull.md), [webhook-ingestion spec](../openspec/specs/webhook-ingestion/spec.md) (push family), [queue-adapters spec](../openspec/specs/queue-adapters/spec.md) (pull family).
 * Signature references: GitHub <https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries>, Stripe <https://docs.stripe.com/webhooks#verify-events>, Slack <https://api.slack.com/authentication/verifying-requests-from-slack>, Docker Hub (no native signing) <https://docs.docker.com/docker-hub/webhooks/>.
 * Queue trust references: `go-redis` <https://github.com/redis/go-redis>, Redis ACL <https://redis.io/docs/latest/operate/oss_and_stack/management/security/acl/>.
 * Secret sourcing: HMAC secrets, shared-secret tokens, and queue DSNs are injected via environment/config (never committed). Storage of `family`/`trust_mode`/`verified`/`verify_detail` + redaction: [ADR-0002](ADR-0002-postgres-persistence-and-retention.md).

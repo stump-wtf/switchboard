@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-07-05
 decision-makers: Joe Stump
 related: [ADR-0001, ADR-0005, ADR-0007, ADR-0008, ADR-0010]

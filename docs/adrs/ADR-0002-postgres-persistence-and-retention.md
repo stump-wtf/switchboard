@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-07-05
 decision-makers: Joe Stump
 related: [ADR-0000, ADR-0001, ADR-0003, ADR-0005, ADR-0007, ADR-0014]
@@ -104,7 +104,7 @@ CREATE TABLE todos (
   title            text,
   payload_ref      text,                       -- e.g. 'event:<id>' or a blob key
   payload          jsonb,                      -- small inline payload for producers with no stored event
-  idempotency_key  text        NOT NULL,
+  idempotency_key  text,                       -- nullable; only producers that supply one are deduped
   assignee         text,                       -- persona/endpoint id; NULL ⇒ pool queue
   state            text        NOT NULL DEFAULT 'pending',  -- pending|claimed|done|failed
   owner            text,
@@ -118,7 +118,8 @@ CREATE TABLE todos (
   completed_at     timestamptz
 );
 CREATE INDEX idx_todos_pending ON todos (queue, created_at) WHERE state = 'pending';
-CREATE UNIQUE INDEX idx_todos_dedupe ON todos (queue, idempotency_key) WHERE state <> 'done' AND state <> 'failed';
+CREATE UNIQUE INDEX idx_todos_dedupe ON todos (queue, idempotency_key)
+    WHERE idempotency_key IS NOT NULL AND state <> 'done' AND state <> 'failed';
 
 -- Adapter registry (runtime enable/disable + NON-SECRET config; provider secrets are env/config-injected, never stored plaintext).
 CREATE TABLE adapters (
