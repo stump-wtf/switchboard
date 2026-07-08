@@ -37,3 +37,10 @@ jobs:
         run: go build ./...
       - name: test
         run: go test ./...
+      - name: test (race — queue packages)
+        # The durable queue's correctness rests on concurrent claims (FOR UPDATE SKIP LOCKED) and the
+        # lease reaper, so the race detector guards the queue packages in the PRIMARY gate too, not
+        # only the GitHub mirror (SPEC-0003). -race needs cgo, hence a C compiler on the runner.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./internal/store/... ./internal/db/... ./internal/ingest/...

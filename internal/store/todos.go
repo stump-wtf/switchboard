@@ -7,10 +7,19 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ErrConflict is returned when a state transition loses a race (e.g. claim an already-claimed todo).
 var ErrConflict = errors.New("store: conflict")
+
+// querier is the subset of pgx shared by *pgxpool.Pool and pgx.Tx, so the raw-SQL helpers can run
+// either directly on the pool or inside a transaction (e.g. the atomic event+todo insert). ADR-0002.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
 // Todo is a durable work-item (ADR-0007). States: pending → claimed → done|failed.
 type Todo struct {
@@ -60,8 +69,51 @@ type CreateTodoParams struct {
 // CreateTodo inserts a todo, deduping on (queue, idempotency_key) among non-terminal rows. The bool
 // reports whether a new row was created (false = an existing non-terminal todo already covers it). ADR-0007.
 func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool, error) {
+	t, created, err := createTodo(ctx, s.pool, p)
+	if err == nil && created {
+		// Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY". Best-effort nudge so an
+		// idle worker/UI wakes without polling. The durable queue is the source of truth, so a lost
+		// NOTIFY costs only latency, never work — hence the error here is deliberately ignored.
+		s.notifyTodoReady(ctx, t.Queue)
+	}
+	return t, created, err
+}
+
+// CreateEventTodo records an accepted delivery and enqueues its todo in ONE transaction, so a failure
+// enqueuing the todo can never orphan a persisted event row (and vice-versa). The event id is linked
+// onto the todo. On success it returns the event id, the todo, and whether a NEW todo was created
+// (false = idempotent duplicate). Governing: SPEC-0002/0004 REQ atomic ingestion — event and todo
+// commit together or not at all.
+func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoParams) (int64, Todo, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, Todo{}, false, err
+	}
+	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+
+	eventID, err := insertEvent(ctx, tx, e)
+	if err != nil {
+		return 0, Todo{}, false, err
+	}
+	p.EventID = &eventID
+	t, created, err := createTodo(ctx, tx, p)
+	if err != nil {
+		return 0, Todo{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, Todo{}, false, err
+	}
+	if created {
+		s.notifyTodoReady(ctx, t.Queue)
+	}
+	return eventID, t, created, nil
+}
+
+// createTodo is the querier-based core of CreateTodo: it runs on either the pool or a transaction and
+// performs no LISTEN/NOTIFY (the caller nudges only after a durable commit).
+func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool, error) {
 	id := "td_" + uuid.NewString()
-	row := s.pool.QueryRow(ctx, `
+	row := q.QueryRow(ctx, `
 		INSERT INTO todos (id, queue, source, kind, title, payload, event_id, idempotency_key, assignee)
 		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), $5, $6, $7, NULLIF($8,''), NULLIF($9,''))
 		ON CONFLICT (queue, idempotency_key)
@@ -71,17 +123,13 @@ func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool,
 		id, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee)
 	t, err := scanTodo(row)
 	if err == nil {
-		// Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY". Best-effort nudge so an
-		// idle worker/UI wakes without polling. The durable queue is the source of truth, so a lost
-		// NOTIFY costs only latency, never work — hence the error here is deliberately ignored.
-		s.notifyTodoReady(ctx, t.Queue)
 		return t, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, false, err
 	}
 	// Conflict: return the existing non-terminal todo.
-	row = s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos
+	row = q.QueryRow(ctx, `SELECT `+todoCols+` FROM todos
 		WHERE queue = $1 AND idempotency_key = $2 AND state <> 'done' AND state <> 'failed'
 		ORDER BY created_at LIMIT 1`, p.Queue, p.IdempotencyKey)
 	t, err = scanTodo(row)
@@ -99,14 +147,17 @@ func (s *Store) notifyTodoReady(ctx context.Context, queue string) {
 	_, _ = s.pool.Exec(ctx, `SELECT pg_notify('todo_ready', $1)`, queue)
 }
 
-// ClaimTodo atomically claims a specific pending todo for owner, setting a lease. ADR-0007 claim.
-// Returns ErrConflict if the todo exists but is not claimable (already claimed / wrong assignee),
-// ErrNotFound if it does not exist.
+// ClaimTodo atomically claims a specific todo for owner, setting a lease. A todo is claimable when it
+// is pending OR when its lease has expired (crash recovery, so a stopped reaper can't strand it) and
+// it still has attempts remaining. ADR-0007 claim / SPEC-0003 lease recovery. Returns ErrConflict if
+// the todo exists but is not claimable (live claim / wrong assignee / exhausted), ErrNotFound if absent.
 func (s *Store) ClaimTodo(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='claimed', owner=$2, lease_expires_at=now()+$3::interval,
 			attempt=attempt+1, claimed_at=now(), updated_at=now()
-		WHERE id=$1 AND state='pending' AND (assignee IS NULL OR assignee=$2)
+		WHERE id=$1 AND (assignee IS NULL OR assignee=$2)
+			AND (state='pending'
+				OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts))
 		RETURNING `+todoCols, id, owner, ttl.String())
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -115,15 +166,19 @@ func (s *Store) ClaimTodo(ctx context.Context, id, owner string, ttl time.Durati
 	return t, err
 }
 
-// ClaimNext claims the oldest pending todo across the allowed queues using FOR UPDATE SKIP LOCKED
-// (ADR-0002), so concurrent workers never collide. Returns ErrNotFound when no work is available.
+// ClaimNext claims the oldest claimable todo across the allowed queues using FOR UPDATE SKIP LOCKED
+// (ADR-0002), so concurrent workers never collide. A todo is claimable when it is pending OR when its
+// lease has expired with attempts remaining — the scan recovers expired leases directly, so a stopped
+// reaper can never strand work (SPEC-0003). Returns ErrNotFound when no work is available.
 func (s *Store) ClaimNext(ctx context.Context, queues []string, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='claimed', owner=$1, lease_expires_at=now()+$2::interval,
 			attempt=attempt+1, claimed_at=now(), updated_at=now()
 		WHERE id = (
 			SELECT id FROM todos
-			WHERE queue = ANY($3) AND state='pending' AND (assignee IS NULL OR assignee=$1)
+			WHERE queue = ANY($3) AND (assignee IS NULL OR assignee=$1)
+				AND (state='pending'
+					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts))
 			ORDER BY created_at
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
@@ -244,8 +299,13 @@ type EventInput struct {
 // InsertEvent records an accepted delivery, deduping on (source, external_id). Returns the event id
 // (existing id on a duplicate delivery).
 func (s *Store) InsertEvent(ctx context.Context, e EventInput) (int64, error) {
+	return insertEvent(ctx, s.pool, e)
+}
+
+// insertEvent is the querier-based core of InsertEvent, runnable on the pool or inside a transaction.
+func insertEvent(ctx context.Context, q querier, e EventInput) (int64, error) {
 	var id int64
-	err := s.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		INSERT INTO events (source, family, event_type, external_id, trust_mode, verified, verify_detail,
 			content_type, headers, payload, payload_size, source_ip)
 		VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,NULLIF($12,'')::inet)
@@ -255,7 +315,7 @@ func (s *Store) InsertEvent(ctx context.Context, e EventInput) (int64, error) {
 		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Duplicate delivery — fetch the existing id.
-		if err2 := s.pool.QueryRow(ctx,
+		if err2 := q.QueryRow(ctx,
 			`SELECT id FROM events WHERE source=$1 AND external_id=$2`, e.Source, e.ExternalID,
 		).Scan(&id); err2 != nil {
 			return 0, err2
