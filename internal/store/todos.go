@@ -71,6 +71,10 @@ func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool,
 		id, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee)
 	t, err := scanTodo(row)
 	if err == nil {
+		// Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY". Best-effort nudge so an
+		// idle worker/UI wakes without polling. The durable queue is the source of truth, so a lost
+		// NOTIFY costs only latency, never work — hence the error here is deliberately ignored.
+		s.notifyTodoReady(ctx, t.Queue)
 		return t, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -85,6 +89,14 @@ func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool,
 		return Todo{}, false, ErrNotFound
 	}
 	return t, false, err
+}
+
+// notifyTodoReady emits a best-effort LISTEN/NOTIFY wakeup on the todo_ready channel carrying the
+// queue name. Correctness never depends on delivery (SPEC-0004): errors are swallowed by design.
+func (s *Store) notifyTodoReady(ctx context.Context, queue string) {
+	// pg_notify is used (not a literal NOTIFY) so the channel payload — the queue name — is passed as
+	// a bound parameter rather than interpolated into SQL text (Parameterized Queries Only).
+	_, _ = s.pool.Exec(ctx, `SELECT pg_notify('todo_ready', $1)`, queue)
 }
 
 // ClaimTodo atomically claims a specific pending todo for owner, setting a lease. ADR-0007 claim.
