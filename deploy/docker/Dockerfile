@@ -7,13 +7,15 @@
 # reverse_proxy in front. No forward_auth: it would be redundant with the app's own login and could
 # conflict with the OIDC redirect flow.
 
-FROM golang:1.23-alpine AS build
+# Vendored build: deps are committed under vendor/ so the image builds with NO network. The Gitea
+# act_runner's BuildKit (docker-container driver) has no egress to the Go module proxy, so an
+# in-container `go mod download` (or a GOTOOLCHAIN fetch) fails — vendoring makes the build hermetic.
+# Base MUST be >= the go.mod `go` directive or GOTOOLCHAIN would try to fetch a toolchain (needs network).
+FROM golang:1.25-alpine AS build
 WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/switchboard ./cmd/switchboard
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags "-s -w" -o /out/switchboard ./cmd/switchboard
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/switchboard /usr/local/bin/switchboard
