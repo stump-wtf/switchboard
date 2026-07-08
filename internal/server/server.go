@@ -50,6 +50,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
+	// Governing: SPEC-0001/0005/0006/0007/0008/0012 REQ "Security headers on all responses". Applied
+	// as the outermost app middleware so every surface (webhook, /agent, MCP, web, errors) carries them.
+	r.Use(secureHeaders)
+
+	// Rate limiters (SPEC-0006 webhook self-mgmt MUST, todo drain SHOULD; SPEC-0009 persona card).
+	// The agent API (todo drain + webhook self-management verbs) and inbound webhook get IP throttles;
+	// the durable queue stays the source of truth, so throttling only bounds abuse, never drops work.
+	agentRL := newRateLimiter(20, 40) // ~20 req/s per IP, burst 40 — comfortable for real drain loops
+	webhookRL := newRateLimiter(10, 20)
 
 	// Static assets + health.
 	staticSub, _ := fs.Sub(switchboard.StaticFS, "static")
@@ -62,12 +71,13 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 
-	// Inbound ingestion (verified per-provider; ADR-0003).
-	r.Post("/webhooks/github", ing.GitHub)
+	// Inbound ingestion (verified per-provider; ADR-0003). MaxBytesReader inside GitHub bounds the
+	// body to 5 MiB → 413 before HMAC verification (SPEC-0001).
+	r.With(webhookRL.middleware).Post("/webhooks/github", ing.GitHub)
 	r.Post("/dev/todos", ing.DevCreateTodo)
 
-	// Vended agent API (bearer-credential auth inside; ADR-0008).
-	r.Mount("/agent", api.Routes())
+	// Vended agent API (bearer-credential auth inside; ADR-0008). 1 MiB body cap + IP rate limit.
+	r.With(agentRL.middleware, maxBytes(1<<20)).Mount("/agent", api.Routes())
 
 	// Auth (OIDC RP against Pocket ID; ADR-0011).
 	r.Get("/login", webh.Login)
@@ -76,8 +86,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	r.Post("/auth/dev-login", authr.DevLogin)
 	r.Get("/logout", authr.Logout)
 
-	// Human web UI (requires an authenticated human; ADR-0001/008).
+	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB.
 	r.Group(func(pr chi.Router) {
+		pr.Use(maxBytes(1 << 20))
 		pr.Use(authr.RequireHuman)
 		pr.Get("/", webh.Dashboard)
 		pr.Post("/agents", webh.CreateAgent)
@@ -102,6 +113,37 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// secureHeaders sets defensive response headers on every route (SPEC-0001/0005/0006/0007/0008/0012).
+// The CSP is tuned to the actual web UI: an external stylesheet under /static plus an inline <style>
+// block and inline style="" attributes (hence style-src 'unsafe-inline'); there are no scripts, so
+// script-src is locked to 'self'. frame-ancestors 'none' backs up X-Frame-Options: DENY.
+func secureHeaders(next http.Handler) http.Handler {
+	const csp = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+		"script-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", csp)
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// maxBytes caps a request body at n bytes via http.MaxBytesReader, so a read past the limit errors
+// (the reader also writes a 413 when the handler surfaces the error) rather than buffering unbounded
+// input. Governing: SPEC-0001 (webhook), SPEC-0006 (/agent), SPEC-0012 (web forms) body limits.
+func maxBytes(n int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, n)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // reaper periodically requeues (or dead-letters) todos with expired leases — crash safety (ADR-0002).

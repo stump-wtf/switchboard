@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -48,8 +49,15 @@ func New(st *store.Store, hub *agentapi.Hub, log *slog.Logger, githubSecret, git
 
 // GitHub is the signed GitHub webhook receiver: POST /webhooks/github.
 func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	// Governing: SPEC-0001 REQ body limits. MaxBytesReader (not io.LimitReader) so an over-limit body
+	// is REJECTED with 413 rather than silently truncated and then HMAC-verified against a short read.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "payload too large")
+			return
+		}
 		http.Error(w, "read error", http.StatusBadRequest)
 		return
 	}
