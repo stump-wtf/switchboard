@@ -191,6 +191,22 @@ func (s *Store) ClaimNext(ctx context.Context, queues []string, owner string, tt
 	return t, err
 }
 
+// HeartbeatTodo extends the visibility lease on a claimed todo (SQS ChangeMessageVisibility). Only
+// the current lease owner may heartbeat (guarded by state='claimed' AND owner); it does not consume
+// an attempt or change claimed_at. Returns ErrConflict if the todo exists but is not a live claim
+// owned by owner, ErrNotFound if absent. Governing: SPEC-0003 REQ "Visibility Window, Lease, Heartbeat".
+func (s *Store) HeartbeatTodo(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
+		WHERE id=$1 AND state='claimed' AND owner=$2
+		RETURNING `+todoCols, id, owner, ttl.String())
+	t, err := scanTodo(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Todo{}, s.classifyMiss(ctx, id)
+	}
+	return t, err
+}
+
 // CompleteTodo acks a claimed todo owned by owner. ADR-0007 complete.
 func (s *Store) CompleteTodo(ctx context.Context, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
