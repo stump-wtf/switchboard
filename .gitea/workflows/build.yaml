@@ -5,10 +5,18 @@
 #   - push :latest, :main, :sha-<short>
 # StumpCloud's Ansible references :latest with `pull: always`, so an ie01 redeploy picks up HEAD.
 #
-# Registry auth: the per-run secrets.GITEA_TOKEN works for the Gitea API but is REJECTED by the
-# container registry — it needs a real PAT with write:package scope. Set a purpose-scoped
-# `REGISTRY_TOKEN` repo secret (username joestump). Until it's set, every step below skips and the
-# workflow stays green; the first push after the secret lands builds + publishes. Modeled on reduit.
+# Registry auth: on Gitea < 1.26 the automatic per-run token (gitea.token) is REJECTED by the
+# container registry even with `permissions: packages: write` — VERIFIED: it returns
+# `Get "https://gitea.stump.rocks/v2/": unauthorized` (401) at docker login. Package-scoped Actions
+# tokens landed in Gitea 1.26; until this instance is on >= 1.26, a real PAT with write:package scope
+# is required. Set a purpose-scoped `REGISTRY_TOKEN` repo secret (username joestump). Until it's set,
+# every step below skips and the workflow stays green; the first push after the secret lands builds
+# + publishes. Modeled on reduit.
+#
+# ONCE THIS GITEA IS >= 1.26: drop REGISTRY_TOKEN entirely and log in with the free automatic token —
+#   username: ${{ gitea.actor }}
+#   password: ${{ gitea.token }}
+# (the `permissions: packages: write` block below then grants it push to joestump's own packages).
 name: build-and-push
 
 on:
