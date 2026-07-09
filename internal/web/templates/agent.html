@@ -6,6 +6,7 @@
 <h2>Vend a scoped MCP endpoint</h2>
 <div class="card">
   <form method="post" action="/agents/{{.Agent.ID}}/vend">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <label>Queues (comma-separated) — the todo queues this endpoint may work</label>
     <input name="queues" placeholder="reviews, deploys" required>
     <label>Verbs (comma-separated) — allowed MCP tools</label>
@@ -26,7 +27,7 @@
       <td class="muted">{{range .ScopeQueues}}{{.}} {{end}}</td>
       <td class="muted">{{range .ScopeVerbs}}{{.}} {{end}}</td>
       <td><span class="badge {{.State}}">{{.State}}</span></td>
-      <td>{{if eq .State "active"}}<form method="post" action="/endpoints/{{.ID}}/revoke"><button class="secondary">revoke</button></form>{{end}}</td>
+      <td>{{if eq .State "active"}}<form method="post" action="/endpoints/{{.ID}}/revoke"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="secondary">revoke</button></form>{{end}}</td>
     </tr>
   {{end}}
   </tbody>

@@ -17,10 +17,10 @@ type Config struct {
 	// BaseURL is the externally-reachable base URL, used to build the OIDC redirect URL and the
 	// vended endpoint URLs handed to agents. No trailing slash.
 	BaseURL string
-	// DatabaseURL is the PostgreSQL DSN (ADR-002).
+	// DatabaseURL is the PostgreSQL DSN (ADR-0002).
 	DatabaseURL string
 
-	// --- OIDC relying-party config (ADR-011: switchboard is an RP against Pocket ID, a passkey IdP) ---
+	// --- OIDC relying-party config (ADR-0011: switchboard is an RP against Pocket ID, a passkey IdP) ---
 	OIDCIssuer       string // e.g. https://pocket-id.stump.rocks
 	OIDCClientID     string
 	OIDCClientSecret string

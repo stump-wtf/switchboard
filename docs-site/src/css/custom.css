@@ -68,7 +68,7 @@
   letter-spacing: 0.01em;
 }
 
-/* Trust-mode badges reused from the app tokens (ADR-003) so docs and UI match.
+/* Trust-mode badges reused from the app tokens (ADR-0003) so docs and UI match.
    Usage in MDX: <span class="sb-badge sb-badge--signed">signed</span> */
 .sb-badge {
   display: inline-block;

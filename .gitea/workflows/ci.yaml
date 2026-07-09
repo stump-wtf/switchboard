@@ -27,7 +27,9 @@ jobs:
           cache: true
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          # Exclude vendor/: third-party sources (e.g. google/uuid) are not gofmt-clean and
+          # are not ours to reformat. go vet/build/test already ignore vendor in module mode.
+          unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^vendor/'))
           if [ -n "$unformatted" ]; then echo "unformatted:"; echo "$unformatted"; exit 1; fi
       - name: go vet
         run: go vet ./...
@@ -35,3 +37,10 @@ jobs:
         run: go build ./...
       - name: test
         run: go test ./...
+      - name: test (race — queue packages)
+        # The durable queue's correctness rests on concurrent claims (FOR UPDATE SKIP LOCKED) and the
+        # lease reaper, so the race detector guards the queue packages in the PRIMARY gate too, not
+        # only the GitHub mirror (SPEC-0003). -race needs cgo, hence a C compiler on the runner.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./internal/store/... ./internal/db/... ./internal/ingest/...

@@ -2,6 +2,7 @@
 <h1>Your agents</h1>
 <div class="card">
   <form method="post" action="/agents">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <label>Agent name</label><input name="name" placeholder="reviewer-bot" required>
     <label>Description</label><input name="description" placeholder="reviews PRs while I'm away">
     <p style="margin-top:.8rem"><button>Register agent</button></p>

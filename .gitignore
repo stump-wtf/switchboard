@@ -23,3 +23,8 @@ data/
 
 # Agent worktrees
 .claude/worktrees/
+
+# SDD tracker-issue cache (per ADR-0025)
+.sdd/
+
+.claude/settings.local.json

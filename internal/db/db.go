@@ -2,7 +2,7 @@
 //
 // Migrations are plain .sql files embedded into the binary and applied on startup in filename order,
 // each in its own transaction, tracked in schema_migrations. No external migration tool — this keeps
-// switchboard a single static binary (ADR-015) with raw SQL (ADR-002).
+// switchboard a single static binary (ADR-0015) with raw SQL (ADR-0002).
 package db
 
 import (
@@ -10,6 +10,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"path"
 	"sort"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,6 +37,14 @@ func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 
 // Migrate applies every embedded migration not yet recorded in schema_migrations.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+	return applyMigrations(ctx, pool, migrationsFS, "migrations")
+}
+
+// applyMigrations is the testable core of Migrate: it applies every .sql file under dir in fsys, in
+// lexical order, each in its own transaction, recording applied versions in schema_migrations and
+// skipping ones already recorded. Splitting the migration source out as an fs.FS lets tests inject a
+// deliberately-failing migration to prove the transactional-rollback guarantee.
+func applyMigrations(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, dir string) error {
 	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    text PRIMARY KEY,
 		applied_at timestamptz NOT NULL DEFAULT now()
@@ -43,7 +52,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("db: ensure schema_migrations: %w", err)
 	}
 
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return fmt.Errorf("db: read migrations: %w", err)
 	}
@@ -65,7 +74,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if exists {
 			continue
 		}
-		sqlBytes, err := migrationsFS.ReadFile("migrations/" + name)
+		sqlBytes, err := fs.ReadFile(fsys, path.Join(dir, name))
 		if err != nil {
 			return fmt.Errorf("db: read migration %s: %w", name, err)
 		}

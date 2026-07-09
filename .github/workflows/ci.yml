@@ -34,14 +34,16 @@ jobs:
     env:
       SWITCHBOARD_TEST_DATABASE_URL: postgres://switchboard:switchboard@localhost:5432/switchboard?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          # Exclude vendor/: third-party sources (e.g. google/uuid) are not gofmt-clean and
+          # are not ours to reformat. go vet/build/test already ignore vendor in module mode.
+          unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^vendor/'))
           if [ -n "$unformatted" ]; then echo "unformatted:"; echo "$unformatted"; exit 1; fi
       - name: go vet
         run: go vet ./...
@@ -53,8 +55,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true

@@ -1,4 +1,4 @@
-// Package ingest turns inbound deliveries into verified events + durable todos (ADR-003/007/014).
+// Package ingest turns inbound deliveries into verified events + durable todos (ADR-0003/007/014).
 //
 // The GitHub adapter is the reference `signed` webhook: HMAC-SHA256 over the raw body, verified in
 // constant time; a bad or missing signature is a 401 and the payload is NOT persisted (only a
@@ -11,9 +11,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/joestump/switchboard/internal/agentapi"
@@ -22,7 +24,7 @@ import (
 
 const maxBody = 5 << 20 // 5 MiB
 
-// sensitiveHeaders are redacted before an event's headers are persisted (ADR-002/003).
+// sensitiveHeaders are redacted before an event's headers are persisted (ADR-0002/003).
 var sensitiveHeaders = map[string]bool{
 	"x-hub-signature": true, "x-hub-signature-256": true, "authorization": true,
 	"cookie": true, "x-slack-signature": true, "stripe-signature": true, "x-api-key": true,
@@ -48,8 +50,15 @@ func New(st *store.Store, hub *agentapi.Hub, log *slog.Logger, githubSecret, git
 
 // GitHub is the signed GitHub webhook receiver: POST /webhooks/github.
 func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	// Governing: SPEC-0001 REQ body limits. MaxBytesReader (not io.LimitReader) so an over-limit body
+	// is REJECTED with 413 rather than silently truncated and then HMAC-verified against a short read.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "payload too large")
+			return
+		}
 		http.Error(w, "read error", http.StatusBadRequest)
 		return
 	}
@@ -68,23 +77,21 @@ func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 
 	event := r.Header.Get("X-GitHub-Event")
 	delivery := r.Header.Get("X-GitHub-Delivery")
-	eventID, err := i.store.InsertEvent(r.Context(), store.EventInput{
-		Source: "github", Family: "webhook", EventType: event, ExternalID: delivery,
-		TrustMode: "signed", Verified: true, VerifyDetail: "hmac-sha256 ok",
-		ContentType: r.Header.Get("Content-Type"), Headers: sanitizeHeaders(r.Header),
-		Payload: body, SourceIP: clientIP(r),
-	})
+	// Governing: SPEC-0002/0004 REQ atomic ingestion — persist the event and enqueue its todo in a
+	// single transaction so a CreateTodo failure can never leave an orphaned event row behind.
+	_, td, created, err := i.store.CreateEventTodo(r.Context(),
+		store.EventInput{
+			Source: "github", Family: "webhook", EventType: event, ExternalID: delivery,
+			TrustMode: "signed", Verified: true, VerifyDetail: "hmac-sha256 ok",
+			ContentType: r.Header.Get("Content-Type"), Headers: sanitizeHeaders(r.Header),
+			Payload: body, SourceIP: clientIP(r),
+		},
+		store.CreateTodoParams{
+			Queue: i.githubQueue, Source: "github", Kind: event, Title: summarizeGitHub(event, body),
+			Payload: body, IdempotencyKey: delivery,
+		})
 	if err != nil {
-		i.log.Error("insert event", "err", err)
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	td, created, err := i.store.CreateTodo(r.Context(), store.CreateTodoParams{
-		Queue: i.githubQueue, Source: "github", Kind: event, Title: summarizeGitHub(event, body),
-		Payload: body, EventID: &eventID, IdempotencyKey: delivery,
-	})
-	if err != nil {
-		i.log.Error("create todo", "err", err)
+		i.log.Error("ingest github delivery", "err", err)
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -169,6 +176,10 @@ func summarizeGitHub(event string, body []byte) string {
 	}
 }
 
+// urlSecretParam matches a secret carried in a URL query string (e.g. a `?token=…` webhook URL that
+// shows up in a Referer/Location/Link header). The value is redacted so it is never persisted.
+var urlSecretParam = regexp.MustCompile(`(?i)([?&](?:token|access_token|api[_-]?key|apikey|secret|signature|sig)=)[^&#\s]+`)
+
 func sanitizeHeaders(h http.Header) []byte {
 	out := map[string]string{}
 	for k, v := range h {
@@ -176,7 +187,7 @@ func sanitizeHeaders(h http.Header) []byte {
 			out[k] = "«redacted»"
 			continue
 		}
-		out[k] = strings.Join(v, ", ")
+		out[k] = urlSecretParam.ReplaceAllString(strings.Join(v, ", "), "${1}«redacted»")
 	}
 	b, _ := json.Marshal(out)
 	return b

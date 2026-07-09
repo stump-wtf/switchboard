@@ -1,8 +1,8 @@
-// Package auth is the OIDC relying-party login (ADR-011) and session layer.
+// Package auth is the OIDC relying-party login (ADR-0011) and session layer.
 //
 // Switchboard is an RP against Pocket ID (a passkey-only IdP that holds HUMANS ONLY). It trusts the
 // issuer and deliberately does NOT enforce an amr/acr assurance claim — passkey step-up is deferred
-// (ADR-011). Before adding any non-passkey issuer, that guard MUST be added; this is called out at
+// (ADR-0011). Before adding any non-passkey issuer, that guard MUST be added; this is called out at
 // the provider-init site below so a reviewer confronts it.
 package auth
 
@@ -10,10 +10,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -34,7 +36,10 @@ const (
 
 type ctxKey int
 
-const humanKey ctxKey = 0
+const (
+	humanKey ctxKey = iota
+	csrfKey
+)
 
 // Authenticator holds the OIDC provider + session store.
 type Authenticator struct {
@@ -51,7 +56,7 @@ type Authenticator struct {
 func New(ctx context.Context, cfg config.Config, st *store.Store, log *slog.Logger) (*Authenticator, error) {
 	a := &Authenticator{cfg: cfg, store: st, log: log, secure: strings.HasPrefix(cfg.BaseURL, "https://")}
 	if cfg.OIDCConfigured() {
-		// ADR-011: we trust this issuer wholesale and enforce NO amr/acr assurance claim. That is
+		// ADR-0011: we trust this issuer wholesale and enforce NO amr/acr assurance claim. That is
 		// acceptable ONLY because Pocket ID is passkey-only. Adding a non-passkey issuer here MUST be
 		// paired with an amr/acr step-up check on consent actions (friend approvals). Do not cross silently.
 		provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuer)
@@ -80,6 +85,22 @@ func FromContext(ctx context.Context) (Human, bool) {
 	return h, ok
 }
 
+// CSRFFromContext returns the per-session CSRF token for the current request, if authenticated.
+// Handlers embed it as a hidden field in state-changing forms; RequireCSRF validates it. (SPEC-0008.)
+func CSRFFromContext(ctx context.Context) string {
+	t, _ := ctx.Value(csrfKey).(string)
+	return t
+}
+
+// csrfToken derives a per-session CSRF synchronizer token from the (secret, HttpOnly) session token.
+// It is bound to the session, safe to embed in HTML (preimage-resistant; leaks nothing about the
+// session token), and needs no server-side storage. An attacker cannot forge it without reading the
+// victim's session cookie, which SameSite=Lax + HttpOnly + the same-origin policy prevent.
+func csrfToken(sessionToken string) string {
+	sum := sha256.Sum256([]byte("switchboard-csrf:" + sessionToken))
+	return hex.EncodeToString(sum[:])
+}
+
 // oidcState is the short-lived per-login state stashed in a cookie across the redirect.
 type oidcState struct {
 	State    string `json:"s"`
@@ -93,7 +114,19 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OIDC not configured (set SWITCHBOARD_OIDC_* or SWITCHBOARD_DEV_LOGIN=1)", http.StatusServiceUnavailable)
 		return
 	}
-	st := oidcState{State: randToken(), Nonce: randToken(), Verifier: oauth2.GenerateVerifier()}
+	state, err := randToken()
+	if err != nil {
+		a.log.Error("login: generate state", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	nonce, err := randToken()
+	if err != nil {
+		a.log.Error("login: generate nonce", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	st := oidcState{State: state, Nonce: nonce, Verifier: oauth2.GenerateVerifier()}
 	raw, _ := json.Marshal(st)
 	http.SetCookie(w, a.cookie(stateCookie, base64.RawURLEncoding.EncodeToString(raw), 10*time.Minute))
 	url := a.oauth.AuthCodeURL(st.State, oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier))
@@ -185,7 +218,10 @@ func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWri
 	if err != nil {
 		return err
 	}
-	tok := randToken()
+	tok, err := randToken()
+	if err != nil {
+		return err
+	}
 	if err := a.store.CreateSession(ctx, hashToken(tok), h.ID, sessionTTL); err != nil {
 		return err
 	}
@@ -194,6 +230,7 @@ func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWri
 }
 
 // RequireHuman is middleware that admits only authenticated humans; others are redirected to login.
+// It also stashes the per-session CSRF token so downstream handlers can embed it in forms.
 func (a *Authenticator) RequireHuman(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, ok := a.human(r)
@@ -201,7 +238,40 @@ func (a *Authenticator) RequireHuman(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), humanKey, h)))
+		ctx := context.WithValue(r.Context(), humanKey, h)
+		if c, err := r.Cookie(sessionCookie); err == nil {
+			ctx = context.WithValue(ctx, csrfKey, csrfToken(c.Value))
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// RequireCSRF rejects unsafe (state-changing) requests whose CSRF token does not match the one
+// derived from the caller's session. Safe methods pass through untouched. The token is read from the
+// csrf_token form field or the X-CSRF-Token header. Governing: SPEC-0008 REQ CSRF synchronizer tokens.
+func (a *Authenticator) RequireCSRF(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+			next.ServeHTTP(w, r)
+			return
+		}
+		c, err := r.Cookie(sessionCookie)
+		if err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		expected := csrfToken(c.Value)
+		got := r.FormValue("csrf_token")
+		if got == "" {
+			got = r.Header.Get("X-CSRF-Token")
+		}
+		if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+			a.log.Warn("csrf token mismatch", "path", r.URL.Path, "remote", r.RemoteAddr)
+			http.Error(w, "invalid CSRF token", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -243,10 +313,15 @@ func (a *Authenticator) cookie(name, value string, ttl time.Duration) *http.Cook
 	}
 }
 
-func randToken() string {
+// randToken returns a 256-bit URL-safe random string. A crypto/rand failure is surfaced, never
+// swallowed — a silent low-entropy state/nonce/session token would defeat CSRF/replay protection
+// and session unguessability. Governing: SPEC-0008.
+func randToken() (string, error) {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("auth: read random: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func hashToken(s string) string {
