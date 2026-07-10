@@ -1,6 +1,7 @@
 // Generate docs-site/docs-generated/ from the repo's SDD-canonical design record at build time:
 //   docs/adrs/                     -> /decisions   (ADRs, MADR)
 //   docs/openspec/specs/{cap}/     -> /specs       (OpenSpec spec.md + design.md pairs)
+//   docs/design/NN-slug.md         -> /design      (design language, ADR-0016)
 //   docs/reference/*.yaml          -> /reference   (machine-readable contracts)
 //   docs/prfaq.md                  -> /prfaq
 // These files are the single source of truth; this script only adapts them for Docusaurus
@@ -23,6 +24,7 @@ const SITE = join(__dirname, '..');
 const REPO = join(SITE, '..');
 const ADR_SRC = join(REPO, 'docs', 'adrs');
 const SPEC_SRC = join(REPO, 'docs', 'openspec', 'specs');
+const DESIGN_SRC = join(REPO, 'docs', 'design');
 const REF_SRC = join(REPO, 'docs', 'reference');
 const OUT = join(SITE, 'docs-generated');
 const STATIC_REF = join(SITE, 'static', 'reference');
@@ -36,11 +38,13 @@ const capDirs = readdirSync(SPEC_SRC)
   .filter((d) => statSync(join(SPEC_SRC, d)).isDirectory())
   .sort();
 const refFiles = readdirSync(REF_SRC).filter((f) => /\.ya?ml$/.test(f)).sort();
+const designFiles = readdirSync(DESIGN_SRC).filter((f) => /^\d+-.*\.md$/.test(f)).sort();
 
 // ---- clean + scaffold ----
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(join(OUT, 'decisions'), { recursive: true });
 mkdirSync(join(OUT, 'specs'), { recursive: true });
+mkdirSync(join(OUT, 'design'), { recursive: true });
 mkdirSync(join(OUT, 'reference'), { recursive: true });
 rmSync(STATIC_REF, { recursive: true, force: true });
 mkdirSync(STATIC_REF, { recursive: true });
@@ -139,8 +143,8 @@ import Link from '@docusaurus/Link';
 
   <Link className="sb-tile" to="/decisions/ADR-0001-web-stack-go-htmx-pico">
     <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 8h18"/><circle cx="5.8" cy="6" r="0.5"/><circle cx="7.8" cy="6" r="0.5"/></svg>
-    <div className="sb-tile__title">Local live web UI</div>
-    <p className="sb-tile__body">A small, local‑only operator board — four screens on Go (net/http) + HTMX + Pico.css, updating live over Server‑Sent Events, with the same trust badges the API and MCP surfaces carry.</p>
+    <div className="sb-tile__title">Live operator board</div>
+    <p className="sb-tile__body">A five‑view operator board — Board, Todos, Endpoints, Personas, Friends — on Go (net/http) + HTMX, wearing the brass‑and‑bakelite Operator design language and updating live over Server‑Sent Events, with the same trust badges the API and MCP surfaces carry.</p>
   </Link>
 
 </div>
@@ -170,6 +174,8 @@ brass, bakelite, operator‑cream, oxblood, and patch‑cable tones.
 - **[Specifications](/specs)** — ${capDirs.length} OpenSpec capabilities (RFC 2119 requirements + Mermaid design):
   ingestion, the durable todo queue, persistence, the MCP + agent tool surfaces, vended endpoints,
   identity, personas, friending, Channels push delivery, and the web UI.
+- **[Design](/design)** — the "Operator" design language (ADR‑0016): tokens, components, the five
+  operator‑board screens, voice, and the directions explored.
 - **[Reference](/reference)** — the OpenAPI (HTTP surface) and AsyncAPI (SSE stream) contracts.
 `);
 
@@ -278,6 +284,38 @@ writeFileSync(
   ),
 );
 
+// ---- Design language (docs/design/NN-slug.md) -> design/ ----
+// Numeric filename prefix orders the sidebar; the emitted filename drops it so routes are clean
+// (/design/overview, /design/design-language, …). Cross-links between design pages
+// (`./NN-slug.md`) are rewritten onto those routes.
+function rewriteDesignSectionLinks(s) {
+  return s.replace(/\]\((?:\.\/)?\d+-([a-z0-9-]+)\.md([^)]*)\)/g, '](/design/$1$2)');
+}
+for (const f of designFiles) {
+  const pos = parseInt(f.match(/^(\d+)-/)[1], 10);
+  const slug = f.replace(/^\d+-/, '').replace(/\.md$/, '');
+  const raw = readFileSync(join(DESIGN_SRC, f), 'utf8');
+  const { fm, body } = splitFrontmatter(raw);
+  const label = fmValue(fm, 'title') || slug;
+  const content = rewriteDesignSectionLinks(rewriteDesignLinks(rewriteRepoLinks(body)));
+  writeFileSync(
+    join(OUT, 'design', `${slug}.md`),
+    `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,
+  );
+}
+writeFileSync(
+  join(OUT, 'design', '_category_.json'),
+  JSON.stringify(
+    {
+      label: 'Design',
+      position: 4,
+      link: { type: 'generated-index', slug: '/design', title: 'Design', description: 'The "Operator" design language (ADR-0016): tokens, components, screens, voice, and the directions explored.' },
+    },
+    null,
+    2,
+  ),
+);
+
 // ---- reference YAML contracts -> reference/ ----
 const REF_META = {
   'openapi.yaml':  { pos: 1, title: 'OpenAPI — HTTP surface', blurb: 'The webhook ingestion endpoints and the local web-UI routes. Validated against OpenAPI 3.1.' },
@@ -301,7 +339,7 @@ writeFileSync(
   JSON.stringify(
     {
       label: 'Reference',
-      position: 4,
+      position: 5,
       link: { type: 'generated-index', slug: '/reference', title: 'Reference Contracts', description: 'Machine-readable interface contracts: the HTTP surface (OpenAPI) and the live SSE stream (AsyncAPI).' },
     },
     null,

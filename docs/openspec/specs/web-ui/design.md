@@ -1,5 +1,10 @@
 # Design: Web UI
 
+> **Refined by [SPEC-0013](../operator-board/design.md) (Operator Board)** — the screen set grows to
+> the five-view operator board and styling moves to the ADR-0016 token/component layer (Pico.css is
+> not adopted). This document remains the baseline design record for sessions, SSE plumbing,
+> security posture, and error handling.
+
 ## Context
 
 SPEC-0012 realizes [ADR-0001](../../../adrs/ADR-0001-web-stack-go-htmx-pico.md): switchboard serves a

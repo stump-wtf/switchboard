@@ -25,7 +25,7 @@ Two layers:
 | ADR | Title | One-line |
 |-----|-------|----------|
 | [ADR-0000](adrs/ADR-0000-project-naming-and-scope.md) | Project naming & scope | The project is `switchboard`; MVP scope ratified. |
-| [ADR-0001](adrs/ADR-0001-web-stack-go-htmx-pico.md) | Web stack | Go `net/http` + chi, `html/template`, HTMX + Pico.css; assets embedded via `embed.FS`. |
+| [ADR-0001](adrs/ADR-0001-web-stack-go-htmx-pico.md) | Web stack | Go `net/http` + chi, `html/template`, HTMX; assets embedded via `embed.FS` (CSS layer amended by ADR-0016). |
 | [ADR-0002](adrs/ADR-0002-postgres-persistence-and-retention.md) | PostgreSQL persistence & retention | Postgres queue store: SKIP LOCKED claims, ON CONFLICT dedup, partial pending index, age + row-cap pruning. |
 | [ADR-0003](adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types & trust | Two families (webhook/queue); webhook trust `signed`/`token`/`open`; queue trust = broker connection. |
 | [ADR-0005](adrs/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay`/`list_providers` + recent-events resource. |
@@ -38,6 +38,8 @@ Two layers:
 | [ADR-0013](adrs/ADR-0013-channels-push-delivery.md) | **Channels push-delivery** | Claude Code Channels pushes into a live session as a notify layer; the durable todo queue stays the ledger. |
 | [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) | **Ingestion adapters (push/pull)** | Push (webhook) + pull (queue) families → todos; Redis is the reference pull adapter; store-then-ack couples the source ack to the todo. |
 | [ADR-0015](adrs/ADR-0015-implementation-language-go.md) | **Implementation language = Go** | Go for the concurrent queue service: goroutine workers, single static binary, official Go MCP/A2A SDKs, `pgx` + `SKIP LOCKED`. |
+| [ADR-0016](adrs/ADR-0016-operator-design-language.md) | **Operator design language** | Direction 1a "Operator" (brass & bakelite) is canonical; owned `tokens.css` + `.sb-*` layer replaces the never-shipped Pico.css; fonts vendored. |
+| [ADR-0017](adrs/ADR-0017-mcp-streamable-http-only.md) | **MCP over Streamable HTTP only** | Vended endpoints served HTTP/S-direct from the central service; URL + bearer credential is the whole client; stdio adapter retired. |
 
 ## OpenSpec Specifications
 
@@ -56,8 +58,10 @@ rationale). Grouped by layer, in dependency order.
 | [SPEC-0008](openspec/specs/identity/spec.md) | Human identity & assurance | ADR-0011 | OIDC (Pocket ID) login, session establishment, deferred passkey step-up. |
 | [SPEC-0009](openspec/specs/personas/spec.md) | Personas as Agent Cards | ADR-0009 | Persona record, verb→skill derivation, A2A Agent Card + well-known endpoint. |
 | [SPEC-0010](openspec/specs/friending/spec.md) | A2A friending | ADR-0010 | Discover → request → approval-todo → approve(=vend); per-direction, revocable, non-transitive. |
-| [SPEC-0011](openspec/specs/channels/spec.md) | Channels push delivery | ADR-0013 | `claude/channel` capability + notification, best-effort/lossy, degrade-to-pull. |
-| [SPEC-0012](openspec/specs/web-ui/spec.md) | Web UI | ADR-0001 | Server-rendered dashboard (html/template + HTMX + Pico.css + SSE), embedded assets. |
+| [SPEC-0011](openspec/specs/channels/spec.md) | Channels push delivery | ADR-0013 | Push semantics over the vended MCP session: notify shape, sender gate, best-effort/lossy, degrade-to-pull. |
+| [SPEC-0012](openspec/specs/web-ui/spec.md) | Web UI | ADR-0001 | Baseline web surface: embedded templates, sessions, SSE, security & a11y (screen set refined by SPEC-0013). |
+| [SPEC-0013](openspec/specs/operator-board/spec.md) | Operator board | ADR-0016, 0001 | Five-view operator UI (Board/Todos/Endpoints/Personas/Friends), drawer + modals, live SSE, design-language conformance. |
+| [SPEC-0014](openspec/specs/mcp-transport/spec.md) | MCP Streamable HTTP transport | ADR-0017 | `/mcp/{endpoint}` HTTP-only MCP: bearer auth, scoped tools incl. heartbeat, channels doorbells, stdio retirement. |
 
 ## Reference Contracts
 
@@ -97,10 +101,9 @@ also tracked in the relevant spec's `design.md` **Open Questions** section.
    [ADR-0013](adrs/ADR-0013-channels-push-delivery.md),
    [SPEC-0011](openspec/specs/channels/spec.md). **Confirm.**
 
-6. **Channels transport: HTTP-direct vs. local stdio adapter** —
-   [ADR-0013](adrs/ADR-0013-channels-push-delivery.md),
-   [SPEC-0011](openspec/specs/channels/spec.md). Language-independent (Go either way); handshake shape
-   is a code-session detail. **Confirm.**
+6. **Channels transport: HTTP-direct vs. local stdio adapter** — **Resolved: HTTP-direct.**
+   [ADR-0017](adrs/ADR-0017-mcp-streamable-http-only.md) serves vended endpoints exclusively over
+   Streamable HTTP ([SPEC-0014](openspec/specs/mcp-transport/spec.md)); the stdio adapter is retired.
 
 7. **Pull-adapter ack timing: ack-on-store vs. ack-on-complete** *(proposed: ack-on-store)* —
    [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md),
@@ -114,7 +117,10 @@ also tracked in the relevant spec's `design.md` **Open Questions** section.
   `SPEC-XXXX`. `spec.md` uses RFC 2119 + `#### Scenario` WHEN/THEN; `design.md` carries the Mermaid
   architecture. Frontmatter `implements: [ADR-XXXX]` links each spec to the ADR(s) it realizes.
 - **Reference:** machine-readable contracts at `docs/reference/*.yaml`.
+- **Design:** the "Operator" design language lives at `docs/design/NN-slug.md`
+  ([ADR-0016](adrs/ADR-0016-operator-design-language.md)) and renders at `/design` on the site.
 - **Rendering:** `docs-site/scripts/build-docs.mjs` auto-discovers all `ADR-*.md`, every
-  `openspec/specs/*/` pair, and the reference YAMLs; new files appear on the site without further wiring.
+  `openspec/specs/*/` pair, `design/NN-*.md`, and the reference YAMLs; new files appear on the site
+  without further wiring.
 - **Tooling:** managed with the [SDD plugin](https://github.com/joestump/claude-plugin-sdd)
   (`/sdd:adr`, `/sdd:spec`, `/sdd:plan`, …). See the repo `CLAUDE.md`.
