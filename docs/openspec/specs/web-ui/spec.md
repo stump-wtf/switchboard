@@ -16,13 +16,19 @@ in (OIDC via Pocket ID, or a dev-only local login), registers agents, and vends/
 endpoints those agents plug into Claude Code Channels ([ADR-0013](../../../adrs/ADR-0013-channels-push-delivery.md)).
 
 The stack is deliberately minimal per ADR-0001: `net/http` + chi routing, stdlib `html/template`
-(contextual auto-escaping), HTMX core + `htmx-ext-sse` for interactivity, Pico.css (classless) plus a
-`tokens.css` palette override, and inline SVG icons — all **vendored and embedded via `embed.FS`**, no
-Node build, no CDN. Live updates use Server-Sent Events over a plain `net/http` handler using
-`http.Flusher` (no SSE library). The screen set is small: **login** (public), **dashboard** (the
-human's agents), **agent** (one agent + its endpoints + the vend form), and **vended** (the
-one-time credential reveal + `.mcp.json` wiring). Templates compose a shared `layout` with a
-per-page `content` block.
+(contextual auto-escaping), HTMX core + `htmx-ext-sse` for interactivity, a design-token stylesheet
+per [ADR-0016](../../../adrs/ADR-0016-operator-design-language.md), and inline SVG icons — all
+**vendored and embedded via `embed.FS`**, no Node build, no CDN. Live updates use Server-Sent Events
+over a plain `net/http` handler using `http.Flusher` (no SSE library). The screen set is small:
+**login** (public), **dashboard** (the human's agents), **agent** (one agent + its endpoints + the
+vend form), and **vended** (the one-time credential reveal + `.mcp.json` wiring). Templates compose a
+shared `layout` with a per-page `content` block.
+
+> **Refined by [SPEC-0013](../operator-board/spec.md) (Operator Board).** The "Screen Set and
+> Routes" and "Semantic HTML and Classless Styling" requirements below are **superseded** by
+> SPEC-0013's five-view operator board and ADR-0016's owned token/component styling. Everything else
+> in this spec — embedded templates, vend semantics, SSE, error handling, and the Security and
+> Accessibility requirements — remains the governing baseline that SPEC-0013 extends.
 
 ## Requirements
 
@@ -49,6 +55,10 @@ be emitted via any mechanism that bypasses that escaping.
 
 ### Requirement: Screen Set and Routes
 
+> **Superseded by [SPEC-0013](../operator-board/spec.md) § "Information Architecture and
+> Navigation"** — the operator board replaces the dashboard/agent/vended screens with the
+> Board/Todos/Endpoints (and capability-gated Personas/Friends) views. Retained for history.
+
 The UI MUST expose exactly these screens and routes: a public `GET /login`; and authenticated
 `GET /` (dashboard), `POST /agents` (register agent), `GET /agents/{id}` (agent detail + vend form),
 `POST /agents/{id}/vend` (mint a scoped credential), and `POST /endpoints/{id}/revoke`. The dashboard
@@ -71,7 +81,8 @@ authenticated human and MUST return 404 for an agent the human does not own.
 The vend form MUST require both `queues` and `verbs` (comma-separated) and MUST reject a submission
 missing either with `400 Bad Request`. On success the server MUST mint a credential, persist only its
 hash and a display prefix, and render the plaintext credential **exactly once** on the vended page
-together with ready-to-paste `.mcp.json` wiring for Claude Code Channels. The plaintext credential
+together with ready-to-paste HTTP `.mcp.json` wiring per [SPEC-0014](../mcp-transport/spec.md)
+(`"type": "http"` — no local binary). The plaintext credential
 MUST NOT be persisted and MUST NOT be recoverable after the reveal. Endpoint scope MUST be immutable;
 changing access MUST require revoke-and-re-vend.
 
@@ -108,6 +119,11 @@ corrupt state, since the authoritative data lives in PostgreSQL and a reload ref
   authoritative state from the database
 
 ### Requirement: Semantic HTML and Classless Styling
+
+> **Superseded by [SPEC-0013](../operator-board/spec.md) § "Design Language Conformance"** —
+> styling moves from classless Pico.css to the owned `tokens.css` + `.sb-*` component layer per
+> [ADR-0016](../../../adrs/ADR-0016-operator-design-language.md). The semantic-HTML and inline-SVG
+> obligations below carry forward unchanged. Retained for history.
 
 Templates MUST use semantic HTML (`<header>`, `<main>`, `<nav>`, `<table>`, `<form>`, `<article>`)
 styled by classless Pico.css plus the `tokens.css` palette override, keeping markup free of a utility

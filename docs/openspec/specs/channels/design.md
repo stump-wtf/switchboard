@@ -11,14 +11,13 @@ adds a real push path, but its delivery is **best-effort and unacknowledged** by
 definition. ADR-0013 resolves the tension: Channels is a *notify layer* over the durable queue, never
 the ledger. The durable todo is the delivery of record; the channel notification is a doorbell.
 
-The MVP is implemented in `internal/channel/adapter.go` as a **local stdio adapter**: Claude Code
-spawns `switchboard channel` as an MCP stdio subprocess (declared in `.mcp.json`) with a vended
-credential ([ADR-0008](../../../adrs/ADR-0008-human-principal-vended-endpoints.md)) in the
-environment. The adapter is at once a channel (push) and a tool server (`list_todos`/`claim`/
-`complete`/`fail`), bridging the harness to central switchboard's vended agent API over HTTP. The
-push source is the agent API's SSE stream (`GET /agent/stream`, `internal/agentapi/agentapi.go`),
-which fans newly-created todos to subscribers filtered by queue scope, dropping events for slow
-subscribers. The prose contract this design folds in is `docs/specs/channel-delivery.md`.
+**Transport** is decided and owned elsewhere: [ADR-0017](../../../adrs/ADR-0017-mcp-streamable-http-only.md)
+/ [SPEC-0014](../mcp-transport/spec.md) serve every vended endpoint exclusively over **Streamable
+HTTP**, and the channel capability rides that same session — one transport, one credential, one
+scope. The original MVP's local stdio adapter (`switchboard channel`, `internal/channel/adapter.go`)
+and its `/agent/stream` SSE source are retired by that decision. What remains in this capability is
+the **push semantics layer**: eligibility (sender gate), shape (summary + snake_case `meta`),
+fan-out filtering by endpoint scope, and the lossy, degrade-to-pull delivery contract.
 
 ## Goals / Non-Goals
 
@@ -26,8 +25,7 @@ subscribers. The prose contract this design folds in is `docs/specs/channel-deli
 
 - Deliver push ergonomics (no polling lag when a session is live) without weakening ADR-0007
   durability.
-- Reuse the vended MCP endpoint/credential as the channel transport — one transport, one credential,
-  one scope.
+- Reuse the vended MCP session as the channel carrier — no second connection, credential, or scope.
 - Make the failure mode automatic and lossless: no attached session ⇒ the todo waits for pull.
 - Keep attribution and injection safety: only verified, human-attributed todos push; payloads cannot
   break out of the `<channel>` wrapper.
@@ -36,19 +34,17 @@ subscribers. The prose contract this design folds in is `docs/specs/channel-deli
 
 - Channels as the system of record (rejected option A in ADR-0013) — push never gates correctness.
 - Two-way channels for the MVP: the **reply tool** and **permission relay**
-  (`claude/channel/permission`) are designed in ADR-0013/`channel-delivery.md` but deferred; the MVP
-  adapter is one-way.
-- Choosing the final transport: HTTP-direct (Streamable HTTP) vs. stdio adapter is an open item; the
-  MVP ships the stdio adapter.
+  (`claude/channel/permission`) are designed in ADR-0013 but deferred; push is one-way.
+- Transport, session, and tool-serving mechanics — governed by SPEC-0014.
 - Guaranteeing ordering or delivery beyond what the queue provides.
 
 ## Decisions
 
 ### Notify layer over the durable queue (not the ledger)
 
-**Choice**: A todo transition (create/assign) emits at most one `notifications/claude/channel`
-carrying a summary + identifiers; the agent still claims/completes via the durable verbs. Push is a
-doorbell; the durable todo is the work.
+**Choice**: A todo transition (create/assign) emits at most one `notifications/claude/channel` per
+in-scope attached session, carrying a summary + identifiers; the agent still claims/completes via the
+durable verbs. Push is a doorbell; the durable todo is the work.
 **Rationale**: The standard drops events silently when no session is attached, so push cannot be the
 record. Backing push with the durable queue gives "fast *and* safe" — zero durability loss.
 **Alternatives considered**:
@@ -57,15 +53,17 @@ record. Backing push with the durable queue gives "fast *and* safe" — zero dur
 - Pull-only: rejected — forfeits a now-available push path and pays polling latency on every idle
   drain even when a session is attached.
 
-### stdio adapter transport for the MVP
+### Doorbells ride the vended Streamable HTTP session (no adapter)
 
-**Choice**: Run `switchboard channel` as a local stdio MCP subprocess of the harness, bridging to
-central switchboard over HTTP with the vended credential.
-**Rationale**: Channels is spawned by Claude Code as a stdio subprocess today; a thin Go adapter maps
-cleanly onto that while keeping the durable queue central. Same Go binary, no separate service.
+**Choice**: The notification hub publishes directly to attached SPEC-0014 sessions filtered by
+endpoint queue scope; there is no client-side bridge process.
+**Rationale**: ADR-0017 removed the stdio adapter and its REST/SSE plumbing; emitting on the session
+the agent already holds eliminates a process, a credential hand-off, and a reconnection protocol.
 **Alternatives considered**:
-- HTTP-direct (Streamable HTTP) channel served alongside vended endpoints and the web UI's SSE:
-  preferred if/when Channels supports that MCP transport; deferred as the open transport question.
+- Local stdio adapter bridging to central SSE (the original MVP): retired — required the binary on
+  every agent host and duplicated transport code (ADR-0017).
+- A dedicated notification WebSocket/SSE endpoint separate from MCP: rejected — second transport to
+  authenticate and keep alive for no semantic gain.
 
 ### snake_case `meta` keys, no lease in the push
 
@@ -75,13 +73,13 @@ notification carries no lease.
 would vanish. Withholding the lease forces the agent through the idempotent `claim`, preserving
 ownership/lease semantics.
 **Alternatives considered**:
-- Inlining the todo payload/lease into the push: deferred (an open question in `channel-delivery.md`)
-  — notification-only by default keeps the injection surface and payload size small.
+- Inlining the todo payload/lease into the push: deferred — notification-only keeps the injection
+  surface and payload size small.
 
 ### Drop-on-full fan-out
 
-**Choice**: The SSE hub buffers 32 todos per subscriber and drops on a full buffer rather than
-blocking the publisher.
+**Choice**: The hub buffers a bounded number of doorbells per subscriber and drops on a full buffer
+rather than blocking the publisher.
 **Rationale**: The queue is the ledger; a dropped doorbell is recoverable by pull. Blocking the
 publisher on a slow session would couple todo creation to session liveness.
 **Alternatives considered**:
@@ -89,47 +87,36 @@ publisher on a slow session would couple todo creation to session liveness.
 
 ## Architecture
 
-The adapter declares `claude/channel` + tools on `initialize`, starts a push goroutine on
-`notifications/initialized`, subscribes to `GET /agent/stream`, and emits one
-`notifications/claude/channel` per new todo. When no session is attached the push is dropped and the
-todo is drained later by pull. All stdout writes are serialized behind a mutex; the push goroutine
-honors context cancellation.
-
 ```mermaid
 sequenceDiagram
     autonumber
     participant WH as Webhook / source (verified, attributed)
     participant Q as Durable todos (PostgreSQL — ledger)
-    participant Hub as agentapi SSE Hub
-    participant AD as Go channel adapter (stdio)
+    participant Hub as Notification hub (in-process)
+    participant S as Vended MCP session (Streamable HTTP, SPEC-0014)
     participant CC as Live Claude Code session
 
-    Note over AD,CC: Handshake
-    CC->>AD: initialize
-    AD-->>CC: capabilities.experimental["claude/channel"] + tools
-    CC->>AD: notifications/initialized
-    AD->>Hub: GET /agent/stream (Bearer vended credential)
+    Note over S,CC: Session (SPEC-0014)
+    CC->>S: initialize (Bearer vended credential)
+    S-->>CC: capabilities: tools + experimental claude/channel
 
     Note over WH,Q: Work arrives
     WH->>Q: create/assign todo (verified + attributed)
-    Q->>Hub: publish todo (filtered by queue scope)
+    Q->>Hub: NOTIFY todo_ready → publish (filtered by endpoint queue scope)
 
-    alt Session attached
-        Hub-->>AD: SSE event: todo {id,queue,kind,source,title}
-        AD->>AD: neutralize </channel>; build content + snake_case meta
-        AD-->>CC: notifications/claude/channel (meta.todo_id, ...)
-        CC->>AD: tools/call claim {id}
-        AD->>Q: POST /agent/todos/{id}/claim (Bearer)
-        Q-->>AD: 200 (lease set)
-        AD-->>CC: tool result
-        CC->>AD: tools/call complete {id,result}
-        AD->>Q: POST /agent/todos/{id}/complete (Bearer)
+    alt Session attached and in scope
+        Hub-->>S: doorbell {id, queue, kind, source, title}
+        S->>S: neutralize </channel>; build content + snake_case meta
+        S-->>CC: notifications/claude/channel (meta.todo_id, …)
+        CC->>S: tools/call claim {id}
+        S->>Q: ClaimTodo (lease set)
+        CC->>S: tools/call complete {id, result}
+        S->>Q: CompleteTodo (ack)
     else No session attached (lossy → degrade to pull)
-        Hub--xAD: event dropped silently
+        Hub--xS: event dropped silently
         Note over Q: todo stays pending
-        CC->>AD: (later) tools/call list_todos
-        AD->>Q: GET /agent/todos (Bearer) — pull drain
-        Q-->>AD: pending todos
+        CC->>S: (later) tools/call list_todos — pull drain
+        S->>Q: pending todos
     end
 ```
 
@@ -137,30 +124,24 @@ sequenceDiagram
 
 - **Push is lossy/unacknowledged** → Back every push with the durable queue; a missed doorbell is
   recovered by the pull worker loop. Push never gates correctness.
-- **Two paths to maintain (adapter + queue)** → Accepted as the cost of "fast *and* safe"; the
-  adapter is thin and the fallback is automatic.
+- **Harness support for channels over HTTP MCP may lag stdio channels** → tools work regardless;
+  agents degrade to pull until harness support lands (tracked in SPEC-0014's open questions).
 - **Two-way channels widen the injection surface** → Mitigated by the existing verification +
   attribution sender gate and by neutralizing `</channel>` breakouts; two-way is deferred regardless.
-- **Research-preview gates** (Claude Code v2.1.80+, permission relay v2.1.81+, Anthropic auth via
-  claude.ai/Console only — not Bedrock/Vertex/Foundry, org `channelsEnabled`, allowlist /
-  `--dangerously-load-development-channels`) → Documented as operational constraints; harnesses
-  without Channels fall back to pull with no configuration.
+- **Research-preview gates** (Claude Code version and org policy for Channels) → Documented as
+  operational constraints; harnesses without Channels fall back to pull with no configuration.
 - **Duplicate at-least-once notifies** → Idempotency-key dedup + idempotent `claim` make duplicates
   harmless.
 
 ## Migration Plan
 
-Greenfield for this capability — the MVP stdio adapter is already built. The only forward migration is
-the open transport question: if Channels adopts the Streamable HTTP MCP transport, switchboard can
-serve channels HTTP-direct alongside the vended endpoints and web UI SSE, retiring the per-harness
-stdio subprocess. That change would be additive (a new transport binding) and MUST preserve the
-notify-shape, sender-gate, and degrade-to-pull semantics unchanged.
+The push-semantics layer migrates with SPEC-0014's cutover: the hub's publish target changes from
+the retired `/agent/stream` SSE subscribers to attached MCP sessions, preserving notify shape,
+sender gate, scope filtering, and degrade-to-pull unchanged. No data migration; the stdio adapter's
+deletion is governed by SPEC-0014's migration plan.
 
 ## Open Questions
 
-- **Transport**: does Claude Code Channels support the Streamable HTTP MCP transport (enabling
-  HTTP-direct channels), or does it remain a local stdio subprocess? The MVP ships the stdio adapter;
-  HTTP-direct is the preferred end state.
 - **Inline payload**: should a small payload be inlined into the push, or remain notification-only
   (summary + ids)? MVP is notification-only.
 - **Two-way**: when to enable the reply tool and permission relay (`claude/channel/permission`), and
