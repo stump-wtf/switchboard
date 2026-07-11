@@ -25,7 +25,9 @@ package redis
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
+	"strconv"
+	"strings"
 
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -36,13 +38,27 @@ const Source = "redis"
 
 // NewClient parses a Redis DSN (redis:// or rediss://, e.g. SWITCHBOARD_REDIS_URL) into a client
 // that satisfies StreamClient and ListClient. The DSN may embed credentials, so it is never logged
-// and never included in error text beyond what go-redis's parser reports.
+// and never included in error text: go-redis's ParseURL (via net/url) embeds the raw URL in its
+// parse errors, so the DSN is redacted from the returned error before it can reach a log line.
+//
+// Governing: SPEC-0002 REQ "Error Handling Standards" (never broker credentials).
 func NewClient(dsn string) (*goredis.Client, error) {
 	opts, err := goredis.ParseURL(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("redis: parse dsn: %w", err)
+		return nil, errors.New("redis: parse dsn: " + redactDSN(err.Error(), dsn))
 	}
 	return goredis.NewClient(opts), nil
+}
+
+// redactDSN strips every occurrence of the DSN from an error message — both raw and in the
+// strconv.Quote form net/url uses when embedding the URL in *url.Error text — so a malformed DSN
+// carrying credentials can never leak into logs via a wrapped parse error.
+func redactDSN(msg, dsn string) string {
+	if dsn == "" {
+		return msg
+	}
+	msg = strings.ReplaceAll(msg, strconv.Quote(dsn), `"[redacted]"`)
+	return strings.ReplaceAll(msg, dsn, "[redacted]")
 }
 
 // payloadField is the stream entry field treated as the raw message body when present.

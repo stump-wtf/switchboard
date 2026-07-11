@@ -75,3 +75,47 @@ func TestAdapterRegistry(t *testing.T) {
 		t.Fatalf("set enabled missing: %v, want ErrNotFound", err)
 	}
 }
+
+// SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety": the poll-loop runner stamps each
+// consume attempt's outcome (last poll time + last error) on the adapter's registry row so an
+// operator can see a degraded adapter without shell access.
+func TestRecordAdapterPoll(t *testing.T) {
+	s, ctx := testStore(t)
+
+	if _, err := s.RegisterAdapter(ctx, "redis", "queue", "queue", nil); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	a, err := s.GetAdapter(ctx, "redis")
+	if err != nil || a.LastPollAt != nil || a.LastError != nil {
+		t.Fatalf("fresh row must have no poll health: %+v err=%v", a, err)
+	}
+
+	// A degraded attempt records the (credential-free) error text.
+	if err := s.RecordAdapterPoll(ctx, "redis", "redis stream: xreadgroup: connection refused"); err != nil {
+		t.Fatalf("record failing poll: %v", err)
+	}
+	a, err = s.GetAdapter(ctx, "redis")
+	if err != nil || a.LastPollAt == nil || a.LastError == nil {
+		t.Fatalf("failing poll not stamped: %+v err=%v", a, err)
+	}
+	if *a.LastError != "redis stream: xreadgroup: connection refused" {
+		t.Fatalf("last_error = %q", *a.LastError)
+	}
+
+	// A healthy attempt clears last_error and refreshes last_poll_at.
+	if err := s.RecordAdapterPoll(ctx, "redis", ""); err != nil {
+		t.Fatalf("record healthy poll: %v", err)
+	}
+	a, err = s.GetAdapter(ctx, "redis")
+	if err != nil || a.LastPollAt == nil {
+		t.Fatalf("healthy poll not stamped: %+v err=%v", a, err)
+	}
+	if a.LastError != nil {
+		t.Fatalf("healthy poll must clear last_error, got %q", *a.LastError)
+	}
+
+	// Unregistered adapters resolve to ErrNotFound here too.
+	if err := s.RecordAdapterPoll(ctx, "nope", ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("record missing: %v, want ErrNotFound", err)
+	}
+}

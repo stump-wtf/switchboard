@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -105,5 +106,25 @@ func TestNewClientParsesDSN(t *testing.T) {
 	}
 	if _, err := NewClient("http://not-redis"); err == nil {
 		t.Fatal("invalid DSN must error")
+	}
+}
+
+// SPEC-0002 REQ "Error Handling Standards": broker credentials never appear in errors/logs. A
+// malformed DSN makes go-redis's parser (net/url) embed the raw URL — credentials included — in
+// its error, so NewClient must redact the DSN from what it returns.
+func TestNewClientRedactsDSNFromParseErrors(t *testing.T) {
+	const secret = "hunter2"
+	for _, dsn := range []string{
+		"redis://user:" + secret + "@127.0.0.1:6379/not-a-db", // invalid db number → error mentions URL parts
+		"http://user:" + secret + "@example.com",              // wrong scheme
+		"redis://user:" + secret + "@127.0.0.1:6379/0\x7f",    // control char → net/url quotes the raw URL
+	} {
+		_, err := NewClient(dsn)
+		if err == nil {
+			t.Fatalf("DSN %q must error", dsn)
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("parse error leaks DSN credentials: %v", err)
+		}
 	}
 }

@@ -42,8 +42,10 @@ jobs:
         # lease reaper, so the race detector guards the queue packages in the PRIMARY gate too, not
         # only the GitHub mirror (SPEC-0003). internal/mcp joins the list because its session
         # registry, tool layer, and doorbell fan-out are shared state under concurrent HTTP
-        # traffic (SPEC-0014 REQ "Concurrency Safety"). -race needs cgo, hence a C compiler
-        # on the runner.
+        # traffic (SPEC-0014 REQ "Concurrency Safety"). internal/adapter joins for the
+        # pull-adapter poll loops: shared loop state MUST be race-safe with the race detector
+        # enabled in CI (SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety"). -race needs
+        # cgo, hence a C compiler on the runner.
         env:
           CGO_ENABLED: "1"
-        run: go test -race ./internal/store/... ./internal/db/... ./internal/ingest/... ./internal/mcp/...
+        run: go test -race ./internal/store/... ./internal/db/... ./internal/ingest/... ./internal/mcp/... ./internal/adapter/...

@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	switchboard "github.com/joestump/switchboard"
+	"github.com/joestump/switchboard/internal/adapter/runner"
 	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
@@ -162,6 +163,18 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 	go reaper(ctx, st, log)
 
+	// Pull-adapter poll loops (ADR-0014; SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety"):
+	// each registered adapter runs as a context-managed worker — enabled-flag gated, backing off on
+	// broker errors, health-stamped on the adapters table — and shuts down cleanly with the server.
+	// The concrete Redis adapters attach here (runner.Add) once the enqueue-coupling Sink lands
+	// (issue #25); until then the runner supervises an empty registry.
+	adapters := runner.New(st, log, runner.Options{})
+	runnerDone := make(chan struct{})
+	go func() {
+		defer close(runnerDone)
+		_ = adapters.Run(ctx) // returns only after every poll loop has been joined
+	}()
+
 	srv := &http.Server{Addr: cfg.Addr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -175,6 +188,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
+	// http.ErrServerClosed means ctx was cancelled (the shutdown goroutine above ran); join the
+	// adapter poll loops so no worker goroutine outlives Run — the graceful-shutdown half of
+	// SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety".
+	<-runnerDone
 	return nil
 }
 

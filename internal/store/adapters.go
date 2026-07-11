@@ -19,13 +19,20 @@ type Adapter struct {
 	Config    []byte // non-secret JSON config (jsonb)
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// LastPollAt is when the poll-loop runner last attempted a consume for this adapter (nil until
+	// the first attempt). Governing: SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety".
+	LastPollAt *time.Time
+	// LastError is the (credential-free) error text of the most recent failed consume attempt; nil
+	// while the adapter is healthy.
+	LastError *string
 }
 
-const adapterCols = `name, family, trust_mode, enabled, config, created_at, updated_at`
+const adapterCols = `name, family, trust_mode, enabled, config, created_at, updated_at, last_poll_at, last_error`
 
 func scanAdapter(row pgx.Row) (Adapter, error) {
 	var a Adapter
-	err := row.Scan(&a.Name, &a.Family, &a.TrustMode, &a.Enabled, &a.Config, &a.CreatedAt, &a.UpdatedAt)
+	err := row.Scan(&a.Name, &a.Family, &a.TrustMode, &a.Enabled, &a.Config, &a.CreatedAt, &a.UpdatedAt,
+		&a.LastPollAt, &a.LastError)
 	return a, err
 }
 
@@ -75,6 +82,30 @@ func (s *Store) AdapterEnabled(ctx context.Context, name string) (bool, error) {
 func (s *Store) SetAdapterEnabled(ctx context.Context, name string, enabled bool) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE adapters SET enabled = $2, updated_at = now() WHERE name = $1`, name, enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RecordAdapterPoll stamps the outcome of one poll-loop consume attempt on the adapter's registry
+// row: last_poll_at is set to now, and last_error carries the attempt's (credential-free) error
+// text — or clears to NULL on a healthy attempt. Returns ErrNotFound for an unregistered adapter.
+// Callers MUST NOT pass error text containing broker credentials (the redis transports already
+// redact the DSN).
+//
+// Governing: SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety" (health/last-poll tracking),
+// REQ "Error Handling Standards" (never log broker credentials).
+func (s *Store) RecordAdapterPoll(ctx context.Context, name string, pollErr string) error {
+	var lastErr *string
+	if pollErr != "" {
+		lastErr = &pollErr
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE adapters SET last_poll_at = now(), last_error = $2 WHERE name = $1`, name, lastErr)
 	if err != nil {
 		return err
 	}
