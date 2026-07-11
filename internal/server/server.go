@@ -19,6 +19,7 @@ import (
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/db"
 	"github.com/joestump/switchboard/internal/ingest"
+	mcpsrv "github.com/joestump/switchboard/internal/mcp"
 	"github.com/joestump/switchboard/internal/store"
 	"github.com/joestump/switchboard/internal/web"
 )
@@ -78,6 +79,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 	// Vended agent API (bearer-credential auth inside; ADR-0008). 1 MiB body cap + IP rate limit.
 	r.With(agentRL.middleware, maxBytes(1<<20)).Mount("/agent", api.Routes())
+
+	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, per-endpoint
+	// rate limit, and the 1 MiB body cap all live inside the package's own middleware stack.
+	r.Mount("/mcp", mcpsrv.New(st, log).Routes())
 
 	// Auth (OIDC RP against Pocket ID; ADR-0011).
 	r.Get("/login", webh.Login)

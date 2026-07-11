@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,12 +53,22 @@ func TestHumanAgentVend(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	ep, err := s.CreateEndpoint(ctx, ag.ID, "credhash123", "sbk_ab12cd", []string{"reviews"}, []string{"list_todos", "claim", "complete"})
+	slug, err := MintSlug(ag.Name)
+	if err != nil {
+		t.Fatalf("mint slug: %v", err)
+	}
+	if !strings.HasPrefix(slug, "reviewer-bot-") {
+		t.Fatalf("slug should derive from agent name, got %q", slug)
+	}
+	ep, err := s.CreateEndpoint(ctx, ag.ID, "credhash123", "sbk_ab12cd", slug, []string{"reviews"}, []string{"list_todos", "claim", "complete"})
 	if err != nil {
 		t.Fatalf("vend endpoint: %v", err)
 	}
 	if ep.State != "active" || ep.Mutability != "immutable" {
 		t.Fatalf("endpoint defaults: state=%s mutability=%s", ep.State, ep.Mutability)
+	}
+	if ep.Slug != slug {
+		t.Fatalf("endpoint slug=%q want %q", ep.Slug, slug)
 	}
 
 	// Resolve by credential hash → scope + owner.
@@ -67,6 +78,14 @@ func TestHumanAgentVend(t *testing.T) {
 	}
 	if auth.OwnerHumanID != h.ID || auth.AgentID != ag.ID || len(auth.ScopeQueues) != 1 || auth.ScopeQueues[0] != "reviews" {
 		t.Fatalf("auth resolved wrong: %+v", auth)
+	}
+	if auth.Slug != slug {
+		t.Fatalf("auth slug=%q want %q", auth.Slug, slug)
+	}
+
+	// Successful auth stamps last-seen (SPEC-0014).
+	if err := s.TouchEndpoint(ctx, ep.ID); err != nil {
+		t.Fatalf("touch endpoint: %v", err)
 	}
 
 	// Revoke → credential no longer resolves.

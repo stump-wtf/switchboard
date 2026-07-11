@@ -127,7 +127,14 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	ep, err := h.store.CreateEndpoint(r.Context(), ag.ID, hash, prefix, queues, verbs)
+	// Governing: SPEC-0014 REQ "Streamable HTTP MCP Endpoint" — the per-endpoint URL slug is
+	// minted and persisted at vend time; /mcp/{slug} is where this credential is honored.
+	slug, err := store.MintSlug(ag.Name)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	ep, err := h.store.CreateEndpoint(r.Context(), ag.ID, hash, prefix, slug, queues, verbs)
 	if err != nil {
 		h.fail(w, err)
 		return

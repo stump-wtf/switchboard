@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,9 +22,11 @@ type Agent struct {
 }
 
 // Endpoint is a vended capability: URL + credential = the grant, scope is immutable. ADR-0008.
+// Slug is the endpoint's public URL segment (/mcp/{slug}); it is not a secret (SPEC-0014).
 type Endpoint struct {
 	ID               string
 	AgentID          string
+	Slug             string
 	CredentialPrefix string
 	ScopeQueues      []string
 	ScopeVerbs       []string
@@ -35,6 +41,7 @@ type AuthEndpoint struct {
 	AgentID      string
 	AgentName    string
 	OwnerHumanID string
+	Slug         string
 	ScopeQueues  []string
 	ScopeVerbs   []string
 }
@@ -84,23 +91,51 @@ func (s *Store) GetAgentOwned(ctx context.Context, id, ownerHumanID string) (Age
 	return a, err
 }
 
+// MintSlug derives an endpoint's public URL slug from its agent's name plus a short random suffix
+// so slugs are unique without being guessable from the name alone. The slug is not a secret: the
+// URL grants nothing without the credential. Governing: SPEC-0014 REQ "Streamable HTTP MCP Endpoint".
+func MintSlug(agentName string) (string, error) {
+	var b strings.Builder
+	prevDash := true // suppress a leading dash
+	for _, r := range strings.ToLower(agentName) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			prevDash = false
+		case !prevDash:
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	base := strings.TrimSuffix(b.String(), "-")
+	if base == "" {
+		base = "endpoint"
+	}
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", fmt.Errorf("store: mint slug: %w", err)
+	}
+	return base + "-" + hex.EncodeToString(suffix), nil
+}
+
 // CreateEndpoint vends a scoped endpoint for an agent. The caller supplies the credential hash + prefix
-// (the plaintext is shown to the human once and never stored). Scope is immutable (ADR-0008).
-func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefix string, queues, verbs []string) (Endpoint, error) {
+// (the plaintext is shown to the human once and never stored) and the minted URL slug. Scope is
+// immutable (ADR-0008).
+func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefix, slug string, queues, verbs []string) (Endpoint, error) {
 	var e Endpoint
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, scope_queues, scope_verbs)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id::text, agent_id::text, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at`,
-		agentID, credHash, credPrefix, queues, verbs,
-	).Scan(&e.ID, &e.AgentID, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt)
+		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues, scope_verbs)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at`,
+		agentID, credHash, credPrefix, slug, queues, verbs,
+	).Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt)
 	return e, err
 }
 
 // ListEndpoints returns an agent's endpoints, newest first.
 func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, agent_id::text, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at
+		SELECT id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at
 		FROM endpoints WHERE agent_id = $1 ORDER BY created_at DESC`, agentID)
 	if err != nil {
 		return nil, err
@@ -109,7 +144,7 @@ func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, 
 	var out []Endpoint
 	for rows.Next() {
 		var e Endpoint
-		if err := rows.Scan(&e.ID, &e.AgentID, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -139,13 +174,23 @@ func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID str
 func (s *Store) EndpointByCredHash(ctx context.Context, credHash string) (AuthEndpoint, error) {
 	var a AuthEndpoint
 	err := s.pool.QueryRow(ctx, `
-		SELECT e.id::text, e.agent_id::text, ag.name, ag.owner_human_id::text, e.scope_queues, e.scope_verbs
+		SELECT e.id::text, e.agent_id::text, ag.name, ag.owner_human_id::text, e.slug, e.scope_queues, e.scope_verbs
 		FROM endpoints e JOIN agents ag ON ag.id = e.agent_id
 		WHERE e.credential_hash = $1 AND e.state = 'active'`,
 		credHash,
-	).Scan(&a.ID, &a.AgentID, &a.AgentName, &a.OwnerHumanID, &a.ScopeQueues, &a.ScopeVerbs)
+	).Scan(&a.ID, &a.AgentID, &a.AgentName, &a.OwnerHumanID, &a.Slug, &a.ScopeQueues, &a.ScopeVerbs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AuthEndpoint{}, ErrNotFound
 	}
 	return a, err
+}
+
+// TouchEndpoint stamps an endpoint's last_seen_at, recording that its credential just authenticated
+// successfully. Governing: SPEC-0014 REQ "Bearer Authentication Bound to the Vended Endpoint".
+func (s *Store) TouchEndpoint(ctx context.Context, endpointID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE endpoints SET last_seen_at = now() WHERE id = $1`, endpointID); err != nil {
+		return fmt.Errorf("store: touch endpoint: %w", err)
+	}
+	return nil
 }
