@@ -22,12 +22,23 @@ var ErrNotFound = errors.New("store: not found")
 // Governing: SPEC-0012 REQ "Live Updates via SSE" (best-effort presentation).
 type TodoTransitionHook func(verb string, t Todo)
 
+// TodoDoorbellHook observes committed todo creations that are eligible for a channel push. The
+// store applies the SPEC-0011 sender gate before firing: only todos persisted together with a
+// VERIFIED delivery event ring the doorbell — per-source verification (ADR-0003) plus human
+// ownership of the receiving endpoint (ADR-0008) are the "gate on the sender" the Channels
+// standard requires. Implementations MUST NOT block: the push is only a doorbell, PostgreSQL
+// remains the ledger, and a missed call costs latency, never work.
+// Governing: SPEC-0011 REQ "Sender Gate and Injection Safety", ADR-0013.
+type TodoDoorbellHook func(t Todo)
+
 // Store wraps a pgx pool.
 type Store struct {
 	pool *pgxpool.Pool
 	// todoHook is read on every todo transition and set (rarely) at wiring time; atomic so a
 	// late SetTodoTransitionHook can never race in-flight transitions.
 	todoHook atomic.Pointer[TodoTransitionHook]
+	// doorbellHook mirrors todoHook for push-eligible creations (the MCP channel doorbell).
+	doorbellHook atomic.Pointer[TodoDoorbellHook]
 }
 
 // New builds a Store over the given pool.
@@ -48,6 +59,24 @@ func (s *Store) SetTodoTransitionHook(fn TodoTransitionHook) {
 func (s *Store) fireTodoHook(verb string, t Todo) {
 	if fn := s.todoHook.Load(); fn != nil {
 		(*fn)(verb, t)
+	}
+}
+
+// SetTodoDoorbellHook registers fn to observe committed, push-eligible todo creations. Safe to
+// call concurrently with store use; passing nil clears the hook.
+func (s *Store) SetTodoDoorbellHook(fn TodoDoorbellHook) {
+	if fn == nil {
+		s.doorbellHook.Store(nil)
+		return
+	}
+	s.doorbellHook.Store(&fn)
+}
+
+// fireDoorbell invokes the registered doorbell hook, if any. Callers fire it only after a durable
+// commit AND only when the todo's delivery event passed per-source verification (the sender gate).
+func (s *Store) fireDoorbell(t Todo) {
+	if fn := s.doorbellHook.Load(); fn != nil {
+		(*fn)(t)
 	}
 }
 

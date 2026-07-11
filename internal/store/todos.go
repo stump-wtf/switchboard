@@ -107,6 +107,12 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 	if created {
 		s.notifyTodoReady(ctx, t.Queue)
 		s.fireTodoHook("created", t)
+		// Sender gate (SPEC-0011): only a todo whose delivery event passed per-source
+		// verification is eligible for a channel push. Plain CreateTodo (no event, e.g. the dev
+		// helper) never rings the doorbell — those todos degrade to pull, losing nothing.
+		if e.Verified {
+			s.fireDoorbell(t)
+		}
 	}
 	return eventID, t, created, nil
 }

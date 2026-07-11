@@ -56,6 +56,12 @@ func (f *fakeStore) TouchEndpoint(_ context.Context, _ string) error {
 	return nil
 }
 
+// revoke drops the credential mapping, mimicking the state='active' filter after a revocation:
+// the hash no longer resolves, so auth answers 401 exactly like a never-vended credential.
+func (f *fakeStore) revoke(token string) {
+	delete(f.byHash, cred.Hash(token))
+}
+
 func (f *fakeStore) ListTodos(_ context.Context, queues []string, state string, limit int) ([]store.Todo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -215,11 +221,22 @@ func vend(t *testing.T, f *fakeStore, slug string, queues, verbs []string) (toke
 // newTestServer mounts Routes() under /mcp exactly as internal/server does.
 func newTestServer(t *testing.T, f *fakeStore) *httptest.Server {
 	t.Helper()
+	ts, _ := newTestServerHandler(t, f)
+	return ts
+}
+
+// newTestServerHandler is newTestServer, also returning the Handler for tests that publish
+// doorbells or close endpoint sessions directly. The handler (sessions, pumps, janitor) is torn
+// down before the HTTP server so shutdown never leaks goroutines.
+func newTestServerHandler(t *testing.T, f *fakeStore) (*httptest.Server, *Handler) {
+	t.Helper()
+	h := New(f, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r := chi.NewRouter()
-	r.Mount("/mcp", New(f, slog.New(slog.NewTextHandler(io.Discard, nil))).Routes())
+	r.Mount("/mcp", h.Routes())
 	ts := httptest.NewServer(r)
 	t.Cleanup(ts.Close)
-	return ts
+	t.Cleanup(h.Close)
+	return ts, h
 }
 
 // bearerTransport injects the Authorization header on every request, like a real MCP client
@@ -438,10 +455,12 @@ func TestCredentialNeverLogged(t *testing.T) {
 	f := newFakeStore()
 	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"list_todos"})
 
+	h := New(f, slog.New(slog.NewTextHandler(&buf, nil)))
 	r := chi.NewRouter()
-	r.Mount("/mcp", New(f, slog.New(slog.NewTextHandler(&buf, nil))).Routes())
+	r.Mount("/mcp", h.Routes())
 	ts := httptest.NewServer(r)
 	t.Cleanup(ts.Close)
+	t.Cleanup(h.Close)
 
 	rawPost(t, ts.URL+"/mcp/agent-a-11111111", token, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
 	rawPost(t, ts.URL+"/mcp/agent-b-22222222", token, `{"jsonrpc":"2.0","id":1,"method":"ping"}`) // 403 path logs a warning

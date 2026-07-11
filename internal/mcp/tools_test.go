@@ -261,10 +261,12 @@ func TestStoreFailureIsGenericToClient(t *testing.T) {
 	f.failErr = errors.New("pg: connection refused host=db-internal-secret")
 	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"list_todos"})
 
+	h := New(f, slog.New(slog.NewTextHandler(&buf, nil)))
 	r := chi.NewRouter()
-	r.Mount("/mcp", New(f, slog.New(slog.NewTextHandler(&buf, nil))).Routes())
+	r.Mount("/mcp", h.Routes())
 	ts := httptest.NewServer(r)
 	t.Cleanup(ts.Close)
+	t.Cleanup(h.Close)
 
 	cs, err := connect(t, ctx, ts.URL+"/mcp/agent-a-11111111", token)
 	if err != nil {

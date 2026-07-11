@@ -50,6 +50,19 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Best-effort by design: the hub drops on full buffers and PostgreSQL stays authoritative.
 	// Governing: SPEC-0012 REQ "Live Updates via SSE".
 	st.SetTodoTransitionHook(webh.PublishTodoTransition)
+
+	// The MCP mount owns live Streamable HTTP sessions; Close tears them (and their goroutines)
+	// down on shutdown. Governing: SPEC-0014 REQ "Concurrency Safety".
+	mcph := mcpsrv.New(st, log)
+	defer mcph.Close()
+	// Same committed-transition publish source as the web SSE hub, one consumer per surface:
+	// the store's doorbell hook fans verified todo creations out to in-scope MCP sessions as
+	// notifications/claude/channel doorbells. Governing: SPEC-0014 REQ "Channels Push over the
+	// HTTP Stream", SPEC-0011 (push semantics; queue stays the ledger).
+	st.SetTodoDoorbellHook(mcph.PublishTodoReady)
+	// Revoking an endpoint in the web UI also closes its live notification streams promptly
+	// (SPEC-0014 scenario "Revocation closes live streams").
+	webh.SetEndpointRevokedHook(mcph.CloseEndpointSessions)
 	api := agentapi.New(st, hub, log)
 	// Generic (token/open) providers are explicit operator opt-in via SWITCHBOARD_GENERIC_PROVIDERS;
 	// a malformed or invalid-mode config fails startup loudly rather than silently opening an
@@ -110,9 +123,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Vended agent API (bearer-credential auth inside; ADR-0008). 1 MiB body cap + IP rate limit.
 	r.With(agentRL.middleware, maxBytes(1<<20)).Mount("/agent", api.Routes())
 
-	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, per-endpoint
-	// rate limit, and the 1 MiB body cap all live inside the package's own middleware stack.
-	r.Mount("/mcp", mcpsrv.New(st, log).Routes())
+	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, rate limits,
+	// and the 1 MiB body cap all live inside the package's own middleware stack.
+	r.Mount("/mcp", mcph.Routes())
 
 	// Auth (OIDC RP against Pocket ID; ADR-0011).
 	r.Get("/login", webh.Login)

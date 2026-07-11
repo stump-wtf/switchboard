@@ -42,7 +42,17 @@ type Handler struct {
 	events     *EventHub
 	sseRetryMS func(ctx context.Context) int
 	keepAlive  time.Duration
+
+	// endpointRevoked, when set, observes successful endpoint revocations (endpoint id). The
+	// server wires it to the MCP mount so revoking an endpoint also closes its live notification
+	// streams promptly, not just future requests. Governing: SPEC-0014 REQ "Concurrency Safety"
+	// scenario "Revocation closes live streams", ADR-0008 (revoke is instant and total).
+	endpointRevoked func(endpointID string)
 }
+
+// SetEndpointRevokedHook registers fn to observe successful endpoint revocations. Wire it before
+// the handler serves traffic; passing nil clears the hook.
+func (h *Handler) SetEndpointRevokedHook(fn func(endpointID string)) { h.endpointRevoked = fn }
 
 // New parses the templates and returns a Handler.
 func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error) {
@@ -221,9 +231,15 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 // Revoke revokes an endpoint. Requires human.
 func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	if err := h.store.RevokeEndpoint(r.Context(), chi.URLParam(r, "id"), human.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+	id := chi.URLParam(r, "id")
+	err := h.store.RevokeEndpoint(r.Context(), id, human.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		h.fail(w, err)
 		return
+	}
+	if err == nil && h.endpointRevoked != nil {
+		// Revocation committed: also tear down any live MCP notification stream immediately.
+		h.endpointRevoked(id)
 	}
 	// Governing: SPEC-0007/0012 REQ open-redirect defense. Never redirect to a raw attacker-supplied
 	// Referer; return to a same-origin in-app PATH only, defaulting to the dashboard.
