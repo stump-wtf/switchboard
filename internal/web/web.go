@@ -25,7 +25,6 @@ import (
 
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
-	"github.com/joestump/switchboard/internal/cred"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -35,7 +34,7 @@ var tmplFS embed.FS
 // pageNames are the page templates composed with layout.html and the shared fragments. Startup
 // parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
-var pageNames = []string{"login", "board", "todos", "todo", "dashboard", "agent", "vended"}
+var pageNames = []string{"login", "board", "todos", "todo", "endpoints"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -48,6 +47,12 @@ type Handler struct {
 	log   *slog.Logger
 	pages map[string]*template.Template
 	frags *template.Template // shared live fragments (templates/fragments.html), standalone-renderable
+
+	// personasEnabled gates the persona chip on endpoint cards and the persona field in the vend
+	// modal (SPEC-0013 "bound persona when personas are enabled"). It stays false until the Personas
+	// view + capability ship; the field lets the Endpoints surface render the persona slot correctly
+	// the moment that capability is wired, without any change here.
+	personasEnabled bool
 
 	// SSE plumbing (SPEC-0012 "Live Updates via SSE"). sseRetryMS and keepAlive are fields so
 	// tests can shrink intervals; production values come from New.
@@ -170,12 +175,13 @@ type view struct {
 	Filter         string           // active Todos filter pill (all|pending|claimed|done|failed)
 	Query          string           // Todos search text
 	Drawer         *drawerView      // standalone todo detail page (drawer fallback)
-	Agents         []store.Agent
-	Agent          *store.Agent
-	Endpoints      []store.Endpoint
-	Endpoint       *store.Endpoint
-	Token          string
-	MCPJSON        string
+
+	// Endpoints view (SPEC-0013 REQ "Endpoints View and Vend Modal").
+	EndpointCards   []endpointCard // the vended-endpoint cards
+	PersonasEnabled bool           // gates the persona chip on cards + the persona field in the modal
+	VerbOptions     []string       // the vend-modal verb toggle chips (drain-verb vocabulary)
+	VendOpen        bool           // no-JS fallback: render the vend form inline in the page
+	Reveal          *revealView    // set on a no-JS vend to render the one-time credential reveal inline
 }
 
 // buildShell computes the layout-shell state. Store errors are logged and rendered as the
@@ -248,91 +254,18 @@ func (h *Handler) ClaimTodo(w http.ResponseWriter, r *http.Request) {
 	h.respondTodoAction(w, r, "ClaimTodo", t, err)
 }
 
-// Dashboard lists the human's agents (surfaced as "Endpoints" in the rail until the SPEC-0013
-// Endpoints view lands). Requires human.
-func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
-	human, _ := auth.FromContext(r.Context())
-	agents, err := h.store.ListAgents(r.Context(), human.ID)
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
-	sh, _ := h.buildShell(r.Context(), "endpoints", &human)
-	h.render(w, "dashboard", view{Title: "Endpoints", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Shell: sh, Agents: agents})
+// AgentsRedirect folds the retired SPEC-0012 dashboard/agent screens into the Endpoints view: the
+// old /agents and /agents/{id} routes 303-redirect to /endpoints. It performs no store lookup, so it
+// cannot leak whether an agent id exists — every request lands on the same authoritative view.
+// Requires human. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" (routes fold into
+// /endpoints).
+func (h *Handler) AgentsRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/endpoints", http.StatusSeeOther)
 }
 
-// CreateAgent registers an agent. Requires human.
-func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
-	human, _ := auth.FromContext(r.Context())
-	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		http.Error(w, "name required", http.StatusBadRequest)
-		return
-	}
-	ag, err := h.store.CreateAgent(r.Context(), human.ID, name, strings.TrimSpace(r.FormValue("description")))
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
-	http.Redirect(w, r, "/agents/"+ag.ID, http.StatusSeeOther)
-}
-
-// Agent renders one agent + its endpoints + the vend form. Requires human.
-func (h *Handler) Agent(w http.ResponseWriter, r *http.Request) {
-	human, _ := auth.FromContext(r.Context())
-	ag, err := h.store.GetAgentOwned(r.Context(), chi.URLParam(r, "id"), human.ID)
-	if err != nil {
-		h.notFoundOr(w, err)
-		return
-	}
-	eps, err := h.store.ListEndpoints(r.Context(), ag.ID)
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
-	sh, _ := h.buildShell(r.Context(), "endpoints", &human)
-	h.render(w, "agent", view{Title: ag.Name, Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Shell: sh, Agent: &ag, Endpoints: eps})
-}
-
-// Vend mints a scoped endpoint credential and shows it once with wiring instructions. Requires human.
-func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
-	human, _ := auth.FromContext(r.Context())
-	ag, err := h.store.GetAgentOwned(r.Context(), chi.URLParam(r, "id"), human.ID)
-	if err != nil {
-		h.notFoundOr(w, err)
-		return
-	}
-	queues := splitCSV(r.FormValue("queues"))
-	verbs := splitCSV(r.FormValue("verbs"))
-	if len(queues) == 0 || len(verbs) == 0 {
-		http.Error(w, "queues and verbs are required", http.StatusBadRequest)
-		return
-	}
-	token, hash, prefix, err := cred.Mint()
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
-	// Governing: SPEC-0014 REQ "Streamable HTTP MCP Endpoint" — the per-endpoint URL slug is
-	// minted and persisted at vend time; /mcp/{slug} is where this credential is honored.
-	slug, err := store.MintSlug(ag.Name)
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
-	ep, err := h.store.CreateEndpoint(r.Context(), ag.ID, hash, prefix, slug, queues, verbs)
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
-	sh, _ := h.buildShell(r.Context(), "endpoints", &human)
-	h.render(w, "vended", view{
-		Title: "Vended", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Shell: sh, Agent: &ag, Endpoint: &ep,
-		Token: token, MCPJSON: buildMCPJSON(h.cfg.BaseURL, ep.Slug, token),
-	})
-}
-
-// Revoke revokes an endpoint. Requires human.
+// Revoke revokes (kills) an endpoint the human owns. Revoke is instant and total (ADR-0008); the
+// scope is immutable, so changing access means revoke + re-vend. Requires human.
+// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal", SPEC-0007 REQ "Revocation Is Total".
 func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	id := chi.URLParam(r, "id")
@@ -346,8 +279,8 @@ func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 		h.endpointRevoked(id)
 	}
 	// Governing: SPEC-0007/0012 REQ open-redirect defense. Never redirect to a raw attacker-supplied
-	// Referer; return to a same-origin in-app PATH only, defaulting to the dashboard.
-	http.Redirect(w, r, h.safeRedirectTarget(r, "/"), http.StatusSeeOther)
+	// Referer; return to a same-origin in-app PATH only, defaulting to the Endpoints view.
+	http.Redirect(w, r, h.safeRedirectTarget(r, "/endpoints"), http.StatusSeeOther)
 }
 
 // safeRedirectTarget returns a same-origin, path-only redirect target derived from the request's

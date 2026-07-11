@@ -204,3 +204,62 @@ func TestOwnershipSchemaConstraints(t *testing.T) {
 		t.Fatal("creating an agent for a nonexistent human must fail (FK violation)")
 	}
 }
+
+// TestListEndpointCards: the Endpoints-view projection is scoped strictly by owner, orders active
+// endpoints before revoked ones, carries the credential DISPLAY PREFIX (never a reversible
+// credential), and stamps revoked_at on a killed endpoint. Governing: SPEC-0013 REQ "Endpoints View
+// and Vend Modal", SPEC-0007 REQ "Human as Accountable Principal".
+func TestListEndpointCards(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := mustHuman(t, s, ctx, "cards|owner", "Owner")
+	other := mustHuman(t, s, ctx, "cards|other", "Other")
+
+	agOwner := mustAgent(t, s, ctx, owner.ID, "reviewer-bot")
+	slugA, _ := MintSlug("reviewer-bot")
+	active, err := s.CreateEndpoint(ctx, agOwner.ID, "hash-active", "sbk_active0", slugA, []string{"reviews"}, []string{"claim"})
+	if err != nil {
+		t.Fatalf("vend active: %v", err)
+	}
+	agOwner2 := mustAgent(t, s, ctx, owner.ID, "old-bot")
+	slugB, _ := MintSlug("old-bot")
+	revoked, err := s.CreateEndpoint(ctx, agOwner2.ID, "hash-revoked", "sbk_revoke0", slugB, []string{"deploys"}, []string{"complete"})
+	if err != nil {
+		t.Fatalf("vend revoked: %v", err)
+	}
+	if err := s.RevokeEndpoint(ctx, revoked.ID, owner.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// Another human's endpoint must never appear in the owner's cards.
+	agOther := mustAgent(t, s, ctx, other.ID, "intruder-bot")
+	slugC, _ := MintSlug("intruder-bot")
+	if _, err := s.CreateEndpoint(ctx, agOther.ID, "hash-other", "sbk_other00", slugC, []string{"x"}, []string{"claim"}); err != nil {
+		t.Fatalf("vend other: %v", err)
+	}
+
+	cards, err := s.ListEndpointCards(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("list endpoint cards: %v", err)
+	}
+	if len(cards) != 2 {
+		t.Fatalf("owner has %d cards, want 2 (no cross-owner leak)", len(cards))
+	}
+	// Active sorts before revoked.
+	if cards[0].State != "active" || cards[1].State != "revoked" {
+		t.Errorf("ordering = [%s, %s], want [active, revoked]", cards[0].State, cards[1].State)
+	}
+	a := cards[0]
+	if a.ID != active.ID || a.AgentName != "reviewer-bot" {
+		t.Errorf("active card = {%s, %s}, want {%s, reviewer-bot}", a.ID, a.AgentName, active.ID)
+	}
+	if a.CredentialPrefix != "sbk_active0" {
+		t.Errorf("card prefix = %q, want the display prefix sbk_active0", a.CredentialPrefix)
+	}
+	if a.RevokedAt != nil {
+		t.Errorf("active card carries a revoked_at stamp: %v", a.RevokedAt)
+	}
+	r := cards[1]
+	if r.RevokedAt == nil {
+		t.Error("revoked card must carry a revoked_at stamp (killed · when)")
+	}
+}

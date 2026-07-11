@@ -23,7 +23,7 @@ func TestDocumentDeclaresLangAndViewport(t *testing.T) {
 	pages := map[string]view{
 		"login":     {Title: "Log in"},
 		"board":     {Title: "The Board", Human: testHuman(), Shell: shell{Active: "board"}},
-		"dashboard": {Title: "Endpoints", Human: testHuman(), Shell: shell{Active: "endpoints"}},
+		"endpoints": {Title: "Endpoints", Human: testHuman(), Shell: shell{Active: "endpoints"}, VerbOptions: drainVerbs},
 	}
 	for page, v := range pages {
 		body := renderPage(t, h, page, v)
@@ -46,8 +46,8 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 	const payload = `"><script>alert(1)</script>`
 	h := newTestHandler(t)
 	human := &store.Human{ID: "h1", DisplayName: payload, Email: "x@example.com"}
-	ag := &store.Agent{ID: "a1", Name: payload, Description: payload, CreatedAt: time.Now()}
-	ep := &store.Endpoint{ID: "e1", CredentialPrefix: payload, ScopeQueues: []string{payload}, ScopeVerbs: []string{payload}, State: "active"}
+	card := endpointCard{ID: "e1", AgentName: payload, PersonaName: payload, CredPrefix: payload,
+		Queues: []string{payload}, Verbs: []string{payload}, State: "active"}
 	sh := shell{Active: "endpoints", DBConnected: true, Initials: `"><i>`}
 
 	bodies := map[string]string{
@@ -58,10 +58,11 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 				ID: 1, Source: payload, EventType: payload, TrustMode: "signed", ReceivedAt: time.Now(),
 			}, false)},
 		}),
-		"dashboard": renderPage(t, h, "dashboard", view{Title: "Endpoints", Human: human, CSRF: "tok", Shell: sh, Agents: []store.Agent{*ag}}),
-		"agent":     renderPage(t, h, "agent", view{Title: ag.Name, Human: human, CSRF: "tok", Shell: sh, Agent: ag, Endpoints: []store.Endpoint{*ep}}),
-		"vended": renderPage(t, h, "vended", view{Title: "Vended", Human: human, CSRF: "tok", Shell: sh, Agent: ag, Endpoint: ep,
-			Token: `</pre><script>steal()</script>`, MCPJSON: `{"x":"</pre><script>steal()</script>"}`}),
+		"endpoints": renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: human, CSRF: "tok", Shell: sh,
+			EndpointCards: []endpointCard{card}, PersonasEnabled: true, VerbOptions: []string{payload}}),
+		"reveal": renderFrag(t, h, "vend_reveal", revealView{AgentName: payload, Slug: payload,
+			Token: `</pre><script>steal()</script>`, MCPJSON: `{"x":"</pre><script>steal()</script>"}`,
+			Queues: []string{payload}, Verbs: []string{payload}, CSRF: "tok"}),
 	}
 	for page, body := range bodies {
 		if strings.Contains(body, "<script>alert(1)</script>") || strings.Contains(body, "<script>steal()</script>") {

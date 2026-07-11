@@ -1,0 +1,34 @@
+{{define "content"}}
+{{/* Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" — vended-endpoint cards (agent name,
+     bound persona when enabled, status, scope chips, credential DISPLAY PREFIX only, last-seen,
+     Edit/Revoke on active; revoked cards dimmed with a killed-at stamp) plus the "+ Vend endpoint"
+     modal. The modal is an HTMX fragment swapped into the shared #sb-overlay slot (the same overlay
+     machinery the todo drawer uses: focus trap, Escape, scrim-click, focus return — sb.js). A no-JS
+     visitor gets the form inline (VendOpen) and the reveal inline (Reveal) instead. */}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">Endpoints</h1>
+    <p class="sb-tagline">vended lines · each a URL + credential · scope is immutable</p>
+  </div>
+  {{/* Progressive enhancement: with JS the button fetches the modal into the overlay; without JS the
+       href navigates to the inline form. */}}
+  <a class="sb-btn sb-vend-open" href="/endpoints/vend"
+     hx-get="/endpoints/vend" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">+ Vend endpoint</a>
+</div>
+
+{{if .Reveal}}<div class="sb-card sb-reveal-inline">{{template "vend_reveal" .Reveal}}</div>{{end}}
+
+{{if .VendOpen}}<div class="sb-card sb-vend-inline">{{template "vend_form" .}}</div>{{end}}
+
+{{if .EndpointCards}}
+<section class="sb-cards" aria-label="Vended endpoints">
+  {{range .EndpointCards}}{{template "endpoint_card" dict "C" . "CSRF" $.CSRF "PersonasEnabled" $.PersonasEnabled}}{{end}}
+</section>
+{{/* Page-local SSE sink: the Endpoints screen renders the last-seen swap targets, so only it
+     subscribes to the endpoint_seen typed event (subscribing from the layout would orphan the OOB
+     swap on every other view). */}}
+<div class="sb-sse-sink" hidden aria-hidden="true" sse-swap="endpoint_seen"></div>
+{{else}}
+<p class="sb-empty">no endpoints vended yet · vend one to hand an agent a scoped MCP line</p>
+{{end}}
+{{end}}

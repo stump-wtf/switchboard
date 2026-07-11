@@ -18,8 +18,9 @@ import (
 // template surface, authenticated and not.
 func allPages(t *testing.T, h *Handler) map[string]string {
 	t.Helper()
-	ag := &store.Agent{ID: "a1", Name: "reviewer-bot", Description: "reviews PRs", CreatedAt: time.Now()}
-	ep := &store.Endpoint{ID: "e1", Slug: "reviewer-bot-ab12cd", CredentialPrefix: "sbk_ab12cd", ScopeQueues: []string{"reviews"}, ScopeVerbs: []string{"claim"}, State: "active"}
+	seen := time.Now().Add(-2 * time.Minute)
+	card := endpointCard{ID: "e1", AgentName: "reviewer-bot", Slug: "reviewer-bot-ab12cd",
+		CredPrefix: "sbk_ab12cd", Queues: []string{"reviews"}, Verbs: []string{"claim"}, State: "active", LastSeenAt: &seen}
 	sh := shell{Active: "board", TodoCount: 1, LiveRate: 2, DBConnected: true, Initials: "JS"}
 	views := map[string]view{
 		"login": {Title: "Log in", OIDCConfigured: true},
@@ -28,10 +29,8 @@ func allPages(t *testing.T, h *Handler) map[string]string {
 			Rows: []feedRow{feedRowFromEvent(store.EventSummary{
 				ID: 1, Source: "github", EventType: "push", TrustMode: "signed", ReceivedAt: time.Now(),
 				TodoID: "td_1", TodoState: "pending"}, false)}},
-		"dashboard": {Title: "Endpoints", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"}, Agents: []store.Agent{*ag}},
-		"agent":     {Title: ag.Name, Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"}, Agent: ag, Endpoints: []store.Endpoint{*ep}},
-		"vended": {Title: "Vended", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"}, Agent: ag, Endpoint: ep,
-			Token: "sbk_secret", MCPJSON: buildMCPJSON("https://sb.example.com", ep.Slug, "sbk_secret")},
+		"endpoints": {Title: "Endpoints", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"},
+			EndpointCards: []endpointCard{card}, VerbOptions: drainVerbs},
 	}
 	out := make(map[string]string, len(views))
 	for page, v := range views {

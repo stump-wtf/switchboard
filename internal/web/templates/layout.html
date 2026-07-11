@@ -44,13 +44,12 @@
 <div class="sb-shell">
 {{if .Human}}
 {{/* Nav rail: Board / Todos / Endpoints. Personas and Friends stay hidden until their backing
-     capabilities land (SPEC-0013 hidden-not-broken). Endpoints points at the agents screen until its
-     own view ships. */}}
+     capabilities land (SPEC-0013 hidden-not-broken). */}}
 <nav class="sb-rail" aria-label="Primary">
   <ul class="sb-rail__list">
     <li><a class="sb-rail__item" href="/"{{if eq .Shell.Active "board"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Board</span></a></li>
     <li><a class="sb-rail__item" href="/todos"{{if eq .Shell.Active "todos"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Todos</span>{{template "todo_count" dict "Count" .Shell.TodoCount}}</a></li>
-    <li><a class="sb-rail__item" href="/agents"{{if eq .Shell.Active "endpoints"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Endpoints</span></a></li>
+    <li><a class="sb-rail__item" href="/endpoints"{{if eq .Shell.Active "endpoints"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Endpoints</span></a></li>
   </ul>
   <p class="sb-rail__foot sb-conn{{if not .Shell.DBConnected}} sb-conn--down{{end}}"><span class="sb-conn__dot" aria-hidden="true"></span><span class="sb-conn__label">postgres · {{if .Shell.DBConnected}}connected{{else}}disconnected{{end}}</span></p>
 </nav>

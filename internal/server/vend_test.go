@@ -33,85 +33,89 @@ func postForm(t *testing.T, r chi.Router, token, path string, form url.Values) *
 // credRe pulls the revealed plaintext credential out of the vended page's <pre> block.
 var credRe = regexp.MustCompile(`sbk_[A-Za-z0-9_-]+`)
 
-// TestVendRejectsMissingScopeAndMintsNothing: an empty queues or verbs field is a 400 and leaves the
-// agent with zero endpoints — no credential is minted on the rejection path.
-// SPEC-0012 scenario "Missing scope is rejected".
+// TestVendRejectsMissingScopeAndMintsNothing: an empty name, queues, or verbs field is a 400 and
+// mints nothing — the validation runs before any store write, so no agent and no endpoint are left
+// behind on the rejection path. SPEC-0013 scenario "Vend modal validates scope".
 func TestVendRejectsMissingScopeAndMintsNothing(t *testing.T) {
 	r, st, ctx := newDBRouter(t)
 	human, token := mintSession(t, st, ctx, "test|alice", "Alice Ames", "alice@example.com")
-	agent, err := st.CreateAgent(ctx, human.ID, "alice-reviewer", "")
-	if err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	csrf := scrapeCSRF(t, getAs(t, r, token, "/agents/"+agent.ID).Body.String())
+	csrf := scrapeCSRF(t, getAs(t, r, token, "/endpoints").Body.String())
 
 	for name, form := range map[string]url.Values{
-		"missing verbs":  {"csrf_token": {csrf}, "queues": {"reviews"}, "verbs": {""}},
-		"missing queues": {"csrf_token": {csrf}, "queues": {""}, "verbs": {"claim"}},
-		"both empty":     {"csrf_token": {csrf}, "queues": {"  "}, "verbs": {","}},
+		"missing name":   {"csrf_token": {csrf}, "name": {"  "}, "queues": {"reviews"}, "verbs": {"claim"}},
+		"missing verbs":  {"csrf_token": {csrf}, "name": {"bot"}, "queues": {"reviews"}, "verbs": {""}},
+		"missing queues": {"csrf_token": {csrf}, "name": {"bot"}, "queues": {""}, "verbs": {"claim"}},
+		"both empty":     {"csrf_token": {csrf}, "name": {"bot"}, "queues": {"  "}, "verbs": {","}},
 	} {
-		rec := postForm(t, r, token, "/agents/"+agent.ID+"/vend", form)
+		rec := postForm(t, r, token, "/endpoints/vend", form)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: got %d, want 400", name, rec.Code)
 		}
 	}
 
-	eps, err := st.ListEndpoints(ctx, agent.ID)
+	// No agent and no endpoint were created by any rejected vend.
+	cards, err := st.ListEndpointCards(ctx, human.ID)
 	if err != nil {
-		t.Fatalf("list endpoints: %v", err)
+		t.Fatalf("list endpoint cards: %v", err)
 	}
-	if len(eps) != 0 {
-		t.Fatalf("rejected vends minted %d endpoint(s); want 0", len(eps))
+	if len(cards) != 0 {
+		t.Fatalf("rejected vends minted %d endpoint(s); want 0", len(cards))
+	}
+	agents, err := st.ListAgents(ctx, human.ID)
+	if err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("rejected vends created %d agent(s); want 0", len(agents))
 	}
 }
 
-// TestVendRevealsCredentialOnceWithHTTPWiring: a valid vend returns the plaintext credential once,
-// with HTTP-only wiring, and persists only the hash + prefix. The plaintext is not recoverable on a
-// later GET, and the persisted prefix is a prefix of the revealed credential (never the whole thing).
-// SPEC-0012 scenario "Credential is shown once and stored only as a hash"; SPEC-0014 "Vend reveal
-// shows HTTP wiring".
+// TestVendRevealsCredentialOnceWithHTTPWiring: a valid vend creates the named agent + endpoint,
+// returns the plaintext credential once with HTTP-only wiring, and persists only the hash + prefix.
+// The plaintext is not recoverable on a later GET /endpoints, and the persisted prefix is a prefix of
+// the revealed credential (never the whole thing). SPEC-0013 scenario "Credential reveal is one-time";
+// SPEC-0014 "Vend reveal shows HTTP wiring".
 func TestVendRevealsCredentialOnceWithHTTPWiring(t *testing.T) {
 	r, st, ctx := newDBRouter(t)
 	human, token := mintSession(t, st, ctx, "test|alice", "Alice Ames", "alice@example.com")
-	agent, err := st.CreateAgent(ctx, human.ID, "alice-reviewer", "")
-	if err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	csrf := scrapeCSRF(t, getAs(t, r, token, "/agents/"+agent.ID).Body.String())
+	csrf := scrapeCSRF(t, getAs(t, r, token, "/endpoints").Body.String())
 
-	rec := postForm(t, r, token, "/agents/"+agent.ID+"/vend",
-		url.Values{"csrf_token": {csrf}, "queues": {"reviews, deploys"}, "verbs": {"claim, complete"}})
+	rec := postForm(t, r, token, "/endpoints/vend",
+		url.Values{"csrf_token": {csrf}, "name": {"alice-reviewer"}, "queues": {"reviews, deploys"}, "verbs": {"claim", "complete"}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("vend: got %d, want 200", rec.Code)
 	}
 	// html/template escapes the JSON block's quotes; unescape so the wiring assertions read the
-	// literal .mcp.json a human would copy off the page.
+	// literal .mcp.json a human would copy off the reveal.
 	body := html.UnescapeString(rec.Body.String())
 
 	cred := credRe.FindString(body)
 	if cred == "" {
-		t.Fatalf("no plaintext credential revealed on vended page")
+		t.Fatalf("no plaintext credential revealed on the vend reveal")
 	}
 	for _, want := range []string{`"type": "http"`, "/mcp/", "Bearer " + cred} {
 		if !strings.Contains(body, want) {
-			t.Errorf("vended page missing HTTP wiring element %q", want)
+			t.Errorf("vend reveal missing HTTP wiring element %q", want)
 		}
 	}
 	for _, bad := range []string{`"command"`, "SWITCHBOARD_TOKEN", "on your PATH", "switchboard channel"} {
 		if strings.Contains(body, bad) {
-			t.Errorf("vended page leaks retired stdio marker %q", bad)
+			t.Errorf("vend reveal leaks retired stdio marker %q", bad)
 		}
 	}
 
 	// Exactly one endpoint persisted, storing only a prefix — never the full plaintext.
-	eps, err := st.ListEndpoints(ctx, agent.ID)
+	cards, err := st.ListEndpointCards(ctx, human.ID)
 	if err != nil {
-		t.Fatalf("list endpoints: %v", err)
+		t.Fatalf("list endpoint cards: %v", err)
 	}
-	if len(eps) != 1 {
-		t.Fatalf("got %d endpoints, want 1", len(eps))
+	if len(cards) != 1 {
+		t.Fatalf("got %d endpoints, want 1", len(cards))
 	}
-	ep := eps[0]
+	ep := cards[0]
+	if ep.AgentName != "alice-reviewer" {
+		t.Errorf("endpoint bound to agent %q, want alice-reviewer", ep.AgentName)
+	}
 	if !strings.HasPrefix(cred, ep.CredentialPrefix) {
 		t.Errorf("stored prefix %q is not a prefix of revealed credential %q", ep.CredentialPrefix, cred)
 	}
@@ -122,8 +126,13 @@ func TestVendRevealsCredentialOnceWithHTTPWiring(t *testing.T) {
 		t.Errorf("wiring URL does not carry the minted slug %q", ep.Slug)
 	}
 
-	// One-time reveal: the plaintext is gone on any later render of the agent screen.
-	if agentBody := getAs(t, r, token, "/agents/"+agent.ID).Body.String(); strings.Contains(agentBody, cred) {
-		t.Errorf("agent screen re-rendered the one-time plaintext credential")
+	// One-time reveal: the plaintext is gone on any later render of the Endpoints view (only the
+	// prefix persists), so the credential is unrecoverable from the UI once the modal closes.
+	epsBody := getAs(t, r, token, "/endpoints").Body.String()
+	if strings.Contains(epsBody, cred) {
+		t.Errorf("endpoints view re-rendered the one-time plaintext credential")
+	}
+	if !strings.Contains(epsBody, ep.CredentialPrefix) {
+		t.Errorf("endpoints view should still show the credential display prefix")
 	}
 }

@@ -1185,10 +1185,229 @@ pre code {
   .sb-feed__pulse,
   .sb-ring,
   .sb-drawer,
+  .sb-modal,
   .sb-trow--flash {
     animation: none;
   }
   .sb-lease__bar {
     transition: none;
+  }
+}
+
+/* ============================ Endpoints view + vend modal (SPEC-0013) ============================ */
+
+.sb-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.sb-vend-open {
+  flex: none;
+}
+
+/* Endpoint cards grid. */
+.sb-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+  margin: 16px 0;
+}
+.sb-epcard {
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  padding: 14px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* A killed endpoint is dimmed but still legible — proof it existed and was revoked. */
+.sb-epcard--revoked {
+  opacity: 0.62;
+  border-style: dashed;
+}
+.sb-epcard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sb-epcard__ident {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.sb-epcard__agent {
+  font-weight: 600;
+  color: var(--sb-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-epcard__scope {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+}
+.sb-epcard__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.sb-epcard__row dt {
+  flex: none;
+  width: 68px;
+}
+.sb-epcard__row dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 4px;
+  align-items: center;
+}
+.sb-epcard__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--sb-divider);
+  padding-top: 10px;
+  margin-top: 2px;
+}
+.sb-epcard__seen {
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+.sb-epcard__killed {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-muted);
+}
+.sb-epcard__acts {
+  display: flex;
+  gap: 8px;
+}
+.sb-epcard__revoke {
+  margin: 0;
+}
+
+/* Scope chips: queues (brass) and verbs (green), plus a toggle variant for the vend form. */
+.sb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: var(--sb-radius-chip);
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.sb-chip--queue {
+  color: var(--sb-chip-queue);
+  background: var(--sb-chip-queue-bg);
+  border-color: var(--sb-chip-queue-border);
+}
+.sb-chip--verb {
+  color: var(--sb-chip-verb);
+  background: var(--sb-chip-verb-bg);
+  border-color: var(--sb-chip-verb-border);
+}
+.sb-chip--persona {
+  color: var(--sb-secondary);
+  background: var(--sb-nav-active-bg);
+  border-color: var(--sb-border-strong);
+}
+.sb-chipset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+/* Toggle chips are label-wrapped checkboxes: the native checkbox stays for no-JS + a11y, the chip
+   dims when unchecked. */
+.sb-chip--toggle {
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.5;
+}
+.sb-chip--toggle:has(input:checked) {
+  opacity: 1;
+}
+.sb-chip--toggle input {
+  margin: 0;
+  accent-color: var(--sb-chip-verb);
+}
+
+/* Modal: a centered dialog over the shared overlay scrim (the same #sb-overlay the drawer uses). */
+.sb-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(480px, 94vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border-strong);
+  border-radius: var(--sb-radius-modal);
+  box-shadow: var(--sb-shadow-modal);
+  padding: 20px 22px 24px;
+  animation: sb-modal-in var(--sb-dur-enter) var(--sb-ease);
+}
+.sb-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.sb-modal__title {
+  font-family: var(--sb-font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--sb-ink);
+  margin: 0;
+}
+
+/* Inline (no-JS) vend form + reveal panels reuse the card chrome, not the fixed overlay. The reveal
+   fragment is the same .sb-modal markup the overlay uses, so — like .sb-drawer-inline — neutralize
+   the fixed positioning when it renders inside a page card, and drop the overlay-only close control. */
+.sb-vend-inline,
+.sb-reveal-inline {
+  max-width: 560px;
+}
+.sb-reveal-inline .sb-modal {
+  position: static;
+  transform: none;
+  width: auto;
+  max-height: none;
+  box-shadow: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  animation: none;
+}
+.sb-reveal-inline .sb-drawer__close {
+  display: none;
+}
+
+.sb-vend__foot {
+  margin-top: 6px;
+}
+
+@keyframes sb-modal-in {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 8px));
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%);
   }
 }

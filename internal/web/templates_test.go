@@ -6,6 +6,7 @@ package web
 // Architecture and Navigation".
 
 import (
+	"html"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -151,41 +152,90 @@ func TestLoginRendersWithoutRail(t *testing.T) {
 	}
 }
 
-func TestEndpointsScreensRender(t *testing.T) {
+// TestEndpointsViewRendersCards: the Endpoints view renders active + revoked cards with the agent
+// name, scope chips, credential DISPLAY PREFIX only, last-seen / killed stamps, and Revoke on active
+// cards — and marks the Endpoints rail entry active. Governing: SPEC-0013 REQ "Endpoints View and
+// Vend Modal".
+func TestEndpointsViewRendersCards(t *testing.T) {
 	h := newTestHandler(t)
-	ag := &store.Agent{ID: "a1", Name: "reviewer-bot", Description: "reviews PRs", CreatedAt: time.Now()}
-	ep := &store.Endpoint{ID: "e1", CredentialPrefix: "sbk_ab12cd", ScopeQueues: []string{"reviews"}, ScopeVerbs: []string{"claim"}, State: "active"}
 	sh := shell{Active: "endpoints", DBConnected: true, Initials: "JS"}
+	seen := time.Now().Add(-2 * time.Minute)
+	killed := time.Now().Add(-1 * time.Hour)
+	active := endpointCard{ID: "e1", AgentName: "reviewer-bot", Slug: "reviewer-bot-ab12cd",
+		CredPrefix: "sbk_ab12cd", Queues: []string{"reviews"}, Verbs: []string{"claim"}, State: "active", LastSeenAt: &seen}
+	revoked := endpointCard{ID: "e2", AgentName: "old-bot", Slug: "old-bot-99",
+		CredPrefix: "sbk_dead00", Queues: []string{"deploys"}, Verbs: []string{"complete"}, State: "revoked", RevokedAt: &killed}
 
-	dash := renderPage(t, h, "dashboard", view{Title: "Endpoints", Human: testHuman(), CSRF: "tok", Shell: sh, Agents: []store.Agent{*ag}})
-	if !strings.Contains(dash, "Endpoints") || !strings.Contains(dash, "reviewer-bot") {
-		t.Error("dashboard missing Endpoints title or agent row")
-	}
-	if !strings.Contains(dash, "href=\"/agents\" aria-current=\"page\"") {
-		t.Error("dashboard rail must mark Endpoints active")
-	}
+	body := renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: testHuman(), CSRF: "tok",
+		Shell: sh, EndpointCards: []endpointCard{active, revoked}, VerbOptions: drainVerbs})
 
-	agent := renderPage(t, h, "agent", view{Title: ag.Name, Human: testHuman(), CSRF: "tok", Shell: sh, Agent: ag, Endpoints: []store.Endpoint{*ep}})
 	for _, want := range []string{
-		"sbk_ab12cd", "sb-badge--active", "Vend endpoint",
-		`id="sb-ep-seen-e1"`, ">never<", // last-seen swap target exists before the first frame
-		`sse-swap="endpoint_seen"`, // page-local sink subscribes the endpoint screen
+		"reviewer-bot", "old-bot",
+		"sbk_ab12cd", "sbk_dead00", // credential display prefixes
+		"sb-chip--queue", "sb-chip--verb", // scope chips
+		"sb-badge--active", "sb-badge--revoked",
+		"sb-epcard--revoked",                // the killed card is dimmed
+		"endpoint killed",                   // + stamped with when
+		`id="sb-ep-seen-e1"`, "seen 2m ago", // active card last-seen swap target + stamp
+		`action="/endpoints/e1/revoke"`,         // Revoke on the active card
+		"+ Vend endpoint",                       // the vend trigger
+		`sse-swap="endpoint_seen"`,              // page-local sink subscribes the endpoint screen
+		`href="/endpoints" aria-current="page"`, // rail marks Endpoints active
 	} {
-		if !strings.Contains(agent, want) {
-			t.Errorf("agent: missing %q", want)
+		if !strings.Contains(body, want) {
+			t.Errorf("endpoints view: missing %q", want)
 		}
 	}
-	seen := time.Now().Add(-2 * time.Minute)
-	ep2 := *ep
-	ep2.LastSeenAt = &seen
-	agentSeen := renderPage(t, h, "agent", view{Title: ag.Name, Human: testHuman(), CSRF: "tok", Shell: sh, Agent: ag, Endpoints: []store.Endpoint{ep2}})
-	if !strings.Contains(agentSeen, "seen 2m ago") {
-		t.Error("agent: touched endpoint missing rendered last-seen stamp")
+	// The revoked card must NOT offer a Revoke action, and no full credential ever appears.
+	if strings.Contains(body, `action="/endpoints/e2/revoke"`) {
+		t.Error("revoked card must not render a Revoke action")
 	}
+}
 
-	vended := renderPage(t, h, "vended", view{Title: "Vended", Human: testHuman(), CSRF: "tok", Shell: sh, Agent: ag, Endpoint: ep, Token: "sbk_secret", MCPJSON: "{}"})
-	if !strings.Contains(vended, "sbk_secret") || !strings.Contains(vended, "shown only once") {
-		t.Error("vended missing one-time credential display")
+// TestVendModalRendersFields: the vend modal collects a name, queue field, and verb toggle chips,
+// carries the CSRF token, posts to /endpoints/vend, and wires the overlay focus/close machinery.
+// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal".
+func TestVendModalRendersFields(t *testing.T) {
+	h := newTestHandler(t)
+	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: drainVerbs})
+	for _, want := range []string{
+		`role="dialog"`, `aria-modal="true"`, `data-sb-modal`, // modal a11y + overlay hook
+		`data-sb-close`,                                         // close control (Escape/scrim/return handled by sb.js)
+		`action="/endpoints/vend"`, `hx-post="/endpoints/vend"`, // no-JS + HTMX submit
+		`name="csrf_token" value="tok"`,    // CSRF over the POST
+		`name="name"`, `data-sb-vend-name`, // agent name field
+		`name="queues"`, `data-sb-vend-queues`, // queue field
+		`name="verbs" value="list_todos"`, `name="verbs" value="claim"`, // verb toggle chips
+		`data-sb-vend-submit`, // the submit sb.js gates on scope
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("vend modal: missing %q", want)
+		}
+	}
+}
+
+// TestVendRevealShowsCredentialOnceAndHTTPWiring: the one-time reveal shows the plaintext credential
+// once, the minted /mcp/{slug} URL, HTTP-only .mcp.json wiring, and a shown-once warning.
+// Governing: SPEC-0013 (credential reveal is one-time), SPEC-0014 REQ "HTTP Wiring Is the Only Wiring".
+func TestVendRevealShowsCredentialOnceAndHTTPWiring(t *testing.T) {
+	h := newTestHandler(t)
+	mcpjson := buildMCPJSON("https://sb.example.com", "reviewer-bot-ab12cd", "sbk_secret")
+	body := html.UnescapeString(renderFrag(t, h, "vend_reveal", revealView{AgentName: "reviewer-bot",
+		Slug: "reviewer-bot-ab12cd", Token: "sbk_secret", MCPJSON: mcpjson,
+		Queues: []string{"reviews"}, Verbs: []string{"claim"}, CSRF: "tok"}))
+	for _, want := range []string{
+		"sbk_secret", "shown only once",
+		`"type": "http"`, "/mcp/reviewer-bot-ab12cd", "Bearer sbk_secret",
+		"data-sb-close", // closing clears the overlay → the plaintext is unrecoverable
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("vend reveal: missing %q", want)
+		}
+	}
+	// The reveal must carry exactly one copy of the plaintext credential outside the wiring's Bearer
+	// header (the credential block) — i.e. it is not sprinkled across many surfaces.
+	if n := strings.Count(body, "sbk_secret"); n != 2 { // once in the <pre> block, once in the Bearer header
+		t.Errorf("plaintext credential appears %d times, want exactly 2 (credential block + wiring)", n)
 	}
 }
 

@@ -25,13 +25,13 @@ func validPageFS() fstest.MapFS {
 }
 
 func TestParsePagesEmbeddedFS(t *testing.T) {
-	// The real embedded FS must parse every page named by the spec (login, dashboard, agent,
-	// vended) plus the SPEC-0013 board view.
+	// The real embedded FS must parse every page the spec ships: login, the SPEC-0013 board/todos
+	// views, and the Endpoints view (which folded in the retired dashboard/agent/vended screens).
 	pages, err := parsePages(tmplFS)
 	if err != nil {
 		t.Fatalf("parsePages(embedded): %v", err)
 	}
-	for _, p := range []string{"login", "board", "dashboard", "agent", "vended"} {
+	for _, p := range []string{"login", "board", "todos", "endpoints"} {
 		if pages[p] == nil {
 			t.Errorf("embedded FS missing parsed page %q", p)
 		}
@@ -40,11 +40,11 @@ func TestParsePagesEmbeddedFS(t *testing.T) {
 
 func TestParsePagesFailsOnBrokenTemplate(t *testing.T) {
 	fsys := validPageFS()
-	fsys["templates/agent.html"] = &fstest.MapFile{Data: []byte(`{{define "content"}}{{.Agent.Name`)} // unclosed action
+	fsys["templates/endpoints.html"] = &fstest.MapFile{Data: []byte(`{{define "content"}}{{.EndpointCards`)} // unclosed action
 
 	if _, err := parsePages(fsys); err == nil {
 		t.Fatal("parsePages must fail when a page template is broken")
-	} else if !strings.Contains(err.Error(), `"agent"`) {
+	} else if !strings.Contains(err.Error(), `"endpoints"`) {
 		t.Errorf("error should name the failing page: %v", err)
 	}
 }
@@ -60,7 +60,7 @@ func TestParsePagesFailsOnBrokenLayout(t *testing.T) {
 
 func TestParsePagesFailsOnMissingTemplate(t *testing.T) {
 	fsys := validPageFS()
-	delete(fsys, "templates/vended.html")
+	delete(fsys, "templates/endpoints.html")
 
 	if _, err := parsePages(fsys); err == nil {
 		t.Fatal("parsePages must fail when a page template file is missing")

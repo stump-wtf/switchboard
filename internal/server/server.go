@@ -281,7 +281,13 @@ func newRouter(d routerDeps) chi.Router {
 		// drawer fragment (HTMX) or a standalone page (deep link / no-JS fallback).
 		pr.Get("/todos", d.webh.Todos)
 		pr.Get("/todos/{id}", d.webh.TodoDrawer)
-		pr.Get("/agents", d.webh.Dashboard)
+		// Endpoints view + vend modal (SPEC-0013). The retired SPEC-0012 /agents screens 303-redirect
+		// here; GET /endpoints/vend serves the modal fragment, POST /endpoints/vend mints + reveals once.
+		pr.Get("/endpoints", d.webh.Endpoints)
+		pr.Get("/endpoints/vend", d.webh.VendModal)
+		pr.Post("/endpoints/vend", d.webh.Vend)
+		pr.Get("/agents", d.webh.AgentsRedirect)
+		pr.Get("/agents/{id}", d.webh.AgentsRedirect)
 		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
 		pr.Get("/events", d.webh.Events)
 		// Operator todo lifecycle actions (SPEC-0013 endpoints table). Each dispatches to a SPEC-0003
@@ -293,9 +299,6 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/todos/{id}/retry", d.webh.RetryTodo)
 		pr.Post("/todos/{id}/extend", d.webh.ExtendTodo)
 		pr.Post("/todos/{id}/release", d.webh.ReleaseTodo)
-		pr.Post("/agents", d.webh.CreateAgent)
-		pr.Get("/agents/{id}", d.webh.Agent)
-		pr.Post("/agents/{id}/vend", d.webh.Vend)
 		pr.Post("/endpoints/{id}/revoke", d.webh.Revoke)
 		pr.Post("/logout", d.authr.Logout)
 	})

@@ -185,6 +185,57 @@ func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, 
 	return out, rows.Err()
 }
 
+// EndpointCard is the operator Endpoints-view projection of a vended endpoint (SPEC-0013 REQ
+// "Endpoints View and Vend Modal"): the endpoint enriched with its agent's name and, when personas
+// are enabled, the bound persona's name. It never carries the credential — only its non-secret
+// display prefix — so the cards can render without ever touching a reversible secret.
+type EndpointCard struct {
+	ID               string
+	AgentID          string
+	AgentName        string
+	PersonaName      string // "" when no persona is bound (or personas are disabled)
+	Slug             string
+	CredentialPrefix string
+	ScopeQueues      []string
+	ScopeVerbs       []string
+	State            string
+	CreatedAt        time.Time
+	RevokedAt        *time.Time // set once the endpoint was killed (revoke), for the dimmed card stamp
+	LastSeenAt       *time.Time // nil until the credential first authenticates
+}
+
+// ListEndpointCards returns every endpoint owned by a human (via its agents), enriched with the
+// backing agent name and bound persona name, active endpoints first then newest-first. It scopes
+// strictly by owner_human_id so one operator can never see another's endpoints.
+// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal", SPEC-0007 REQ "Human as Accountable
+// Principal".
+func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]EndpointCard, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT e.id::text, e.agent_id::text, ag.name, COALESCE(p.name, ''),
+		       e.slug, e.credential_prefix, e.scope_queues, e.scope_verbs,
+		       e.state, e.created_at, e.revoked_at, e.last_seen_at
+		FROM endpoints e
+		JOIN agents ag ON ag.id = e.agent_id
+		LEFT JOIN personas p ON p.id = e.persona_id
+		WHERE ag.owner_human_id = $1
+		ORDER BY (e.state = 'active') DESC, e.created_at DESC`, ownerHumanID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list endpoint cards: %w", err)
+	}
+	defer rows.Close()
+	var out []EndpointCard
+	for rows.Next() {
+		var c EndpointCard
+		if err := rows.Scan(&c.ID, &c.AgentID, &c.AgentName, &c.PersonaName, &c.Slug,
+			&c.CredentialPrefix, &c.ScopeQueues, &c.ScopeVerbs, &c.State, &c.CreatedAt,
+			&c.RevokedAt, &c.LastSeenAt); err != nil {
+			return nil, fmt.Errorf("store: scan endpoint card: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // RevokeEndpoint marks an endpoint revoked, but only if it belongs to the given human (via its agent).
 // Revoke = invalidate credential + unroute; instant and total (ADR-0008).
 func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID string) error {

@@ -138,77 +138,79 @@ func scrapeCSRF(t *testing.T, body string) string {
 	return m[1]
 }
 
-// TestDashboardListsOnlySessionHumansAgents: two humans, one agent each; each session sees exactly
-// its own agent on GET /agents — the handler scopes by the human id from request context, never by
-// anything client-supplied. SPEC-0012: "The dashboard MUST list only the authenticated human's agents."
-func TestDashboardListsOnlySessionHumansAgents(t *testing.T) {
-	r, st, ctx := newDBRouter(t)
-	humanA, tokenA := mintSession(t, st, ctx, "test|alice", "Alice Ames", "alice@example.com")
-	humanB, tokenB := mintSession(t, st, ctx, "test|bob", "Bob Byrne", "bob@example.com")
-	if _, err := st.CreateAgent(ctx, humanA.ID, "alice-reviewer", ""); err != nil {
-		t.Fatalf("create agent A: %v", err)
+// vendFixture creates an agent + a vended endpoint for a human directly through the store, for the
+// Endpoints-view scoping tests. The credential material is a fixed non-secret stand-in.
+func vendFixture(t *testing.T, st *store.Store, ctx context.Context, ownerHumanID, agentName, hash, prefix string) {
+	t.Helper()
+	ag, err := st.CreateAgent(ctx, ownerHumanID, agentName, "")
+	if err != nil {
+		t.Fatalf("create agent %s: %v", agentName, err)
 	}
-	if _, err := st.CreateAgent(ctx, humanB.ID, "bob-deployer", ""); err != nil {
-		t.Fatalf("create agent B: %v", err)
+	slug, err := store.MintSlug(agentName)
+	if err != nil {
+		t.Fatalf("mint slug: %v", err)
 	}
-
-	recA := getAs(t, r, tokenA, "/agents")
-	if recA.Code != http.StatusOK {
-		t.Fatalf("GET /agents as A: got %d, want 200", recA.Code)
-	}
-	bodyA := recA.Body.String()
-	if !strings.Contains(bodyA, "alice-reviewer") {
-		t.Error("A's dashboard must list A's agent")
-	}
-	if strings.Contains(bodyA, "bob-deployer") {
-		t.Error("A's dashboard must NOT list B's agent")
-	}
-
-	recB := getAs(t, r, tokenB, "/agents")
-	if recB.Code != http.StatusOK {
-		t.Fatalf("GET /agents as B: got %d, want 200", recB.Code)
-	}
-	bodyB := recB.Body.String()
-	if !strings.Contains(bodyB, "bob-deployer") {
-		t.Error("B's dashboard must list B's agent")
-	}
-	if strings.Contains(bodyB, "alice-reviewer") {
-		t.Error("B's dashboard must NOT list A's agent")
+	if _, err := st.CreateEndpoint(ctx, ag.ID, hash, prefix, slug, []string{"reviews"}, []string{"claim"}); err != nil {
+		t.Fatalf("vend endpoint for %s: %v", agentName, err)
 	}
 }
 
-// TestUnownedAgentIs404WithoutExistenceLeak: fetching another human's agent returns the same 404 —
-// status and body — as fetching an agent that does not exist at all, and never echoes the unowned
-// agent's name or description. SPEC-0012: "MUST return 404 for an agent the human does not own."
-func TestUnownedAgentIs404WithoutExistenceLeak(t *testing.T) {
+// TestEndpointsListsOnlySessionHumansEndpoints: two humans, one vended endpoint each; each session
+// sees exactly its own endpoint card on GET /endpoints — the handler scopes by the human id from
+// request context, never by anything client-supplied. SPEC-0013: the Endpoints view lists only the
+// authenticated human's endpoints.
+func TestEndpointsListsOnlySessionHumansEndpoints(t *testing.T) {
 	r, st, ctx := newDBRouter(t)
-	_, tokenA := mintSession(t, st, ctx, "test|alice", "Alice Ames", "alice@example.com")
+	humanA, tokenA := mintSession(t, st, ctx, "test|alice", "Alice Ames", "alice@example.com")
 	humanB, tokenB := mintSession(t, st, ctx, "test|bob", "Bob Byrne", "bob@example.com")
-	agentB, err := st.CreateAgent(ctx, humanB.ID, "bob-secret-agent", "bob's confidential notes")
-	if err != nil {
-		t.Fatalf("create agent B: %v", err)
+	vendFixture(t, st, ctx, humanA.ID, "alice-reviewer", "hash-a", "sbk_alice0")
+	vendFixture(t, st, ctx, humanB.ID, "bob-deployer", "hash-b", "sbk_bob000")
+
+	recA := getAs(t, r, tokenA, "/endpoints")
+	if recA.Code != http.StatusOK {
+		t.Fatalf("GET /endpoints as A: got %d, want 200", recA.Code)
+	}
+	bodyA := recA.Body.String()
+	if !strings.Contains(bodyA, "alice-reviewer") {
+		t.Error("A's endpoints view must list A's endpoint")
+	}
+	if strings.Contains(bodyA, "bob-deployer") {
+		t.Error("A's endpoints view must NOT list B's endpoint")
 	}
 
-	unowned := getAs(t, r, tokenA, "/agents/"+agentB.ID)
-	nonexistent := getAs(t, r, tokenA, "/agents/00000000-0000-0000-0000-000000000000")
+	recB := getAs(t, r, tokenB, "/endpoints")
+	if recB.Code != http.StatusOK {
+		t.Fatalf("GET /endpoints as B: got %d, want 200", recB.Code)
+	}
+	bodyB := recB.Body.String()
+	if !strings.Contains(bodyB, "bob-deployer") {
+		t.Error("B's endpoints view must list B's endpoint")
+	}
+	if strings.Contains(bodyB, "alice-reviewer") {
+		t.Error("B's endpoints view must NOT list A's endpoint")
+	}
+}
 
-	if unowned.Code != http.StatusNotFound {
-		t.Fatalf("GET unowned agent as A: got %d, want 404", unowned.Code)
-	}
-	if nonexistent.Code != http.StatusNotFound {
-		t.Fatalf("GET nonexistent agent as A: got %d, want 404", nonexistent.Code)
-	}
-	// Existence must not leak: the unowned response is byte-identical to the nonexistent one.
-	if unowned.Body.String() != nonexistent.Body.String() {
-		t.Errorf("unowned 404 body %q differs from nonexistent 404 body %q — existence leak",
-			unowned.Body.String(), nonexistent.Body.String())
-	}
-	if b := unowned.Body.String(); strings.Contains(b, "bob-secret-agent") || strings.Contains(b, "confidential") {
-		t.Errorf("unowned 404 leaked agent contents: %q", b)
-	}
-	// And the owner still sees it: 404 is authorization-scoped, not a missing row.
-	if rec := getAs(t, r, tokenB, "/agents/"+agentB.ID); rec.Code != http.StatusOK {
-		t.Fatalf("GET own agent as B: got %d, want 200", rec.Code)
+// TestRetiredAgentRoutesRedirectToEndpoints: the SPEC-0012 dashboard/agent routes were folded into
+// the Endpoints view, so GET /agents and GET /agents/{id} 303-redirect to /endpoints. Because the
+// redirect performs no store lookup, it can never leak whether an agent id exists — every id lands
+// on the same view. SPEC-0013 REQ "Endpoints View and Vend Modal" (routes fold into /endpoints).
+func TestRetiredAgentRoutesRedirectToEndpoints(t *testing.T) {
+	r, st, ctx := newDBRouter(t)
+	_, token := mintSession(t, st, ctx, "test|alice", "Alice Ames", "alice@example.com")
+
+	for _, path := range []string{
+		"/agents",
+		"/agents/00000000-0000-0000-0000-000000000000",
+		"/agents/not-a-uuid",
+	} {
+		rec := getAs(t, r, token, path)
+		if rec.Code != http.StatusSeeOther {
+			t.Errorf("GET %s: got %d, want 303", path, rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "/endpoints" {
+			t.Errorf("GET %s: Location %q, want /endpoints", path, loc)
+		}
 	}
 }
 
@@ -219,10 +221,10 @@ func TestLogoutRevokesSessionAndClearsCookie(t *testing.T) {
 	r, st, ctx := newDBRouter(t)
 	_, token := mintSession(t, st, ctx, "test|alice", "Alice Ames", "alice@example.com")
 
-	// Authenticated before logout; scrape the CSRF token from the rendered dashboard form.
-	rec := getAs(t, r, token, "/agents")
+	// Authenticated before logout; scrape the CSRF token from the rendered Endpoints view.
+	rec := getAs(t, r, token, "/endpoints")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /agents pre-logout: got %d, want 200", rec.Code)
+		t.Fatalf("GET /endpoints pre-logout: got %d, want 200", rec.Code)
 	}
 	csrf := scrapeCSRF(t, rec.Body.String())
 
@@ -245,7 +247,7 @@ func TestLogoutRevokesSessionAndClearsCookie(t *testing.T) {
 		t.Error("logout must clear the session cookie (empty value, negative Max-Age)")
 	}
 	// The server-side session is gone: the old cookie no longer authenticates.
-	if rec := getAs(t, r, token, "/agents"); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+	if rec := getAs(t, r, token, "/endpoints"); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
 		t.Fatalf("replayed cookie after logout: got %d → %q, want 302 → /login", rec.Code, rec.Header().Get("Location"))
 	}
 }

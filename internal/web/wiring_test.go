@@ -10,9 +10,6 @@ import (
 	"html"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/joestump/switchboard/internal/store"
 )
 
 // legacyStdioMarkers are substrings that would betray the retired stdio/binary transport. None may
@@ -76,20 +73,17 @@ func TestBuildMCPJSONNormalizesBaseURL(t *testing.T) {
 	}
 }
 
-// The rendered vended page shows the HTTP wiring, states the immutable-scope contract, and carries
-// none of the retired binary/stdio instructions.
-func TestVendedPageShowsHTTPWiringOnly(t *testing.T) {
+// The one-time reveal fragment shows the HTTP wiring, states the immutable-scope contract, and
+// carries none of the retired binary/stdio instructions.
+func TestVendRevealShowsHTTPWiringOnly(t *testing.T) {
 	h := newTestHandler(t)
-	ag := &store.Agent{ID: "a1", Name: "reviewer-bot", CreatedAt: time.Now()}
-	ep := &store.Endpoint{ID: "e1", Slug: "reviewer-bot-ab12cd", CredentialPrefix: "sbk_ab12cd",
-		ScopeQueues: []string{"reviews"}, ScopeVerbs: []string{"claim"}, State: "active"}
-	sh := shell{Active: "endpoints", DBConnected: true, Initials: "JS"}
-	mcpjson := buildMCPJSON("https://sb.example.com", ep.Slug, "sbk_secret")
+	mcpjson := buildMCPJSON("https://sb.example.com", "reviewer-bot-ab12cd", "sbk_secret")
 
 	// html/template escapes the JSON block's quotes; unescape so the wiring assertions read the
-	// literal .mcp.json a human would copy off the page.
-	body := html.UnescapeString(renderPage(t, h, "vended", view{Title: "Vended", Human: testHuman(),
-		CSRF: "tok", Shell: sh, Agent: ag, Endpoint: ep, Token: "sbk_secret", MCPJSON: mcpjson}))
+	// literal .mcp.json a human would copy off the reveal.
+	body := html.UnescapeString(renderFrag(t, h, "vend_reveal", revealView{AgentName: "reviewer-bot",
+		Slug: "reviewer-bot-ab12cd", Token: "sbk_secret", MCPJSON: mcpjson,
+		Queues: []string{"reviews"}, Verbs: []string{"claim"}, CSRF: "tok"}))
 
 	for _, want := range []string{
 		"sbk_secret",               // the one-time plaintext reveal
@@ -97,15 +91,14 @@ func TestVendedPageShowsHTTPWiringOnly(t *testing.T) {
 		`"type": "http"`,           // HTTP wiring in the pasted block
 		"/mcp/reviewer-bot-ab12cd", // the minted endpoint URL/path
 		"Bearer sbk_secret",        // bearer credential
-		"revoke",                   // immutable-scope: change = revoke + re-vend
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("vended page missing %q", want)
+			t.Errorf("vend reveal missing %q", want)
 		}
 	}
 	for _, bad := range legacyStdioMarkers {
 		if strings.Contains(body, bad) {
-			t.Errorf("vended page leaks retired stdio marker %q", bad)
+			t.Errorf("vend reveal leaks retired stdio marker %q", bad)
 		}
 	}
 }

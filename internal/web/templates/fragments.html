@@ -155,3 +155,115 @@
     {{else if eq .Row.State "failed"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/retry" hx-target="#sb-overlay" hx-swap="innerHTML">Retry now</button>{{end}}
   </div>
 </div>{{end}}
+
+{{/* ============================ Endpoints view (SPEC-0013) ============================ */}}
+
+{{/* endpoint_card — one vended-endpoint card. Args via dict: C web.endpointCard, CSRF string,
+     PersonasEnabled bool. Revoked cards are dimmed and stamped with when the endpoint was killed;
+     the credential shows its DISPLAY PREFIX ONLY (never a reusable credential). All dynamic strings
+     pass through html/template contextual escaping. Governing: SPEC-0013 REQ "Endpoints View and
+     Vend Modal", SPEC-0007 (revoke = kill; scope immutable). */}}
+{{define "endpoint_card"}}{{$c := .C}}<article id="sb-ep-{{$c.ID}}" class="sb-epcard{{if eq $c.State "revoked"}} sb-epcard--revoked{{end}}">
+  <div class="sb-epcard__head">
+    <div class="sb-epcard__ident">
+      <span class="sb-epcard__agent">{{$c.AgentName}}</span>
+      {{if and .PersonasEnabled $c.PersonaName}}<span class="sb-chip sb-chip--persona">{{$c.PersonaName}}</span>{{end}}
+    </div>
+    <span class="sb-badge sb-badge--{{$c.State}}">{{$c.State}}</span>
+  </div>
+  <dl class="sb-epcard__scope">
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Queues</dt><dd>{{range $c.Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span> {{else}}<span class="sb-muted">—</span>{{end}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Verbs</dt><dd>{{range $c.Verbs}}<span class="sb-chip sb-chip--verb">{{.}}</span> {{else}}<span class="sb-muted">—</span>{{end}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Credential</dt><dd><code class="sb-code">{{$c.CredPrefix}}…</code> <span class="sb-muted">shown once at vend</span></dd></div>
+  </dl>
+  <div class="sb-epcard__foot">
+    {{if eq $c.State "revoked"}}
+      {{/* Killed endpoint: dimmed, and states when it was revoked. Governing: SPEC-0007 revoke = kill. */}}
+      <span class="sb-epcard__killed">endpoint killed{{if $c.RevokedAt}} · {{reltime $c.RevokedAt.UTC}}{{end}}</span>
+    {{else}}
+      {{/* Server render and the endpoint_seen SSE frame share this fragment, so the OOB swap target
+           (sb-ep-seen-<id>) exists before the first live frame. */}}
+      <span class="sb-epcard__seen">{{if $c.LastSeenAt}}{{template "endpoint_seen" dict "ID" $c.ID "SeenAt" $c.LastSeenAt.UTC "OOB" false}}{{else}}<span id="sb-ep-seen-{{$c.ID}}" class="sb-muted">never seen</span>{{end}}</span>
+      <div class="sb-epcard__acts">
+        {{/* Scope is immutable (SPEC-0007): Edit is present per the card spec but cannot alter scope —
+             changing access is revoke + re-vend, which the disabled control's label states. */}}
+        <button type="button" class="sb-btn sb-btn--secondary sb-btn--mono" disabled aria-disabled="true" title="Scope is immutable — revoke and re-vend to change access">Edit</button>
+        <form method="post" action="/endpoints/{{$c.ID}}/revoke" class="sb-epcard__revoke"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="sb-btn sb-btn--danger sb-btn--mono">Revoke</button></form>
+      </div>
+    {{end}}
+  </div>
+</article>{{end}}
+
+{{/* vend_form — the vend field set, shared by the modal (overlay) and the no-JS inline panel. Data:
+     web.view (CSRF, PersonasEnabled, VerbOptions). Queues are a comma-separated field (open-ended, no
+     registry) that sb.js enhances into a live chip preview; verbs are toggle chips (checkboxes, all on
+     by default). The submit stays enabled in markup so a no-JS post still reaches the server, which
+     re-validates scope (400, mints nothing, on an empty name/queue/verb). */}}
+{{define "vend_form"}}<form id="sb-vend-form" class="sb-vend" method="post" action="/endpoints/vend"
+    hx-post="/endpoints/vend" hx-target="#sb-overlay" hx-swap="innerHTML" data-sb-vend>
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <div class="sb-field">
+    <label for="sb-vend-name">Agent name</label>
+    <input id="sb-vend-name" class="sb-input" name="name" placeholder="reviewer-bot" required autocomplete="off" data-sb-vend-name>
+    <p class="sb-help">the agent this scoped line belongs to</p>
+  </div>
+  {{if .PersonasEnabled}}
+  <div class="sb-field">
+    <label for="sb-vend-persona">Persona (optional)</label>
+    <input id="sb-vend-persona" class="sb-input" name="persona" placeholder="none" autocomplete="off">
+    <p class="sb-help">bind this endpoint to a published persona</p>
+  </div>
+  {{end}}
+  <div class="sb-field">
+    <label for="sb-vend-queues">Queues</label>
+    <input id="sb-vend-queues" class="sb-input" name="queues" placeholder="reviews, deploys" autocomplete="off" data-sb-vend-queues aria-describedby="sb-vend-queues-help">
+    <div class="sb-chipset" data-sb-vend-queue-chips aria-hidden="true"></div>
+    <p class="sb-help" id="sb-vend-queues-help">comma-separated · the todo queues this endpoint may work · at least one required</p>
+  </div>
+  <div class="sb-field">
+    <span class="sb-label" id="sb-vend-verbs-label">Verbs</span>
+    <div class="sb-chipset" role="group" aria-labelledby="sb-vend-verbs-label" data-sb-vend-verbs>
+      {{range .VerbOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="verbs" value="{{.}}" checked> {{.}}</label>{{end}}
+    </div>
+    <p class="sb-help">allowed MCP tools · at least one required</p>
+  </div>
+  <div class="sb-vend__foot">
+    <button type="submit" class="sb-btn" data-sb-vend-submit>Vend endpoint</button>
+  </div>
+  <p class="sb-help">Scope is immutable — to change access, revoke and re-vend.</p>
+</form>{{end}}
+
+{{/* vend_modal — the "+ Vend endpoint" overlay. Swapped into #sb-overlay; sb.js opens it, traps
+     focus within [data-sb-modal], closes on Escape / scrim / the close control, and returns focus to
+     the trigger. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal". */}}
+{{define "vend_modal"}}<div class="sb-modal" role="dialog" aria-modal="true" aria-labelledby="sb-vend-title" data-sb-modal tabindex="-1">
+  <div class="sb-modal__head">
+    <h2 class="sb-modal__title" id="sb-vend-title">Vend endpoint</h2>
+    <button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button>
+  </div>
+  {{template "vend_form" .}}
+</div>{{end}}
+
+{{/* vend_reveal — the one-time credential reveal (SPEC-0013 "credential shown once"; SPEC-0014 "HTTP
+     Wiring Is the Only Wiring"). Rendered ONLY as the response to a successful vend; the plaintext
+     credential is never persisted, so no card or later page can reproduce it. Data: web.revealView. */}}
+{{define "vend_reveal"}}<div class="sb-modal sb-modal--reveal" role="dialog" aria-modal="true" aria-labelledby="sb-reveal-title" data-sb-modal tabindex="-1">
+  <div class="sb-modal__head">
+    <h2 class="sb-modal__title" id="sb-reveal-title">Endpoint vended</h2>
+    <button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button>
+  </div>
+  <p class="sb-muted">Scoped line for <strong>{{.AgentName}}</strong>.</p>
+  <p class="sb-callout sb-callout--danger">Copy the credential now — it is shown only once and stored only as a hash.</p>
+  <span class="sb-label" id="sb-reveal-cred-label">Credential</span>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-cred-label">{{.Token}}</pre>
+  <p class="sb-muted sb-mono">queues: {{range .Queues}}<code>{{.}}</code> {{end}}· verbs: {{range .Verbs}}<code>{{.}}</code> {{end}}</p>
+  {{/* Governing: SPEC-0014 — the reveal shows Streamable-HTTP wiring (type: http + /mcp/{slug} URL +
+       bearer header) only. No local binary or stdio command. */}}
+  <span class="sb-label" id="sb-reveal-wiring-label">Wire it into your MCP client</span>
+  <p class="sb-muted">Add this to your project's <code>.mcp.json</code>. Your agent connects over Streamable
+  HTTP at <code>/mcp/{{.Slug}}</code>, presenting the credential above as a bearer token.</p>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-wiring-label">{{.MCPJSON}}</pre>
+  <div class="sb-vend__foot">
+    <button type="button" class="sb-btn" data-sb-close>Done</button>
+  </div>
+</div>{{end}}
