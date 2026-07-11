@@ -44,6 +44,7 @@ type fakeFriendStore struct {
 
 	personaCalled bool
 	created       *store.CreateFriendRequestParams // non-nil once CreateFriendRequest is called
+	approvalTodo  *store.ApprovalTodoParams        // non-nil once CreateApprovalTodo is called
 }
 
 func (f *fakeFriendStore) PublishedPersonaByID(_ context.Context, _ string) (store.Persona, error) {
@@ -63,6 +64,12 @@ func (f *fakeFriendStore) CreateFriendRequest(_ context.Context, p store.CreateF
 	cp := p
 	f.created = &cp
 	return f.createEdge, f.createErr
+}
+
+func (f *fakeFriendStore) CreateApprovalTodo(_ context.Context, p store.ApprovalTodoParams) (store.Todo, bool, error) {
+	cp := p
+	f.approvalTodo = &cp
+	return store.Todo{}, true, nil
 }
 
 type fakeVerifier struct {
@@ -154,6 +161,15 @@ func TestFriendIntakeValidProvenanceRecordsEdge(t *testing.T) {
 	}
 	if fs.created.ToPersona != "11111111-1111-1111-1111-111111111111" {
 		t.Errorf("to_persona = %q, want the resolved persona id", fs.created.ToPersona)
+	}
+	// The pending edge also surfaces as a durable approval todo carrying the legible who/why for the
+	// target human (SPEC-0010 "Approval Delivered as a Todo", #63).
+	if fs.approvalTodo == nil {
+		t.Fatal("expected an approval todo to be filed for the target human")
+	}
+	if fs.approvalTodo.EdgeID != "edge-1" || fs.approvalTodo.ToHuman != "owner-1" ||
+		fs.approvalTodo.FromHuman != "req-human-1" || !fs.approvalTodo.ProvenanceVerified {
+		t.Errorf("approval todo lost request context: %+v", fs.approvalTodo)
 	}
 	// Response envelope.
 	var resp struct {

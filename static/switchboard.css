@@ -1374,6 +1374,7 @@ pre code {
   }
 }
 
+/* ============================ Friends view (SPEC-0013) ============================ */
 /* ============================ Endpoints view + vend modal (SPEC-0013) ============================ */
 
 .sb-page-head {
@@ -1382,6 +1383,70 @@ pre code {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+/* view toggle + filter pills row */
+.sb-friends-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 16px 0 14px;
+}
+.sb-friends-toolbar .sb-fpills {
+  margin: 0;
+}
+
+/* segmented cards|ledger control */
+.sb-seg {
+  display: inline-flex;
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-pill);
+  overflow: hidden;
+}
+.sb-seg__opt {
+  padding: 5px 15px;
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  color: var(--sb-muted);
+  text-decoration: none;
+  background: var(--sb-panel);
+}
+.sb-seg__opt:hover {
+  color: var(--sb-ink);
+}
+.sb-seg__opt--active {
+  background: var(--sb-nav-active-bg);
+  color: var(--sb-ink);
+  font-weight: 600;
+}
+
+/* friend status badges reuse the badge grammar with the shared status tokens */
+.sb-badge--pending {
+  color: var(--sb-status-pending);
+  background: var(--sb-status-pending-bg);
+}
+.sb-badge--approved {
+  color: var(--sb-status-done);
+  background: var(--sb-status-done-bg);
+}
+.sb-badge--denied {
+  color: var(--sb-status-failed);
+  background: var(--sb-status-failed-bg);
+}
+
+/* cards grid + one friendship card */
+.sb-fcards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.sb-fcard {
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  padding: 14px 16px;
   margin-bottom: 6px;
 }
 .sb-vend-open {
@@ -1404,6 +1469,103 @@ pre code {
   flex-direction: column;
   gap: 10px;
 }
+.sb-fcard--incoming {
+  border-color: var(--sb-brass);
+}
+.sb-fcard__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sb-fcard__arrow {
+  color: var(--sb-faint);
+}
+.sb-fcard__host {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-faint-2);
+}
+.sb-fcard__reason {
+  font-size: 13px;
+  color: var(--sb-muted);
+  margin: 0;
+}
+.sb-fcard__acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* intent chips */
+.sb-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sb-chip {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: var(--sb-radius-chip);
+  border: 1px solid var(--sb-border);
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-ink);
+  background: var(--sb-panel);
+}
+.sb-chip--none {
+  color: var(--sb-faint);
+  font-style: italic;
+}
+
+/* grouped ledger */
+.sb-fledger {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.sb-fgroup__head {
+  font-family: var(--sb-font-display);
+  font-size: 16px;
+  color: var(--sb-ink);
+  margin: 0 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sb-fgroup__n {
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+.sb-empty--inline {
+  margin: 0;
+  padding: 8px 0;
+}
+
+/* inline action forms + small select */
+.sb-fform {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.sb-input--sm {
+  width: auto;
+  max-width: 180px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+/* add-friend modal (reuses the overlay focus-trap) */
+.sb-modal {
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-modal);
+  padding: 20px 22px;
+  max-width: 480px;
+  margin: 40px auto;
 /* A killed endpoint is dimmed but still legible — proof it existed and was revoked. */
 .sb-epcard--revoked {
   opacity: 0.62;
@@ -1544,6 +1706,43 @@ pre code {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.sb-modal__title {
+  font-family: var(--sb-font-display);
+  font-size: 20px;
+  margin: 0;
+}
+.sb-modal__note {
+  font-size: 13px;
+  color: var(--sb-muted);
+  margin: 8px 0 14px;
+}
+.sb-modal__foot {
+  margin-top: 16px;
+}
+.sb-resolve {
+  margin-top: 5px;
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+}
+.sb-resolve__host {
+  color: var(--sb-brass);
+}
+.sb-resolve__hint {
+  color: var(--sb-faint);
+}
+
+/* visually-hidden label (icon-only / compact controls keep an accessible name) */
+.sb-vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
   gap: 12px;
   margin-bottom: 14px;
 }

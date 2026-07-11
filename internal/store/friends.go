@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -322,6 +323,123 @@ func (s *Store) CountLiveFriendRequestsFrom(ctx context.Context, fromHuman strin
 		return 0, fmt.Errorf("store: count live friend requests: %w", err)
 	}
 	return n, nil
+}
+
+// approvalQueue is the durable queue a target human's friend-approval todos land in. The operator
+// drains it from the Friends view (approve is the vend, SPEC-0010) exactly like any other todo.
+const approvalQueue = "friend-approvals"
+
+// approvalTodoKind is the kind stamped on a friend-approval todo so the queue view and the Friends
+// surface can recognize it.
+const approvalTodoKind = "friend.request"
+
+// approvalKey is the idempotency key of the approval todo for one edge — a stable derivation so the
+// "create the approval todo if not already" contract dedups a re-delivered intake onto one todo.
+func approvalKey(edgeID string) string { return "friend-approval:" + edgeID }
+
+// ApprovalTodoParams carries the legible who/why a friend request surfaces to the target human as a
+// durable approval todo. Fields mirror the edge that provoked it. Governing: SPEC-0010 REQ "Approval
+// Delivered as a Todo".
+type ApprovalTodoParams struct {
+	EdgeID             string
+	FromHuman          string
+	FromPersona        string
+	ToPersona          string
+	ToHuman            string // the owning/target human — routed via the todo assignee
+	RequestedQueues    []string
+	RequestedVerbs     []string
+	Reason             string
+	ProvenanceVerified bool
+}
+
+// CreateApprovalTodo records the durable approval todo for a pending friend edge: it lands in the
+// target human's approvals queue carrying request_id, from_human, from_persona, to_persona,
+// requested_scope, reason, and provenance_verified so the human can decide with full context. It is
+// idempotent on the edge id (a re-delivered intake collapses onto the same todo — "if not already").
+// Governing: SPEC-0010 REQ "Approval Delivered as a Todo".
+func (s *Store) CreateApprovalTodo(ctx context.Context, p ApprovalTodoParams) (Todo, bool, error) {
+	payload, err := json.Marshal(map[string]any{
+		"request_id":          p.EdgeID,
+		"from_human":          p.FromHuman,
+		"from_persona":        p.FromPersona,
+		"to_persona":          p.ToPersona,
+		"requested_queues":    nonNilStrings(p.RequestedQueues),
+		"requested_verbs":     nonNilStrings(p.RequestedVerbs),
+		"reason":              p.Reason,
+		"provenance_verified": p.ProvenanceVerified,
+	})
+	if err != nil {
+		return Todo{}, false, fmt.Errorf("store: marshal approval todo payload: %w", err)
+	}
+	return s.CreateTodo(ctx, CreateTodoParams{
+		Queue:          approvalQueue,
+		Source:         p.FromPersona,
+		Kind:           approvalTodoKind,
+		Title:          "Friend request · " + p.FromPersona + " → " + p.ToPersona,
+		Payload:        payload,
+		Assignee:       p.ToHuman,
+		IdempotencyKey: approvalKey(p.EdgeID),
+	})
+}
+
+// ResolveApprovalTodo marks the approval todo for edgeID done (best-effort) once its friend edge is
+// decided (approved or declined) from the Friends view, so the durable queue entry clears rather
+// than lingering. A missing todo is a no-op. Governing: SPEC-0010 REQ "Approval Delivered as a Todo".
+func (s *Store) ResolveApprovalTodo(ctx context.Context, edgeID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE todos SET state = 'done', completed_at = now(), updated_at = now()
+		 WHERE queue = $1 AND idempotency_key = $2 AND state NOT IN ('done', 'failed')`,
+		approvalQueue, approvalKey(edgeID))
+	if err != nil {
+		return fmt.Errorf("store: resolve approval todo: %w", err)
+	}
+	return nil
+}
+
+// RemoveFriendEdge deletes an owner-scoped edge whose current state is one of fromStates, returning
+// the edge as it was before deletion. It backs the Friends view "Withdraw" (a pending request) and
+// "Unblock" (removing a terminal denied/revoked entry from the ledger) actions. Ownership isolation
+// holds: a cross-owner or missing id is ErrNotFound (byte-identical, never leaking existence), and an
+// edge in a state outside fromStates is ErrInvalidTransition with the row left untouched. Deleting the
+// edge never touches the endpoints substrate (the FK is edge→endpoint ON DELETE SET NULL); a revoked
+// edge's endpoint was already killed by RevokeFriendEdge. Governing: SPEC-0013 Endpoints table POST
+// /friends/{id}/withdraw|unblock, SPEC-0010 REQ "Per-Direction, Revocable, Non-Transitive Edges".
+func (s *Store) RemoveFriendEdge(ctx context.Context, edgeID, ownerHumanID string, fromStates ...string) (FriendEdge, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return FriendEdge{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	edge, err := scanFriendEdge(tx.QueryRow(ctx,
+		`SELECT `+friendEdgeCols+` FROM friend_edges WHERE id = $1 AND to_human = $2 FOR UPDATE`,
+		edgeID, ownerHumanID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FriendEdge{}, ErrNotFound
+	}
+	if err != nil {
+		return FriendEdge{}, err
+	}
+	if !containsString(fromStates, edge.State) {
+		return FriendEdge{}, ErrInvalidTransition
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM friend_edges WHERE id = $1`, edgeID); err != nil {
+		return FriendEdge{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return FriendEdge{}, err
+	}
+	return edge, nil
+}
+
+// containsString reports whether v is in set (small linear scan for the RemoveFriendEdge state guard).
+func containsString(set []string, v string) bool {
+	for _, s := range set {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateForFriendParams are the inputs to CreateForFriend — a cross-agent work handoff. EndpointID is

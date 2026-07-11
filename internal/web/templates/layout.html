@@ -52,6 +52,9 @@
     <li><a class="sb-rail__item" href="/todos"{{if eq .Shell.Active "todos"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Todos</span>{{template "todo_count" dict "Count" .Shell.TodoCount}}</a></li>
     <li><a class="sb-rail__item" href="/endpoints"{{if eq .Shell.Active "endpoints"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Endpoints</span></a></li>
     {{if .Shell.PersonasEnabled}}<li><a class="sb-rail__item" href="/personas"{{if eq .Shell.Active "personas"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Personas</span></a></li>{{end}}
+    {{/* Friends: revealed only when the friending capability is enabled (SPEC-0013 hidden-not-broken);
+         the pending-incoming badge shows only when nonzero. */}}
+    {{if .Shell.FriendsEnabled}}<li><a class="sb-rail__item" href="/friends"{{if eq .Shell.Active "friends"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Friends</span>{{template "friend_badge" dict "Count" .Shell.FriendsIncoming}}</a></li>{{end}}
   </ul>
   <p class="sb-rail__foot sb-conn{{if not .Shell.DBConnected}} sb-conn--down{{end}}"><span class="sb-conn__dot" aria-hidden="true"></span><span class="sb-conn__label">postgres · {{if .Shell.DBConnected}}connected{{else}}disconnected{{end}}</span></p>
 </nav>

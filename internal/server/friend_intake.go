@@ -45,6 +45,7 @@ type friendIntakeStore interface {
 	UpsertHuman(ctx context.Context, subject, displayName, email string) (store.Human, error)
 	CountLiveFriendRequestsFrom(ctx context.Context, fromHuman string) (int, error)
 	CreateFriendRequest(ctx context.Context, p store.CreateFriendRequestParams) (store.FriendEdge, error)
+	CreateApprovalTodo(ctx context.Context, p store.ApprovalTodoParams) (store.Todo, bool, error)
 }
 
 // provenanceVerifier verifies a friend request's OIDC-signed human provenance and returns the
@@ -188,6 +189,25 @@ func (h *friendIntake) Intake(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("friend intake: create friend request", "err", err)
 		writeIntakeErr(w, http.StatusInternalServerError, "internal", "internal error")
 		return
+	}
+
+	// The pending edge also surfaces to the target human as a DURABLE approval todo carrying the
+	// legible who/why (SPEC-0010 "Approval Delivered as a Todo"). It is idempotent on the edge id, so a
+	// re-delivered intake never double-files. A failure here is logged but does not fail the accepted
+	// request: the edge is already durably recorded and the human can still decide from the Friends
+	// view (the todo is the notification, not the source of truth).
+	if _, _, err := h.store.CreateApprovalTodo(r.Context(), store.ApprovalTodoParams{
+		EdgeID:             edge.ID,
+		FromHuman:          requester.ID,
+		FromPersona:        body.FromPersona,
+		ToPersona:          persona.ID,
+		ToHuman:            persona.OwnerHumanID,
+		RequestedQueues:    body.RequestedQueues,
+		RequestedVerbs:     body.RequestedVerbs,
+		Reason:             body.Reason,
+		ProvenanceVerified: true,
+	}); err != nil {
+		h.log.Error("friend intake: create approval todo", "request_id", edge.ID, "err", err)
 	}
 
 	h.log.Info("friend request accepted", "request_id", edge.ID, "to_persona", persona.ID,

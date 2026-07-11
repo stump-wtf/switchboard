@@ -78,6 +78,17 @@ var sessionRoutes = map[string]bool{
 	"POST /todos/{id}/extend":     true, // operator extend lease / heartbeat (SPEC-0013)
 	"POST /todos/{id}/release":    true, // operator release lease back to pending (SPEC-0013)
 	"POST /endpoints/{id}/revoke": true,
+	// Friends view + approval flow (SPEC-0013). All session-gated; the handlers 404 when the friending
+	// capability is disabled, but auth (RequireHuman) still runs first, so anonymous → /login here too.
+	"GET /friends":                true,
+	"GET /friends/new":            true,
+	"GET /friends/resolve":        true,
+	"POST /friends":               true,
+	"POST /friends/{id}/approve":  true,
+	"POST /friends/{id}/decline":  true,
+	"POST /friends/{id}/withdraw": true,
+	"POST /friends/{id}/revoke":   true,
+	"POST /friends/{id}/unblock":  true,
 	"GET /personas":               true, // Personas view (SPEC-0013; capability-gated in the handler)
 	"POST /personas":              true, // create persona
 	"POST /personas/{id}":         true, // update persona (incl. publish toggle)

@@ -34,7 +34,7 @@ var tmplFS embed.FS
 // pageNames are the page templates composed with layout.html and the shared fragments. Startup
 // parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
-var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "personas"}
+var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "personas", "friends"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -97,7 +97,7 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 
 // templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod}
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod, "join": joinScope}
 }
 
 // parsePages composes layout.html and fragments.html with each page template from fsys
@@ -155,12 +155,14 @@ func stageMod(state string) string {
 // live counts, database connectivity, and the avatar initials.
 // Governing: SPEC-0013 REQ "Information Architecture and Navigation".
 type shell struct {
-	Active          string // board | todos | endpoints | personas — marks aria-current on the rail
+	Active          string // board | todos | endpoints | personas | friends — marks aria-current on the rail
 	TodoCount       int    // pending todos, shown beside the Todos rail entry
 	LiveRate        int    // events/min for the LIVE pill (hidden when zero)
 	DBConnected     bool   // pool ping result — the rail footer indicator
 	Initials        string // avatar initials
 	PersonasEnabled bool   // render the Personas rail entry only when the capability is enabled
+	FriendsEnabled  bool   // friending capability on — reveal the Friends rail entry (SPEC-0013)
+	FriendsIncoming int    // pending incoming friend requests — the rail badge (shown when nonzero)
 }
 
 type view struct {
@@ -187,6 +189,14 @@ type view struct {
 
 	// Personas view (SPEC-0013 REQ "Personas View"): cards + create/edit modals.
 	Personas *personasView
+
+	// Friends view (SPEC-0013 REQ "Friends View").
+	FriendGroups []friendGroup // grouped-ledger sections (Incoming/Outgoing/Active/Blocked)
+	FriendCards  []friendCard  // flat card list (the cards layout renders this)
+	FriendCounts friendCounts  // filter-pill counts
+	FriendLayout string        // active layout: cards | ledger
+	FriendFilter string        // active filter pill: all | incoming | outgoing | active | blocked
+	Agents       []store.Agent // the add-friend modal's local-agent picker (the human's own agents)
 }
 
 // buildShell computes the layout-shell state. Store errors are logged and rendered as the
@@ -199,6 +209,16 @@ func (h *Handler) buildShell(ctx context.Context, active string, human *store.Hu
 		return sh, store.BoardStats{}
 	}
 	sh.DBConnected = true
+	// Friends rail entry + pending-incoming badge, only when the capability is enabled (SPEC-0013:
+	// hidden-not-broken). A count-read failure degrades to a hidden badge, never a failed page.
+	if h.cfg.FriendingEnabled {
+		sh.FriendsEnabled = true
+		if edges, err := h.store.ListFriendEdges(ctx, human.ID, "pending"); err != nil {
+			h.log.Warn("shell friend requests", "err", err)
+		} else {
+			sh.FriendsIncoming = len(edges)
+		}
+	}
 	stats, err := h.store.BoardStats(ctx)
 	if err != nil {
 		h.log.Warn("shell board stats", "err", err)
@@ -339,6 +359,12 @@ func (h *Handler) notFoundOr(w http.ResponseWriter, err error) {
 		return
 	}
 	h.fail(w, err)
+}
+
+// joinScope renders a scope list (queues/verbs/intents) as a comma-separated string for display,
+// returning "" for the empty list so templates can show a "none negotiated" fallback.
+func joinScope(items []string) string {
+	return strings.Join(items, ", ")
 }
 
 func splitCSV(s string) []string {

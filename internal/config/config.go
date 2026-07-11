@@ -36,6 +36,13 @@ type Config struct {
 	// fixed local human — so the vend → agent → Channels loop is exercisable without a live Pocket ID.
 	// NEVER enable in production. Off by default. (SWITCHBOARD_DEV_LOGIN=1)
 	DevLogin bool
+
+	// FriendingEnabled gates the capability-scoped Friends view (SPEC-0013): the rail entry and the
+	// /friends routes are hidden — the view 404s — until an operator turns the friending capability on.
+	// Off by default. Governing: SPEC-0013 REQ "Friends View", REQ "Information Architecture and
+	// Navigation" (views whose backing capability is not enabled are hidden, not rendered broken).
+	// (SWITCHBOARD_FRIENDING=1)
+	FriendingEnabled bool
 }
 
 // FromEnv builds a Config from environment variables, applying defaults.
@@ -55,6 +62,7 @@ func FromEnv() Config {
 		OIDCClientSecret: os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
 		OIDCRedirectURL:  redirect,
 		DevLogin:         os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
+		FriendingEnabled: os.Getenv("SWITCHBOARD_FRIENDING") == "1",
 	}
 }
 

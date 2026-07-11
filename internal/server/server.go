@@ -305,6 +305,19 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/todos/{id}/extend", d.webh.ExtendTodo)
 		pr.Post("/todos/{id}/release", d.webh.ReleaseTodo)
 		pr.Post("/endpoints/{id}/revoke", d.webh.Revoke)
+		// Friends view + approval flow (SPEC-0013 endpoints table; SPEC-0010 approval-is-vend). The
+		// handlers 404 until the friending capability is enabled (capability gating lives in the
+		// handler, so the routes stay classified session-gated for the route-table baseline). Approve
+		// mints a scoped endpoint onto a target-OWNED agent; CSRF arrives via the layout hx-headers.
+		pr.Get("/friends", d.webh.Friends)
+		pr.Get("/friends/new", d.webh.AddFriendModal)
+		pr.Get("/friends/resolve", d.webh.ResolveFriendHandle)
+		pr.Post("/friends", d.webh.AddFriend)
+		pr.Post("/friends/{id}/approve", d.webh.ApproveFriend)
+		pr.Post("/friends/{id}/decline", d.webh.DeclineFriend)
+		pr.Post("/friends/{id}/withdraw", d.webh.WithdrawFriend)
+		pr.Post("/friends/{id}/revoke", d.webh.RevokeFriend)
+		pr.Post("/friends/{id}/unblock", d.webh.UnblockFriend)
 		// Personas view (SPEC-0013 endpoints table). Capability-gated inside the handler: while the
 		// personas capability is disabled these 404 (hidden-not-broken); the routes stay session- and
 		// CSRF-gated like every other web mutation. Governing: SPEC-0013 REQ "Personas View".
