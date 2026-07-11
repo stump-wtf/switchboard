@@ -1,29 +1,32 @@
 {{define "content"}}
-<h1>Your agents</h1>
-<div class="card">
+{{/* The agents screen, surfaced as "Endpoints" in the rail until the SPEC-0013 Endpoints view
+     folds it in (see the operator-board migration plan). */}}
+<h1 class="sb-page-title">Endpoints</h1>
+<p class="sb-tagline">register an agent · vend it a scoped line</p>
+<div class="sb-card">
   <form method="post" action="/agents">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-    <!-- Governing: SPEC-0012 REQ "Labels and Icon-Only Controls" — labels programmatically
-         associated via for/id so AT announces the controls by name. -->
-    <label for="agent-name">Agent name</label><input id="agent-name" name="name" placeholder="reviewer-bot" required>
-    <label for="agent-description">Description</label><input id="agent-description" name="description" placeholder="reviews PRs while I'm away">
-    <p style="margin-top:.8rem"><button>Register agent</button></p>
+    {{/* Governing: SPEC-0012 REQ "Labels and Icon-Only Controls" — labels programmatically
+         associated via for/id so AT announces the controls by name. */}}
+    <div class="sb-field"><label for="agent-name">Agent name</label><input id="agent-name" name="name" placeholder="reviewer-bot" required></div>
+    <div class="sb-field"><label for="agent-desc">Description</label><input id="agent-desc" name="description" placeholder="reviews PRs while I'm away"></div>
+    <p><button class="sb-btn">Register agent</button></p>
   </form>
-  <p class="muted">Registering an agent grants nothing — power comes only from a vend.</p>
+  <p class="sb-help">Registering an agent grants nothing — power comes only from a vend.</p>
 </div>
 {{if .Agents}}
-<table>
+<table class="sb-table">
   <thead><tr><th>Agent</th><th>Description</th><th>Created</th><th></th></tr></thead>
   <tbody>
   {{range .Agents}}
     <tr>
       <td><a href="/agents/{{.ID}}">{{.Name}}</a></td>
-      <td class="muted">{{.Description}}</td>
-      <td class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
-      <td><a href="/agents/{{.ID}}">manage →</a></td>
+      <td class="sb-muted">{{.Description}}</td>
+      <td class="sb-muted sb-mono">{{.CreatedAt.Format "2006-01-02"}}</td>
+      <td><a class="sb-btn sb-btn--mono" href="/agents/{{.ID}}">manage →</a></td>
     </tr>
   {{end}}
   </tbody>
 </table>
-{{else}}<p class="muted">No agents yet — register one above.</p>{{end}}
+{{else}}<p class="sb-empty">no agents yet · register one above</p>{{end}}
 {{end}}

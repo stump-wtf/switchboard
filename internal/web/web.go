@@ -1,6 +1,7 @@
-// Package web is the human-facing UI (ADR-0001: html/template, themed with the switchboard palette):
-// log in, register agents, and vend/revoke scoped MCP endpoints. Handlers marked "requires human"
-// read the authenticated principal from context (the server wraps them in auth.RequireHuman).
+// Package web is the human-facing UI (ADR-0016: the "Operator" design language over html/template):
+// the Board landing view, agent registration, and vend/revoke of scoped MCP endpoints. Handlers
+// marked "requires human" read the authenticated principal from context (the server wraps them in
+// auth.RequireHuman).
 package web
 
 import (
@@ -9,12 +10,14 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 
@@ -43,25 +46,40 @@ type Handler struct {
 
 // New parses the templates and returns a Handler.
 func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error) {
+	funcs := template.FuncMap{"reltime": relTime, "tag": providerTag}
 	h := &Handler{store: st, cfg: cfg, log: log, pages: map[string]*template.Template{},
 		events: newEventHub(), keepAlive: defaultKeepAlive}
 	h.sseRetryMS = h.sseRetrySetting
-	for _, p := range []string{"login", "dashboard", "agent", "vended"} {
-		t, err := template.ParseFS(tmplFS, "templates/layout.html", "templates/"+p+".html")
+	for _, p := range []string{"login", "board", "dashboard", "agent", "vended"} {
+		t, err := template.New(p).Funcs(funcs).ParseFS(tmplFS, "templates/layout.html", "templates/"+p+".html")
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parse templates for %q: %w", p, err)
 		}
 		h.pages[p] = t
 	}
 	return h, nil
 }
 
+// shell carries the layout-shell state every authenticated view renders: the active rail entry,
+// live counts, database connectivity, and the avatar initials.
+// Governing: SPEC-0013 REQ "Information Architecture and Navigation".
+type shell struct {
+	Active      string // board | todos | endpoints — marks aria-current on the rail
+	TodoCount   int    // pending todos, shown beside the Todos rail entry
+	LiveRate    int    // events/min for the LIVE pill (hidden when zero)
+	DBConnected bool   // pool ping result — the rail footer indicator
+	Initials    string // avatar initials
+}
+
 type view struct {
 	Title          string
 	Human          *store.Human
 	CSRF           string
+	Shell          shell
 	OIDCConfigured bool
 	DevLogin       bool
+	Stats          store.BoardStats
+	Events         []store.EventSummary
 	Agents         []store.Agent
 	Agent          *store.Agent
 	Endpoints      []store.Endpoint
@@ -70,12 +88,54 @@ type view struct {
 	MCPJSON        string
 }
 
+// buildShell computes the layout-shell state. Store errors are logged and rendered as the
+// degraded shell (zero counts, disconnected indicator) rather than failing the page — the shell's
+// job is precisely to show that degradation (SPEC-0013 "Database connectivity is reflected").
+func (h *Handler) buildShell(ctx context.Context, active string, human *store.Human) (shell, store.BoardStats) {
+	sh := shell{Active: active, Initials: initials(human)}
+	if err := h.store.Ping(ctx); err != nil {
+		h.log.Warn("shell db ping", "err", err)
+		return sh, store.BoardStats{}
+	}
+	sh.DBConnected = true
+	stats, err := h.store.BoardStats(ctx)
+	if err != nil {
+		h.log.Warn("shell board stats", "err", err)
+		return sh, store.BoardStats{}
+	}
+	sh.TodoCount = stats.AwaitingClaim
+	sh.LiveRate = stats.EventsPerMin
+	return sh, stats
+}
+
 // Login renders the public login page.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "login", view{Title: "Log in", OIDCConfigured: h.cfg.OIDCConfigured(), DevLogin: h.cfg.DevLogin})
 }
 
-// Dashboard lists the human's agents. Requires human.
+// Board renders the landing view: trust legend, stat tiles, and the recent-events feed, all
+// server-rendered from the database (SSE live updates are a separate story). Requires human.
+// Governing: SPEC-0013 REQ "Board View — Live Incoming Lines" (static slice).
+func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
+	human, _ := auth.FromContext(r.Context())
+	sh, stats := h.buildShell(r.Context(), "board", &human)
+	var events []store.EventSummary
+	if sh.DBConnected {
+		var err error
+		if events, err = h.store.RecentEvents(r.Context(), 12); err != nil {
+			// Suppressed to a log so the Board still renders its shell (with whatever tiles
+			// resolved); the feed shows its empty state.
+			h.log.Warn("board recent events", "err", err)
+		}
+	}
+	h.render(w, "board", view{
+		Title: "The Board", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
+		Shell: sh, Stats: stats, Events: events,
+	})
+}
+
+// Dashboard lists the human's agents (surfaced as "Endpoints" in the rail until the SPEC-0013
+// Endpoints view lands). Requires human.
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	agents, err := h.store.ListAgents(r.Context(), human.ID)
@@ -83,7 +143,8 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	h.render(w, "dashboard", view{Title: "Agents", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Agents: agents})
+	sh, _ := h.buildShell(r.Context(), "endpoints", &human)
+	h.render(w, "dashboard", view{Title: "Endpoints", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Shell: sh, Agents: agents})
 }
 
 // CreateAgent registers an agent. Requires human.
@@ -115,7 +176,8 @@ func (h *Handler) Agent(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	h.render(w, "agent", view{Title: ag.Name, Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Agent: &ag, Endpoints: eps})
+	sh, _ := h.buildShell(r.Context(), "endpoints", &human)
+	h.render(w, "agent", view{Title: ag.Name, Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Shell: sh, Agent: &ag, Endpoints: eps})
 }
 
 // Vend mints a scoped endpoint credential and shows it once with wiring instructions. Requires human.
@@ -149,8 +211,9 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
+	sh, _ := h.buildShell(r.Context(), "endpoints", &human)
 	h.render(w, "vended", view{
-		Title: "Vended", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Agent: &ag, Endpoint: &ep,
+		Title: "Vended", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Shell: sh, Agent: &ag, Endpoint: &ep,
 		Token: token, MCPJSON: buildMCPJSON(h.cfg.BaseURL, token),
 	})
 }
@@ -228,6 +291,75 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// initials derives the avatar initials from a human's display name (first letters of the first two
+// words), falling back to the email's first letter, then to the operator glyph "OP".
+func initials(human *store.Human) string {
+	if human == nil {
+		return "OP"
+	}
+	fields := strings.Fields(human.DisplayName)
+	switch {
+	case len(fields) >= 2:
+		return upperFirst(fields[0]) + upperFirst(fields[1])
+	case len(fields) == 1:
+		return upperFirst(fields[0])
+	case human.Email != "":
+		return upperFirst(human.Email)
+	default:
+		return "OP"
+	}
+}
+
+func upperFirst(s string) string {
+	for _, r := range s {
+		return string(unicode.ToUpper(r))
+	}
+	return ""
+}
+
+// relTime renders a compact relative age for feed rows ("just now", "5m ago", "3h ago", "2d ago").
+func relTime(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+// providerTags maps known source names to their design-doc two-letter chips
+// (GH/ST/SL/DH/HL/RD per docs/design/03-components.md).
+var providerTags = map[string]string{
+	"github": "GH", "stripe": "ST", "slack": "SL", "dockerhub": "DH",
+	"healthchecks": "HL", "redis": "RD",
+}
+
+// providerTag renders the two-letter provider chip for a source name (github → GH); unknown
+// sources fall back to their first two letters upper-cased.
+func providerTag(source string) string {
+	if tag, ok := providerTags[strings.ToLower(source)]; ok {
+		return tag
+	}
+	var tag []rune
+	for _, r := range source {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			tag = append(tag, unicode.ToUpper(r))
+			if len(tag) == 2 {
+				break
+			}
+		}
+	}
+	if len(tag) == 0 {
+		return "··"
+	}
+	return string(tag)
 }
 
 func buildMCPJSON(baseURL, token string) string {

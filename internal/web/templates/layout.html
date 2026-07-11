@@ -1,67 +1,62 @@
 {{define "layout"}}<!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · Switchboard</title>
 <link rel="stylesheet" href="/static/tokens.css">
-<!-- Vendored + embedded per ADR-0001 (no CDN; CSP script-src 'self'). SSE live regions: SPEC-0012. -->
+<link rel="stylesheet" href="/static/switchboard.css">
+{{/* Vendored + embedded per ADR-0001 (no CDN; CSP script-src 'self'). SSE live regions: SPEC-0012. */}}
 <script src="/static/vendor/htmx.min.js" defer></script>
 <script src="/static/vendor/htmx-ext-sse.min.js" defer></script>
-<style>
-  body { font-family: var(--pico-font-family, ui-monospace, monospace);
-    background: var(--pico-background-color); color: var(--pico-color);
-    margin: 0; line-height: 1.5; }
-  .wrap { max-width: 860px; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
-  header.top { display: flex; align-items: center; gap: .6rem; padding: .8rem 1.25rem;
-    border-bottom: 1px solid var(--pico-muted-border-color); background: var(--pico-card-sectioning-background-color); }
-  header.top .brand { color: var(--sb-brass-bright); font-weight: 700; letter-spacing: .03em; }
-  header.top .spacer { margin-left: auto; }
-  header.top a { color: var(--sb-cream-muted); text-decoration: none; margin-left: 1rem; }
-  header.top form.logout { display: inline; margin: 0 0 0 1rem; }
-  header.top button.linklike { background: none; border: none; padding: 0; margin: 0; font: inherit;
-    color: var(--sb-cream-muted); text-decoration: none; cursor: pointer; }
-  h1 { color: var(--pico-h1-color); font-size: 1.5rem; }
-  h2 { color: var(--sb-brass-bright); font-size: 1.05rem; border-bottom: 1px solid var(--pico-muted-border-color); padding-bottom: .3rem; margin-top: 2rem; }
-  a { color: var(--sb-brass); }
-  table { width: 100%; border-collapse: collapse; margin: .5rem 0; }
-  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--pico-muted-border-color); font-size: .9rem; }
-  th { color: var(--sb-cream-muted); font-weight: 600; }
-  input, select, textarea { background: var(--pico-form-element-background-color);
-    color: var(--pico-color); border: 1px solid var(--pico-form-element-border-color);
-    border-radius: .25rem; padding: .4rem .55rem; font: inherit; }
-  label, .field-label { display: block; font-size: .85rem; color: var(--sb-cream-muted); margin: .6rem 0 .2rem; }
-  button, .btn { background: var(--sb-brass); color: var(--sb-bakelite); border: none;
-    border-radius: .25rem; padding: .45rem .9rem; font: inherit; font-weight: 600; cursor: pointer; }
-  button.secondary { background: transparent; color: var(--sb-oxblood); border: 1px solid var(--sb-oxblood); }
-  .card { background: var(--pico-card-background-color); border: 1px solid var(--pico-card-border-color);
-    border-radius: .5rem; padding: 1rem 1.15rem; margin: 1rem 0; }
-  .badge { display: inline-block; padding: .05rem .5rem; border-radius: 999px; font-size: .72rem;
-    font-weight: 600; border: 1px solid currentColor; }
-  .badge.signed { color: var(--sb-patch-green); } .badge.token { color: var(--sb-amber); }
-  .badge.open { color: var(--sb-oxblood); } .badge.queue { color: var(--sb-patch-blue); }
-  .badge.active { color: var(--sb-patch-green); } .badge.revoked { color: var(--sb-cream-muted); }
-  code, pre { background: var(--pico-code-background-color); color: var(--sb-brass-bright); border-radius: .3rem; }
-  code { padding: .1rem .35rem; } pre { padding: .8rem; overflow-x: auto; font-size: .82rem; }
-  .muted { color: var(--sb-cream-muted); font-size: .85rem; }
-  .warn { border-left: 3px solid var(--sb-amber); padding-left: .8rem; color: var(--sb-amber); }
-  header.top .lamp { color: var(--sb-patch-green); font-size: .75rem; letter-spacing: .02em; }
-</style>
 </head>
 <body>
-<header class="top">
-  <span class="brand">◍ Switchboard</span>
+<div class="sb-app">
+{{/* Governing: SPEC-0013 REQ "Information Architecture and Navigation" — persistent top bar
+     (mark + wordmark + LIVE pill + avatar) as the banner landmark. */}}
+<header class="sb-topbar">
+  <svg class="sb-mark" viewBox="0 0 28 28" fill="none" role="img" aria-label="Switchboard mark" xmlns="http://www.w3.org/2000/svg">
+    <path d="M8 11 C 5.3 13.2, 6.1 16.4, 9.6 17.4" style="stroke: var(--sb-copper)" stroke-width="2.3" stroke-linecap="round"/>
+    <circle cx="8" cy="8.4" r="2.7" style="stroke: var(--sb-brass-logo)" stroke-width="1.8"/>
+    <circle cx="9.8" cy="19.7" r="2.7" style="stroke: var(--sb-brass-logo)" stroke-width="1.8"/>
+    <circle cx="20.2" cy="9" r="2.7" style="stroke: var(--sb-brass-logo)" stroke-width="1.8"/>
+  </svg>
+  <span class="sb-wordmark">Switchboard</span>
+  <span class="sb-context">operator board</span>
+  <span class="sb-topbar__spacer"></span>
   {{if .Human}}
-  <!-- Live receiving lamp (SPEC-0012): subscribed via htmx-ext-sse; the region exists in the DOM
-       before any event arrives and is aria-live=polite so the first swap is announced. A dropped
-       event only stales this label — reload renders authoritative state from PostgreSQL. -->
-  <span class="lamp" hx-ext="sse" sse-connect="/events" role="status" aria-live="polite" aria-label="Live update status">
-    <span sse-swap="todo"><span aria-hidden="true">●</span> receiving</span>
-  </span>
+    {{/* Live receiving lamp (SPEC-0012): subscribed via htmx-ext-sse; the region exists in the DOM
+         before any event arrives and is aria-live=polite so the first swap is announced. A dropped
+         event only stales this label — reload renders authoritative state from PostgreSQL. */}}
+    <span class="sb-lamp" hx-ext="sse" sse-connect="/events" role="status" aria-live="polite" aria-label="Live update status">
+      <span sse-swap="todo"><span aria-hidden="true">●</span> receiving</span>
+    </span>
+    {{if gt .Shell.LiveRate 0}}<span class="sb-live"><span class="sb-live__dot" aria-hidden="true"></span>LIVE · {{.Shell.LiveRate}}/min</span>{{end}}
+    <span class="sb-avatar" title="{{.Human.DisplayName}}" aria-label="Signed in as {{.Human.DisplayName}}">{{.Shell.Initials}}</span>
+    <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="sb-linklike">log out</button></form>
+  {{else}}
+    <a class="sb-linklike" href="/login">log in</a>
   {{end}}
-  <span class="spacer"></span>
-  {{if .Human}}<span class="muted">{{.Human.DisplayName}}</span><form class="logout" method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="linklike">log out</button></form>{{else}}<a href="/login">log in</a>{{end}}
 </header>
-<main class="wrap">{{template "content" .}}</main>
+<div class="sb-shell">
+{{if .Human}}
+{{/* Nav rail: Board / Todos / Endpoints. Personas and Friends stay hidden until their backing
+     capabilities land (SPEC-0013 hidden-not-broken). Todos points at the Board and Endpoints at the
+     agents screen until their own views ship. */}}
+<nav class="sb-rail" aria-label="Primary">
+  <ul class="sb-rail__list">
+    <li><a class="sb-rail__item" href="/"{{if eq .Shell.Active "board"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Board</span></a></li>
+    <li><a class="sb-rail__item" href="/"{{if eq .Shell.Active "todos"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Todos</span><span class="sb-rail__count">{{.Shell.TodoCount}}</span></a></li>
+    <li><a class="sb-rail__item" href="/agents"{{if eq .Shell.Active "endpoints"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Endpoints</span></a></li>
+  </ul>
+  <p class="sb-rail__foot sb-conn{{if not .Shell.DBConnected}} sb-conn--down{{end}}"><span class="sb-conn__dot" aria-hidden="true"></span><span class="sb-conn__label">postgres · {{if .Shell.DBConnected}}connected{{else}}disconnected{{end}}</span></p>
+</nav>
+{{end}}
+<main class="sb-main">{{template "content" .}}</main>
+</div>
+{{/* Overlay slot + toast region: present-but-empty; the SSE/overlay stories wire them up. */}}
+<div id="sb-overlay" class="sb-overlay" hidden></div>
+<div id="sb-toasts" class="sb-toasts" aria-live="polite"></div>
+</div>
 </body>
 </html>{{end}}

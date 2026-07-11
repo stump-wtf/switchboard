@@ -116,7 +116,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		pr.Use(maxBytes(1 << 20))
 		pr.Use(authr.RequireHuman)
 		pr.Use(authr.RequireCSRF)
-		pr.Get("/", webh.Dashboard)
+		// Governing: SPEC-0013 REQ "Information Architecture and Navigation" — GET / renders the
+		// Board; the agents screen moves to /agents (surfaced as "Endpoints" in the rail).
+		pr.Get("/", webh.Board)
+		pr.Get("/agents", webh.Dashboard)
 		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
 		pr.Get("/events", webh.Events)
 		pr.Post("/agents", webh.CreateAgent)

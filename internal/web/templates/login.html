@@ -1,10 +1,14 @@
 {{define "content"}}
-<h1>Switchboard</h1>
-<p class="muted">The operator's board for inbound webhooks → agents. Log in to register agents and
-vend them scoped MCP endpoints that plug into Claude Code Channels.</p>
-<div class="card">
-  {{if .OIDCConfigured}}<p><a class="btn" href="/auth/login">Log in with Pocket ID</a></p>{{end}}
-  {{if .DevLogin}}<form method="post" action="/auth/dev-login"><button>Dev login (local, no OIDC)</button> <span class="warn">dev only — OIDC bypassed</span></form>{{end}}
-  {{if and (not .OIDCConfigured) (not .DevLogin)}}<p class="warn">No login configured. Set <code>SWITCHBOARD_OIDC_*</code> or <code>SWITCHBOARD_DEV_LOGIN=1</code>.</p>{{end}}
+<div class="sb-login">
+  <h1 class="sb-page-title">Switchboard</h1>
+  <p class="sb-tagline">many lines in · each verified · patched through</p>
+  <p class="sb-muted">The operator's board for inbound webhooks → agents. Log in to register agents
+  and vend them scoped MCP endpoints.</p>
+  <div class="sb-card">
+    {{if .OIDCConfigured}}<p><a class="sb-btn" href="/auth/login">Log in with Pocket ID</a></p>{{end}}
+    {{if .DevLogin}}<form method="post" action="/auth/dev-login"><button class="sb-btn sb-btn--secondary">Dev login (local, no OIDC)</button></form>
+    <p class="sb-callout sb-callout--warn">dev only — OIDC bypassed</p>{{end}}
+    {{if and (not .OIDCConfigured) (not .DevLogin)}}<p class="sb-callout sb-callout--danger">No login configured. Set <code>SWITCHBOARD_OIDC_*</code> or <code>SWITCHBOARD_DEV_LOGIN=1</code>.</p>{{end}}
+  </div>
 </div>
 {{end}}

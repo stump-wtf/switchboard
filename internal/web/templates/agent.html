@@ -1,38 +1,44 @@
 {{define "content"}}
-<p><a href="/">← agents</a></p>
-<h1>{{.Agent.Name}}</h1>
-<p class="muted">{{.Agent.Description}}</p>
+<p class="sb-backlink"><a href="/agents">← endpoints</a></p>
+<h1 class="sb-page-title">{{.Agent.Name}}</h1>
+<p class="sb-tagline">{{if .Agent.Description}}{{.Agent.Description}}{{else}}agent · unscoped until vended{{end}}</p>
 
-<h2>Vend a scoped MCP endpoint</h2>
-<div class="card">
+<h2 class="sb-section-title">Vend a scoped MCP endpoint</h2>
+<div class="sb-card">
   <form method="post" action="/agents/{{.Agent.ID}}/vend">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-    <!-- Governing: SPEC-0012 REQ "Labels and Icon-Only Controls" — labels programmatically
-         associated via for/id so AT announces the controls by name. -->
-    <label for="vend-queues">Queues (comma-separated) — the todo queues this endpoint may work</label>
-    <input id="vend-queues" name="queues" placeholder="reviews, deploys" required>
-    <label for="vend-verbs">Verbs (comma-separated) — allowed MCP tools</label>
-    <input id="vend-verbs" name="verbs" value="list_todos,claim,complete,fail" required>
-    <p style="margin-top:.8rem"><button>Vend endpoint</button></p>
+    {{/* Governing: SPEC-0012 REQ "Labels and Icon-Only Controls" — labels programmatically
+         associated via for/id so AT announces the controls by name. */}}
+    <div class="sb-field">
+      <label for="vend-queues">Queues (comma-separated)</label>
+      <input id="vend-queues" name="queues" placeholder="reviews, deploys" required>
+      <p class="sb-help">the todo queues this endpoint may work</p>
+    </div>
+    <div class="sb-field">
+      <label for="vend-verbs">Verbs (comma-separated)</label>
+      <input id="vend-verbs" name="verbs" value="list_todos,claim,complete,fail" required>
+      <p class="sb-help">allowed MCP tools</p>
+    </div>
+    <p><button class="sb-btn">Vend endpoint</button></p>
   </form>
-  <p class="muted">Scope is immutable — to change access, revoke and re-vend.</p>
+  <p class="sb-help">Scope is immutable — to change access, revoke and re-vend.</p>
 </div>
 
-<h2>Endpoints</h2>
+<h2 class="sb-section-title">Endpoints</h2>
 {{if .Endpoints}}
-<table>
+<table class="sb-table">
   <thead><tr><th>Credential</th><th>Queues</th><th>Verbs</th><th>State</th><th></th></tr></thead>
   <tbody>
   {{range .Endpoints}}
     <tr>
       <td><code>{{.CredentialPrefix}}</code></td>
-      <td class="muted">{{range .ScopeQueues}}{{.}} {{end}}</td>
-      <td class="muted">{{range .ScopeVerbs}}{{.}} {{end}}</td>
-      <td><span class="badge {{.State}}">{{.State}}</span></td>
-      <td>{{if eq .State "active"}}<form method="post" action="/endpoints/{{.ID}}/revoke"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="secondary">revoke</button></form>{{end}}</td>
+      <td class="sb-muted sb-mono">{{range .ScopeQueues}}{{.}} {{end}}</td>
+      <td class="sb-muted sb-mono">{{range .ScopeVerbs}}{{.}} {{end}}</td>
+      <td><span class="sb-badge sb-badge--{{.State}}">{{.State}}</span></td>
+      <td>{{if eq .State "active"}}<form method="post" action="/endpoints/{{.ID}}/revoke"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="sb-btn sb-btn--danger">Revoke</button></form>{{end}}</td>
     </tr>
   {{end}}
   </tbody>
 </table>
-{{else}}<p class="muted">No endpoints vended yet.</p>{{end}}
+{{else}}<p class="sb-empty">no endpoints vended yet</p>{{end}}
 {{end}}

@@ -1,147 +1,347 @@
 /*
  * switchboard — tokens.css
- * The palette override layer over Pico.css (classless), per ADR-001.
+ * Pure design tokens for the "Operator" design language.
+ * Governing: ADR-0016 (Operator design language), SPEC-0013 REQ "Design Language Conformance".
  *
- * A throwback to the era of manual telephone exchanges: bakelite and walnut panels, brass jacks,
- * operator-cream bakelite handsets, aged paper labels, oxblood patch cords, and the amber glow of
- * incandescent lamps. Warm, slightly desaturated, tactile.
+ * Two themes over one semantic vocabulary:
+ *   - operator-cream (light, DEFAULT) — the approved designs: parchment, brass, oxblood.
+ *   - bakelite (dark) — the dim operator room, derived from the same material palette.
  *
- * Two layers:
- *   1. --sb-*   raw palette (the physical materials of a switchboard)
- *   2. --pico-* semantic overrides so classless Pico markup themes itself
- * Plus trust-mode tokens (signed / unverified / redis) used by the UI badges (ADR-003).
+ * This file holds custom properties and @font-face only. Component classes live in
+ * switchboard.css; the docs site consumes the same token vocabulary.
  *
- * Dark is the default (a dim operator room, panels aglow). Light is the operator's paper-label
- * daytime view. Toggle with <html data-theme="light|dark"> or via prefers-color-scheme.
+ * Theme switching: light is the default; dark applies via prefers-color-scheme unless the
+ * document opts out with <html data-theme="light">, and always with <html data-theme="dark">.
  */
 
-:root {
-  /* ---- raw palette: switchboard materials ---- */
-  --sb-bakelite:      #1a1411; /* darkest — bakelite black-brown */
-  --sb-walnut:        #241c17; /* panel wood */
-  --sb-walnut-raised: #2f251d; /* raised panel / card */
-  --sb-brass:         #c99b4d; /* primary — polished brass jack */
-  --sb-brass-bright:  #e3ba6a; /* brass highlight */
-  --sb-brass-dim:     #9a7734; /* tarnished brass */
-  --sb-cream:         #f3ead3; /* operator-cream bakelite / paper */
-  --sb-cream-panel:   #e9dcbd; /* aged paper panel */
-  --sb-parchment:     #d8c8a1; /* label card */
-  --sb-ink:           #2b2017; /* ink on cream */
-  --sb-ink-soft:      #6f6149; /* faded ink */
-  --sb-cream-text:    #ece0c6; /* cream text on dark */
-  --sb-cream-muted:   #a99a7c; /* muted cream */
-  --sb-oxblood:       #b1533f; /* patch-cord oxblood */
-  --sb-oxblood-deep:  #8f3a2c; /* deep burgundy / danger */
-  --sb-amber:         #d99a3c; /* incandescent amber glow */
-  --sb-patch-green:   #6f9a5f; /* connected / a patched line */
-  --sb-patch-blue:    #6d8a99; /* dusty telephone blue (the queue cord) */
-  --sb-copper:        #a86b3c;
+/* ---- vendored typefaces (OFL; see static/fonts/OFL-*.txt) — never a CDN ---- */
 
-  /* ---- trust-mode semantics (ADR-003) ---- */
-  --sb-trust-signed:      var(--sb-patch-green); /* verified line patched through */
-  --sb-trust-unverified:  var(--sb-amber);       /* caution — no signature */
-  --sb-trust-redis:       var(--sb-patch-blue);  /* the queue cord */
-  --sb-trust-rejected:    var(--sb-oxblood-deep);/* 401 — call refused */
-
-  /* ---- Pico semantic overrides: LIGHT (operator's paper-label daytime) ---- */
-  --pico-font-family: "Iosevka", "DejaVu Sans Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
-  --pico-background-color: var(--sb-cream);
-  --pico-color: var(--sb-ink);
-  --pico-h1-color: var(--sb-ink);
-  --pico-muted-color: var(--sb-ink-soft);
-  --pico-muted-border-color: #cdbc95;
-  --pico-primary: #9a7326;               /* darker brass for AA contrast on cream */
-  --pico-primary-hover: #7f5f1e;
-  --pico-primary-focus: rgba(154, 115, 38, 0.25);
-  --pico-primary-inverse: var(--sb-cream);
-  --pico-secondary: var(--sb-oxblood-deep);
-  --pico-secondary-hover: #772f22;
-  --pico-card-background-color: var(--sb-cream-panel);
-  --pico-card-border-color: #d3c29a;
-  --pico-card-sectioning-background-color: #f7efda;
-  --pico-form-element-background-color: #f7efda;
-  --pico-form-element-border-color: #cdbc95;
-  --pico-code-background-color: #ece0c2;
-  --pico-code-color: #6b4f1e;
-  --pico-mark-background-color: #f2d79a;
-  --pico-blockquote-border-color: var(--sb-brass);
-  --pico-border-radius: 0.25rem;
+@font-face {
+  font-family: "Zilla Slab";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/zilla-slab-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Zilla Slab";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/zilla-slab-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Zilla Slab";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/zilla-slab-700.woff2") format("woff2");
+}
+/* IBM Plex Sans ships as a variable font covering the 400–600 range used by the UI. */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-sans-var.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-600.woff2") format("woff2");
 }
 
-/* ---- DARK (default mood): dim operator room, panels aglow ---- */
+/* ---- operator-cream (light) — the default theme ---- */
+
+:root {
+  /* type */
+  --sb-font-display: "Zilla Slab", Georgia, "Times New Roman", serif;
+  --sb-font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sb-font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* surfaces */
+  --sb-canvas: #efe6d2;
+  --sb-panel: #faf4e6;
+  --sb-raised-hi: #f6efde;
+  --sb-raised-lo: #f0e7d3;
+  --sb-header-strip: #f0e4cc;
+  --sb-input-bg: #fbf6ea;
+  --sb-code-bg: #efe1c2;
+
+  /* lines */
+  --sb-border: #e7dac0;
+  --sb-border-strong: #e1d3b6;
+  --sb-divider: #ede1c6;
+  --sb-input-border: #d9c48f;
+  --sb-input-border-soft: #e0cfa9;
+
+  /* ink */
+  --sb-ink: #241c15;
+  --sb-text: #2b2118;
+  --sb-body: #4a4237;
+  --sb-secondary: #6b6152;
+  --sb-muted: #8a7c64;
+  --sb-faint: #a2937a;
+  --sb-faint-2: #a89a80;
+  --sb-faint-3: #b3a488;
+
+  /* brand accents */
+  --sb-oxblood: #7a2b24;
+  --sb-oxblood-hover: #9a3b2e;
+  --sb-oxblood-disabled: #b9998f;
+  --sb-on-oxblood: #f3e7cf;
+  --sb-brass: #b0863b;
+  --sb-brass-bright: #c9a24b;
+  --sb-brass-logo: #c79a45;
+  --sb-brass-chart: #cbae68;
+  --sb-ring: #c9902a;
+  --sb-copper: #c2603a;
+
+  /* trust modes (ADR-0003: signed · token · open · queue) */
+  --sb-trust-signed: #235c33;
+  --sb-trust-signed-bg: #dce9d9;
+  --sb-trust-signed-dot: #2f9e44;
+  --sb-trust-token: #7a5310;
+  --sb-trust-token-bg: #f0e4c6;
+  --sb-trust-token-dot: #c9902a;
+  --sb-trust-open: #7a2b24;
+  --sb-trust-open-bg: #eedad3;
+  --sb-trust-open-dot: #b0554b;
+  --sb-trust-queue: #1f5570;
+  --sb-trust-queue-bg: #d7e5ec;
+  --sb-trust-queue-dot: #3a7ca5;
+
+  /* todo status */
+  --sb-status-pending: #1f5570;
+  --sb-status-pending-bg: #d7e5ec;
+  --sb-status-claimed: #7a5310;
+  --sb-status-claimed-bg: #f0e4c6;
+  --sb-status-done: #235c33;
+  --sb-status-done-bg: #dce9d9;
+  --sb-status-failed: #7a2b24;
+  --sb-status-failed-bg: #eedad3;
+  --sb-status-neutral: #6b6455;
+
+  /* chips & special */
+  --sb-chip-verb: #3b5a3e;
+  --sb-chip-verb-bg: #e4eadd;
+  --sb-chip-verb-border: #9bbf9e;
+  --sb-chip-queue: #7a2b24;
+  --sb-chip-queue-bg: #efe1c2;
+  --sb-chip-queue-border: #b0863b;
+  --sb-dedup: #5a4a8a;
+  --sb-dedup-bg: #e7dff0;
+  --sb-live: #2f9e44;
+  --sb-live-bg: #dce9d9;
+  --sb-toast-bg: #241c15;
+  --sb-toast-text: #f3e7cf;
+  --sb-scrim: rgba(36, 28, 21, 0.4);
+  --sb-nav-active-bg: #e9daba;
+  --sb-row-hover: #f1e6cc;
+  --sb-row-flash: #f3e9cf;
+  --sb-alert-tint: #f3e2db;
+  --sb-lease-track: #e3d2a6;
+
+  /* shape */
+  --sb-radius-card: 12px;
+  --sb-radius-modal: 14px;
+  --sb-radius-btn: 8px;
+  --sb-radius-chip: 6px;
+  --sb-radius-pill: 999px;
+
+  /* elevation (warm, long-throw) */
+  --sb-shadow-modal: 0 30px 70px -20px rgba(20, 15, 8, 0.6);
+  --sb-shadow-drawer: -16px 0 40px -18px rgba(20, 15, 8, 0.5);
+  --sb-shadow-toast: 0 12px 30px -10px rgba(20, 15, 8, 0.6);
+
+  /* motion */
+  --sb-ease: ease;
+  --sb-dur-enter: 0.25s;
+  --sb-dur-row: 0.5s;
+  --sb-dur-pulse: 1.4s;
+}
+
+/* ---- bakelite (dark) — shared value set ---- */
+/* Applied via prefers-color-scheme (unless data-theme="light") and via data-theme="dark". */
+
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    --pico-background-color: var(--sb-bakelite);
-    --pico-color: var(--sb-cream-text);
-    --pico-h1-color: #f0e5cb;
-    --pico-muted-color: var(--sb-cream-muted);
-    --pico-muted-border-color: #3d3025;
-    --pico-primary: var(--sb-brass);
-    --pico-primary-hover: var(--sb-brass-bright);
-    --pico-primary-focus: rgba(201, 155, 77, 0.3);
-    --pico-primary-inverse: var(--sb-bakelite);
-    --pico-secondary: var(--sb-oxblood);
-    --pico-secondary-hover: #c76552;
-    --pico-card-background-color: var(--sb-walnut);
-    --pico-card-border-color: #3d3025;
-    --pico-card-sectioning-background-color: var(--sb-walnut-raised);
-    --pico-form-element-background-color: var(--sb-walnut-raised);
-    --pico-form-element-border-color: #46372a;
-    --pico-code-background-color: #221a14;
-    --pico-code-color: var(--sb-brass-bright);
-    --pico-mark-background-color: #4a3a1c;
-    --pico-mark-color: #f0e5cb;
-    --pico-blockquote-border-color: var(--sb-brass-dim);
+  :root:not([data-theme="light"]) {
+    --sb-canvas: #1a1411;
+    --sb-panel: #241c17;
+    --sb-raised-hi: #2f251d;
+    --sb-raised-lo: #241c17;
+    --sb-header-strip: #2a211a;
+    --sb-input-bg: #2a211a;
+    --sb-code-bg: #221a14;
+
+    --sb-border: #3d3025;
+    --sb-border-strong: #46372a;
+    --sb-divider: #332820;
+    --sb-input-border: #5a462c;
+    --sb-input-border-soft: #4a3a28;
+
+    --sb-ink: #f0e5cb;
+    --sb-text: #ece0c6;
+    --sb-body: #d8c8a1;
+    --sb-secondary: #bfae8d;
+    --sb-muted: #a99a7c;
+    --sb-faint: #8d7f66;
+    --sb-faint-2: #857759;
+    --sb-faint-3: #7a6d54;
+
+    --sb-oxblood: #b1533f;
+    --sb-oxblood-hover: #c76552;
+    --sb-oxblood-disabled: #6b4a41;
+    --sb-on-oxblood: #f3ead3;
+    --sb-brass: #c99b4d;
+    --sb-brass-bright: #e3ba6a;
+    --sb-brass-logo: #c99b4d;
+    --sb-brass-chart: #9a7734;
+    --sb-ring: #d99a3c;
+    --sb-copper: #a86b3c;
+
+    --sb-trust-signed: #a9cf98;
+    --sb-trust-signed-bg: #22301f;
+    --sb-trust-signed-dot: #6f9a5f;
+    --sb-trust-token: #e0b866;
+    --sb-trust-token-bg: #34290f;
+    --sb-trust-token-dot: #d99a3c;
+    --sb-trust-open: #e09080;
+    --sb-trust-open-bg: #33201c;
+    --sb-trust-open-dot: #b1533f;
+    --sb-trust-queue: #9dc0d3;
+    --sb-trust-queue-bg: #1e2b33;
+    --sb-trust-queue-dot: #6d8a99;
+
+    --sb-status-pending: #9dc0d3;
+    --sb-status-pending-bg: #1e2b33;
+    --sb-status-claimed: #e0b866;
+    --sb-status-claimed-bg: #34290f;
+    --sb-status-done: #a9cf98;
+    --sb-status-done-bg: #22301f;
+    --sb-status-failed: #e09080;
+    --sb-status-failed-bg: #33201c;
+    --sb-status-neutral: #a99a7c;
+
+    --sb-chip-verb: #a9cf98;
+    --sb-chip-verb-bg: #24301f;
+    --sb-chip-verb-border: #4a6b4a;
+    --sb-chip-queue: #e09080;
+    --sb-chip-queue-bg: #2c231b;
+    --sb-chip-queue-border: #9a7734;
+    --sb-dedup: #b7a7dd;
+    --sb-dedup-bg: #2c2438;
+    --sb-live: #8fca7d;
+    --sb-live-bg: #22301f;
+    --sb-toast-bg: #f3ead3;
+    --sb-toast-text: #241c15;
+    --sb-scrim: rgba(10, 7, 5, 0.55);
+    --sb-nav-active-bg: #3a2e1e;
+    --sb-row-hover: #2c231b;
+    --sb-row-flash: #3a2f1f;
+    --sb-alert-tint: #3a221c;
+    --sb-lease-track: #4a3a1c;
+
+    --sb-shadow-modal: 0 30px 70px -20px rgba(0, 0, 0, 0.8);
+    --sb-shadow-drawer: -16px 0 40px -18px rgba(0, 0, 0, 0.7);
+    --sb-shadow-toast: 0 12px 30px -10px rgba(0, 0, 0, 0.8);
   }
 }
 
-/* explicit dark opt-in mirrors the media query */
 [data-theme="dark"] {
-  --pico-background-color: var(--sb-bakelite);
-  --pico-color: var(--sb-cream-text);
-  --pico-h1-color: #f0e5cb;
-  --pico-muted-color: var(--sb-cream-muted);
-  --pico-muted-border-color: #3d3025;
-  --pico-primary: var(--sb-brass);
-  --pico-primary-hover: var(--sb-brass-bright);
-  --pico-primary-focus: rgba(201, 155, 77, 0.3);
-  --pico-primary-inverse: var(--sb-bakelite);
-  --pico-secondary: var(--sb-oxblood);
-  --pico-secondary-hover: #c76552;
-  --pico-card-background-color: var(--sb-walnut);
-  --pico-card-border-color: #3d3025;
-  --pico-card-sectioning-background-color: var(--sb-walnut-raised);
-  --pico-form-element-background-color: var(--sb-walnut-raised);
-  --pico-form-element-border-color: #46372a;
-  --pico-code-background-color: #221a14;
-  --pico-code-color: var(--sb-brass-bright);
-  --pico-mark-background-color: #4a3a1c;
-  --pico-mark-color: #f0e5cb;
-  --pico-blockquote-border-color: var(--sb-brass-dim);
-}
+  --sb-canvas: #1a1411;
+  --sb-panel: #241c17;
+  --sb-raised-hi: #2f251d;
+  --sb-raised-lo: #241c17;
+  --sb-header-strip: #2a211a;
+  --sb-input-bg: #2a211a;
+  --sb-code-bg: #221a14;
 
-/*
- * Trust-mode badges (ADR-003): every event's trust story is shown, never assumed.
- * Usage (code session): <span class="sb-badge sb-badge--signed">signed</span>
- */
-.sb-badge {
-  display: inline-block;
-  padding: 0.1rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.75em;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  border: 1px solid currentColor;
-  background: color-mix(in srgb, currentColor 14%, transparent);
-}
-.sb-badge--signed     { color: var(--sb-trust-signed); }
-.sb-badge--unverified { color: var(--sb-trust-unverified); }
-.sb-badge--redis      { color: var(--sb-trust-redis); }
-.sb-badge--rejected   { color: var(--sb-trust-rejected); }
+  --sb-border: #3d3025;
+  --sb-border-strong: #46372a;
+  --sb-divider: #332820;
+  --sb-input-border: #5a462c;
+  --sb-input-border-soft: #4a3a28;
 
-/* the live status lamp on the dashboard (● receiving / ○ idle) */
-.sb-lamp { color: var(--sb-cream-muted); }
-.sb-lamp--receiving {
-  color: var(--sb-amber);
-  text-shadow: 0 0 6px color-mix(in srgb, var(--sb-amber) 70%, transparent);
+  --sb-ink: #f0e5cb;
+  --sb-text: #ece0c6;
+  --sb-body: #d8c8a1;
+  --sb-secondary: #bfae8d;
+  --sb-muted: #a99a7c;
+  --sb-faint: #8d7f66;
+  --sb-faint-2: #857759;
+  --sb-faint-3: #7a6d54;
+
+  --sb-oxblood: #b1533f;
+  --sb-oxblood-hover: #c76552;
+  --sb-oxblood-disabled: #6b4a41;
+  --sb-on-oxblood: #f3ead3;
+  --sb-brass: #c99b4d;
+  --sb-brass-bright: #e3ba6a;
+  --sb-brass-logo: #c99b4d;
+  --sb-brass-chart: #9a7734;
+  --sb-ring: #d99a3c;
+  --sb-copper: #a86b3c;
+
+  --sb-trust-signed: #a9cf98;
+  --sb-trust-signed-bg: #22301f;
+  --sb-trust-signed-dot: #6f9a5f;
+  --sb-trust-token: #e0b866;
+  --sb-trust-token-bg: #34290f;
+  --sb-trust-token-dot: #d99a3c;
+  --sb-trust-open: #e09080;
+  --sb-trust-open-bg: #33201c;
+  --sb-trust-open-dot: #b1533f;
+  --sb-trust-queue: #9dc0d3;
+  --sb-trust-queue-bg: #1e2b33;
+  --sb-trust-queue-dot: #6d8a99;
+
+  --sb-status-pending: #9dc0d3;
+  --sb-status-pending-bg: #1e2b33;
+  --sb-status-claimed: #e0b866;
+  --sb-status-claimed-bg: #34290f;
+  --sb-status-done: #a9cf98;
+  --sb-status-done-bg: #22301f;
+  --sb-status-failed: #e09080;
+  --sb-status-failed-bg: #33201c;
+  --sb-status-neutral: #a99a7c;
+
+  --sb-chip-verb: #a9cf98;
+  --sb-chip-verb-bg: #24301f;
+  --sb-chip-verb-border: #4a6b4a;
+  --sb-chip-queue: #e09080;
+  --sb-chip-queue-bg: #2c231b;
+  --sb-chip-queue-border: #9a7734;
+  --sb-dedup: #b7a7dd;
+  --sb-dedup-bg: #2c2438;
+  --sb-live: #8fca7d;
+  --sb-live-bg: #22301f;
+  --sb-toast-bg: #f3ead3;
+  --sb-toast-text: #241c15;
+  --sb-scrim: rgba(10, 7, 5, 0.55);
+  --sb-nav-active-bg: #3a2e1e;
+  --sb-row-hover: #2c231b;
+  --sb-row-flash: #3a2f1f;
+  --sb-alert-tint: #3a221c;
+  --sb-lease-track: #4a3a1c;
+
+  --sb-shadow-modal: 0 30px 70px -20px rgba(0, 0, 0, 0.8);
+  --sb-shadow-drawer: -16px 0 40px -18px rgba(0, 0, 0, 0.7);
+  --sb-shadow-toast: 0 12px 30px -10px rgba(0, 0, 0, 0.8);
 }

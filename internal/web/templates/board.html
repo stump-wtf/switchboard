@@ -1,0 +1,55 @@
+{{define "content"}}
+{{/* Governing: SPEC-0013 REQ "Board View — Live Incoming Lines" (server-rendered slice; SSE wiring
+     lands with the live-updates story). */}}
+<h1 class="sb-page-title">The Board</h1>
+<p class="sb-tagline">many lines in · each verified · patched through</p>
+
+<ul class="sb-legend" aria-label="Trust modes">
+  <li><span class="sb-badge sb-badge--signed">signed</span></li>
+  <li><span class="sb-badge sb-badge--token">token</span></li>
+  <li><span class="sb-badge sb-badge--open">open</span></li>
+  <li><span class="sb-badge sb-badge--queue">queue</span></li>
+</ul>
+
+<section class="sb-tiles" aria-label="Queue summary">
+  <div class="sb-tile">
+    <span class="sb-microlabel">Todos today</span>
+    <div class="sb-tile__value">{{.Stats.TodosToday}}</div>
+    <div class="sb-tile__unit">created since midnight</div>
+  </div>
+  <div class="sb-tile">
+    <span class="sb-microlabel">In flight</span>
+    <div class="sb-tile__value">{{.Stats.InFlight}}</div>
+    <div class="sb-tile__unit">claimed under lease</div>
+  </div>
+  <div class="sb-tile{{if gt .Stats.AwaitingClaim 0}} sb-tile--alert{{end}}">
+    <span class="sb-microlabel">Awaiting claim</span>
+    <div class="sb-tile__value">{{.Stats.AwaitingClaim}}</div>
+    <div class="sb-tile__unit">pending in queue</div>
+  </div>
+  <div class="sb-tile">
+    <span class="sb-microlabel">Verified</span>
+    <div class="sb-tile__value">{{.Stats.VerifiedPct}}%</div>
+    <div class="sb-tile__unit">of today's events signed</div>
+  </div>
+</section>
+
+<h2 class="sb-section-title">Recent lines in</h2>
+{{if .Events}}
+<ul class="sb-feed" aria-live="polite">
+  {{range .Events}}
+  <li class="sb-feed__row">
+    <span class="sb-tag" aria-hidden="true">{{tag .Source}}</span>
+    <span>
+      <span class="sb-feed__source">{{.Source}}</span>
+      <span class="sb-feed__type">{{.EventType}}</span>
+    </span>
+    <span class="sb-badge sb-badge--{{.TrustMode}}">{{.TrustMode}}</span>
+    <span class="sb-feed__age">{{reltime .ReceivedAt}}</span>
+  </li>
+  {{end}}
+</ul>
+{{else}}
+<p class="sb-empty">no lines in yet · the board is quiet</p>
+{{end}}
+{{end}}
