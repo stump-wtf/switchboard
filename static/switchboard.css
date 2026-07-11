@@ -274,6 +274,22 @@ a:hover {
   max-width: 1060px;
 }
 
+/* ---- content-info footer (contentinfo landmark) ---- */
+
+.sb-footer {
+  flex: none;
+  padding: 12px 30px;
+  border-top: 1px solid var(--sb-border-strong);
+  background: linear-gradient(180deg, var(--sb-raised-lo), var(--sb-raised-hi));
+}
+
+.sb-footer__text {
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--sb-muted);
+}
+
 .sb-page-title {
   font-family: var(--sb-font-display);
   font-weight: 700;

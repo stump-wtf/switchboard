@@ -177,6 +177,9 @@ type fakeStore struct {
 	mu       sync.Mutex
 	humans   map[string]store.Human // by OIDC subject
 	sessions map[string]fakeSession // token hash -> session
+	// sessionErr, when non-nil, is returned by SessionHuman ahead of any lookup — it models a
+	// transient store failure (e.g. a DB blip) that is NOT store.ErrNotFound.
+	sessionErr error
 }
 
 type fakeSession struct {
@@ -215,6 +218,9 @@ func (f *fakeStore) CreateSession(_ context.Context, tokenHash, humanID string, 
 func (f *fakeStore) SessionHuman(_ context.Context, tokenHash string) (store.Human, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.sessionErr != nil {
+		return store.Human{}, f.sessionErr
+	}
 	s, ok := f.sessions[tokenHash]
 	if !ok || !time.Now().Before(s.expiresAt) { // only live (unexpired) sessions admit access
 		return store.Human{}, store.ErrNotFound

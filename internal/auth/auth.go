@@ -262,12 +262,21 @@ func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWri
 // (only live sessions admit access; expired sessions are treated as unauthenticated).
 func (a *Authenticator) RequireHuman(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h, ok := a.human(r)
-		if !ok {
-			// A presented cookie that did not resolve to a live session (garbage, revoked, or
-			// expired) is dead weight — clear it so the browser stops replaying it.
-			if _, err := r.Cookie(sessionCookie); err == nil {
+		h, err := a.sessionHuman(r)
+		if err != nil {
+			// Clear ONLY a cookie we can prove is dead — one that resolved to no live session
+			// (garbage, revoked, or expired → store.ErrNotFound). A transient store failure (a DB
+			// blip) leaves the cookie's validity UNKNOWN, so we must NOT delete a possibly-valid
+			// session cookie — doing so would silently log the human out on every hiccup. We still
+			// deny THIS request (fail closed) and redirect to login regardless.
+			// Governing: SPEC-0008 REQ "Session-Gated Human Surface".
+			switch {
+			case errors.Is(err, store.ErrNotFound):
 				http.SetCookie(w, a.cookie(sessionCookie, "", -time.Hour))
+			case errors.Is(err, http.ErrNoCookie):
+				// No cookie was presented — nothing to clear.
+			default:
+				a.log.Warn("session lookup", "err", err)
 			}
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
@@ -320,18 +329,34 @@ func (a *Authenticator) LoadHuman(next http.Handler) http.Handler {
 }
 
 func (a *Authenticator) human(r *http.Request) (Human, bool) {
-	c, err := r.Cookie(sessionCookie)
+	h, err := a.sessionHuman(r)
 	if err != nil {
-		return Human{}, false
-	}
-	h, err := a.store.SessionHuman(r.Context(), hashToken(c.Value))
-	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
+		// ErrNotFound (dead cookie) and http.ErrNoCookie (no cookie) are ordinary "not logged in"
+		// outcomes; only a transient store failure is worth a log line.
+		if !errors.Is(err, store.ErrNotFound) && !errors.Is(err, http.ErrNoCookie) {
 			a.log.Warn("session lookup", "err", err)
 		}
 		return Human{}, false
 	}
 	return h, true
+}
+
+// sessionHuman resolves the caller's session cookie to a live human, preserving WHY resolution
+// failed so callers can react correctly. The returned error is one of:
+//   - nil                → authenticated
+//   - http.ErrNoCookie   → no session cookie was presented
+//   - store.ErrNotFound  → a cookie was presented but resolves to NO live session (garbage,
+//     revoked, or expired): the cookie is provably dead
+//   - any other error    → a transient store failure; the cookie's validity is UNKNOWN and it MUST
+//     NOT be treated as dead (see RequireHuman's cookie-clearing decision)
+//
+// Governing: SPEC-0008 REQ "Session-Gated Human Surface", REQ "Server-Side Session Establishment".
+func (a *Authenticator) sessionHuman(r *http.Request) (Human, error) {
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return Human{}, err // http.ErrNoCookie
+	}
+	return a.store.SessionHuman(r.Context(), hashToken(c.Value))
 }
 
 func (a *Authenticator) cookie(name, value string, ttl time.Duration) *http.Cookie {

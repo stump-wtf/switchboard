@@ -56,7 +56,7 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"<header class=\"sb-topbar\">",                                             // banner landmark (header element)
+		"<header class=\"sb-topbar\" role=\"banner\">",                             // banner landmark (header element)
 		"<nav class=\"sb-rail\" aria-label=\"Primary\">",                           // navigation landmark
 		"<main class=\"sb-main\">",                                                 // main landmark
 		"aria-current=\"page\"",                                                    // active rail entry

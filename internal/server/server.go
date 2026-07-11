@@ -209,13 +209,23 @@ func newRouter(d routerDeps) chi.Router {
 
 	// Auth (OIDC RP against Pocket ID; ADR-0011). The login screen is the ONLY public web page
 	// (SPEC-0012 "Security Requirements → Authentication"; REQ "Screen Set and Routes": public GET /login).
-	r.Get("/login", d.webh.Login)
-	r.Get("/auth/login", d.authr.Login)
-	r.Get("/auth/callback", d.authr.Callback)
-	// Dev-login is config-gated (404 unless SWITCHBOARD_DEV_LOGIN) and, like every auth form POST,
-	// bounds its body at 64 KiB. Governing: SPEC-0008 REQ "Development Login Guard",
-	// REQ "Request Body Size Limits".
-	r.With(maxBytes(64<<10)).Post("/auth/dev-login", d.authr.DevLogin)
+	// These public entry points share a per-IP throttle that blunts credential-stuffing and
+	// OIDC-callback abuse — the native limiter SPEC-0008 recommends, applied in-process rather than
+	// left solely to a front proxy. Dev-login is config-gated (404 unless SWITCHBOARD_DEV_LOGIN) and,
+	// like every auth form POST, bounds its body at 64 KiB. It establishes the session, so no prior
+	// session exists to derive a synchronizer CSRF token from; its defenses are the config gate,
+	// POST-only method, body cap, and this throttle (the OIDC state cookie plays that role for the
+	// OIDC login/callback exchange).
+	// Governing: SPEC-0008 REQ "Development Login Guard", REQ "Request Body Size Limits",
+	// "Security Requirements → Rate Limiting".
+	authRL := newRateLimiter(5, 10) // auth is low-frequency per human; burst 10 covers real logins
+	r.Group(func(ar chi.Router) {
+		ar.Use(authRL.middleware)
+		ar.Get("/login", d.webh.Login)
+		ar.Get("/auth/login", d.authr.Login)
+		ar.Get("/auth/callback", d.authr.Callback)
+		ar.With(maxBytes(64<<10)).Post("/auth/dev-login", d.authr.DevLogin)
+	})
 
 	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB;
 	// RequireCSRF guards every state-changing form with a per-session synchronizer token (SPEC-0008).

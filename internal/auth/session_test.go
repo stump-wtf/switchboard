@@ -8,8 +8,11 @@ package auth
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,6 +184,29 @@ func TestRequireHumanExpiredSessionRedirectsAndClears(t *testing.T) {
 	requireClearedSessionCookie(t, rec.Result())
 }
 
+// A transient store failure (e.g. a DB blip) must NOT be treated as a dead session: RequireHuman
+// still denies the request (fail closed) and redirects to login, but it must NOT clear the session
+// cookie — otherwise a momentary database hiccup would silently log every operator out. Only a
+// provably dead cookie (store.ErrNotFound) is cleared. Governing: SPEC-0008 REQ "Session-Gated
+// Human Surface" (carry-over fix, issue #55).
+func TestRequireHumanTransientStoreErrorPreservesCookie(t *testing.T) {
+	fs := newFakeStore()
+	fs.sessionErr = errors.New("db connection reset by peer")
+	a := newSessionAuth(fs, "http://127.0.0.1:8080")
+
+	h, _, called := gated(a)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, requestWithSession("a-valid-looking-token"))
+
+	// Access is denied for this request (fail closed).
+	requireRedirectToLogin(t, rec, *called)
+
+	// But the session cookie is left intact — no Set-Cookie clearing it on a transient failure.
+	if c := cookieByName(t, rec.Result(), sessionCookie); c != nil {
+		t.Fatalf("a transient store error must NOT clear the session cookie, got: %+v", c)
+	}
+}
+
 // SPEC-0008 REQ "Session-Gated Human Surface": a live session admits the request and the
 // authenticated human (plus the per-session CSRF token) is carried in request context.
 func TestRequireHumanLiveSessionAdmitsAndCarriesHuman(t *testing.T) {
@@ -204,6 +230,67 @@ func TestRequireHumanLiveSessionAdmitsAndCarriesHuman(t *testing.T) {
 	}
 	if csrf != csrfToken(tok) {
 		t.Fatal("per-session CSRF token must be derivable from the session and present in context")
+	}
+}
+
+// --- CSRF over the session-gated group -----------------------------------------------------------
+
+// The human web routes are wired RequireHuman → RequireCSRF (see newRouter). This proves that
+// composition end-to-end for a state-changing POST like logout: a live session alone is not enough —
+// a matching per-session synchronizer token is also required, and an anonymous caller never even
+// reaches the CSRF check (RequireHuman redirects first). Governing: SPEC-0008 "Security Requirements
+// → CSRF Protection"; REQ "Session-Gated Human Surface".
+func TestSessionGroupRequiresCSRFOnPOST(t *testing.T) {
+	fs := newFakeStore()
+	a := newSessionAuth(fs, "http://127.0.0.1:8080")
+	tok := establish(t, a)
+
+	var reached bool
+	chain := a.RequireHuman(a.RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	post := func(csrf string, withSession bool) *httptest.ResponseRecorder {
+		body := url.Values{}
+		if csrf != "" {
+			body.Set("csrf_token", csrf)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/logout", strings.NewReader(body.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if withSession {
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: tok})
+		}
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, r)
+		return rec
+	}
+
+	// Anonymous: RequireHuman redirects to /login before CSRF is ever consulted.
+	reached = false
+	if rec := post(csrfToken(tok), false); rec.Code != http.StatusFound || rec.Result().Header.Get("Location") != "/login" {
+		t.Fatalf("anonymous POST should redirect to /login, got %d", rec.Code)
+	} else if reached {
+		t.Fatal("anonymous POST must not reach the protected handler")
+	}
+
+	// Valid session, missing CSRF token → 403.
+	reached = false
+	if rec := post("", true); rec.Code != http.StatusForbidden {
+		t.Fatalf("session POST without CSRF token should be 403, got %d", rec.Code)
+	} else if reached {
+		t.Fatal("CSRF-less POST must not reach the protected handler")
+	}
+
+	// Valid session, forged CSRF token → 403.
+	if rec := post("forged-token", true); rec.Code != http.StatusForbidden {
+		t.Fatalf("session POST with forged CSRF token should be 403, got %d", rec.Code)
+	}
+
+	// Valid session, correct per-session token → passes.
+	reached = false
+	if rec := post(csrfToken(tok), true); rec.Code != http.StatusOK || !reached {
+		t.Fatalf("session POST with valid CSRF token should pass, got %d reached=%v", rec.Code, reached)
 	}
 }
 

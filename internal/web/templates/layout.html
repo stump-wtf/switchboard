@@ -19,8 +19,9 @@
      renders authoritative database state. */}}
 <div class="sb-app"{{if .Human}} hx-ext="sse" sse-connect="/events"{{end}}>
 {{/* Governing: SPEC-0013 REQ "Information Architecture and Navigation" — persistent top bar
-     (mark + wordmark + LIVE pill + avatar) as the banner landmark. */}}
-<header class="sb-topbar">
+     (mark + wordmark + LIVE pill + avatar) as the banner landmark. The explicit role makes the
+     banner landmark unambiguous for AT and for the SPEC-0008 login-accessibility contract. */}}
+<header class="sb-topbar" role="banner">
   <svg class="sb-mark" viewBox="0 0 28 28" fill="none" role="img" aria-label="Switchboard mark" xmlns="http://www.w3.org/2000/svg">
     <path d="M8 11 C 5.3 13.2, 6.1 16.4, 9.6 17.4" style="stroke: var(--sb-copper)" stroke-width="2.3" stroke-linecap="round"/>
     <circle cx="8" cy="8.4" r="2.7" style="stroke: var(--sb-brass-logo)" stroke-width="1.8"/>
@@ -56,6 +57,11 @@
 {{end}}
 <main class="sb-main">{{template "content" .}}</main>
 </div>
+{{/* Content-info landmark, present on every page including the public login screen so the
+     SPEC-0008 accessibility contract (banner + main + contentinfo landmarks) holds there too. */}}
+<footer class="sb-footer" role="contentinfo">
+  <span class="sb-footer__text">Switchboard · many lines in · each verified · patched through</span>
+</footer>
 {{/* Overlay slot (drawer/modal stories) + toast region. The toast region exists in the DOM before
      any update and is aria-live so background transitions are announced (SPEC-0013 "Live Updates
      and Toasts"); sb.js expires each toast after a short TTL. */}}
