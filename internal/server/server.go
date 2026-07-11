@@ -51,6 +51,13 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Governing: SPEC-0012 REQ "Live Updates via SSE".
 	st.SetTodoTransitionHook(webh.PublishTodoTransition)
 	api := agentapi.New(st, hub, log)
+	// Generic (token/open) providers are explicit operator opt-in via SWITCHBOARD_GENERIC_PROVIDERS;
+	// a malformed or invalid-mode config fails startup loudly rather than silently opening an
+	// endpoint. Governing: SPEC-0001 REQ "Explicit Open Trust Mode".
+	generic, err := ingest.ParseGenericProviders(os.Getenv("SWITCHBOARD_GENERIC_PROVIDERS"))
+	if err != nil {
+		return err
+	}
 	ing := ingest.New(st, hub, log, ingest.Config{
 		GitHubSecret: os.Getenv("SWITCHBOARD_GITHUB_SECRET"),
 		GitHubQueue:  os.Getenv("SWITCHBOARD_GITHUB_QUEUE"),
@@ -58,6 +65,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		StripeQueue:  os.Getenv("SWITCHBOARD_STRIPE_QUEUE"),
 		SlackSecret:  os.Getenv("SWITCHBOARD_SLACK_SECRET"),
 		SlackQueue:   os.Getenv("SWITCHBOARD_SLACK_QUEUE"),
+		Generic:      generic,
 		DevLogin:     cfg.DevLogin,
 	})
 
@@ -93,6 +101,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		wr.Post("/webhooks/github", ing.GitHub)
 		wr.Post("/webhooks/stripe", ing.Stripe)
 		wr.Post("/webhooks/slack", ing.Slack)
+		// Generic token/open providers (SPEC-0001): shared-secret token compared constant-time, or
+		// explicit operator-opted-in open mode; unknown names 404, never a fall-through to open.
+		wr.Post("/webhooks/generic/{name}", ing.Generic)
 	})
 	r.Post("/dev/todos", ing.DevCreateTodo)
 

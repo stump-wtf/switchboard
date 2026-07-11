@@ -36,6 +36,7 @@ const defaultReplayTolerance = 300 * time.Second
 var sensitiveHeaders = map[string]bool{
 	"x-hub-signature": true, "x-hub-signature-256": true, "authorization": true,
 	"cookie": true, "x-slack-signature": true, "stripe-signature": true, "x-api-key": true,
+	"x-webhook-token": true,
 }
 
 // Ingest holds the ingestion dependencies.
@@ -49,8 +50,9 @@ type Ingest struct {
 	stripeQueue  string
 	slackSecret  string
 	slackQueue   string
-	tolerance    time.Duration    // replay window for timestamped signatures
-	now          func() time.Time // injectable clock for replay-window tests
+	generic      map[string]GenericProvider // token/open providers by name (generic.go)
+	tolerance    time.Duration              // replay window for timestamped signatures
+	now          func() time.Time           // injectable clock for replay-window tests
 	devLogin     bool
 }
 
@@ -62,7 +64,11 @@ type Config struct {
 	StripeQueue  string
 	SlackSecret  string
 	SlackQueue   string
-	DevLogin     bool
+	// Generic maps provider name → token/open configuration for the generic endpoint
+	// (POST /webhooks/generic/{name}); build it with ParseGenericProviders so every entry carries
+	// an explicit, validated trust mode. Governing: SPEC-0001 REQ "Explicit Open Trust Mode".
+	Generic  map[string]GenericProvider
+	DevLogin bool
 }
 
 // New builds an Ingest.
@@ -76,11 +82,15 @@ func New(st *store.Store, hub *agentapi.Hub, log *slog.Logger, cfg Config) *Inge
 	if cfg.SlackQueue == "" {
 		cfg.SlackQueue = "slack"
 	}
+	if cfg.Generic == nil {
+		cfg.Generic = map[string]GenericProvider{}
+	}
 	return &Ingest{
 		store: st, hub: hub, log: log,
 		githubSecret: cfg.GitHubSecret, githubQueue: cfg.GitHubQueue,
 		stripeSecret: cfg.StripeSecret, stripeQueue: cfg.StripeQueue,
 		slackSecret: cfg.SlackSecret, slackQueue: cfg.SlackQueue,
+		generic:   cfg.Generic,
 		tolerance: defaultReplayTolerance, now: time.Now,
 		devLogin: cfg.DevLogin,
 	}
