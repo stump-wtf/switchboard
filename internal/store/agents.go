@@ -138,8 +138,16 @@ func MintSlug(agentName string) (string, error) {
 // (the plaintext is shown to the human once and never stored) and the minted URL slug. Scope is
 // immutable (ADR-0008).
 func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefix, slug string, queues, verbs []string) (Endpoint, error) {
+	return createEndpoint(ctx, s.pool, agentID, credHash, credPrefix, slug, queues, verbs)
+}
+
+// createEndpoint is the querier-based core of CreateEndpoint: it runs on either the pool or a
+// transaction so approval-time vending (SPEC-0010) can mint the endpoint in the SAME transaction
+// that transitions a friend edge to approved — approval is the vend, atomically. Governing:
+// ADR-0008 (URL + credential together = the grant; scope immutable).
+func createEndpoint(ctx context.Context, q querier, agentID, credHash, credPrefix, slug string, queues, verbs []string) (Endpoint, error) {
 	var e Endpoint
-	err := s.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues, scope_verbs)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at`,
