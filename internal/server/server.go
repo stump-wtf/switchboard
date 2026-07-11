@@ -103,8 +103,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Pull-adapter poll loops (ADR-0014; SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety"):
 	// each registered adapter runs as a context-managed worker — enabled-flag gated, backing off on
 	// broker errors, health-stamped on the adapters table — and shuts down cleanly with the server.
-	// The concrete Redis adapters attach here (runner.Add) once the enqueue-coupling Sink lands
-	// (issue #25); until then the runner supervises an empty registry.
+	// The full seam exists (redis transports + adapter.StoreSink enqueue coupling); concrete
+	// instances attach here (runner.Add) once operator broker config — which streams/lists to
+	// consume, adapters.config jsonb vs. environment — is resolved (a SPEC-0002 design open
+	// question). Until then the runner supervises an empty registry.
 	adapters := runner.New(st, log, runner.Options{})
 	runnerDone := make(chan struct{})
 	go func() {

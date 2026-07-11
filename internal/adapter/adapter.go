@@ -51,8 +51,8 @@ type Adapter interface {
 // Sink is the shared back half a pull adapter feeds: it verifies (trust = the connection), derives
 // the idempotency key, normalizes, creates the todo (dedup), and persists the event — atomically,
 // like the push family's ingest path. Deliver returns nil only once the todo is durably stored in
-// PostgreSQL, so the adapter may then (and only then) ack the source message. The concrete
-// implementation is the enqueue coupling story; this package defines the seam.
+// PostgreSQL, so the adapter may then (and only then) ack the source message. StoreSink (sink.go)
+// is the concrete implementation; this interface defines the seam.
 //
 // Governing: ADR-0014 (store-then-ack), SPEC-0002 REQ "Adapter Interface and Trust Mode".
 type Sink interface {
