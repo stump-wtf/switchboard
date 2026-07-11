@@ -66,9 +66,12 @@ type Authenticator struct {
 func New(ctx context.Context, cfg config.Config, st *store.Store, log *slog.Logger) (*Authenticator, error) {
 	a := &Authenticator{cfg: cfg, store: st, log: log, secure: strings.HasPrefix(cfg.BaseURL, "https://")}
 	if cfg.OIDCConfigured() {
-		// ADR-0011: we trust this issuer wholesale and enforce NO amr/acr assurance claim. That is
-		// acceptable ONLY because Pocket ID is passkey-only. Adding a non-passkey issuer here MUST be
-		// paired with an amr/acr step-up check on consent actions (friend approvals). Do not cross silently.
+		// This is the IdP-trust-set configuration point. ADR-0011: we trust this issuer wholesale and
+		// enforce NO amr/acr assurance claim. That is acceptable ONLY because Pocket ID is passkey-only.
+		// Adding a non-passkey issuer here MUST be paired with a phishing-resistant amr/acr step-up
+		// check on consent actions (friend approvals). Do not cross silently.
+		// Governing: ADR-0011 (assurance step-up deferred), SPEC-0008 REQ "Assurance Posture — Trust
+		// the Issuer, Step-Up Deferred".
 		provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuer)
 		if err != nil {
 			return nil, err
@@ -153,16 +156,19 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := r.Cookie(stateCookie)
 	if err != nil {
+		a.log.Warn("oidc callback rejected", "reason", "missing state cookie", "remote", r.RemoteAddr)
 		http.Error(w, "missing state", http.StatusBadRequest)
 		return
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
 	if err != nil {
+		a.log.Warn("oidc callback rejected", "reason", "malformed state cookie", "remote", r.RemoteAddr)
 		http.Error(w, "bad state", http.StatusBadRequest)
 		return
 	}
 	var st oidcState
 	if err := json.Unmarshal(raw, &st); err != nil || st.State == "" || st.State != r.URL.Query().Get("state") {
+		a.log.Warn("oidc callback rejected", "reason", "state mismatch", "remote", r.RemoteAddr)
 		http.Error(w, "state mismatch", http.StatusBadRequest)
 		return
 	}
@@ -176,15 +182,22 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	rawID, ok := token.Extra("id_token").(string)
 	if !ok {
+		a.log.Warn("oidc callback rejected", "reason", "no id_token in token response", "remote", r.RemoteAddr)
 		http.Error(w, "no id_token", http.StatusBadGateway)
 		return
 	}
+	// The verifier checks issuer, audience, expiry, and signature only. Deliberately NO amr/acr
+	// assurance check here — the trusted issuer is passkey-only (ADR-0011); see New for the guard
+	// that must accompany any non-passkey issuer.
+	// Governing: ADR-0011, SPEC-0008 REQ "Assurance Posture — Trust the Issuer, Step-Up Deferred".
 	idToken, err := a.verifier.Verify(r.Context(), rawID)
 	if err != nil {
+		a.log.Warn("oidc callback rejected", "reason", "id_token verification failed", "err", err, "remote", r.RemoteAddr)
 		http.Error(w, "id_token verify failed", http.StatusBadGateway)
 		return
 	}
 	if idToken.Nonce != st.Nonce {
+		a.log.Warn("oidc callback rejected", "reason", "nonce mismatch", "remote", r.RemoteAddr)
 		http.Error(w, "nonce mismatch", http.StatusBadRequest)
 		return
 	}
@@ -202,7 +215,9 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-// DevLogin mints a session for a fixed local human, bypassing OIDC. Guarded by SWITCHBOARD_DEV_LOGIN.
+// DevLogin mints a session for a fixed local human, bypassing OIDC. Guarded by SWITCHBOARD_DEV_LOGIN:
+// when the flag is unset the route answers 404 and establishes no session — in every build, including
+// production. Governing: SPEC-0008 REQ "Development Login Guard".
 func (a *Authenticator) DevLogin(w http.ResponseWriter, r *http.Request) {
 	if !a.cfg.DevLogin {
 		http.NotFound(w, r)

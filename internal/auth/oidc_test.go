@@ -43,9 +43,10 @@ type fakeIdP struct {
 	wrongKey *rsa.PrivateKey
 
 	mu           sync.Mutex
-	nonce        string // echoed into the minted ID token's nonce claim
-	badSignature bool   // sign the ID token with a key that is not in the JWKS
-	lastVerifier string // code_verifier presented at the token endpoint ("" = no exchange yet)
+	nonce        string         // echoed into the minted ID token's nonce claim
+	badSignature bool           // sign the ID token with a key that is not in the JWKS
+	lastVerifier string         // code_verifier presented at the token endpoint ("" = no exchange yet)
+	extraClaims  map[string]any // merged into the minted ID token (e.g. amr/acr for assurance tests)
 }
 
 const (
@@ -98,9 +99,10 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 		if f.badSignature {
 			signKey = f.wrongKey
 		}
+		extra := f.extraClaims
 		f.mu.Unlock()
 		now := time.Now()
-		idToken := signJWT(t, signKey, map[string]any{
+		claims := map[string]any{
 			"iss":   f.srv.URL,
 			"sub":   testSubject,
 			"aud":   testClientID,
@@ -109,7 +111,11 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 			"nonce": nonce,
 			"name":  testName,
 			"email": testEmail,
-		})
+		}
+		for k, v := range extra {
+			claims[k] = v
+		}
+		idToken := signJWT(t, signKey, claims)
 		writeJSON(w, map[string]any{
 			"access_token": "test-access-token",
 			"token_type":   "Bearer",
@@ -126,6 +132,12 @@ func (f *fakeIdP) setNonce(n string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nonce = n
+}
+
+func (f *fakeIdP) setExtraClaims(c map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.extraClaims = c
 }
 
 func (f *fakeIdP) verifierSeen() string {

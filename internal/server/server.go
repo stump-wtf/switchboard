@@ -136,7 +136,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	r.Get("/login", webh.Login)
 	r.Get("/auth/login", authr.Login)
 	r.Get("/auth/callback", authr.Callback)
-	r.Post("/auth/dev-login", authr.DevLogin)
+	// Dev-login is config-gated (404 unless SWITCHBOARD_DEV_LOGIN) and, like every auth form POST,
+	// bounds its body at 64 KiB. Governing: SPEC-0008 REQ "Development Login Guard",
+	// REQ "Request Body Size Limits".
+	r.With(maxBytes(64<<10)).Post("/auth/dev-login", authr.DevLogin)
 
 	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB;
 	// RequireCSRF guards every state-changing form with a per-session synchronizer token (SPEC-0008).
