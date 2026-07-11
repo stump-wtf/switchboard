@@ -159,14 +159,21 @@ func signJWT(t *testing.T, key *rsa.PrivateKey, claims map[string]any) string {
 // --- fake session store -------------------------------------------------------------------------
 
 // fakeStore is an in-memory sessionStore: upsert keyed on OIDC subject, sessions keyed on token hash.
+// Sessions carry an expiry so tests can prove expired sessions are not honored, mirroring the real
+// store's `expires_at > now()` admission check.
 type fakeStore struct {
 	mu       sync.Mutex
 	humans   map[string]store.Human // by OIDC subject
-	sessions map[string]string      // token hash -> human ID
+	sessions map[string]fakeSession // token hash -> session
+}
+
+type fakeSession struct {
+	humanID   string
+	expiresAt time.Time
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{humans: map[string]store.Human{}, sessions: map[string]string{}}
+	return &fakeStore{humans: map[string]store.Human{}, sessions: map[string]fakeSession{}}
 }
 
 func (f *fakeStore) UpsertHuman(_ context.Context, subject, displayName, email string) (store.Human, error) {
@@ -186,22 +193,22 @@ func (f *fakeStore) UpsertHuman(_ context.Context, subject, displayName, email s
 	return h, nil
 }
 
-func (f *fakeStore) CreateSession(_ context.Context, tokenHash, humanID string, _ time.Duration) error {
+func (f *fakeStore) CreateSession(_ context.Context, tokenHash, humanID string, ttl time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.sessions[tokenHash] = humanID
+	f.sessions[tokenHash] = fakeSession{humanID: humanID, expiresAt: time.Now().Add(ttl)}
 	return nil
 }
 
 func (f *fakeStore) SessionHuman(_ context.Context, tokenHash string) (store.Human, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	id, ok := f.sessions[tokenHash]
-	if !ok {
+	s, ok := f.sessions[tokenHash]
+	if !ok || !time.Now().Before(s.expiresAt) { // only live (unexpired) sessions admit access
 		return store.Human{}, store.ErrNotFound
 	}
 	for _, h := range f.humans {
-		if h.ID == id {
+		if h.ID == s.humanID {
 			return h, nil
 		}
 	}

@@ -101,6 +101,48 @@ func TestHumanAgentVend(t *testing.T) {
 	}
 }
 
+// Server-side session lifecycle against real SQL: only the token hash is stored, lookup admits only
+// live (unexpired) sessions via `expires_at > now()`, and deletion revokes server-side.
+// Governing: SPEC-0008 REQ "Server-Side Session Establishment", REQ "Session-Gated Human Surface".
+func TestSessionLifecycle(t *testing.T) {
+	s, ctx := testStore(t)
+
+	h, err := s.UpsertHuman(ctx, "pocket|sess", "Sess Human", "sess@example.com")
+	if err != nil {
+		t.Fatalf("upsert human: %v", err)
+	}
+
+	// A live session resolves to its human.
+	if err := s.CreateSession(ctx, "livehash", h.ID, time.Hour); err != nil {
+		t.Fatalf("create live session: %v", err)
+	}
+	got, err := s.SessionHuman(ctx, "livehash")
+	if err != nil || got.ID != h.ID {
+		t.Fatalf("live session must resolve to its human: %+v, %v", got, err)
+	}
+
+	// An expired session is not honored.
+	if err := s.CreateSession(ctx, "expiredhash", h.ID, -time.Minute); err != nil {
+		t.Fatalf("create expired session: %v", err)
+	}
+	if _, err := s.SessionHuman(ctx, "expiredhash"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired session must be ErrNotFound, got %v", err)
+	}
+
+	// An unknown token hash does not resolve.
+	if _, err := s.SessionHuman(ctx, "nosuchhash"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown session must be ErrNotFound, got %v", err)
+	}
+
+	// Logout deletes the record server-side; the prior hash no longer authenticates.
+	if err := s.DeleteSession(ctx, "livehash"); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if _, err := s.SessionHuman(ctx, "livehash"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted session must be ErrNotFound, got %v", err)
+	}
+}
+
 func TestTodoQueueLifecycle(t *testing.T) {
 	s, ctx := testStore(t)
 

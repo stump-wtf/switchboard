@@ -243,10 +243,17 @@ func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWri
 
 // RequireHuman is middleware that admits only authenticated humans; others are redirected to login.
 // It also stashes the per-session CSRF token so downstream handlers can embed it in forms.
+// Governing: SPEC-0008 REQ "Session-Gated Human Surface", REQ "Server-Side Session Establishment"
+// (only live sessions admit access; expired sessions are treated as unauthenticated).
 func (a *Authenticator) RequireHuman(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, ok := a.human(r)
 		if !ok {
+			// A presented cookie that did not resolve to a live session (garbage, revoked, or
+			// expired) is dead weight — clear it so the browser stops replaying it.
+			if _, err := r.Cookie(sessionCookie); err == nil {
+				http.SetCookie(w, a.cookie(sessionCookie, "", -time.Hour))
+			}
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
