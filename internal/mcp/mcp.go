@@ -10,8 +10,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -37,16 +39,28 @@ const (
 	sessionIdleTimeout = 30 * time.Minute
 )
 
-// EndpointStore is the slice of the store the MCP surface needs: credential resolution and the
+// EndpointStore is the slice of the store the auth middleware needs: credential resolution and the
 // last-seen stamp. *store.Store satisfies it; tests substitute a fake.
 type EndpointStore interface {
 	EndpointByCredHash(ctx context.Context, credHash string) (store.AuthEndpoint, error)
 	TouchEndpoint(ctx context.Context, endpointID string) error
 }
 
+// ToolStore is the full store slice the MCP surface consumes: endpoint auth plus the SPEC-0006
+// drain verbs the tool layer wraps (lifecycle semantics live in internal/store per SPEC-0003).
+type ToolStore interface {
+	EndpointStore
+	ListTodos(ctx context.Context, queues []string, state string, limit int) ([]store.Todo, error)
+	GetTodo(ctx context.Context, id string) (store.Todo, error)
+	ClaimTodo(ctx context.Context, id, owner string, ttl time.Duration) (store.Todo, error)
+	HeartbeatTodo(ctx context.Context, id, owner string, ttl time.Duration) (store.Todo, error)
+	CompleteTodo(ctx context.Context, id, owner string, result []byte) (store.Todo, error)
+	FailTodo(ctx context.Context, id, owner string, result []byte) (store.Todo, error)
+}
+
 // Handler mounts the per-endpoint Streamable HTTP MCP servers.
 type Handler struct {
-	store EndpointStore
+	store ToolStore
 	log   *slog.Logger
 	rl    *rateLimiter
 
@@ -58,7 +72,7 @@ type Handler struct {
 }
 
 // New builds the MCP surface.
-func New(st EndpointStore, log *slog.Logger) *Handler {
+func New(st ToolStore, log *slog.Logger) *Handler {
 	return &Handler{
 		store: st,
 		log:   log,
@@ -138,16 +152,30 @@ func (h *Handler) rateLimit(next http.Handler) http.Handler {
 	})
 }
 
-// limitBody bounds request bodies at 1 MiB, answering 413 for declared-oversize requests up front
-// and capping chunked bodies via http.MaxBytesReader. Governing: SPEC-0014 REQ body size limits.
+// limitBody bounds request bodies at 1 MiB, answering 413 for declared-oversize requests up front.
+// Bodies without a declared length (chunked encoding) are drained through http.MaxBytesReader
+// BEFORE the SDK parses anything, so an oversized chunked body also gets 413 — not the 400 the SDK
+// would answer once the reader trips mid-parse. MCP request bodies are complete JSON-RPC messages,
+// so buffering ≤1 MiB here costs nothing. Governing: SPEC-0014 REQ "Request Body Size Limits".
 func (h *Handler) limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength > maxBodyBytes {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		if r.Body != nil && r.Body != http.NoBody {
+			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+			if err != nil {
+				var mbe *http.MaxBytesError
+				if errors.As(err, &mbe) {
+					http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+					return
+				}
+				http.Error(w, "error reading request body", http.StatusBadRequest)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(body))
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -209,13 +237,20 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 // newServer builds the per-session MCP server. The SDK owns protocol-version negotiation and
-// session mechanics. The tools capability is advertised now; the SPEC-0006 verb registry (filtered
-// by the scope in the request context) is the follow-up story, so tools/list is empty until then.
+// session mechanics. The SPEC-0006 verb registry is filtered by the endpoint's immutable verb
+// allowlist (resolved by the auth middleware on the initialize request), so tools/list advertises
+// exactly the endpoint's scope; the scopeGuard middleware turns a tools/call of a known verb
+// outside that allowlist into a stable scope error before any handler or store code runs.
+// Governing: SPEC-0014 REQ "Agent Tool Surface over MCP".
 func (h *Handler) newServer(r *http.Request) *sdk.Server {
 	srv := sdk.NewServer(&sdk.Implementation{Name: serverName, Version: serverVersion}, &sdk.ServerOptions{
 		Logger:       h.log,
 		Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{ListChanged: true}},
 	})
+	if ep, ok := EndpointFromContext(r.Context()); ok {
+		h.registerTools(srv, ep)
+		srv.AddReceivingMiddleware(h.scopeGuard(ep))
+	}
 	return srv
 }
 

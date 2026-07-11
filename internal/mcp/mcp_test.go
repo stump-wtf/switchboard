@@ -10,7 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,10 +26,21 @@ import (
 )
 
 // fakeStore maps credential hashes to endpoints, mimicking EndpointByCredHash semantics
-// (ErrNotFound for unknown AND revoked credentials — the store only resolves active rows).
+// (ErrNotFound for unknown AND revoked credentials — the store only resolves active rows), and
+// holds an in-memory todo table mirroring the store's SPEC-0003 transition guards so the tool
+// wrappers can be integration-tested without Postgres. failErr, when set, makes every todo
+// operation fail with it (the injected-DB-failure path).
 type fakeStore struct {
 	byHash  map[string]store.AuthEndpoint
 	touches atomic.Int64
+
+	mu      sync.Mutex
+	todos   map[string]store.Todo
+	failErr error
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{byHash: map[string]store.AuthEndpoint{}, todos: map[string]store.Todo{}}
 }
 
 func (f *fakeStore) EndpointByCredHash(_ context.Context, hash string) (store.AuthEndpoint, error) {
@@ -40,6 +54,148 @@ func (f *fakeStore) EndpointByCredHash(_ context.Context, hash string) (store.Au
 func (f *fakeStore) TouchEndpoint(_ context.Context, _ string) error {
 	f.touches.Add(1)
 	return nil
+}
+
+func (f *fakeStore) ListTodos(_ context.Context, queues []string, state string, limit int) ([]store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return nil, f.failErr
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	inQ := map[string]bool{}
+	for _, q := range queues {
+		inQ[q] = true
+	}
+	var out []store.Todo
+	for _, t := range f.todos {
+		if inQ[t.Queue] && (state == "" || t.State == state) {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeStore) GetTodo(_ context.Context, id string) (store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Todo{}, f.failErr
+	}
+	t, ok := f.todos[id]
+	if !ok {
+		return store.Todo{}, store.ErrNotFound
+	}
+	return t, nil
+}
+
+func (f *fakeStore) ClaimTodo(_ context.Context, id, owner string, ttl time.Duration) (store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Todo{}, f.failErr
+	}
+	t, ok := f.todos[id]
+	if !ok {
+		return store.Todo{}, store.ErrNotFound
+	}
+	expired := t.State == "claimed" && t.LeaseExpiresAt != nil && t.LeaseExpiresAt.Before(time.Now()) && t.Attempt < t.MaxAttempts
+	if !(t.State == "pending" || expired) || (t.Assignee != "" && t.Assignee != owner) {
+		return store.Todo{}, store.ErrConflict
+	}
+	now := time.Now()
+	lease := now.Add(ttl)
+	t.State, t.Owner, t.LeaseExpiresAt, t.ClaimedAt = "claimed", owner, &lease, &now
+	t.Attempt++
+	f.todos[id] = t
+	return t, nil
+}
+
+func (f *fakeStore) HeartbeatTodo(_ context.Context, id, owner string, ttl time.Duration) (store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Todo{}, f.failErr
+	}
+	t, ok := f.todos[id]
+	if !ok {
+		return store.Todo{}, store.ErrNotFound
+	}
+	if t.State != "claimed" || t.Owner != owner {
+		return store.Todo{}, store.ErrConflict
+	}
+	lease := time.Now().Add(ttl)
+	t.LeaseExpiresAt = &lease
+	f.todos[id] = t
+	return t, nil
+}
+
+func (f *fakeStore) CompleteTodo(_ context.Context, id, owner string, result []byte) (store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Todo{}, f.failErr
+	}
+	t, ok := f.todos[id]
+	if !ok {
+		return store.Todo{}, store.ErrNotFound
+	}
+	if t.State != "claimed" || t.Owner != owner {
+		return store.Todo{}, store.ErrConflict
+	}
+	now := time.Now()
+	t.State, t.Result, t.CompletedAt = "done", result, &now
+	f.todos[id] = t
+	return t, nil
+}
+
+func (f *fakeStore) FailTodo(_ context.Context, id, owner string, result []byte) (store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Todo{}, f.failErr
+	}
+	t, ok := f.todos[id]
+	if !ok {
+		return store.Todo{}, store.ErrNotFound
+	}
+	if t.State != "claimed" || t.Owner != owner {
+		return store.Todo{}, store.ErrConflict
+	}
+	if t.Attempt >= t.MaxAttempts {
+		t.State = "failed"
+	} else {
+		t.State, t.Owner = "pending", ""
+	}
+	t.LeaseExpiresAt, t.Result = nil, result
+	f.todos[id] = t
+	return t, nil
+}
+
+// putTodo seeds a todo row.
+func (f *fakeStore) putTodo(t store.Todo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t.MaxAttempts == 0 {
+		t.MaxAttempts = 5
+	}
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now()
+	}
+	f.todos[t.ID] = t
+}
+
+// todoState reads a todo's current state (test-side assertion helper).
+func (f *fakeStore) todoState(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.todos[id].State
 }
 
 // vend mints a real credential (like the web vend path) and registers it in the fake store.
@@ -93,7 +249,7 @@ func TestHandshake(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	f := newFakeStore()
 	token := vend(t, f, "test-agent-ab12cd34", []string{"reviews"}, []string{"list_todos", "claim"})
 	ts := newTestServer(t, f)
 
@@ -114,13 +270,19 @@ func TestHandshake(t *testing.T) {
 		t.Fatal("tools capability not advertised")
 	}
 
-	// tools/list works on the session; the verb registry lands in the follow-up story, so empty.
+	// tools/list advertises exactly the endpoint's allowlisted verbs (SPEC-0014 REQ "Agent Tool
+	// Surface over MCP") — this endpoint was vended with list_todos + claim only.
 	tools, err := cs.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
 	}
-	if len(tools.Tools) != 0 {
-		t.Fatalf("expected no tools yet, got %d", len(tools.Tools))
+	var names []string
+	for _, tool := range tools.Tools {
+		names = append(names, tool.Name)
+	}
+	sort.Strings(names)
+	if want := []string{"claim", "list_todos"}; !slices.Equal(names, want) {
+		t.Fatalf("advertised tools = %v, want %v", names, want)
 	}
 
 	if err := cs.Ping(ctx, nil); err != nil {
@@ -139,7 +301,7 @@ func TestAuthRejections(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	f := newFakeStore()
 	tokenA := vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"list_todos"})
 	vend(t, f, "agent-b-22222222", []string{"deploys"}, []string{"list_todos"})
 
@@ -191,7 +353,7 @@ func revokedToken(t *testing.T, _ *fakeStore) string {
 // TestSessionCookieCarriesNoAuthority: a valid web session cookie without a bearer credential is
 // still 401 — cookies are never consulted on /mcp/*. Governing: SPEC-0014 REQ "Authentication".
 func TestSessionCookieCarriesNoAuthority(t *testing.T) {
-	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	f := newFakeStore()
 	vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"list_todos"})
 	ts := newTestServer(t, f)
 
@@ -212,7 +374,7 @@ func TestSessionCookieCarriesNoAuthority(t *testing.T) {
 
 // TestSecurityHeadersAndBodyCap: nosniff + no-store on /mcp/* responses; >1 MiB bodies get 413.
 func TestSecurityHeadersAndBodyCap(t *testing.T) {
-	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	f := newFakeStore()
 	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"list_todos"})
 	ts := newTestServer(t, f)
 
@@ -254,7 +416,7 @@ func TestPerEndpointRateLimit(t *testing.T) {
 	}
 
 	// And over HTTP: an empty bucket answers 429 with Retry-After.
-	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	f := newFakeStore()
 	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"list_todos"})
 	ts := newTestServer(t, f)
 	var last *http.Response
@@ -273,7 +435,7 @@ func TestPerEndpointRateLimit(t *testing.T) {
 // success and failure paths (SPEC-0014 REQ "Error Handling Standards").
 func TestCredentialNeverLogged(t *testing.T) {
 	var buf strings.Builder
-	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	f := newFakeStore()
 	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"list_todos"})
 
 	r := chi.NewRouter()
@@ -309,4 +471,4 @@ func rawPost(t *testing.T, url, token, body string) *http.Response {
 }
 
 // Compile-time check: the real store satisfies the interface the handler consumes.
-var _ EndpointStore = (*store.Store)(nil)
+var _ ToolStore = (*store.Store)(nil)
