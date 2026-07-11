@@ -73,6 +73,9 @@ type ToolStore interface {
 	FailTodo(ctx context.Context, id, owner string, result []byte) (store.Todo, error)
 	ListEventHistory(ctx context.Context, f store.EventHistoryFilter) ([]store.EventHistoryItem, error)
 	EventHistoryByID(ctx context.Context, id int64) (store.EventHistoryDetail, error)
+	// SettingString backs replay target resolution (SPEC-0005 REQ "Replay Safety"): the
+	// `replay_default_target` fallback and the `replay_allowed_targets` allowlist both read here.
+	SettingString(ctx context.Context, key, def string) (string, error)
 }
 
 // Handler mounts the per-endpoint Streamable HTTP MCP sessions, their scope-filtered tool
@@ -83,9 +86,13 @@ type Handler struct {
 
 	// preRL bounds unauthenticated volumetric abuse per client IP before any store lookup; rl is
 	// the per-endpoint budget, keyed by endpoint id AFTER authentication so an unauthenticated
-	// caller can neither drain a real endpoint's bucket nor grow the map with slug spam.
-	preRL *rateLimiter
-	rl    *rateLimiter
+	// caller can neither drain a real endpoint's bucket nor grow the map with slug spam. replayRL
+	// is the tighter per-endpoint budget guarding the one side-effecting tool (replay_webhook_event),
+	// which performs an outbound POST and could be abused for amplification/SSRF probing.
+	// Governing: SPEC-0005 REQ "Rate Limiting" (replay bounded more tightly than reads).
+	preRL    *rateLimiter
+	rl       *rateLimiter
+	replayRL *rateLimiter
 
 	// providers is the configured-provider snapshot served by list_providers (SPEC-0005),
 	// installed at wiring time via SetProviders. Atomic so live sessions read it race-free.
@@ -115,8 +122,11 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 		// bucket bounds credential guessing and slug spam without letting an unauthenticated
 		// caller starve a known endpoint; the per-endpoint bucket (same shape and budget as the
 		// /agent surface) covers request POSTs and stream (re)establishment post-auth.
-		preRL:       newRateLimiter(50, 100),
-		rl:          newRateLimiter(20, 40),
+		preRL: newRateLimiter(50, 100),
+		rl:    newRateLimiter(20, 40),
+		// Replay is bounded well under the read budget (5 rps / 20 burst vs. 20 / 40): enough for
+		// interactive local-consumer testing, far too little for amplification or SSRF sweeps.
+		replayRL:    newRateLimiter(5, 20),
 		idleTimeout: sessionIdleTimeout,
 		sessions:    map[string]*mcpSession{},
 		done:        make(chan struct{}),

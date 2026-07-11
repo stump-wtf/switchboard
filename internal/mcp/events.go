@@ -31,9 +31,17 @@ import (
 // shared with the SPEC-0006 verbs in tools.go). Governing: SPEC-0005 REQ "Stable Error Shape".
 const (
 	codeInvalidArgument = "invalid_argument"
-	// codeReplayFailed is reserved for replay connection/transport failures; the delivery path
-	// that raises it lands with #40 (downstream non-2xx is reported, never raised).
+	// codeReplayFailed is raised only for replay connection/transport failures (a downstream non-2xx
+	// is reported as delivered, never raised). Governing: SPEC-0005 scenario "Downstream non-2xx is
+	// reported, not raised".
 	codeReplayFailed = "replay_failed"
+	// codeRateLimited is returned when the per-endpoint replay budget is exhausted. The SPEC-0005
+	// Security Requirements mandate replay be rate-limited per caller (it drives outbound requests
+	// and could be abused for amplification/SSRF probing); a distinct machine code lets a caller
+	// back off deterministically rather than confusing throttling with a bad target
+	// (invalid_argument) or a transport failure (replay_failed).
+	// Governing: SPEC-0005 "Rate Limiting" security requirement.
+	codeRateLimited = "rate_limited"
 )
 
 const (
@@ -216,15 +224,21 @@ func (h *Handler) replayWebhookEventTool(ep store.AuthEndpoint) sdk.ToolHandlerF
 		}
 		// Governing: SPEC-0005 scenario "Unknown id raises not_found" — the id is resolved (a pure
 		// read) before any thought of an outbound request.
-		if _, err := h.store.EventHistoryByID(ctx, in.ID); err != nil {
+		d, err := h.store.EventHistoryByID(ctx, in.ID)
+		if err != nil {
 			return nil, replayWebhookEventOut{}, h.mapEventStoreErr(ep, "replay_webhook_event", err)
 		}
-		// Replay delivery — target resolution against the configured default, SSRF-hardened scheme
-		// and network validation, the outbound POST itself, mandatory logging, and the tighter
-		// per-caller rate limit — lands with #40 (SPEC-0005 REQ "Replay Safety"). Until then the
-		// verb is part of the declared tool surface but performs no outbound request.
-		h.log.Warn("mcp replay_webhook_event not yet implemented", "slug", ep.Slug, "event_id", in.ID)
-		return nil, replayWebhookEventOut{}, &toolError{codeInternal, "replay delivery is not implemented yet"}
+		// Replay delivery — rate limit, target resolution against the configured default,
+		// SSRF-hardened scheme + resolved-IP validation, the outbound POST, and mandatory logging —
+		// lives in replay.go. The stored raw payload and a replay-safe header subset are replayed;
+		// the target is always the explicit arg or the configured default, so the tool never replays
+		// back to the originating provider (there is no back-to-provider option in the contract).
+		// Governing: SPEC-0005 REQ "Replay Safety".
+		out, err := h.replay(ctx, ep.Slug, ep.ID, in.ID, toEventDetailOut(d), in.TargetURL)
+		if err != nil {
+			return nil, replayWebhookEventOut{}, err
+		}
+		return nil, out, nil
 	}
 }
 

@@ -267,10 +267,11 @@ func TestGetWebhookEventDetail(t *testing.T) {
 	callErr(t, ctx, cs, "get_webhook_event", map[string]any{"id": 0}, "invalid_argument")
 }
 
-// TestReplayWebhookEventSurface: the replay verb is part of the declared contract and resolves its
-// id (unknown → not_found) but performs no outbound delivery until #40 lands the SSRF-hardened
-// replay path — a valid id currently answers the stable internal code.
-// Governing: SPEC-0005 scenario "Unknown id raises not_found".
+// TestReplayWebhookEventSurface: the replay verb resolves its id (unknown → not_found) before any
+// outbound thought, and with #40's delivery landed a valid id with neither an explicit target nor a
+// configured default is the hard invalid_argument (never a guessed target). The full SSRF/delivery
+// behaviour is exercised in replay_test.go.
+// Governing: SPEC-0005 scenario "Unknown id raises not_found", "No target and no default is an error".
 func TestReplayWebhookEventSurface(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -283,8 +284,8 @@ func TestReplayWebhookEventSurface(t *testing.T) {
 	cs := session(t, ctx, f, []string{"reviews"}, eventVerbNames)
 
 	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 999}, "not_found")
-	// Delivery is #40's; the surface answers internal rather than silently succeeding.
-	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 3}, "internal")
+	// No explicit target and no configured replay_default_target: a hard invalid_argument.
+	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 3}, "invalid_argument")
 }
 
 // TestListProviders: list_providers reports the configured snapshot — name, family, trust mode,

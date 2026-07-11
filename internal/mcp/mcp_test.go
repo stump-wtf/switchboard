@@ -34,18 +34,31 @@ type fakeStore struct {
 	byHash  map[string]store.AuthEndpoint
 	touches atomic.Int64
 
-	mu      sync.Mutex
-	todos   map[string]store.Todo
-	events  map[int64]store.EventHistoryDetail // SPEC-0005 event-history rows (events_test.go)
-	failErr error
+	mu       sync.Mutex
+	todos    map[string]store.Todo
+	events   map[int64]store.EventHistoryDetail // SPEC-0005 event-history rows (events_test.go)
+	settings map[string]string                  // SPEC-0005 replay knobs (replay_test.go)
+	failErr  error
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		byHash: map[string]store.AuthEndpoint{},
-		todos:  map[string]store.Todo{},
-		events: map[int64]store.EventHistoryDetail{},
+		byHash:   map[string]store.AuthEndpoint{},
+		todos:    map[string]store.Todo{},
+		events:   map[int64]store.EventHistoryDetail{},
+		settings: map[string]string{},
 	}
+}
+
+// SettingString mirrors store.Store.SettingString: a configured key returns its value, an absent
+// key returns the supplied default. Backs replay target resolution in the tests.
+func (f *fakeStore) SettingString(_ context.Context, key, def string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.settings[key]; ok {
+		return v, nil
+	}
+	return def, nil
 }
 
 func (f *fakeStore) EndpointByCredHash(_ context.Context, hash string) (store.AuthEndpoint, error) {
@@ -437,14 +450,18 @@ func TestPerEndpointRateLimit(t *testing.T) {
 		t.Fatal("bucket should refill over time")
 	}
 
-	// And over HTTP: an empty bucket answers 429 with Retry-After.
+	// And over HTTP: an empty bucket answers 429 with Retry-After. The endpoint's bucket is drained
+	// directly (this test is in-package) rather than by flooding sequential HTTP requests — the
+	// latter races the 20 rps refill against wall-clock request latency and flakes on slow/-race
+	// runners. Draining to empty and issuing a single request makes the 429 deterministic: refill
+	// over the few milliseconds before that request is far below one token.
 	f := newFakeStore()
 	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"list_todos"})
-	ts := newTestServer(t, f)
-	var last *http.Response
-	for i := 0; i < 45; i++ {
-		last = rawPost(t, ts.URL+"/mcp/agent-a-11111111", token, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	ts, h := newTestServerHandler(t, f)
+	drain := time.Now()
+	for h.rl.allowAt("ep-agent-a-11111111", drain) { //nolint:revive // intentional drain loop
 	}
+	last := rawPost(t, ts.URL+"/mcp/agent-a-11111111", token, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
 	if last.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("after exhausting the bucket status = %d, want 429", last.StatusCode)
 	}

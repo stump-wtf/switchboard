@@ -27,3 +27,19 @@ func (s *Store) SettingInt(ctx context.Context, key string, def int) (int, error
 	}
 	return v, nil
 }
+
+// SettingString returns the string value of a settings row, or def when the key is absent. Like
+// SettingInt, a missing row is not an error — settings are policy/presentation knobs, so an
+// unconfigured key falls back to the supplied default. This backs the SPEC-0005
+// `replay_default_target` and replay allowlist knobs (internal/mcp/replay.go).
+func (s *Store) SettingString(ctx context.Context, key, def string) (string, error) {
+	var raw string
+	err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return def, nil
+	}
+	if err != nil {
+		return def, fmt.Errorf("read setting %s: %w", key, err)
+	}
+	return raw, nil
+}
