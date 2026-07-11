@@ -46,6 +46,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Feed the web SSE hub from committed todo lifecycle transitions (process-local publish hook).
+	// Best-effort by design: the hub drops on full buffers and PostgreSQL stays authoritative.
+	// Governing: SPEC-0012 REQ "Live Updates via SSE".
+	st.SetTodoTransitionHook(webh.PublishTodoTransition)
 	api := agentapi.New(st, hub, log)
 	ing := ingest.New(st, hub, log, os.Getenv("SWITCHBOARD_GITHUB_SECRET"), os.Getenv("SWITCHBOARD_GITHUB_QUEUE"), cfg.DevLogin)
 
@@ -98,6 +102,8 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		pr.Use(authr.RequireHuman)
 		pr.Use(authr.RequireCSRF)
 		pr.Get("/", webh.Dashboard)
+		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
+		pr.Get("/events", webh.Events)
 		pr.Post("/agents", webh.CreateAgent)
 		pr.Get("/agents/{id}", webh.Agent)
 		pr.Post("/agents/{id}/vend", webh.Vend)
@@ -125,8 +131,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 // secureHeaders sets defensive response headers on every route (SPEC-0001/0005/0006/0007/0008/0012).
 // The CSP is tuned to the actual web UI: an external stylesheet under /static plus an inline <style>
-// block and inline style="" attributes (hence style-src 'unsafe-inline'); there are no scripts, so
-// script-src is locked to 'self'. frame-ancestors 'none' backs up X-Frame-Options: DENY.
+// block and inline style="" attributes (hence style-src 'unsafe-inline'); the only scripts are the
+// vendored htmx assets embedded and served from /static (ADR-0001: no CDN), so script-src stays
+// locked to 'self'. frame-ancestors 'none' backs up X-Frame-Options: DENY.
 func secureHeaders(next http.Handler) http.Handler {
 	const csp = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
 		"script-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"

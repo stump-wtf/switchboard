@@ -7,10 +7,12 @@
 <div class="card">
   <form method="post" action="/agents/{{.Agent.ID}}/vend">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-    <label>Queues (comma-separated) — the todo queues this endpoint may work</label>
-    <input name="queues" placeholder="reviews, deploys" required>
-    <label>Verbs (comma-separated) — allowed MCP tools</label>
-    <input name="verbs" value="list_todos,claim,complete,fail" required>
+    <!-- Governing: SPEC-0012 REQ "Labels and Icon-Only Controls" — labels programmatically
+         associated via for/id so AT announces the controls by name. -->
+    <label for="vend-queues">Queues (comma-separated) — the todo queues this endpoint may work</label>
+    <input id="vend-queues" name="queues" placeholder="reviews, deploys" required>
+    <label for="vend-verbs">Verbs (comma-separated) — allowed MCP tools</label>
+    <input id="vend-verbs" name="verbs" value="list_todos,claim,complete,fail" required>
     <p style="margin-top:.8rem"><button>Vend endpoint</button></p>
   </form>
   <p class="muted">Scope is immutable — to change access, revoke and re-vend.</p>

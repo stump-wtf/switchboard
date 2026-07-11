@@ -3,8 +3,10 @@
 <div class="card">
   <form method="post" action="/agents">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-    <label>Agent name</label><input name="name" placeholder="reviewer-bot" required>
-    <label>Description</label><input name="description" placeholder="reviews PRs while I'm away">
+    <!-- Governing: SPEC-0012 REQ "Labels and Icon-Only Controls" — labels programmatically
+         associated via for/id so AT announces the controls by name. -->
+    <label for="agent-name">Agent name</label><input id="agent-name" name="name" placeholder="reviewer-bot" required>
+    <label for="agent-description">Description</label><input id="agent-description" name="description" placeholder="reviews PRs while I'm away">
     <p style="margin-top:.8rem"><button>Register agent</button></p>
   </form>
   <p class="muted">Registering an agent grants nothing — power comes only from a vend.</p>

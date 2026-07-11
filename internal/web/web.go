@@ -5,6 +5,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -31,11 +33,19 @@ type Handler struct {
 	cfg   config.Config
 	log   *slog.Logger
 	pages map[string]*template.Template
+
+	// SSE plumbing (SPEC-0012 "Live Updates via SSE"). sseRetryMS and keepAlive are fields so
+	// tests can shrink intervals; production values come from New.
+	events     *EventHub
+	sseRetryMS func(ctx context.Context) int
+	keepAlive  time.Duration
 }
 
 // New parses the templates and returns a Handler.
 func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error) {
-	h := &Handler{store: st, cfg: cfg, log: log, pages: map[string]*template.Template{}}
+	h := &Handler{store: st, cfg: cfg, log: log, pages: map[string]*template.Template{},
+		events: newEventHub(), keepAlive: defaultKeepAlive}
+	h.sseRetryMS = h.sseRetrySetting
 	for _, p := range []string{"login", "dashboard", "agent", "vended"} {
 		t, err := template.ParseFS(tmplFS, "templates/layout.html", "templates/"+p+".html")
 		if err != nil {

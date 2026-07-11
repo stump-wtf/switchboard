@@ -75,6 +75,7 @@ func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool,
 		// idle worker/UI wakes without polling. The durable queue is the source of truth, so a lost
 		// NOTIFY costs only latency, never work — hence the error here is deliberately ignored.
 		s.notifyTodoReady(ctx, t.Queue)
+		s.fireTodoHook("created", t)
 	}
 	return t, created, err
 }
@@ -105,6 +106,7 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 	}
 	if created {
 		s.notifyTodoReady(ctx, t.Queue)
+		s.fireTodoHook("created", t)
 	}
 	return eventID, t, created, nil
 }
@@ -163,6 +165,9 @@ func (s *Store) ClaimTodo(ctx context.Context, id, owner string, ttl time.Durati
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, id)
 	}
+	if err == nil {
+		s.fireTodoHook("claimed", t)
+	}
 	return t, err
 }
 
@@ -187,6 +192,9 @@ func (s *Store) ClaimNext(ctx context.Context, queues []string, owner string, tt
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ErrNotFound
+	}
+	if err == nil {
+		s.fireTodoHook("claimed", t)
 	}
 	return t, err
 }
@@ -217,6 +225,9 @@ func (s *Store) CompleteTodo(ctx context.Context, id, owner string, result []byt
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, id)
 	}
+	if err == nil {
+		s.fireTodoHook("done", t)
+	}
 	return t, err
 }
 
@@ -233,6 +244,10 @@ func (s *Store) FailTodo(ctx context.Context, id, owner string, result []byte) (
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, id)
+	}
+	if err == nil {
+		// verb mirrors the committed outcome: pending (will retry) or failed (dead-lettered).
+		s.fireTodoHook(t.State, t)
 	}
 	return t, err
 }
@@ -251,6 +266,9 @@ func (s *Store) RetryTodo(ctx context.Context, id string) (Todo, error) {
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, id)
+	}
+	if err == nil {
+		s.fireTodoHook("pending", t)
 	}
 	return t, err
 }

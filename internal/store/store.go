@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,11 +15,41 @@ import (
 // ErrNotFound is returned when a lookup matches no row.
 var ErrNotFound = errors.New("store: not found")
 
+// TodoTransitionHook observes committed todo lifecycle transitions for best-effort in-process
+// fan-out (e.g. the web UI's SSE hub). verb is one of created|claimed|done|failed|pending
+// (pending = a retry/requeue). Implementations MUST NOT block: delivery is presentation only —
+// PostgreSQL remains the source of truth and a missed call costs nothing but a UI refresh.
+// Governing: SPEC-0012 REQ "Live Updates via SSE" (best-effort presentation).
+type TodoTransitionHook func(verb string, t Todo)
+
 // Store wraps a pgx pool.
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool *pgxpool.Pool
+	// todoHook is read on every todo transition and set (rarely) at wiring time; atomic so a
+	// late SetTodoTransitionHook can never race in-flight transitions.
+	todoHook atomic.Pointer[TodoTransitionHook]
+}
 
 // New builds a Store over the given pool.
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+
+// SetTodoTransitionHook registers fn to observe committed todo transitions. Safe to call
+// concurrently with store use; passing nil clears the hook.
+func (s *Store) SetTodoTransitionHook(fn TodoTransitionHook) {
+	if fn == nil {
+		s.todoHook.Store(nil)
+		return
+	}
+	s.todoHook.Store(&fn)
+}
+
+// fireTodoHook invokes the registered transition hook, if any. Called only after a transition has
+// durably committed, so observers can never see a state the database does not.
+func (s *Store) fireTodoHook(verb string, t Todo) {
+	if fn := s.todoHook.Load(); fn != nil {
+		(*fn)(verb, t)
+	}
+}
 
 // Human is an OIDC-authenticated principal (Pocket ID subject). ADR-0008/011.
 type Human struct {

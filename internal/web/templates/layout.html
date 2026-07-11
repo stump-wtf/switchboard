@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · Switchboard</title>
 <link rel="stylesheet" href="/static/tokens.css">
+<!-- Vendored + embedded per ADR-0001 (no CDN; CSP script-src 'self'). SSE live regions: SPEC-0012. -->
+<script src="/static/vendor/htmx.min.js" defer></script>
+<script src="/static/vendor/htmx-ext-sse.min.js" defer></script>
 <style>
   body { font-family: var(--pico-font-family, ui-monospace, monospace);
     background: var(--pico-background-color); color: var(--pico-color);
@@ -27,7 +30,7 @@
   input, select, textarea { background: var(--pico-form-element-background-color);
     color: var(--pico-color); border: 1px solid var(--pico-form-element-border-color);
     border-radius: .25rem; padding: .4rem .55rem; font: inherit; }
-  label { display: block; font-size: .85rem; color: var(--sb-cream-muted); margin: .6rem 0 .2rem; }
+  label, .field-label { display: block; font-size: .85rem; color: var(--sb-cream-muted); margin: .6rem 0 .2rem; }
   button, .btn { background: var(--sb-brass); color: var(--sb-bakelite); border: none;
     border-radius: .25rem; padding: .45rem .9rem; font: inherit; font-weight: 600; cursor: pointer; }
   button.secondary { background: transparent; color: var(--sb-oxblood); border: 1px solid var(--sb-oxblood); }
@@ -42,11 +45,20 @@
   code { padding: .1rem .35rem; } pre { padding: .8rem; overflow-x: auto; font-size: .82rem; }
   .muted { color: var(--sb-cream-muted); font-size: .85rem; }
   .warn { border-left: 3px solid var(--sb-amber); padding-left: .8rem; color: var(--sb-amber); }
+  header.top .lamp { color: var(--sb-patch-green); font-size: .75rem; letter-spacing: .02em; }
 </style>
 </head>
 <body>
 <header class="top">
   <span class="brand">◍ Switchboard</span>
+  {{if .Human}}
+  <!-- Live receiving lamp (SPEC-0012): subscribed via htmx-ext-sse; the region exists in the DOM
+       before any event arrives and is aria-live=polite so the first swap is announced. A dropped
+       event only stales this label — reload renders authoritative state from PostgreSQL. -->
+  <span class="lamp" hx-ext="sse" sse-connect="/events" role="status" aria-live="polite" aria-label="Live update status">
+    <span sse-swap="todo"><span aria-hidden="true">●</span> receiving</span>
+  </span>
+  {{end}}
   <span class="spacer"></span>
   {{if .Human}}<span class="muted">{{.Human.DisplayName}}</span><form class="logout" method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="linklike">log out</button></form>{{else}}<a href="/login">log in</a>{{end}}
 </header>
