@@ -25,14 +25,14 @@ import (
 // `Stripe-Signature: t=<unix>,v1=<hex>[,v1=<hex>...]` (multiple v1 entries during secret
 // rotation). The signed `t=` timestamp is additionally checked against the replay window.
 func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
-	body, ok := readBody(w, r)
+	body, ok := i.readBody(w, r)
 	if !ok {
 		return
 	}
 	if i.stripeSecret == "" {
 		// Governing: SPEC-0001 scenario "Signature secret not configured" — reject without
 		// comparing any signature.
-		http.Error(w, "stripe adapter not configured", http.StatusServiceUnavailable)
+		writeErr(w, http.StatusServiceUnavailable, "stripe adapter not configured")
 		return
 	}
 	if !verifyStripe(i.stripeSecret, body, r.Header.Get("Stripe-Signature"), i.now(), i.tolerance) {
@@ -79,13 +79,13 @@ func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
 // `X-Slack-Signature: v0=<hex>` alongside `X-Slack-Request-Timestamp`. The timestamp is part of
 // the signed material and is additionally checked against the replay window.
 func (i *Ingest) Slack(w http.ResponseWriter, r *http.Request) {
-	body, ok := readBody(w, r)
+	body, ok := i.readBody(w, r)
 	if !ok {
 		return
 	}
 	if i.slackSecret == "" {
 		// Governing: SPEC-0001 scenario "Signature secret not configured".
-		http.Error(w, "slack adapter not configured", http.StatusServiceUnavailable)
+		writeErr(w, http.StatusServiceUnavailable, "slack adapter not configured")
 		return
 	}
 	if !verifySlack(i.slackSecret, body, r.Header.Get("X-Slack-Request-Timestamp"),

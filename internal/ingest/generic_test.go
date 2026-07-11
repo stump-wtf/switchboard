@@ -118,6 +118,7 @@ func TestGenericRejections(t *testing.T) {
 		{"wrong dedicated header token", "dockerhub", map[string]string{"X-Webhook-Token": "wrong"}, "", http.StatusForbidden},
 		{"wrong URL token", "dockerhub", nil, "token=wrong", http.StatusForbidden},
 		{"malformed authorization scheme", "dockerhub", map[string]string{"Authorization": "Basic s3cret"}, "", http.StatusForbidden},
+		{"wrong lowercase-bearer token", "dockerhub", map[string]string{"Authorization": "bearer wrong"}, "", http.StatusForbidden},
 		{"provider disabled until token set", "tokenless", nil, "", http.StatusForbidden},
 		// A disabled provider rejects even an empty presented token (no empty==empty match).
 		{"disabled provider rejects empty token", "tokenless", map[string]string{"X-Webhook-Token": ""}, "", http.StatusForbidden},
@@ -144,6 +145,32 @@ func TestGenericRejectsOversizedBody(t *testing.T) {
 	ing.Generic(rec, req)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized generic body: got %d, want 413", rec.Code)
+	}
+}
+
+// The Authorization auth-scheme is case-insensitive per RFC 7235 §2.1 — `bearer x` and `BEARER x`
+// must present the token exactly like `Bearer x`, while non-Bearer schemes present nothing.
+func TestPresentedTokenSchemeCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name string
+		auth string
+		want string
+	}{
+		{"canonical Bearer", "Bearer s3cret", "s3cret"},
+		{"lowercase bearer", "bearer s3cret", "s3cret"},
+		{"uppercase BEARER", "BEARER s3cret", "s3cret"},
+		{"mixed case BeArEr", "BeArEr s3cret", "s3cret"},
+		{"Basic is not Bearer", "Basic s3cret", ""},
+		{"bare scheme with no token", "Bearer ", ""},
+		{"scheme fragment without space", "Bearers3cret", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := genericRequest("x", "", map[string]string{"Authorization": tc.auth}, "")
+			if got := presentedToken(req); got != tc.want {
+				t.Fatalf("presentedToken(Authorization: %q) = %q, want %q", tc.auth, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -231,6 +258,20 @@ func TestGenericTokenAcceptPersists(t *testing.T) {
 	decode(t, rec2.Body.Bytes(), &second)
 	if first.ID == "" || first.ID != second.ID {
 		t.Fatalf("redelivery must dedup to the same todo: %q vs %q", first.ID, second.ID)
+	}
+
+	// A lowercase `bearer` scheme authenticates too (RFC 7235 case-insensitive schemes) and still
+	// dedups into the same todo.
+	rec3 := httptest.NewRecorder()
+	ing.Generic(rec3, genericRequest("dockerhub",
+		`{"push_data":{"tag":"latest"}}`, map[string]string{"Authorization": "bearer s3cret"}, ""))
+	if rec3.Code != http.StatusAccepted {
+		t.Fatalf("lowercase bearer scheme: got %d, want 202 (body %s)", rec3.Code, rec3.Body.String())
+	}
+	var third struct{ ID string }
+	decode(t, rec3.Body.Bytes(), &third)
+	if third.ID != first.ID {
+		t.Fatalf("lowercase-bearer redelivery must dedup to the same todo: %q vs %q", third.ID, first.ID)
 	}
 }
 

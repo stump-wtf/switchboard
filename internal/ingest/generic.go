@@ -91,7 +91,7 @@ func ParseGenericProviders(raw string) (map[string]GenericProvider, error) {
 
 // Generic is the token/open generic webhook receiver: POST /webhooks/generic/{name}.
 func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
-	body, ok := readBody(w, r)
+	body, ok := i.readBody(w, r)
 	if !ok {
 		return
 	}
@@ -165,12 +165,15 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 
 // presentedToken extracts the shared-secret token from the request: `Authorization: Bearer <token>`
 // or the dedicated X-Webhook-Token header (preferred), with a `?token=` URL fallback for senders
-// that can only be configured with a URL. Governing: SPEC-0001 REQ "Shared-Secret Token
-// Authentication for Unsigned Webhooks" (header SHOULD, URL MAY).
+// that can only be configured with a URL. The `Bearer` auth-scheme is matched case-insensitively —
+// RFC 7235 §2.1 makes scheme names case-insensitive, so `bearer <token>` must authenticate too.
+// Governing: SPEC-0001 REQ "Shared-Secret Token Authentication for Unsigned Webhooks" (header
+// SHOULD, URL MAY).
 func presentedToken(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); auth != "" {
-		if tok, ok := strings.CutPrefix(auth, "Bearer "); ok {
-			return tok
+		const scheme = "Bearer "
+		if len(auth) > len(scheme) && strings.EqualFold(auth[:len(scheme)], scheme) {
+			return auth[len(scheme):]
 		}
 	}
 	if tok := r.Header.Get(tokenHeader); tok != "" {

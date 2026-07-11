@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,11 +33,34 @@ const maxBody = 5 << 20 // 5 MiB
 // Enforcement for Timestamped Signatures" (default 300 seconds).
 const defaultReplayTolerance = 300 * time.Second
 
-// sensitiveHeaders are redacted before an event's headers are persisted (ADR-0002/003).
+// sensitiveHeaders is the explicit denylist of headers redacted before an event's headers are
+// persisted. Governing: SPEC-0001 REQ "Header and Secret Sanitization Before Persist" (the spec's
+// named set), ADR-0003.
 var sensitiveHeaders = map[string]bool{
 	"x-hub-signature": true, "x-hub-signature-256": true, "authorization": true,
-	"cookie": true, "x-slack-signature": true, "stripe-signature": true, "x-api-key": true,
-	"x-webhook-token": true,
+	"proxy-authorization": true, "cookie": true, "set-cookie": true, "x-slack-signature": true,
+	"stripe-signature": true, "x-api-key": true, "x-webhook-token": true,
+}
+
+// sensitiveNameFragments catches secret-bearing headers beyond the explicit denylist (e.g.
+// X-Gitlab-Token, X-Custom-Secret, X-Auth-Key variants) so a provider we have not enumerated can
+// never leak a credential into stored headers. Defense in depth over sensitiveHeaders.
+// Governing: SPEC-0001 REQ "Header and Secret Sanitization Before Persist".
+var sensitiveNameFragments = []string{"signature", "token", "secret", "api-key", "apikey", "auth"}
+
+// sensitiveHeaderName reports whether a header's VALUE must be redacted before persist: either an
+// exact denylist hit or a name that carries a credential-suggesting fragment.
+func sensitiveHeaderName(name string) bool {
+	l := strings.ToLower(name)
+	if sensitiveHeaders[l] {
+		return true
+	}
+	for _, frag := range sensitiveNameFragments {
+		if strings.Contains(l, frag) {
+			return true
+		}
+	}
+	return false
 }
 
 // Ingest holds the ingestion dependencies.
@@ -97,18 +121,25 @@ func New(st *store.Store, hub *agentapi.Hub, log *slog.Logger, cfg Config) *Inge
 }
 
 // readBody drains the raw request body under the 5 MiB cap, writing the rejection itself on
-// failure. Governing: SPEC-0001 REQ body limits. MaxBytesReader (not io.LimitReader) so an
-// over-limit body is REJECTED with 413 rather than silently truncated and then HMAC-verified
-// against a short read.
-func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+// failure. It is the single body-limit boundary every receiver shares, so oversize semantics (413,
+// nothing persisted) and error shapes are uniform across providers. MaxBytesReader (not
+// io.LimitReader) so an over-limit body is REJECTED with 413 rather than silently truncated and
+// then HMAC-verified against a short read. Governing: SPEC-0001 REQ "Request Body Size Limits",
+// REQ "Error Handling Standards".
+func (i *Ingest) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
+			i.log.Warn("webhook body over limit", "path", r.URL.Path, "limit", maxBody,
+				"remote", clientIP(r))
 			writeErr(w, http.StatusRequestEntityTooLarge, "payload too large")
 			return nil, false
 		}
-		http.Error(w, "read error", http.StatusBadRequest)
+		// Wrap with boundary context before logging; the client sees only a generic message.
+		i.log.Warn("webhook body read failed", "path", r.URL.Path, "remote", clientIP(r),
+			"err", fmt.Errorf("read request body: %w", err))
+		writeErr(w, http.StatusBadRequest, "read error")
 		return nil, false
 	}
 	return body, true
@@ -116,12 +147,14 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 
 // GitHub is the signed GitHub webhook receiver: POST /webhooks/github.
 func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
-	body, ok := readBody(w, r)
+	body, ok := i.readBody(w, r)
 	if !ok {
 		return
 	}
 	if i.githubSecret == "" {
-		http.Error(w, "github adapter not configured", http.StatusServiceUnavailable)
+		// Governing: SPEC-0001 scenario "Signature secret not configured" — reject without
+		// comparing any signature.
+		writeErr(w, http.StatusServiceUnavailable, "github adapter not configured")
 		return
 	}
 	sig := r.Header.Get("X-Hub-Signature-256")
@@ -169,13 +202,19 @@ func (i *Ingest) DevCreateTodo(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Same bounded-body contract as the webhook receivers: over-limit is 413, never a truncated
+	// read (SPEC-0001 REQ "Request Body Size Limits").
+	body, ok := i.readBody(w, r)
+	if !ok {
+		return
+	}
 	var in struct {
 		Queue   string          `json:"queue"`
 		Title   string          `json:"title"`
 		Kind    string          `json:"kind"`
 		Payload json.RawMessage `json:"payload"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxBody)).Decode(&in); err != nil || in.Queue == "" || in.Title == "" {
+	if err := json.Unmarshal(body, &in); err != nil || in.Queue == "" || in.Title == "" {
 		writeErr(w, http.StatusBadRequest, "queue and title are required")
 		return
 	}
@@ -183,6 +222,9 @@ func (i *Ingest) DevCreateTodo(w http.ResponseWriter, r *http.Request) {
 		Queue: in.Queue, Source: "dev", Kind: in.Kind, Title: in.Title, Payload: in.Payload,
 	})
 	if err != nil {
+		// Governing: SPEC-0001 REQ "Error Handling Standards" — 500 is generic to the client,
+		// structured for the log.
+		i.log.Error("dev create todo", "queue", in.Queue, "err", err)
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -245,10 +287,15 @@ func summarizeGitHub(event string, body []byte) string {
 // shows up in a Referer/Location/Link header). The value is redacted so it is never persisted.
 var urlSecretParam = regexp.MustCompile(`(?i)([?&](?:token|access_token|api[_-]?key|apikey|secret|signature|sig)=)[^&#\s]+`)
 
+// sanitizeHeaders is the single sanitization point for persisted event headers: every receiver MUST
+// route inbound headers through it before handing them to the store. Secret-bearing header values
+// (denylist + name-fragment match) become «redacted», and secrets embedded in URL-valued headers
+// (?token=…) are redacted in place. Governing: SPEC-0001 REQ "Header and Secret Sanitization Before
+// Persist".
 func sanitizeHeaders(h http.Header) []byte {
 	out := map[string]string{}
 	for k, v := range h {
-		if sensitiveHeaders[strings.ToLower(k)] {
+		if sensitiveHeaderName(k) {
 			out[k] = "«redacted»"
 			continue
 		}
