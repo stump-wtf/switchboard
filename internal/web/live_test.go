@@ -82,13 +82,17 @@ func TestFeedRowFromEventlessTodo(t *testing.T) {
 
 func TestCountsFragmentCarriesOOBBundle(t *testing.T) {
 	h := newTestHandler(t)
-	out := renderFrag(t, h, "counts", countsView{Tiles: tilesView{
-		Stats: store.BoardStats{InFlight: 2, AwaitingClaim: 5, VerifiedPct: 80, EventsPerMin: 3},
-		Bars:  activityBars([]int{1, 0, 4}),
-		OOB:   true,
-	}})
+	out := renderFrag(t, h, "counts", countsView{
+		Tiles: tilesView{
+			Stats: store.BoardStats{InFlight: 2, AwaitingClaim: 5, VerifiedPct: 80, EventsPerMin: 3},
+			Bars:  activityBars([]int{1, 0, 4}),
+			OOB:   true,
+		},
+		Todos: store.TodoCounts{All: 9, Pending: 5, Claimed: 2, Done: 1, Failed: 1},
+	})
 	for _, want := range []string{
-		`id="sb-tiles"`, `id="sb-todo-count"`, `id="sb-live"`, // the three swap targets
+		`id="sb-tiles"`, `id="sb-todo-count"`, `id="sb-live"`, // Board swap targets
+		`id="sb-tc-all"`, `id="sb-tc-pending"`, `id="sb-tc-failed"`, // Todos view pill-count targets
 		"sb-tile--alert", // awaiting-claim emphasis travels with the fragment
 		"LIVE · 3/min",   // pill rate
 		">5</span>",      // rail count
@@ -98,8 +102,9 @@ func TestCountsFragmentCarriesOOBBundle(t *testing.T) {
 			t.Errorf("counts: missing %q in %q", want, out)
 		}
 	}
-	if got := strings.Count(out, `hx-swap-oob="true"`); got != 3 {
-		t.Errorf("counts: %d oob swaps, want 3 (tiles + count + pill):\n%q", got, out)
+	// tiles + rail count + LIVE pill (Board) plus the five Todos-view pill counts = 8 OOB swaps.
+	if got := strings.Count(out, `hx-swap-oob="true"`); got != 8 {
+		t.Errorf("counts: %d oob swaps, want 8 (tiles + count + pill + 5 filter counts):\n%q", got, out)
 	}
 }
 

@@ -1,0 +1,11 @@
+{{define "content"}}
+{{/* Governing: SPEC-0013 REQ "Todos View — Durable Queue" — filter pills with live counts, a search
+     over id/source/event, and the durable-queue table, all server-rendered from the database and
+     kept live by the typed SSE events (todo_* frames replace rows OOB; the counts frame refreshes the
+     pill numbers). The pills+table live inside #sb-todos-panel, which HTMX filter/search GETs swap
+     wholesale; the drawer opens into the shared #sb-overlay slot. Reload always renders truth. */}}
+<h1 class="sb-page-title">Todos</h1>
+<p class="sb-tagline">the durable queue · every line accounted for</p>
+
+<div id="sb-todos-panel">{{template "todos_panel" dict "Filter" .Filter "Query" .Query "Counts" .Counts "Rows" .TodoItems}}</div>
+{{end}}

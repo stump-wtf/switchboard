@@ -1,0 +1,7 @@
+{{define "content"}}
+{{/* Standalone fallback for GET /todos/{id} when NOT requested via HTMX (deep links, no-JS): the
+     same drawer fragment rendered inline in the main column instead of the overlay. Governing:
+     SPEC-0013 REQ "Todo Detail Drawer" (overlay open/close reachable by full-page fallback). */}}
+<p class="sb-backlink"><a href="/todos">← Todos</a></p>
+<div class="sb-drawer-inline">{{template "drawer" .Drawer}}</div>
+{{end}}

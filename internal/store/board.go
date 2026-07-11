@@ -55,14 +55,21 @@ type EventSummary struct {
 	TodoID     string // linked todo ("" when none)
 	TodoState  string // pending|claimed|done|failed ("" when none)
 	TodoOwner  string // lease owner when claimed ("" otherwise)
+	Deduped    bool   // no todo links THIS event, but its delivery key collapsed onto another's todo
 }
 
 // RecentEvents returns the newest accepted events, newest first, each joined to its todo's
-// lifecycle state so the feed can render the stage (verifying → patched → claimed → done).
+// lifecycle state so the feed can render the stage (verifying → patched → claimed → done). An event
+// whose delivery collapsed onto an EARLIER delivery's todo (same idempotency key, so createTodo
+// deduped and left this event with no todo of its own) is flagged Deduped, so the feed can render a
+// truthful `deduped` stage instead of a perpetual `verifying…`.
+// Governing: SPEC-0013 REQ "Board View — Live Incoming Lines".
 func (s *Store) RecentEvents(ctx context.Context, limit int) ([]EventSummary, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT e.id, e.source, COALESCE(e.event_type, ''), e.trust_mode, e.received_at,
-			COALESCE(t.id, ''), COALESCE(t.state, ''), COALESCE(t.owner, '')
+			COALESCE(t.id, ''), COALESCE(t.state, ''), COALESCE(t.owner, ''),
+			(t.id IS NULL AND e.external_id IS NOT NULL
+				AND EXISTS (SELECT 1 FROM todos d WHERE d.idempotency_key = e.external_id)) AS deduped
 		FROM events e
 		LEFT JOIN LATERAL (
 			SELECT id, state, owner FROM todos WHERE event_id = e.id ORDER BY created_at DESC LIMIT 1
@@ -76,7 +83,7 @@ func (s *Store) RecentEvents(ctx context.Context, limit int) ([]EventSummary, er
 	for rows.Next() {
 		var e EventSummary
 		if err := rows.Scan(&e.ID, &e.Source, &e.EventType, &e.TrustMode, &e.ReceivedAt,
-			&e.TodoID, &e.TodoState, &e.TodoOwner); err != nil {
+			&e.TodoID, &e.TodoState, &e.TodoOwner, &e.Deduped); err != nil {
 			return nil, fmt.Errorf("recent events scan: %w", err)
 		}
 		out = append(out, e)

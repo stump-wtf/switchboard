@@ -92,6 +92,21 @@ func (s *Store) GetAgentOwned(ctx context.Context, id, ownerHumanID string) (Age
 	return a, err
 }
 
+// AgentNameByID resolves an agent's display name from its id, for rendering `claimed · <agent name>`
+// lease-owner labels on the board (owners are stored as `agent:<agent id>`). Returns ErrNotFound for
+// an unknown id. Governing: SPEC-0013 REQ "Board View — Live Incoming Lines" (claimed · <agent name>).
+func (s *Store) AgentNameByID(ctx context.Context, id string) (string, error) {
+	var name string
+	err := s.pool.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, id).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("agent name by id: %w", err)
+	}
+	return name, nil
+}
+
 // MintSlug derives an endpoint's public URL slug from its agent's name plus a short random suffix
 // so slugs are unique without being guessable from the name alone. The slug is not a secret: the
 // URL grants nothing without the credential. Governing: SPEC-0014 REQ "Streamable HTTP MCP Endpoint".

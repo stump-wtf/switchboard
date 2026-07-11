@@ -596,6 +596,11 @@ a:hover {
 .sb-feed__stage--failed {
   color: var(--sb-status-failed);
 }
+/* Deduped: this delivery collapsed onto an earlier one's todo — a truthful terminal stage rather
+   than a perpetual "verifying…" (SPEC-0013 carry-over). */
+.sb-feed__stage--deduped {
+  color: var(--sb-dedup);
+}
 
 /* Ringing pulse: a just-received line, still verifying. */
 .sb-feed__pulse {
@@ -850,6 +855,266 @@ pre code {
   pointer-events: auto;
 }
 
+/* ---- Todos view: search, filter pills, queue table (SPEC-0013) ---- */
+
+.sb-search {
+  margin: 4px 0 14px;
+}
+.sb-search__input {
+  max-width: 340px;
+}
+
+.sb-fpills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.sb-fpill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 13px;
+  border-radius: var(--sb-radius-pill);
+  border: 1px solid var(--sb-input-border-soft);
+  background: var(--sb-panel);
+  color: var(--sb-secondary);
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  text-decoration: none;
+}
+.sb-fpill:hover {
+  background: var(--sb-row-hover);
+  color: var(--sb-text);
+}
+.sb-fpill--active {
+  background: var(--sb-nav-active-bg);
+  border-color: var(--sb-brass);
+  color: var(--sb-ink);
+  font-weight: 600;
+}
+.sb-fpill__n {
+  font-size: 11px;
+  color: var(--sb-muted);
+}
+.sb-fpill--active .sb-fpill__n {
+  color: var(--sb-oxblood);
+}
+
+.sb-table-wrap {
+  overflow-x: auto;
+}
+.sb-table--todos {
+  min-width: 720px;
+}
+
+.sb-trow__source {
+  font-weight: 600;
+  color: var(--sb-text);
+}
+.sb-trow__kind {
+  font-family: var(--sb-font-mono);
+  font-size: 11.5px;
+  color: var(--sb-muted);
+}
+.sb-trow__sub {
+  display: block;
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-faint-2);
+  margin-top: 2px;
+}
+.sb-trow__age {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-faint-2);
+  white-space: nowrap;
+}
+.sb-trow__act {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* dedup ×N badge — the idempotency key collapsed multiple deliveries onto one todo. */
+.sb-dedup {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: var(--sb-radius-chip);
+  font-family: var(--sb-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--sb-dedup);
+  background: var(--sb-dedup-bg);
+}
+
+/* Reaper re-surface flash: a claimed lease expired back to pending — highlight the row briefly as
+   its OOB swap lands (SPEC-0013 "Reaper re-surface is visible"). */
+.sb-trow--flash {
+  animation: sb-row-flash var(--sb-dur-row) var(--sb-ease);
+}
+
+/* ---- todo detail drawer (SPEC-0013) ---- */
+
+.sb-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(440px, 92vw);
+  overflow-y: auto;
+  background: var(--sb-panel);
+  border-left: 1px solid var(--sb-border-strong);
+  box-shadow: var(--sb-shadow-drawer);
+  padding: 20px 22px 28px;
+  animation: sb-drawer-in var(--sb-dur-enter) var(--sb-ease);
+}
+/* Inline standalone fallback (the /todos/{id} page): the same panel, not fixed to the edge. */
+.sb-drawer-inline .sb-drawer {
+  position: static;
+  width: 100%;
+  max-width: 480px;
+  box-shadow: none;
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  animation: none;
+}
+
+.sb-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.sb-drawer__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sb-drawer__id {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--sb-ink);
+}
+.sb-drawer__close {
+  background: none;
+  border: none;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--sb-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--sb-radius-chip);
+}
+.sb-drawer__close:hover {
+  background: var(--sb-row-hover);
+  color: var(--sb-ink);
+}
+
+.sb-lease {
+  border: 1px solid var(--sb-input-border-soft);
+  border-radius: var(--sb-radius-card);
+  background: var(--sb-status-claimed-bg);
+  padding: 12px 14px;
+  margin: 12px 0;
+}
+.sb-lease__count {
+  font-family: var(--sb-font-mono);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--sb-status-claimed);
+  margin: 2px 0 8px;
+}
+.sb-lease__track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--sb-lease-track);
+  overflow: hidden;
+}
+.sb-lease__bar {
+  height: 100%;
+  background: var(--sb-brass);
+  transition: width 1s linear;
+}
+.sb-drawer__acts {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sb-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 16px;
+  margin: 14px 0;
+}
+.sb-meta__cell dt {
+  font-family: var(--sb-font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--sb-faint);
+  margin-bottom: 3px;
+}
+.sb-meta__cell dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--sb-text);
+}
+.sb-meta__idem {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.sb-drawer__payload {
+  max-height: 240px;
+  margin: 4px 0 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sb-timeline {
+  list-style: none;
+  margin: 6px 0 16px;
+  padding: 0;
+}
+.sb-timeline li {
+  position: relative;
+  padding: 4px 0 4px 20px;
+  font-family: var(--sb-font-mono);
+  font-size: 11.5px;
+  color: var(--sb-faint-2);
+}
+.sb-timeline li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--sb-faint-3);
+  background: var(--sb-panel);
+}
+.sb-timeline__done {
+  color: var(--sb-body);
+}
+.sb-timeline__done::before {
+  background: var(--sb-brass);
+  border-color: var(--sb-brass);
+}
+
+.sb-drawer__foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 /* ---- login (public page, no rail) ---- */
 
 .sb-login {
@@ -895,10 +1160,35 @@ pre code {
   }
 }
 
+@keyframes sb-drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0.4;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes sb-row-flash {
+  0% {
+    background: var(--sb-row-flash);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sb-live__dot,
   .sb-feed__pulse,
-  .sb-ring {
+  .sb-ring,
+  .sb-drawer,
+  .sb-trow--flash {
     animation: none;
+  }
+  .sb-lease__bar {
+    transition: none;
   }
 }

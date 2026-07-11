@@ -63,11 +63,18 @@ func newTestRouter(t *testing.T) chi.Router {
 // adding one without updating this contract) fails.
 var sessionRoutes = map[string]bool{
 	"GET /":                       true, // Board landing (SPEC-0013) — gated, per PR #120 wiring
+	"GET /todos":                  true, // Todos view (SPEC-0013 durable-queue table)
+	"GET /todos/{id}":             true, // Todo detail drawer (fragment / standalone)
 	"GET /agents":                 true,
 	"GET /agents/{id}":            true,
 	"GET /events":                 true,
 	"POST /agents":                true,
-	"POST /todos/{id}/claim":      true, // operator claim from the Board feed (SPEC-0013)
+	"POST /todos/{id}/claim":      true, // operator claim (Board feed + Todos view)
+	"POST /todos/{id}/complete":   true, // operator complete · ack (SPEC-0013)
+	"POST /todos/{id}/fail":       true, // operator fail (SPEC-0013)
+	"POST /todos/{id}/retry":      true, // operator retry a dead-lettered todo (SPEC-0013)
+	"POST /todos/{id}/extend":     true, // operator extend lease / heartbeat (SPEC-0013)
+	"POST /todos/{id}/release":    true, // operator release lease back to pending (SPEC-0013)
 	"POST /agents/{id}/vend":      true,
 	"POST /endpoints/{id}/revoke": true,
 	"POST /logout":                true,

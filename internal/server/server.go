@@ -237,12 +237,22 @@ func newRouter(d routerDeps) chi.Router {
 		// Governing: SPEC-0013 REQ "Information Architecture and Navigation" — GET / renders the
 		// Board; the agents screen moves to /agents (surfaced as "Endpoints" in the rail).
 		pr.Get("/", d.webh.Board)
+		// Todos view: the durable-queue table + detail drawer (SPEC-0013). GET /todos/{id} serves the
+		// drawer fragment (HTMX) or a standalone page (deep link / no-JS fallback).
+		pr.Get("/todos", d.webh.Todos)
+		pr.Get("/todos/{id}", d.webh.TodoDrawer)
 		pr.Get("/agents", d.webh.Dashboard)
 		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
 		pr.Get("/events", d.webh.Events)
-		// Operator claim from the Board feed (SPEC-0013 endpoints table). CSRF arrives via the
+		// Operator todo lifecycle actions (SPEC-0013 endpoints table). Each dispatches to a SPEC-0003
+		// store transition; the UI implements no lifecycle rules of its own. CSRF arrives via the
 		// layout's hx-headers token; the group's RequireCSRF validates it.
 		pr.Post("/todos/{id}/claim", d.webh.ClaimTodo)
+		pr.Post("/todos/{id}/complete", d.webh.CompleteTodo)
+		pr.Post("/todos/{id}/fail", d.webh.FailTodo)
+		pr.Post("/todos/{id}/retry", d.webh.RetryTodo)
+		pr.Post("/todos/{id}/extend", d.webh.ExtendTodo)
+		pr.Post("/todos/{id}/release", d.webh.ReleaseTodo)
 		pr.Post("/agents", d.webh.CreateAgent)
 		pr.Get("/agents/{id}", d.webh.Agent)
 		pr.Post("/agents/{id}/vend", d.webh.Vend)

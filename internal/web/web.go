@@ -35,7 +35,7 @@ var tmplFS embed.FS
 // pageNames are the page templates composed with layout.html and the shared fragments. Startup
 // parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
-var pageNames = []string{"login", "board", "dashboard", "agent", "vended"}
+var pageNames = []string{"login", "board", "todos", "todo", "dashboard", "agent", "vended"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -163,8 +163,13 @@ type view struct {
 	Shell          shell
 	OIDCConfigured bool
 	DevLogin       bool
-	Tiles          tilesView // Board stat band (stats + activity bars)
-	Rows           []feedRow // Board incoming-lines feed
+	Tiles          tilesView        // Board stat band (stats + activity bars)
+	Rows           []feedRow        // Board incoming-lines feed
+	Counts         store.TodoCounts // Todos view filter-pill counts
+	TodoItems      []todoRow        // Todos view table rows
+	Filter         string           // active Todos filter pill (all|pending|claimed|done|failed)
+	Query          string           // Todos search text
+	Drawer         *drawerView      // standalone todo detail page (drawer fallback)
 	Agents         []store.Agent
 	Agent          *store.Agent
 	Endpoints      []store.Endpoint
@@ -215,7 +220,7 @@ func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 			h.log.Warn("board recent events", "err", err)
 		}
 		for _, e := range events {
-			rows = append(rows, feedRowFromEvent(e, false))
+			rows = append(rows, h.feedRowFromEvent(r.Context(), e, false))
 		}
 		buckets, err := h.store.EventBuckets(r.Context(), activityBuckets)
 		if err != nil {
@@ -236,28 +241,11 @@ func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 // claim-under-lease semantics (the UI implements no lifecycle rules of its own).
 func (h *Handler) ClaimTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	id := chi.URLParam(r, "id")
-	t, err := h.store.ClaimTodo(r.Context(), id, "op:"+human.ID, operatorLeaseTTL)
-	switch {
-	case errors.Is(err, store.ErrConflict):
-		// Raced by an agent (or not claimable): generic conflict; the SSE stage update tells the
-		// operator who won. No internal detail leaks (SPEC-0013 error handling).
-		http.Error(w, "conflict", http.StatusConflict)
-		return
-	case errors.Is(err, store.ErrNotFound):
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	case err != nil:
-		h.fail(w, err)
-		return
-	}
-	frag, err := h.renderFragment("feed_row", h.feedRowFromTodo(r.Context(), t, false))
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(frag))
+	t, err := h.store.ClaimTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
+	// respondTodoAction picks the fragment by HTMX target: the Board feed's Claim (default) still gets
+	// a feed_row, while the Todos table and drawer get their own refreshed fragments. On a lost race
+	// the SSE stage update tells the operator who won; no internal detail leaks (SPEC-0013).
+	h.respondTodoAction(w, r, "ClaimTodo", t, err)
 }
 
 // Dashboard lists the human's agents (surfaced as "Endpoints" in the rail until the SPEC-0013

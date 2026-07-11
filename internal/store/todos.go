@@ -286,6 +286,26 @@ func (s *Store) RetryTodo(ctx context.Context, id string) (Todo, error) {
 	return t, err
 }
 
+// ReleaseTodo returns a claimed todo to pending immediately — the operator "Release" action, which
+// hands work back to the queue without waiting for the lease to expire. Only the current lease owner
+// may release; it clears owner and lease but does NOT consume or reset attempts (unlike fail/retry).
+// Returns ErrConflict if the todo exists but is not a live claim owned by owner, ErrNotFound if
+// absent. Governing: SPEC-0013 REQ "Todo Detail Drawer" (Release), SPEC-0003 lease semantics.
+func (s *Store) ReleaseTodo(ctx context.Context, id, owner string) (Todo, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
+		WHERE id=$1 AND state='claimed' AND owner=$2
+		RETURNING `+todoCols, id, owner)
+	t, err := scanTodo(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Todo{}, s.classifyMiss(ctx, id)
+	}
+	if err == nil {
+		s.fireTodoHook("pending", t)
+	}
+	return t, err
+}
+
 // ListTodos returns todos in the allowed queues, optionally filtered by state, newest first.
 func (s *Store) ListTodos(ctx context.Context, queues []string, state string, limit int) ([]Todo, error) {
 	if limit <= 0 || limit > 200 {

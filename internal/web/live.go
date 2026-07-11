@@ -40,6 +40,7 @@ type feedRow struct {
 	State      string // "" (verifying) | pending | claimed | done | failed
 	OwnerLabel string // human-readable lease owner for the claimed stage
 	TodoID     string // enables the Claim action on pending rows
+	Deduped    bool   // event collapsed onto another delivery's todo — render a truthful "deduped" stage
 	OOB        bool   // render as an hx-swap-oob replacement of the existing row
 }
 
@@ -56,9 +57,12 @@ type tilesView struct {
 	OOB   bool
 }
 
-// countsView feeds the "counts" fragment: the OOB bundle of tiles + rail count + LIVE pill.
+// countsView feeds the "counts" fragment: the OOB bundle of tiles + rail count + LIVE pill (Board)
+// plus the Todos view filter-pill counts. Each region is an independent OOB swap, so a page updates
+// only the regions it actually renders (the Todos pills are ignored on the Board and vice-versa).
 type countsView struct {
 	Tiles tilesView
+	Todos store.TodoCounts
 }
 
 // endpointSeenView feeds the "endpoint_seen" fragment: the last-seen refresh for one vended
@@ -75,7 +79,7 @@ type endpointSeenView struct {
 // enqueued onto the ordered live queue and dropped on overflow.
 func (h *Handler) PublishEventReceived(e store.EventSummary) {
 	h.enqueueLive(func(ctx context.Context) {
-		if frag, err := h.renderFragment("feed_row", feedRowFromEvent(e, false)); err == nil {
+		if frag, err := h.renderFragment("feed_row", h.feedRowFromEvent(ctx, e, false)); err == nil {
 			h.events.Publish(Event{Name: "event_received", Data: frag})
 		} else {
 			h.log.Error("render event_received fragment", "event", e.ID, "err", err)
@@ -101,9 +105,27 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 		} else {
 			h.log.Error("render todo fragment", "todo", t.ID, "err", err)
 		}
+		// The Todos view table row (a different DOM element than the Board feed row) is updated by
+		// the SAME event via a second OOB swap, so an open Todos table advances its row live. The
+		// reaper's re-surface (todo_resurfaced) flags the row to flash briefly. Rendering it needs
+		// the enriched read model (trust mode, dedup count) — a best-effort store read; on error the
+		// row swap is skipped and a reload renders truth. Governing: SPEC-0013 REQ "Todos View —
+		// Durable Queue" (reaper re-surface is visible).
+		if h.store != nil {
+			if it, err := h.store.GetTodoItem(ctx, t.ID); err == nil {
+				trow := h.todoRowFromItem(ctx, it, true, name == "todo_resurfaced")
+				if frag, err := h.renderFragment("todo_row", trow); err == nil {
+					payload.WriteString(frag)
+				} else {
+					h.log.Error("render todo_row fragment", "todo", t.ID, "err", err)
+				}
+			} else {
+				h.log.Warn("live todo_row lookup", "todo", t.ID, "err", err)
+			}
+		}
 		// Background transitions surface as transient toasts (SPEC-0013 "Toast on background
 		// transition") announced with the todo id.
-		if msg := toastText(name, t); msg != "" {
+		if msg := h.toastText(ctx, name, t); msg != "" {
 			if frag, err := h.renderFragment("toast", msg); err == nil {
 				payload.WriteString(frag)
 			} else {
@@ -144,12 +166,13 @@ var sseEventNames = map[string]string{
 }
 
 // toastText renders the toast copy for a transition, or "" for transitions that only move the
-// feed (creation is announced by its own row appearing).
-func toastText(name string, t store.Todo) string {
+// feed (creation is announced by its own row appearing). It resolves the lease owner's display name
+// via the store (claimed · <agent name>).
+func (h *Handler) toastText(ctx context.Context, name string, t store.Todo) string {
 	id := shortID(t.ID)
 	switch name {
 	case "todo_claimed":
-		return id + " · claimed · " + ownerLabel(t.Owner)
+		return id + " · claimed · " + h.ownerLabel(ctx, t.Owner)
 	case "todo_completed":
 		return id + " · completed · ack sent"
 	case "todo_failed":
@@ -176,7 +199,15 @@ func (h *Handler) publishCounts(ctx context.Context) {
 	if err != nil {
 		h.log.Error("live counts buckets", "err", err)
 	}
-	frag, err := h.renderFragment("counts", countsView{Tiles: tilesView{Stats: stats, Bars: activityBars(buckets), OOB: true}})
+	// The Todos view filter-pill counts ride the same counts frame (OOB spans ignored on the Board).
+	todos, err := h.store.TodoCounts(ctx)
+	if err != nil {
+		h.log.Error("live counts todo counts", "err", err)
+	}
+	frag, err := h.renderFragment("counts", countsView{
+		Tiles: tilesView{Stats: stats, Bars: activityBars(buckets), OOB: true},
+		Todos: todos,
+	})
 	if err != nil {
 		h.log.Error("render counts fragment", "err", err)
 		return
@@ -226,8 +257,18 @@ func feedRowFromEvent(e store.EventSummary, oob bool) feedRow {
 		State:      e.TodoState,
 		OwnerLabel: ownerLabel(e.TodoOwner),
 		TodoID:     e.TodoID,
+		Deduped:    e.Deduped,
 		OOB:        oob,
 	}
+}
+
+// feedRowFromEvent (method) builds the feed row and resolves the lease-owner display name from the
+// store (claimed · <agent name>), which the pure function above cannot do. Production render paths
+// use this; tests exercise the pure function with a pre-set owner label.
+func (h *Handler) feedRowFromEvent(ctx context.Context, e store.EventSummary, oob bool) feedRow {
+	row := feedRowFromEvent(e, oob)
+	row.OwnerLabel = h.ownerLabel(ctx, e.TodoOwner)
+	return row
 }
 
 // feedRowFromTodo builds the feed render model for a todo transition, resolving the originating
@@ -241,7 +282,7 @@ func (h *Handler) feedRowFromTodo(ctx context.Context, t store.Todo, oob bool) f
 		TrustMode:  "queue",
 		ReceivedAt: t.CreatedAt,
 		State:      t.State,
-		OwnerLabel: ownerLabel(t.Owner),
+		OwnerLabel: h.ownerLabel(ctx, t.Owner),
 		TodoID:     t.ID,
 		OOB:        oob,
 	}
@@ -277,6 +318,21 @@ func activityBars(buckets []int) []bar {
 		bars[i] = bar{Pct: pct, Current: i == len(buckets)-1}
 	}
 	return bars
+}
+
+// ownerLabel (method) resolves an agent lease owner to its display name via the store, rendering
+// `agent · <agent name>` where the pure function can only show the id prefix. The operator owner and
+// the empty owner fall through to the pure function; any store miss (unknown id, lookup error, nil
+// store) degrades gracefully to the id-prefix label. Governing: SPEC-0013 REQ "Board View — Live
+// Incoming Lines" (claimed · <agent name>).
+func (h *Handler) ownerLabel(ctx context.Context, owner string) string {
+	if h.store != nil && strings.HasPrefix(owner, "agent:") {
+		id := strings.TrimPrefix(owner, "agent:")
+		if name, err := h.store.AgentNameByID(ctx, id); err == nil && name != "" {
+			return "agent · " + name
+		}
+	}
+	return ownerLabel(owner)
 }
 
 // ownerLabel renders a lease owner for humans: vended agents claim as "agent:<uuid>" (SPEC-0006/
