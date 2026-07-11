@@ -22,7 +22,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/db"
 	"github.com/joestump/switchboard/internal/store"
 )
@@ -106,10 +105,10 @@ func ingestTestPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 
 // testIngestDeps builds an Ingest against the real store, with a hub whose publishes the test can
 // observe and the pool for row-count asserts.
-func testIngestDeps(t *testing.T, cfg Config) (*Ingest, *agentapi.Hub, *pgxpool.Pool, context.Context) {
+func testIngestDeps(t *testing.T, cfg Config) (*Ingest, *Hub, *pgxpool.Pool, context.Context) {
 	t.Helper()
 	pool, ctx := ingestTestPool(t)
-	hub := agentapi.NewHub()
+	hub := NewHub()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return New(store.New(pool), hub, log, cfg), hub, pool, ctx
 }

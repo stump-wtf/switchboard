@@ -23,7 +23,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/db"
@@ -89,12 +88,11 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 	// The personas capability has landed (store + well-known route wired), so the DB-backed router
 	// enables it exactly as Run does — the Personas view and its routes are live for these tests.
 	webh.SetPersonasEnabled(true)
-	hub := agentapi.NewHub()
+	hub := ingest.NewHub()
 	r := newRouter(routerDeps{
 		st:    st,
 		authr: authr,
 		webh:  webh,
-		api:   agentapi.New(st, hub, log),
 		ing:   ingest.New(st, hub, log, ingest.Config{}),
 		ping:  pool.Ping,
 		log:   log,

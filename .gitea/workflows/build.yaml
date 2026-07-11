@@ -3,7 +3,7 @@
 #   - docker build (amd64) from deploy/docker/Dockerfile
 #   - Trivy scan (fail-closed on HIGH/CRITICAL with a fix)
 #   - push :latest, :main, :sha-<short>
-# StumpCloud's Ansible references :latest with `pull: always`, so an ie01 redeploy picks up HEAD.
+# StumpCloud's Ansible references :latest with `pull: always`, so an ie02 redeploy picks up HEAD.
 #
 # Registry auth: on Gitea < 1.26 the automatic per-run token (gitea.token) is REJECTED by the
 # container registry even with `permissions: packages: write` — VERIFIED: it returns

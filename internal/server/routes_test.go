@@ -17,7 +17,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/ingest"
@@ -42,14 +41,13 @@ func newTestRouter(t *testing.T) chi.Router {
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
-	hub := agentapi.NewHub()
+	hub := ingest.NewHub()
 	mcph := mcpsrv.New(st, log)
 	t.Cleanup(mcph.Close)
 	return newRouter(routerDeps{
 		st:    st,
 		authr: authr,
 		webh:  webh,
-		api:   agentapi.New(st, hub, log),
 		ing:   ingest.New(st, hub, log, ingest.Config{}),
 		mcp:   mcph,
 		ping:  func(context.Context) error { return nil },
@@ -143,7 +141,7 @@ func anonRequest(t *testing.T, r chi.Router, method, path string) *httptest.Resp
 // TestEveryRouteClassifiedAndAnonymousRejected walks the full route table and enforces the
 // authentication boundary route by route:
 //   - session routes (RequireHuman group) redirect anonymous requests to /login;
-//   - the bearer surfaces (/agent, /mcp) reject anonymous requests with 401;
+//   - the vended MCP surface (/mcp) rejects anonymous requests with 401;
 //   - static assets stay public;
 //   - anything else must appear in publicRoutes, or the test fails (auth-by-default).
 func TestEveryRouteClassifiedAndAnonymousRejected(t *testing.T) {
@@ -158,8 +156,8 @@ func TestEveryRouteClassifiedAndAnonymousRejected(t *testing.T) {
 			if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
 				t.Errorf("%s: anonymous got %d → %q, want 302 → /login", key, rec.Code, rec.Header().Get("Location"))
 			}
-		case strings.HasPrefix(route, "/agent/") || strings.HasPrefix(route, "/mcp/"):
-			// Bearer-credential surfaces (ADR-0008; SPEC-0014): no Authorization header → 401.
+		case strings.HasPrefix(route, "/mcp/"):
+			// Vended MCP surface (ADR-0017; SPEC-0014): bearer-credential auth, no Authorization header → 401.
 			rec := anonRequest(t, r, method, routePath(route))
 			if rec.Code != http.StatusUnauthorized {
 				t.Errorf("%s: anonymous got %d, want 401", key, rec.Code)

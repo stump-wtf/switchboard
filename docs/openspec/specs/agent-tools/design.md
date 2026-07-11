@@ -18,9 +18,13 @@ ScopeVerbs }`. The handler enforces `hasVerb` (verb in `ScopeVerbs`) and `inScop
 `ScopeQueues`) before any transition. Todo transitions delegate to the store (`ClaimTodo`,
 `CompleteTodo`, `FailTodo`), the acting owner is recorded as `agent:<AgentID>`, and expired leases are
 requeued by a background reaper (`server.reaper`, 30s ticker) so a crashed agent never strands work.
-A `Hub` fans newly-created todos to subscribed endpoints over SSE (`/agent/stream`) as a lossy
-doorbell — the durable `todos` table (`internal/db/migrations/0001_init.sql`, states
-`pending|claimed|done|failed`) is the ledger.
+Newly-verified todos are fanned out as a lossy doorbell — the durable `todos` table
+(`internal/db/migrations/0001_init.sql`, states `pending|claimed|done|failed`) is always the ledger.
+As shipped (ADR-0017; [SPEC-0014](../mcp-transport/spec.md)) this doorbell is delivered to attached
+MCP sessions as `notifications/claude/channel` on the Streamable-HTTP notification stream, driven by
+the store's committed-transition doorbell hook (`store.SetTodoDoorbellHook` → `mcp.PublishTodoReady`).
+The original bespoke `/agent/stream` SSE and its `internal/agentapi` `Hub` are retired; the ingest
+accept-path keeps a small in-process `ingest.Hub` only as a test-observable new-todo seam.
 
 The webhook self-management verbs (`create_webhook`, `list_webhooks`, `rotate_webhook`,
 `delete_webhook`) extend this same scoped endpoint with ceiling-bounded ingestion-source management.

@@ -244,7 +244,14 @@ context.
 Every endpoint on this surface is served over HTTP and MUST require authentication by default via a
 bearer credential resolved to a scoped endpoint. There are no public verbs on this surface.
 
-| Endpoint | Auth | Justification |
+> **Transport superseded (ADR-0017; [SPEC-0014](../mcp-transport/spec.md)).** These verbs now ship as
+> MCP tools over Streamable HTTP at `/mcp/{endpoint}` — `list_todos` / `claim` / `complete` / `fail` /
+> `heartbeat` plus the webhook self-management verbs, with the new-todo doorbell delivered as
+> `notifications/claude/channel` on the MCP notification stream. The bespoke `/agent/*` REST routes and
+> the `/agent/stream` SSE below are **retired** and no longer served; the table is kept as the record of
+> the verb set, auth model, and scope semantics that SPEC-0014 carries over MCP.
+
+| Endpoint (retired REST shape) | Auth | Justification |
 |----------|------|---------------|
 | `GET /agent/whoami` | Required | Returns the caller's identity + scope. |
 | `GET /agent/todos` (`list_todos`) | Required | Exposes queue contents. |

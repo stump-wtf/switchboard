@@ -34,6 +34,18 @@ services:
     ports:
       # Bind to loopback on the host. switchboard is a self-contained OIDC relying party (ADR-011),
       # so any non-loopback exposure just needs a plain Caddy reverse_proxy — no forward_auth.
+      #
+      # Streaming caveat (ADR-0017; SPEC-0014): the vended MCP notification stream is a long-lived
+      # Streamable-HTTP response on `GET /mcp/{endpoint}`. The reverse proxy MUST NOT buffer it, or
+      # channel doorbells stall until the connection closes. With Caddy, disable response buffering on
+      # that path — `reverse_proxy switchboard:8080 { flush_interval -1 }` (or a matcher scoped to
+      # `/mcp/*`). nginx: `proxy_buffering off;` for the same location.
+      #
+      # Pre-auth rate limiting behind a TLS-terminating proxy (SPEC-0014 "Rate Limiting"): the
+      # per-endpoint MCP limiter keys on the client IP, but Caddy terminates TLS so EVERY agent arrives
+      # from the proxy's single upstream IP — without care they share one pre-auth bucket. Either have
+      # Caddy pass a trusted `X-Forwarded-For` and key the limiter on it, or size the pre-auth budget for
+      # the aggregate fleet. Keep the per-endpoint (post-auth) limiter as the real volumetric guard.
       - "127.0.0.1:8080:8080"
 
 volumes:

@@ -157,12 +157,17 @@ Connection use MUST propagate the request context for cancellation and timeout.
 
 ### Authentication
 
-All endpoints MUST require authentication by default. The vended agent API (mounted at `/agent`)
-authenticates via a bearer credential resolved to an `active` endpoint and its immutable scope; the
-human management routes authenticate via an OIDC-established session ([SPEC-0008](../identity/spec.md))
-and are additionally authorized against ownership.
+All endpoints MUST require authentication by default. The vended agent surface authenticates via a
+bearer credential resolved to an `active` endpoint and its immutable scope; the human management routes
+authenticate via an OIDC-established session ([SPEC-0008](../identity/spec.md)) and are additionally
+authorized against ownership.
 
-| Endpoint | Auth | Justification |
+> **Transport superseded (ADR-0017; [SPEC-0014](../mcp-transport/spec.md)).** The bearer-authenticated
+> agent surface is now served as MCP over Streamable HTTP at `/mcp/{endpoint}`; the `/agent/*` REST
+> routes and `/agent/stream` SSE listed below are **retired** and no longer mounted. The bearer-auth
+> model (credential → active endpoint → immutable scope) is unchanged and enforced on `/mcp/{endpoint}`.
+
+| Endpoint (retired REST shape) | Auth | Justification |
 |----------|------|---------------|
 | `GET /agent/whoami` | Required (bearer credential) | — |
 | `GET /agent/todos` | Required (bearer credential; verb `list_todos`) | — |

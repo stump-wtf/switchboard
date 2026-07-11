@@ -19,7 +19,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/db"
@@ -76,10 +75,10 @@ func newFriendsRouter(t *testing.T) (chi.Router, *store.Store, context.Context) 
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
-	hub := agentapi.NewHub()
+	hub := ingest.NewHub()
 	r := newRouter(routerDeps{
 		st: st, authr: authr, webh: webh,
-		api: agentapi.New(st, hub, log), ing: ingest.New(st, hub, log, ingest.Config{}),
+		ing:     ingest.New(st, hub, log, ingest.Config{}),
 		friends: newFriendIntake(st, authr, log), ping: pool.Ping, log: log,
 	})
 	return r, st, ctx

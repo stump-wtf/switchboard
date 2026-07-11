@@ -10,7 +10,8 @@ openapi: 3.1.0
 # docs/reference/asyncapi.yaml, not here — it has no HTTP endpoint).
 #
 # Live-update stream schema (SSE): docs/reference/asyncapi.yaml.
-# MCP tool contract: docs/specs/mcp-tools.md.
+# MCP tool contract: docs/openspec/specs/mcp-tools/spec.md. Vended MCP endpoints are served over
+# Streamable HTTP at /mcp/{endpoint} (ADR-0017; SPEC-0014), not described here.
 
 info:
   title: switchboard HTTP API

@@ -22,7 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -66,7 +65,7 @@ func sensitiveHeaderName(name string) bool {
 // Ingest holds the ingestion dependencies.
 type Ingest struct {
 	store        *store.Store
-	hub          *agentapi.Hub
+	hub          *Hub
 	log          *slog.Logger
 	githubSecret string
 	githubQueue  string
@@ -96,7 +95,7 @@ type Config struct {
 }
 
 // New builds an Ingest.
-func New(st *store.Store, hub *agentapi.Hub, log *slog.Logger, cfg Config) *Ingest {
+func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 	if cfg.GitHubQueue == "" {
 		cfg.GitHubQueue = "reviews"
 	}

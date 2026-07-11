@@ -13,11 +13,14 @@ The MVP is already implemented. The access model is: a human authenticates via O
 ([SPEC-0008](../identity/spec.md)), registers agents (`internal/store/agents.go` `CreateAgent`), and
 vends each agent a scoped endpoint. Vending mints a credential in `internal/cred/cred.go`, persists
 only its hash via `CreateEndpoint`, and shows the plaintext once (`internal/web/templates/vended.html`).
-The agent-facing surface (`internal/agentapi/agentapi.go`) authenticates each call by hashing the
-presented bearer token and resolving it to an `active` endpoint (`EndpointByCredHash`), then enforces
-the endpoint's queue+verb scope at the boundary. Routes are wired in `internal/server/server.go`
-(`/agent/*` for agents, `/agents/*` and `/endpoints/*` for the human UI). The schema lives in
-`internal/db/migrations/0001_init.sql` (`agents`, `endpoints`).
+The agent-facing surface is the vended MCP endpoint (`internal/mcp`, mounted at `/mcp/{endpoint}`;
+ADR-0017, [SPEC-0014](../mcp-transport/spec.md)): it authenticates each call by hashing the presented
+bearer token and resolving it to an `active` endpoint (`EndpointByCredHash`), verifies the credential
+matches the slug in the path, then enforces the endpoint's queue+verb scope at the boundary. Routes are
+wired in `internal/server/server.go` (`/mcp/{endpoint}` for agents, `/endpoints/*` for the human UI).
+The one-time credential reveal emits the `type: "http"` `.mcp.json` block via `web.buildMCPJSON`. The
+schema lives in `internal/db/migrations/0001_init.sql` (`agents`, `endpoints`). The original
+`internal/agentapi` REST surface and its stdio adapter are retired.
 
 ## Goals / Non-Goals
 

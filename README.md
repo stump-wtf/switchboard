@@ -17,18 +17,18 @@ The name is the architecture: a manual telephone exchange took many incoming lin
 verified the caller, and patched the line through to its destination. That's exactly this — and it's
 why the UI and docs wear a switchboard-era palette (brass, bakelite, operator-cream, oxblood, and
 patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
-[ADR-0000](docs/adr/ADR-0000-project-naming-and-scope.md)).
+[ADR-0000](docs/adrs/ADR-0000-project-naming-and-scope.md)).
 
 > [!IMPORTANT]
-> **Status: MVP working.** The design record — the **architecture decision records** (`docs/adr/`) and
-> the **specs** (`docs/specs/`) — is published to [GitHub Pages](https://joestump.github.io/switchboard/)
+> **Status: MVP working.** The design record — the **architecture decision records** (`docs/adrs/`) and
+> the **specs** (`docs/openspec/specs/`) — is published to [GitHub Pages](https://joestump.github.io/switchboard/)
 > and remains the source of truth. The **MVP is implemented and verified end-to-end**: OIDC login
-> (Pocket ID RP) → register an agent → **vend a scoped MCP endpoint** → a `switchboard channel` stdio
-> adapter serves the todo work-tools and **pushes new todos into a live Claude Code session over
-> Channels**, backed by the durable PostgreSQL queue. A signed GitHub webhook is the reference
-> ingestion path. Still ahead of the MVP: the SSE web dashboard/log screens, personas/A2A cards and
-> friending, more signed providers and the Redis pull adapter, and two-way Channels. Start at the
-> design index: [`docs/README.md`](docs/README.md).
+> (Pocket ID RP) → register an agent → **vend a scoped MCP endpoint** → the agent connects **directly
+> over Streamable HTTP** (`type: "http"` `.mcp.json`: minted URL + bearer credential — no local
+> binary, subprocess, or stdio adapter), which serves the todo work-tools and **pushes new todos into
+> a live session as channel doorbells**, backed by the durable PostgreSQL queue (ADR-0017; SPEC-0014).
+> A signed GitHub webhook is the reference ingestion path. Start at the design index:
+> [`docs/README.md`](docs/README.md).
 
 ## Two layers
 
@@ -37,7 +37,7 @@ patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
 - **Agent layer (ADR-0007–015):** inbound events become durable **todos** that agents claim and
   complete; humans register agents and are vended scoped MCP endpoints; personas are advertised as A2A
   Agent Cards; and cross-agent work is granted by human-approved friending. See
-  [ADR-0007](docs/adr/ADR-0007-todos-as-core-primitive.md) and the
+  [ADR-0007](docs/adrs/ADR-0007-todos-as-core-primitive.md) and the
   [design index](docs/README.md).
 
 ## Why this exists
@@ -45,7 +45,7 @@ patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
 Different providers have wildly different security stories, and pretending otherwise is a security
 bug. `switchboard` makes each source's trust level **explicit, per-provider, enforced, and visible** —
 a signed GitHub event and a token-authenticated Docker Hub event are never displayed or exposed as if they
-were the same thing. See [ADR-0003](docs/adr/ADR-0003-per-provider-ingestion-and-trust-model.md).
+were the same thing. See [ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-and-trust-model.md).
 
 ## Architecture
 
@@ -67,7 +67,7 @@ Provider (GitHub/Stripe/Slack/Docker/…)        Redis (pub/sub or stream)
 One service, single repo. The MCP server and the web server share the same Go HTTP server
 (different route groups) and the same PostgreSQL layer. Stack rationale — net/http + chi over a framework, HTMX
 over a SPA, Pico over Tailwind, inline SVG over icon fonts — is in
-[ADR-0001](docs/adr/ADR-0001-web-stack-go-htmx-pico.md).
+[ADR-0001](docs/adrs/ADR-0001-web-stack-go-htmx-pico.md).
 
 ## Trust model at a glance (ADR-0003)
 
@@ -90,14 +90,15 @@ the caller knows a secret, but unlike HMAC it can't attest the payload.
 
 | Doc | What it covers |
 |-----|----------------|
-| [ADR-0000](docs/adr/ADR-0000-project-naming-and-scope.md) | Project name + MVP/session scope |
-| [ADR-0001](docs/adr/ADR-0001-web-stack-go-htmx-pico.md) | Web/UI stack (Go net/http + chi, html/template, HTMX + Pico) — and why not a framework / Tailwind / icon fonts |
-| [ADR-0002](docs/adr/ADR-0002-postgres-persistence-and-retention.md) | PostgreSQL persistence, queue mechanics, schema sketch, retention |
-| [ADR-0003](docs/adr/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types (webhook / queue) & the trust model (signed / token / open / queue) |
-| [ADR-0005](docs/adr/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract shape |
-| [openapi.yaml](docs/specs/openapi.yaml) | HTTP surface: webhook ingestion + UI endpoints |
-| [asyncapi.yaml](docs/specs/asyncapi.yaml) | SSE event/message schema |
-| [mcp-tools.md](docs/specs/mcp-tools.md) | Exact MCP tool + resource JSON Schemas |
+| [ADR-0000](docs/adrs/ADR-0000-project-naming-and-scope.md) | Project name + MVP/session scope |
+| [ADR-0001](docs/adrs/ADR-0001-web-stack-go-htmx-pico.md) | Web/UI stack (Go net/http + chi, html/template, HTMX + Pico) — and why not a framework / Tailwind / icon fonts |
+| [ADR-0002](docs/adrs/ADR-0002-postgres-persistence-and-retention.md) | PostgreSQL persistence, queue mechanics, schema sketch, retention |
+| [ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types (webhook / queue) & the trust model (signed / token / open / queue) |
+| [ADR-0005](docs/adrs/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract shape |
+| [openapi.yaml](docs/reference/openapi.yaml) | HTTP surface: webhook ingestion + web-UI endpoints |
+| [asyncapi.yaml](docs/reference/asyncapi.yaml) | SSE event/message schema |
+| [SPEC-0005 mcp-tools](docs/openspec/specs/mcp-tools/spec.md) | MCP tool + resource contract & JSON Schemas |
+| [SPEC-0014 mcp-transport](docs/openspec/specs/mcp-transport/spec.md) | Vended MCP endpoints served over Streamable HTTP (`/mcp/{endpoint}`) |
 
 ## Web UI (4 screens)
 
@@ -115,23 +116,25 @@ make build                                   # compile ./bin/switchboard (assets
 export SWITCHBOARD_DATABASE_URL='postgres://user@127.0.0.1:5432/switchboard?sslmode=disable'
 export SWITCHBOARD_OIDC_ISSUER=https://pocket-id.example \
        SWITCHBOARD_OIDC_CLIENT_ID=… SWITCHBOARD_OIDC_CLIENT_SECRET=…
-./bin/switchboard serve                      # web UI + /webhooks/* + /agent API on 127.0.0.1:8080
+./bin/switchboard serve                      # web UI + /webhooks/* + /mcp/{endpoint} on 127.0.0.1:8080
 ```
 
 Migrations apply on startup. For a local spin without a real Pocket ID, set `SWITCHBOARD_DEV_LOGIN=1`
 (loud, dev-only) to log in and vend.
 
-**The vend → Channels loop (the MVP):**
+**The vend → work loop (the MVP):**
 
 1. Log in, register an agent, and **vend a scoped endpoint** (queues + verbs). The vend page shows the
-   credential once, plus a ready-to-paste `.mcp.json`.
-2. Drop that `.mcp.json` into your project and start Claude Code:
-   ```bash
-   claude --dangerously-load-development-channels server:switchboard
+   credential once, plus a ready-to-paste `.mcp.json` — a Streamable-HTTP MCP server block, no local
+   command:
+   ```json
+   {"mcpServers":{"switchboard":{"type":"http","url":"https://<host>/mcp/<slug>","headers":{"Authorization":"Bearer <credential>"}}}}
    ```
-   Claude Code spawns the `switchboard channel` stdio adapter, which authenticates with the vended
-   credential, serves the work tools (`list_todos` / `claim` / `complete` / `fail`), and pushes new
-   todos into your session as `<channel source="switchboard">` events. Requires Claude Code v2.1.80+.
+2. Drop that `.mcp.json` into your project and start your MCP client (e.g. Claude Code). The client
+   connects **directly over HTTP/S** to `/mcp/<slug>` — there is no binary to install or put on PATH.
+   The endpoint serves the work tools (`list_todos` / `claim` / `complete` / `fail` / `heartbeat`) and
+   pushes new todos into the session as `notifications/claude/channel` doorbells on the notification
+   stream (ADR-0017; SPEC-0014).
 3. Send a signed webhook (`POST /webhooks/github`) — or, in dev mode, `POST /dev/todos` — and the todo
    arrives in your session.
 
@@ -169,14 +172,16 @@ or the signed endpoint will (correctly) 401.
    channel's Redis ACL.
 
 The trust mode is always declared per provider and shown in the UI — never silently assumed. See
-[ADR-0003](docs/adr/ADR-0003-per-provider-ingestion-and-trust-model.md).
+[ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-and-trust-model.md).
 
 ## Development
 
 ```bash
-make ci     # gofmt + go vet + golangci-lint + govulncheck + go test — the local mirror of CI
-make fmt    # auto-format
+make ci     # the gate: go vet + go test ./... + go build — the local mirror of CI
+make fmt    # gofmt -w .
+make vet    # go vet ./...
 make test   # go test ./...
+make lint   # golangci-lint (optional; not part of `make ci`)
 ```
 
 ### Database-backed tests

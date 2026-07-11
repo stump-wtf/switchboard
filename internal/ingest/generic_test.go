@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -206,7 +205,7 @@ func testIngest(t *testing.T, cfg Config) (*Ingest, *store.Store, context.Contex
 	t.Helper()
 	pool, ctx := ingestTestPool(t)
 	st := store.New(pool)
-	ing := New(st, agentapi.NewHub(), slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
+	ing := New(st, NewHub(), slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
 	eventRow := func(source string) (string, bool, string) {
 		var mode, detail string
 		var verified bool

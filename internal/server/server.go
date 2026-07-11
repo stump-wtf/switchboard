@@ -1,5 +1,6 @@
-// Package server wires the switchboard HTTP surface: webhooks, the human web UI, the vended agent
-// API, static assets, and a background lease reaper — one chi router, one PostgreSQL layer.
+// Package server wires the switchboard HTTP surface: webhooks, the human web UI, the vended MCP
+// endpoints (Streamable HTTP; ADR-0017), static assets, and a background lease reaper — one chi
+// router, one PostgreSQL layer.
 package server
 
 import (
@@ -17,7 +18,6 @@ import (
 
 	switchboard "github.com/joestump/switchboard"
 	"github.com/joestump/switchboard/internal/adapter/runner"
-	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/cred"
@@ -56,7 +56,11 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		log.Info("webhook signing secrets encrypted at rest")
 	}
 	st := store.New(pool, storeOpts...)
-	hub := agentapi.NewHub()
+	// The ingest Hub is the accept-path's lossy, in-process new-todo doorbell (ingest.Hub); the
+	// production channel push to live MCP sessions flows through the store doorbell hook wired below.
+	// (The stdio adapter and the /agent REST surface — and their agentapi.Hub — were retired in the
+	// SPEC-0014 cutover; MCP is served exclusively over HTTP at /mcp/{endpoint}.)
+	hub := ingest.NewHub()
 	authr, err := auth.New(ctx, cfg, st, log)
 	if err != nil {
 		return err
@@ -94,7 +98,6 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Revoking an endpoint in the web UI also closes its live notification streams promptly
 	// (SPEC-0014 scenario "Revocation closes live streams").
 	webh.SetEndpointRevokedHook(mcph.CloseEndpointSessions)
-	api := agentapi.New(st, hub, log)
 	// Generic (token/open) providers are explicit operator opt-in via SWITCHBOARD_GENERIC_PROVIDERS;
 	// a malformed or invalid-mode config fails startup loudly rather than silently opening an
 	// endpoint. Governing: SPEC-0001 REQ "Explicit Open Trust Mode".
@@ -124,7 +127,6 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		st:      st,
 		authr:   authr,
 		webh:    webh,
-		api:     api,
 		ing:     ing,
 		mcp:     mcph,
 		friends: newFriendIntake(st, authr, log),
@@ -174,7 +176,6 @@ type routerDeps struct {
 	st      *store.Store
 	authr   *auth.Authenticator
 	webh    *web.Handler
-	api     *agentapi.API
 	ing     *ingest.Ingest
 	mcp     *mcpsrv.Handler             // the Run-wired MCP handler (doorbell + revocation hooks attached)
 	friends *friendIntake               // A2A friend-request intake (OIDC-provenance authenticated)
@@ -183,7 +184,7 @@ type routerDeps struct {
 }
 
 // newRouter builds the full switchboard route table. Route grouping is the security baseline:
-// everything not explicitly registered as a public route sits behind bearer auth (/agent, /mcp) or
+// everything not explicitly registered as a public route sits behind bearer auth (/mcp) or
 // auth.RequireHuman (the web UI, including the Board landing at GET /).
 // Governing: SPEC-0012 REQ "Screen Set and Routes", REQ "Authentication Boundary";
 // SPEC-0013 REQ "Information Architecture and Navigation".
@@ -194,10 +195,9 @@ func newRouter(d routerDeps) chi.Router {
 	// as the outermost app middleware so every surface (webhook, /agent, MCP, web, errors) carries them.
 	r.Use(secureHeaders)
 
-	// Rate limiters (SPEC-0006 webhook self-mgmt MUST, todo drain SHOULD; SPEC-0009 persona card).
-	// The agent API (todo drain + webhook self-management verbs) and inbound webhook get IP throttles;
-	// the durable queue stays the source of truth, so throttling only bounds abuse, never drops work.
-	agentRL := newRateLimiter(20, 40) // ~20 req/s per IP, burst 40 — comfortable for real drain loops
+	// Rate limiters (SPEC-0001 inbound webhook; SPEC-0009 persona card). The inbound webhook gets an
+	// IP throttle; the durable queue stays the source of truth, so throttling only bounds abuse, never
+	// drops work. The vended MCP surface carries its own per-endpoint limiter inside internal/mcp.
 	webhookRL := newRateLimiter(10, 20)
 	// Public A2A Agent Card endpoint (SPEC-0009): per-IP throttle to blunt enumeration of persona ids.
 	// RECOMMENDED default is 60 req/min ≈ 1 req/s; burst 30 absorbs legitimate discovery tooling.
@@ -242,9 +242,6 @@ func newRouter(d routerDeps) chi.Router {
 	// handler. Governing: SPEC-0009 REQ "Well-Known Card Endpoint", REQ "Discoverability Is
 	// Owner-Controlled", "Security Requirements → Authentication / Rate Limiting".
 	r.With(cardRL.middleware).Get("/a/{persona_id}/.well-known/agent-card.json", d.webh.AgentCard)
-
-	// Vended agent API (bearer-credential auth inside; ADR-0008). 1 MiB body cap + IP rate limit.
-	r.With(agentRL.middleware, maxBytes(1<<20)).Mount("/agent", d.api.Routes())
 
 	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, per-endpoint
 	// rate limit, and the 1 MiB body cap all live inside the package's own middleware stack.
@@ -427,7 +424,8 @@ func providerStatuses(github, stripe, slack bool, generic map[string]ingest.Gene
 
 // maxBytes caps a request body at n bytes via http.MaxBytesReader, so a read past the limit errors
 // (the reader also writes a 413 when the handler surfaces the error) rather than buffering unbounded
-// input. Governing: SPEC-0001 (webhook), SPEC-0006 (/agent), SPEC-0012 (web forms) body limits.
+// input. Governing: SPEC-0001 (webhook), SPEC-0012 (web forms) body limits (the vended MCP surface
+// bounds its own bodies inside internal/mcp per SPEC-0014).
 func maxBytes(n int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
