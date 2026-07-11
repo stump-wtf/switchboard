@@ -2,8 +2,10 @@
 //
 // The GitHub adapter is the reference `signed` webhook: HMAC-SHA256 over the raw body, verified in
 // constant time; a bad or missing signature is a 401 and the payload is NOT persisted (only a
-// redacted rejection is logged). A successful delivery is recorded as an event and enqueued as a
-// todo, then published to the hub so any attached Channels session is nudged.
+// redacted rejection is logged). Stripe and Slack follow the same contract with their provider
+// signature schemes plus a replay window over the signed timestamp (signed.go). A successful
+// delivery is recorded as an event and enqueued as a todo, then published to the hub so any
+// attached Channels session is nudged.
 package ingest
 
 import (
@@ -17,12 +19,18 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/store"
 )
 
 const maxBody = 5 << 20 // 5 MiB
+
+// defaultReplayTolerance is the freshness window for signature schemes that sign a timestamp
+// (Stripe `t=`, Slack `X-Slack-Request-Timestamp`). Governing: SPEC-0001 REQ "Replay-Window
+// Enforcement for Timestamped Signatures" (default 300 seconds).
+const defaultReplayTolerance = 300 * time.Second
 
 // sensitiveHeaders are redacted before an event's headers are persisted (ADR-0002/003).
 var sensitiveHeaders = map[string]bool{
@@ -37,29 +45,69 @@ type Ingest struct {
 	log          *slog.Logger
 	githubSecret string
 	githubQueue  string
+	stripeSecret string
+	stripeQueue  string
+	slackSecret  string
+	slackQueue   string
+	tolerance    time.Duration    // replay window for timestamped signatures
+	now          func() time.Time // injectable clock for replay-window tests
 	devLogin     bool
 }
 
-// New builds an Ingest.
-func New(st *store.Store, hub *agentapi.Hub, log *slog.Logger, githubSecret, githubQueue string, devLogin bool) *Ingest {
-	if githubQueue == "" {
-		githubQueue = "reviews"
-	}
-	return &Ingest{store: st, hub: hub, log: log, githubSecret: githubSecret, githubQueue: githubQueue, devLogin: devLogin}
+// Config carries the per-provider ingestion settings (secrets + target queues).
+type Config struct {
+	GitHubSecret string
+	GitHubQueue  string
+	StripeSecret string
+	StripeQueue  string
+	SlackSecret  string
+	SlackQueue   string
+	DevLogin     bool
 }
 
-// GitHub is the signed GitHub webhook receiver: POST /webhooks/github.
-func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
-	// Governing: SPEC-0001 REQ body limits. MaxBytesReader (not io.LimitReader) so an over-limit body
-	// is REJECTED with 413 rather than silently truncated and then HMAC-verified against a short read.
+// New builds an Ingest.
+func New(st *store.Store, hub *agentapi.Hub, log *slog.Logger, cfg Config) *Ingest {
+	if cfg.GitHubQueue == "" {
+		cfg.GitHubQueue = "reviews"
+	}
+	if cfg.StripeQueue == "" {
+		cfg.StripeQueue = "stripe"
+	}
+	if cfg.SlackQueue == "" {
+		cfg.SlackQueue = "slack"
+	}
+	return &Ingest{
+		store: st, hub: hub, log: log,
+		githubSecret: cfg.GitHubSecret, githubQueue: cfg.GitHubQueue,
+		stripeSecret: cfg.StripeSecret, stripeQueue: cfg.StripeQueue,
+		slackSecret: cfg.SlackSecret, slackQueue: cfg.SlackQueue,
+		tolerance: defaultReplayTolerance, now: time.Now,
+		devLogin: cfg.DevLogin,
+	}
+}
+
+// readBody drains the raw request body under the 5 MiB cap, writing the rejection itself on
+// failure. Governing: SPEC-0001 REQ body limits. MaxBytesReader (not io.LimitReader) so an
+// over-limit body is REJECTED with 413 rather than silently truncated and then HMAC-verified
+// against a short read.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			writeErr(w, http.StatusRequestEntityTooLarge, "payload too large")
-			return
+			return nil, false
 		}
 		http.Error(w, "read error", http.StatusBadRequest)
+		return nil, false
+	}
+	return body, true
+}
+
+// GitHub is the signed GitHub webhook receiver: POST /webhooks/github.
+func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 	if i.githubSecret == "" {
@@ -131,6 +179,10 @@ func (i *Ingest) DevCreateTodo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"id": td.ID, "queue": td.Queue, "created": created})
 }
 
+// verifyGitHub checks X-Hub-Signature-256 (sha256=<hex>) over the raw body in constant time.
+// GitHub's scheme signs no timestamp, so no replay window is fabricated here.
+// Governing: SPEC-0001 REQ "Signed Webhook Verification", REQ "Replay-Window Enforcement for
+// Timestamped Signatures" (GitHub explicitly gets no freshness window).
 func verifyGitHub(secret string, body []byte, sig string) bool {
 	if !strings.HasPrefix(sig, "sha256=") {
 		return false

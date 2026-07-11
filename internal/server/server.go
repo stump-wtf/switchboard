@@ -51,7 +51,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Governing: SPEC-0012 REQ "Live Updates via SSE".
 	st.SetTodoTransitionHook(webh.PublishTodoTransition)
 	api := agentapi.New(st, hub, log)
-	ing := ingest.New(st, hub, log, os.Getenv("SWITCHBOARD_GITHUB_SECRET"), os.Getenv("SWITCHBOARD_GITHUB_QUEUE"), cfg.DevLogin)
+	ing := ingest.New(st, hub, log, ingest.Config{
+		GitHubSecret: os.Getenv("SWITCHBOARD_GITHUB_SECRET"),
+		GitHubQueue:  os.Getenv("SWITCHBOARD_GITHUB_QUEUE"),
+		StripeSecret: os.Getenv("SWITCHBOARD_STRIPE_SECRET"),
+		StripeQueue:  os.Getenv("SWITCHBOARD_STRIPE_QUEUE"),
+		SlackSecret:  os.Getenv("SWITCHBOARD_SLACK_SECRET"),
+		SlackQueue:   os.Getenv("SWITCHBOARD_SLACK_QUEUE"),
+		DevLogin:     cfg.DevLogin,
+	})
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -76,9 +84,16 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 
-	// Inbound ingestion (verified per-provider; ADR-0003). MaxBytesReader inside GitHub bounds the
-	// body to 5 MiB → 413 before HMAC verification (SPEC-0001).
-	r.With(webhookRL.middleware).Post("/webhooks/github", ing.GitHub)
+	// Inbound ingestion (verified per-provider; ADR-0003). MaxBytesReader inside each receiver
+	// bounds the body to 5 MiB → 413 before HMAC verification (SPEC-0001). Stripe/Slack add a
+	// replay window over the signed timestamp; GitHub's scheme signs no timestamp, so none is
+	// fabricated (SPEC-0001 REQ "Replay-Window Enforcement for Timestamped Signatures").
+	r.Group(func(wr chi.Router) {
+		wr.Use(webhookRL.middleware)
+		wr.Post("/webhooks/github", ing.GitHub)
+		wr.Post("/webhooks/stripe", ing.Stripe)
+		wr.Post("/webhooks/slack", ing.Slack)
+	})
 	r.Post("/dev/todos", ing.DevCreateTodo)
 
 	// Vended agent API (bearer-credential auth inside; ADR-0008). 1 MiB body cap + IP rate limit.

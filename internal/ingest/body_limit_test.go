@@ -12,7 +12,7 @@ import (
 // A webhook body over the 5 MiB ceiling must be rejected with 413 BEFORE any HMAC verification —
 // never truncated-then-verified. Governing: SPEC-0001 REQ body limits.
 func TestGitHubRejectsOversizedBody(t *testing.T) {
-	i := New(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret", "", false)
+	i := New(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{GitHubSecret: "secret"})
 
 	big := bytes.Repeat([]byte("x"), maxBody+1)
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(big))
