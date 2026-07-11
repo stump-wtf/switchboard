@@ -41,10 +41,20 @@ const (
 	csrfKey
 )
 
+// sessionStore is the slice of the data layer the authenticator needs (human upsert + sessions).
+// *store.Store satisfies it; the narrow interface keeps the OIDC flow testable without PostgreSQL.
+// Governing: SPEC-0008 REQ "Human Upsert Keyed on OIDC Subject", REQ "Server-Side Session Establishment".
+type sessionStore interface {
+	UpsertHuman(ctx context.Context, subject, displayName, email string) (store.Human, error)
+	CreateSession(ctx context.Context, tokenHash, humanID string, ttl time.Duration) error
+	SessionHuman(ctx context.Context, tokenHash string) (store.Human, error)
+	DeleteSession(ctx context.Context, tokenHash string) error
+}
+
 // Authenticator holds the OIDC provider + session store.
 type Authenticator struct {
 	cfg      config.Config
-	store    *store.Store
+	store    sessionStore
 	log      *slog.Logger
 	provider *oidc.Provider
 	oauth    oauth2.Config
@@ -109,6 +119,7 @@ type oidcState struct {
 }
 
 // Login begins the OIDC authorization-code flow (with PKCE + nonce).
+// Governing: SPEC-0008 REQ "OIDC Relying-Party Login".
 func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 	if a.provider == nil {
 		http.Error(w, "OIDC not configured (set SWITCHBOARD_OIDC_* or SWITCHBOARD_DEV_LOGIN=1)", http.StatusServiceUnavailable)
@@ -134,6 +145,7 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 // Callback completes the flow: exchange code, verify the ID token, upsert the human, mint a session.
+// Governing: SPEC-0008 REQ "Callback Verification", REQ "Human Upsert Keyed on OIDC Subject".
 func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	if a.provider == nil {
 		http.Error(w, "OIDC not configured", http.StatusServiceUnavailable)
