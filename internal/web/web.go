@@ -328,7 +328,7 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 	sh, _ := h.buildShell(r.Context(), "endpoints", &human)
 	h.render(w, "vended", view{
 		Title: "Vended", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Shell: sh, Agent: &ag, Endpoint: &ep,
-		Token: token, MCPJSON: buildMCPJSON(h.cfg.BaseURL, token),
+		Token: token, MCPJSON: buildMCPJSON(h.cfg.BaseURL, ep.Slug, token),
 	})
 }
 
@@ -482,11 +482,18 @@ func providerTag(source string) string {
 	return string(tag)
 }
 
-func buildMCPJSON(baseURL, token string) string {
+// buildMCPJSON renders the ready-to-paste .mcp.json wiring shown once on the vended page. The
+// wiring is Streamable-HTTP only: an MCP client connects to https://<host>/mcp/<slug> and presents
+// the minted credential as a bearer token. There is no local binary, PATH install, or stdio command
+// — that transport is retired.
+// Governing: SPEC-0014 REQ "HTTP Wiring Is the Only Wiring" (scenario "Vend reveal shows HTTP
+// wiring"), SPEC-0012 REQ "Vend Flow and One-Time Credential Reveal".
+func buildMCPJSON(baseURL, slug, token string) string {
+	mcpURL := strings.TrimRight(baseURL, "/") + "/mcp/" + slug
 	m := map[string]any{"mcpServers": map[string]any{"switchboard": map[string]any{
-		"command": "switchboard",
-		"args":    []string{"channel"},
-		"env":     map[string]string{"SWITCHBOARD_URL": baseURL, "SWITCHBOARD_TOKEN": token},
+		"type":    "http",
+		"url":     mcpURL,
+		"headers": map[string]string{"Authorization": "Bearer " + token},
 	}}}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	return string(b)

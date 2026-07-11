@@ -19,7 +19,7 @@ import (
 func allPages(t *testing.T, h *Handler) map[string]string {
 	t.Helper()
 	ag := &store.Agent{ID: "a1", Name: "reviewer-bot", Description: "reviews PRs", CreatedAt: time.Now()}
-	ep := &store.Endpoint{ID: "e1", CredentialPrefix: "sbk_ab12cd", ScopeQueues: []string{"reviews"}, ScopeVerbs: []string{"claim"}, State: "active"}
+	ep := &store.Endpoint{ID: "e1", Slug: "reviewer-bot-ab12cd", CredentialPrefix: "sbk_ab12cd", ScopeQueues: []string{"reviews"}, ScopeVerbs: []string{"claim"}, State: "active"}
 	sh := shell{Active: "board", TodoCount: 1, LiveRate: 2, DBConnected: true, Initials: "JS"}
 	views := map[string]view{
 		"login": {Title: "Log in", OIDCConfigured: true},
@@ -31,7 +31,7 @@ func allPages(t *testing.T, h *Handler) map[string]string {
 		"dashboard": {Title: "Endpoints", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"}, Agents: []store.Agent{*ag}},
 		"agent":     {Title: ag.Name, Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"}, Agent: ag, Endpoints: []store.Endpoint{*ep}},
 		"vended": {Title: "Vended", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"}, Agent: ag, Endpoint: ep,
-			Token: "sbk_secret", MCPJSON: buildMCPJSON("https://sb.example.com", "sbk_secret")},
+			Token: "sbk_secret", MCPJSON: buildMCPJSON("https://sb.example.com", ep.Slug, "sbk_secret")},
 	}
 	out := make(map[string]string, len(views))
 	for page, v := range views {

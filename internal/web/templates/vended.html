@@ -9,14 +9,17 @@
   <span class="sb-label" id="credential-label">Credential</span>
   <pre tabindex="0" aria-labelledby="credential-label">{{.Token}}</pre>
   <p class="sb-muted sb-mono">queues: {{range .Endpoint.ScopeQueues}}<code>{{.}}</code> {{end}} · verbs: {{range .Endpoint.ScopeVerbs}}<code>{{.}}</code> {{end}}</p>
+  <p class="sb-muted">This endpoint's scope is immutable. To change which queues or verbs it can reach,
+  revoke this endpoint and vend a new one.</p>
 </div>
 
-<h2 class="sb-section-title">Wire it into Claude Code Channels</h2>
-<p class="sb-muted">Add this to your project's <code>.mcp.json</code>, then start Claude Code with the
-channels flag. Switchboard pushes new todos into your session as
-<code>&lt;channel source="switchboard"&gt;</code> events and serves the work tools
-(<code>list_todos</code> / <code>claim</code> / <code>complete</code>) over the same connection.</p>
+{{/* Governing: SPEC-0014 REQ "HTTP Wiring Is the Only Wiring" — the reveal shows Streamable-HTTP
+     wiring (type: http + /mcp/{slug} URL + bearer header) only. No local binary or stdio command. */}}
+<h2 class="sb-section-title">Wire it into your MCP client</h2>
+<p class="sb-muted">Add this to your project's <code>.mcp.json</code>. Your agent connects to Switchboard
+over Streamable HTTP at <code>/mcp/{{.Endpoint.Slug}}</code>, presenting the credential above as a
+bearer token. New todos arrive as <code>&lt;channel source="switchboard"&gt;</code> events and the work
+tools (<code>list_todos</code> / <code>claim</code> / <code>complete</code>) are served over the same
+connection.</p>
 <pre>{{.MCPJSON}}</pre>
-<pre>claude --dangerously-load-development-channels server:switchboard</pre>
-<p class="sb-muted">Requires Claude Code v2.1.80+ and the <code>switchboard</code> binary on your PATH.</p>
 {{end}}
