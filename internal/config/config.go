@@ -19,6 +19,11 @@ type Config struct {
 	BaseURL string
 	// DatabaseURL is the PostgreSQL DSN (ADR-0002).
 	DatabaseURL string
+	// RedisURL is the Redis DSN (redis:// or rediss://) for the pull-adapter family — trust is the
+	// broker connection itself (auth/ACL + TLS), so credentials live in this DSN and are never
+	// logged. Empty disables the Redis adapters. (SWITCHBOARD_REDIS_URL)
+	// Governing: ADR-0014 (Redis reference pull adapter), SPEC-0002 REQ "Redis Reference Transport Modes".
+	RedisURL string
 
 	// --- OIDC relying-party config (ADR-0011: switchboard is an RP against Pocket ID, a passkey IdP) ---
 	OIDCIssuer       string // e.g. https://pocket-id.stump.rocks
@@ -44,6 +49,7 @@ func FromEnv() Config {
 		Addr:             getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
 		BaseURL:          base,
 		DatabaseURL:      os.Getenv("SWITCHBOARD_DATABASE_URL"),
+		RedisURL:         os.Getenv("SWITCHBOARD_REDIS_URL"),
 		OIDCIssuer:       os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
 		OIDCClientID:     os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
 		OIDCClientSecret: os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
