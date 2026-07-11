@@ -40,6 +40,9 @@ func TestPersonaMutationsRequireCSRF(t *testing.T) {
 // token in both the form field and the header (a browser sends the field; HTMX the header).
 func postFormAs(t *testing.T, r chi.Router, token, csrf, path string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
+	if form == nil { // callers that post no fields pass nil; url.Values.Set panics on a nil map.
+		form = url.Values{}
+	}
 	form.Set("csrf_token", csrf)
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
