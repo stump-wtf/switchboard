@@ -215,6 +215,28 @@ func (s *Store) GetPersona(ctx context.Context, id, ownerHumanID string) (Person
 	return p, nil
 }
 
+// PublishedPersonaByID returns a persona only if it is PUBLISHED — the public A2A discovery card
+// (SPEC-0009). It is the resolver the friend-request intake uses to turn a caller-named target
+// persona into its owning human without any session: an unpublished or unknown id is ErrNotFound,
+// so friend requests are bounded to advertised (discoverable) personas — never a fishing probe into
+// a human's private, unpublished personas. Unlike GetPersona it is deliberately owner-agnostic: a
+// published card is public by definition, so this exposes only what SPEC-0009 already publishes.
+// Governing: ADR-0010 (A2A discovery + human-vended friending), SPEC-0010 REQ "Anti-Spam — Bounded
+// Discovery and Quotas" (discovery bounded to advertised personas), SPEC-0009 (personas as cards).
+func (s *Store) PublishedPersonaByID(ctx context.Context, id string) (Persona, error) {
+	// Compare on id::text so an arbitrary (attacker-supplied) non-uuid string yields no rows →
+	// ErrNotFound, rather than a SQL "invalid input syntax for type uuid" error.
+	p, err := scanPersona(s.pool.QueryRow(ctx,
+		`SELECT `+personaCols+` FROM personas WHERE id::text = $1 AND published = true`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Persona{}, ErrNotFound
+	}
+	if err != nil {
+		return Persona{}, fmt.Errorf("store: published persona by id: %w", err)
+	}
+	return p, nil
+}
+
 // ListPersonas returns a human's personas, newest first. Tenant-scoped: each human sees only their
 // own personas. Governing: ADR-0009, SPEC-0009 (owner-controlled personas).
 func (s *Store) ListPersonas(ctx context.Context, ownerHumanID string) ([]Persona, error) {

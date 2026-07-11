@@ -290,6 +290,46 @@ func TestFriendEdgeOwnershipIsolation(t *testing.T) {
 	}
 }
 
+// CountLiveFriendRequestsFrom counts only a requester's LIVE (pending/approved) edges — the
+// per-requester anti-flood quota counter the A2A intake checks. Denied/revoked edges are terminal
+// and drop out of the count, so a requester whose past asks were resolved is never blocked.
+// Governing: SPEC-0010 REQ "Anti-Spam — Bounded Discovery and Quotas".
+func TestCountLiveFriendRequestsFrom(t *testing.T) {
+	s, ctx := testStore(t)
+	requester := mustHuman(t, s, ctx, "pocket|quota-req", "Requester")
+	target := mustHuman(t, s, ctx, "pocket|quota-tgt", "Target")
+
+	if n, err := s.CountLiveFriendRequestsFrom(ctx, requester.ID); err != nil || n != 0 {
+		t.Fatalf("fresh requester count = %d (%v), want 0", n, err)
+	}
+
+	// Two pending edges from this requester to distinct target personas.
+	mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "req@r", ToPersona: "one@t", FromHuman: requester.ID, ToHuman: target.ID,
+		RequestedVerbs: []string{"create_for"}, ProvenanceVerified: true,
+	})
+	denied := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "req@r", ToPersona: "two@t", FromHuman: requester.ID, ToHuman: target.ID,
+		RequestedVerbs: []string{"create_for"}, ProvenanceVerified: true,
+	})
+	if n, err := s.CountLiveFriendRequestsFrom(ctx, requester.ID); err != nil || n != 2 {
+		t.Fatalf("two live edges count = %d (%v), want 2", n, err)
+	}
+
+	// Denying one drops it from the live count (terminal state).
+	if _, err := s.DenyFriendRequest(ctx, denied.ID, target.ID); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	if n, err := s.CountLiveFriendRequestsFrom(ctx, requester.ID); err != nil || n != 1 {
+		t.Fatalf("after deny count = %d (%v), want 1", n, err)
+	}
+
+	// A different requester with no edges counts zero (per-requester scoping).
+	if n, err := s.CountLiveFriendRequestsFrom(ctx, target.ID); err != nil || n != 0 {
+		t.Fatalf("unrelated requester count = %d (%v), want 0", n, err)
+	}
+}
+
 // mustApprovedFriend seeds a pending edge and approves it, returning the edge and its vended
 // endpoint. The requesting persona is "a@a"; the grant is the given queues/verbs (no narrowing).
 func mustApprovedFriend(t *testing.T, s *Store, ctx context.Context, target Human, vendAgent Agent, queues, verbs []string) (FriendEdge, Endpoint) {

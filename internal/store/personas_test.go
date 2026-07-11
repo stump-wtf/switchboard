@@ -200,6 +200,48 @@ func TestPersonaOwnershipIsolation(t *testing.T) {
 	}
 }
 
+// PublishedPersonaByID resolves a PUBLISHED persona owner-agnostically (the public discovery card
+// the friend-request intake targets) but treats an unpublished or unknown id as ErrNotFound — so an
+// unpublished persona cannot be friend-requested and a malformed id never surfaces a SQL type error.
+// Governing: ADR-0010, SPEC-0010 REQ "Anti-Spam — Bounded Discovery and Quotas", SPEC-0009.
+func TestPublishedPersonaByID(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := mustHuman(t, s, ctx, "pocket|pub-owner", "Owner")
+	ag := mustAgent(t, s, ctx, owner.ID, "card-bot")
+	mustEndpointScoped(t, s, ctx, ag.ID, "pub-grant", []string{"reviews"}, []string{"create_for"})
+	p, err := s.CreatePersona(ctx, CreatePersonaParams{
+		OwnerHumanID: owner.ID, AgentID: ag.ID, Name: "Card", SystemPrompt: "x",
+		VerbSubset: []string{"create_for"}, Queues: []string{"reviews"},
+	})
+	if err != nil {
+		t.Fatalf("create persona: %v", err)
+	}
+
+	// Unpublished → ErrNotFound (not discoverable, so not friend-requestable).
+	if _, err := s.PublishedPersonaByID(ctx, p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unpublished persona must be ErrNotFound, got %v", err)
+	}
+	// After marking discoverable → resolvable owner-agnostically, carrying the owning human.
+	if _, err := s.SetPersonaDiscoverable(ctx, p.ID, owner.ID, true); err != nil {
+		t.Fatalf("set discoverable: %v", err)
+	}
+	got, err := s.PublishedPersonaByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("published persona must resolve: %v", err)
+	}
+	if got.OwnerHumanID != owner.ID {
+		t.Fatalf("resolved owner = %q, want %q", got.OwnerHumanID, owner.ID)
+	}
+	// A malformed (non-uuid) id is ErrNotFound, never a SQL error.
+	if _, err := s.PublishedPersonaByID(ctx, "not-a-uuid"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("malformed id must be ErrNotFound, got %v", err)
+	}
+	// A random well-formed uuid that matches nothing is ErrNotFound too.
+	if _, err := s.PublishedPersonaByID(ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id must be ErrNotFound, got %v", err)
+	}
+}
+
 // A persona slug is unique per owner: two personas of one human that derive the same slug collide
 // (ErrConflict), while two different humans may each hold a persona with the same slug.
 // Governing: SPEC-0009 REQ "Well-Known Card Endpoint" (per-persona base path resolves to one persona).

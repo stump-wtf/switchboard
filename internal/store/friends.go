@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -304,6 +305,23 @@ func (s *Store) ListFriendEdges(ctx context.Context, ownerHumanID string, states
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// CountLiveFriendRequestsFrom returns how many LIVE (pending or approved) friend edges a requesting
+// human currently holds — the per-requester quota counter the A2A intake checks before recording a
+// new pending edge. Denied/revoked edges are terminal and do not count, so a requester whose past
+// requests were all resolved is never blocked. Governing: SPEC-0010 REQ "Anti-Spam — Bounded
+// Discovery and Quotas" (friend requests quota'd per requester; over-quota creates no pending edge).
+func (s *Store) CountLiveFriendRequestsFrom(ctx context.Context, fromHuman string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM friend_edges
+		 WHERE from_human = NULLIF($1,'')::uuid AND state IN ('pending', 'approved')`,
+		fromHuman).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("store: count live friend requests: %w", err)
+	}
+	return n, nil
 }
 
 // CreateForFriendParams are the inputs to CreateForFriend — a cross-agent work handoff. EndpointID is

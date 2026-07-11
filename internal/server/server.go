@@ -97,14 +97,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		generic))
 
 	r := newRouter(routerDeps{
-		st:    st,
-		authr: authr,
-		webh:  webh,
-		api:   api,
-		ing:   ing,
-		mcp:   mcph,
-		ping:  pool.Ping,
-		log:   log,
+		st:      st,
+		authr:   authr,
+		webh:    webh,
+		api:     api,
+		ing:     ing,
+		mcp:     mcph,
+		friends: newFriendIntake(st, authr, log),
+		ping:    pool.Ping,
+		log:     log,
 	})
 
 	go reaper(ctx, st, log)
@@ -146,14 +147,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 // routerDeps carries the wired components newRouter assembles into the HTTP surface. Extracted from
 // Run so tests can build the REAL route table (auth grouping included) without a database.
 type routerDeps struct {
-	st    *store.Store
-	authr *auth.Authenticator
-	webh  *web.Handler
-	api   *agentapi.API
-	ing   *ingest.Ingest
-	mcp   *mcpsrv.Handler             // the Run-wired MCP handler (doorbell + revocation hooks attached)
-	ping  func(context.Context) error // /healthz DB probe
-	log   *slog.Logger
+	st      *store.Store
+	authr   *auth.Authenticator
+	webh    *web.Handler
+	api     *agentapi.API
+	ing     *ingest.Ingest
+	mcp     *mcpsrv.Handler             // the Run-wired MCP handler (doorbell + revocation hooks attached)
+	friends *friendIntake               // A2A friend-request intake (OIDC-provenance authenticated)
+	ping    func(context.Context) error // /healthz DB probe
+	log     *slog.Logger
 }
 
 // newRouter builds the full switchboard route table. Route grouping is the security baseline:
@@ -220,6 +222,23 @@ func newRouter(d routerDeps) chi.Router {
 	// rate limit, and the 1 MiB body cap all live inside the package's own middleware stack.
 	// The handler is Run-wired (doorbell + revocation hooks) and passed in — never constructed here.
 	r.Mount("/mcp", d.mcp.Routes())
+
+	// A2A friend-request intake (ADR-0010; SPEC-0010). Inbound only, and deliberately NOT
+	// session-authenticated: the request carries the requesting human's OIDC-signed provenance
+	// in-band, and that token IS the credential — missing/invalid provenance → 401 with no pending
+	// edge (SPEC-0010 "Missing or invalid provenance is rejected"). This is why it sits outside the
+	// RequireHuman group rather than being a "public, ungoverned" route: it is authenticated, just by
+	// signed provenance instead of a session cookie or bearer. Body bounded at 64 KiB (a requested
+	// scope is a small list + reason, not a blob) and per-IP rate-limited to blunt flooding; the
+	// per-requester standing-backlog quota is enforced in the handler. No remote discovery-doc fetch
+	// happens here (provenance is verified against the already-configured issuer's JWKS), so there is
+	// no per-request SSRF surface. Governing: SPEC-0010 "Security Requirements → Authentication,
+	// Rate Limiting, Request Body Size Limits".
+	friendRL := newRateLimiter(5, 10) // friend requests are low-frequency per source; burst 10
+	r.Group(func(fr chi.Router) {
+		fr.Use(friendRL.middleware, maxBytes(64<<10))
+		fr.Post("/a2a/friend-requests", d.friends.Intake)
+	})
 
 	// Auth (OIDC RP against Pocket ID; ADR-0011). The login screen is the ONLY public web page
 	// (SPEC-0012 "Security Requirements → Authentication"; REQ "Screen Set and Routes": public GET /login).

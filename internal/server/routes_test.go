@@ -98,6 +98,11 @@ var publicRoutes = map[string]bool{
 	"POST /webhooks/stripe":         true,
 	"POST /webhooks/slack":          true,
 	"POST /webhooks/generic/{name}": true,
+	// A2A friend-request intake authenticates by the requesting human's OIDC-signed provenance
+	// carried IN-BAND (ADR-0010/0011; SPEC-0010), not via a session cookie or bearer header —
+	// missing/invalid provenance → 401 with no pending edge. Not "ungoverned public": it is
+	// authenticated, just by signed provenance instead of a session.
+	"POST /a2a/friend-requests": true,
 }
 
 // routePath turns a chi route pattern into a concrete request path.

@@ -215,6 +215,45 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
+// ErrProvenanceUnavailable is returned by VerifyProvenance when OIDC is not configured, so the
+// server has no trusted issuer to verify a friend request's provenance against. Callers distinguish
+// this (a 503 "the feature needs OIDC") from a token that simply failed to verify (a 401).
+var ErrProvenanceUnavailable = errors.New("auth: provenance verification unavailable (OIDC not configured)")
+
+// VerifyProvenance verifies an OIDC-signed provenance assertion — the requesting human's ID token —
+// against the SAME trusted issuer switchboard authenticates its own humans with, and returns the
+// attested subject (OIDC `sub`) plus display name/email for the legible approval todo. This is the
+// A2A friend-request credential: the request carries the requesting human's signed identity in-band,
+// NOT the agent's self-assertion of who owns it (ADR-0010). The verifier checks issuer, audience,
+// expiry, and signature; it deliberately does NOT enforce an amr/acr assurance claim because the one
+// trusted issuer (Pocket ID) is passkey-only — passkey step-up stays deferred until a non-passkey
+// issuer is added (ADR-0011; the guard lives at New's provider-init site).
+//
+// A verification failure is returned as an error and MUST be surfaced by the caller as
+// `unauthenticated` with no pending edge created (SPEC-0010 "Missing or invalid provenance is
+// rejected"). No network callback is made here: the issuer's JWKS was fetched once at New and the
+// verifier validates the JWT signature locally, so there is no per-request SSRF surface.
+// Governing: ADR-0010 (verifiable OIDC-signed provenance), ADR-0011 (trust the passkey-only issuer,
+// step-up deferred), SPEC-0010 REQ "Verifiable OIDC-Signed Provenance".
+func (a *Authenticator) VerifyProvenance(ctx context.Context, rawIDToken string) (subject, name, email string, err error) {
+	if a.verifier == nil {
+		return "", "", "", ErrProvenanceUnavailable
+	}
+	idToken, err := a.verifier.Verify(ctx, rawIDToken)
+	if err != nil {
+		return "", "", "", fmt.Errorf("auth: provenance verify: %w", err)
+	}
+	if idToken.Subject == "" {
+		return "", "", "", errors.New("auth: provenance token has empty subject")
+	}
+	var claims struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+	_ = idToken.Claims(&claims)
+	return idToken.Subject, claims.Name, claims.Email, nil
+}
+
 // DevLogin mints a session for a fixed local human, bypassing OIDC. Guarded by SWITCHBOARD_DEV_LOGIN:
 // when the flag is unset the route answers 404 and establishes no session — in every build, including
 // production. Governing: SPEC-0008 REQ "Development Login Guard".
