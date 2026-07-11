@@ -145,24 +145,110 @@ func MintSlug(agentName string) (string, error) {
 
 // CreateEndpoint vends a scoped endpoint for an agent. The caller supplies the credential hash + prefix
 // (the plaintext is shown to the human once and never stored) and the minted URL slug. Scope is
-// immutable (ADR-0008).
+// immutable (ADR-0008). The endpoint is bound to no persona (persona_id NULL) — persona binding is
+// done through VendAgentEndpoint, which validates the persona against the endpoint's agent.
 func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefix, slug string, queues, verbs []string) (Endpoint, error) {
-	return createEndpoint(ctx, s.pool, agentID, credHash, credPrefix, slug, queues, verbs)
+	return createEndpoint(ctx, s.pool, agentID, credHash, credPrefix, slug, queues, verbs, nil)
 }
 
 // createEndpoint is the querier-based core of CreateEndpoint: it runs on either the pool or a
 // transaction so approval-time vending (SPEC-0010) can mint the endpoint in the SAME transaction
 // that transitions a friend edge to approved — approval is the vend, atomically. Governing:
-// ADR-0008 (URL + credential together = the grant; scope immutable).
-func createEndpoint(ctx context.Context, q querier, agentID, credHash, credPrefix, slug string, queues, verbs []string) (Endpoint, error) {
+// ADR-0008 (URL + credential together = the grant; scope immutable). personaID is nil for an
+// agent-level endpoint, or a persona uuid (as a string) to scope the endpoint to a persona of the
+// SAME agent — the caller is responsible for that same-agent invariant (ADR-0009).
+func createEndpoint(ctx context.Context, q querier, agentID, credHash, credPrefix, slug string, queues, verbs []string, personaID any) (Endpoint, error) {
 	var e Endpoint
 	err := q.QueryRow(ctx, `
-		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues, scope_verbs)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues, scope_verbs, persona_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at`,
-		agentID, credHash, credPrefix, slug, queues, verbs,
+		agentID, credHash, credPrefix, slug, queues, verbs, personaID,
 	).Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt)
 	return e, err
+}
+
+// VendParams carries the inputs for VendAgentEndpoint: the vending human, the new agent's name (used
+// only when no persona is bound), an optional persona id, and the pre-minted credential material +
+// URL slug + immutable scope. The plaintext credential never enters the store — the caller mints it
+// and keeps the plaintext for the one-time reveal, handing the store only the hash + display prefix.
+type VendParams struct {
+	OwnerHumanID string
+	Name         string // agent name for the freshly created agent; ignored when PersonaID is set
+	PersonaID    string // "" = agent-level endpoint; otherwise a persona the endpoint is scoped to
+	CredHash     string
+	CredPrefix   string
+	Slug         string
+	Queues       []string
+	Verbs        []string
+}
+
+// VendResult is what VendAgentEndpoint returns: the backing agent's name (for the one-time reveal)
+// and the freshly minted endpoint.
+type VendResult struct {
+	AgentName string
+	Endpoint  Endpoint
+}
+
+// VendAgentEndpoint mints an agent+endpoint (or a persona-scoped endpoint) in ONE transaction, so a
+// failure minting the endpoint can never orphan a freshly created agent. Two modes:
+//
+//   - No persona (PersonaID == ""): creates a new agent named Name and vends an agent-level endpoint
+//     on it. Agent create + endpoint create commit together or not at all.
+//   - With a persona (PersonaID != ""): resolves the persona within the vending human's ownership and
+//     vends the endpoint on the persona's OWN backing agent (Name is ignored), binding persona_id.
+//     Because the endpoint reuses the persona's agent, the bound persona always backs the SAME agent
+//     the endpoint is vended for. A persona that is unknown or owned by another human yields no row →
+//     ErrNotFound, so a vend can never bind a foreign persona or one that backs a different agent.
+//
+// Governing: ADR-0008 (URL + credential = the grant, minted atomically), ADR-0009 (persona_id scopes
+// a vended endpoint to a persona of the same agent), SPEC-0013 REQ "Endpoints View and Vend Modal".
+func (s *Store) VendAgentEndpoint(ctx context.Context, p VendParams) (VendResult, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return VendResult{}, fmt.Errorf("store: vend begin: %w", err)
+	}
+	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+
+	var agentID, agentName string
+	var personaID any // nil → persona_id NULL
+	if p.PersonaID != "" {
+		// Owner-scoped join: an unknown or cross-owner persona returns no row (ErrNotFound), so the
+		// binding can never reach another human's persona, and the endpoint is always vended on the
+		// persona's own agent — the same-agent invariant holds by construction, never by trust.
+		err = tx.QueryRow(ctx, `
+			SELECT a.id::text, a.name
+			FROM personas pe JOIN agents a ON a.id = pe.agent_id
+			WHERE pe.id = $1 AND pe.owner_human_id = $2`,
+			p.PersonaID, p.OwnerHumanID,
+		).Scan(&agentID, &agentName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return VendResult{}, ErrNotFound
+		}
+		if err != nil {
+			return VendResult{}, fmt.Errorf("store: vend resolve persona: %w", err)
+		}
+		personaID = p.PersonaID
+	} else {
+		err = tx.QueryRow(ctx, `
+			INSERT INTO agents (owner_human_id, name)
+			VALUES ($1, $2)
+			RETURNING id::text, name`,
+			p.OwnerHumanID, p.Name,
+		).Scan(&agentID, &agentName)
+		if err != nil {
+			return VendResult{}, fmt.Errorf("store: vend create agent: %w", err)
+		}
+	}
+
+	ep, err := createEndpoint(ctx, tx, agentID, p.CredHash, p.CredPrefix, p.Slug, p.Queues, p.Verbs, personaID)
+	if err != nil {
+		return VendResult{}, fmt.Errorf("store: vend create endpoint: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return VendResult{}, fmt.Errorf("store: vend commit: %w", err)
+	}
+	return VendResult{AgentName: agentName, Endpoint: ep}, nil
 }
 
 // ListEndpoints returns an agent's endpoints, newest first.

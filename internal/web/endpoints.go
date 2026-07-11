@@ -8,6 +8,7 @@ package web
 // policy of its own; SPEC-0014 REQ "HTTP Wiring Is the Only Wiring" for the one-time reveal.
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -74,6 +75,35 @@ func cardFromStore(c store.EndpointCard, personasEnabled bool) endpointCard {
 	return card
 }
 
+// vendPersonaOption is one choice in the vend modal's persona select: the persona id (the submitted
+// value that binds endpoints.persona_id) and its display name. Only the vending human's personas are
+// offered, so a vend can never reference another operator's persona.
+type vendPersonaOption struct {
+	ID   string
+	Name string
+}
+
+// vendPersonaOptions lists the human's personas as vend-modal choices, newest first. It is only
+// consulted while personas are enabled; an empty slice renders the modal with no bindable persona.
+// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" (optional persona), ADR-0009.
+func (h *Handler) vendPersonaOptions(r *http.Request, humanID string) []vendPersonaOption {
+	if !h.personasEnabled {
+		return nil
+	}
+	personas, err := h.store.ListPersonas(r.Context(), humanID)
+	if err != nil {
+		// Suppressed to a log: the vend modal still renders (with no persona choices) and a reload
+		// recovers. A missing persona list must never block vending an agent-level endpoint.
+		h.log.Warn("vend persona options", "err", err)
+		return nil
+	}
+	opts := make([]vendPersonaOption, 0, len(personas))
+	for _, p := range personas {
+		opts = append(opts, vendPersonaOption{ID: p.ID, Name: p.Name})
+	}
+	return opts
+}
+
 // Endpoints renders the Endpoints view: the vended-endpoint cards plus the "+ Vend endpoint" action.
 // Requires human. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal".
 func (h *Handler) Endpoints(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +123,8 @@ func (h *Handler) Endpoints(w http.ResponseWriter, r *http.Request) {
 	}
 	h.render(w, "endpoints", view{
 		Title: "Endpoints", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
-		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled, VerbOptions: drainVerbs,
+		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled,
+		VendPersonaOptions: h.vendPersonaOptions(r, human.ID), VerbOptions: drainVerbs,
 	})
 }
 
@@ -104,7 +135,8 @@ func (h *Handler) VendModal(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	if isHTMX(r) {
 		frag, err := h.renderFragment("vend_modal", view{
-			CSRF: auth.CSRFFromContext(r.Context()), PersonasEnabled: h.personasEnabled, VerbOptions: drainVerbs,
+			CSRF: auth.CSRFFromContext(r.Context()), PersonasEnabled: h.personasEnabled,
+			VendPersonaOptions: h.vendPersonaOptions(r, human.ID), VerbOptions: drainVerbs,
 		})
 		if err != nil {
 			h.fail(w, err)
@@ -130,7 +162,8 @@ func (h *Handler) VendModal(w http.ResponseWriter, r *http.Request) {
 	}
 	h.render(w, "endpoints", view{
 		Title: "Vend endpoint", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
-		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled, VerbOptions: drainVerbs, VendOpen: true,
+		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled,
+		VendPersonaOptions: h.vendPersonaOptions(r, human.ID), VerbOptions: drainVerbs, VendOpen: true,
 	})
 }
 
@@ -149,37 +182,52 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	queues := multiValues(r, "queues")
 	verbs := multiValues(r, "verbs")
+	// The persona binding is only honored while personas are enabled — a submitted persona is ignored
+	// (never bound) when the capability is off, mirroring the modal which renders no persona slot then.
+	var personaID string
+	if h.personasEnabled {
+		personaID = strings.TrimSpace(r.FormValue("persona"))
+	}
 	// Scope validation is a hard gate: no name, no queue, or no verb → reject before minting anything.
 	if name == "" || len(queues) == 0 || len(verbs) == 0 {
 		http.Error(w, "name, at least one queue, and at least one verb are required", http.StatusBadRequest)
 		return
 	}
 
-	ag, err := h.store.CreateAgent(r.Context(), human.ID, name, "")
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
 	token, hash, prefix, err := cred.Mint()
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	// Governing: SPEC-0014 REQ "Streamable HTTP MCP Endpoint" — the per-endpoint URL slug is minted
-	// and persisted at vend time; /mcp/{slug} is where this credential is honored.
-	slug, err := store.MintSlug(ag.Name)
+	// and persisted at vend time; /mcp/{slug} is where this credential is honored. The slug is a
+	// non-secret URL segment, so deriving it from the submitted name is fine even when a persona
+	// reuses a differently named backing agent.
+	slug, err := store.MintSlug(name)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	ep, err := h.store.CreateEndpoint(r.Context(), ag.ID, hash, prefix, slug, queues, verbs)
+	// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" — agent + endpoint are minted in one
+	// transaction, so a failure after the agent insert can never leave an orphan agent. When a persona
+	// is bound the endpoint is vended on the persona's own agent (owner + same-agent validated in the
+	// store); an unknown or foreign persona comes back as ErrNotFound → a 400 that mints nothing.
+	res, err := h.store.VendAgentEndpoint(r.Context(), store.VendParams{
+		OwnerHumanID: human.ID, Name: name, PersonaID: personaID,
+		CredHash: hash, CredPrefix: prefix, Slug: slug, Queues: queues, Verbs: verbs,
+	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "unknown persona", http.StatusBadRequest)
+			return
+		}
 		h.fail(w, err)
 		return
 	}
+	ep := res.Endpoint
 
 	reveal := revealView{
-		AgentName: ag.Name, Slug: ep.Slug, Token: token,
+		AgentName: res.AgentName, Slug: ep.Slug, Token: token,
 		MCPJSON: buildMCPJSON(h.cfg.BaseURL, ep.Slug, token),
 		Queues:  ep.ScopeQueues, Verbs: ep.ScopeVerbs, CSRF: auth.CSRFFromContext(r.Context()),
 	}

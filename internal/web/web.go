@@ -181,11 +181,12 @@ type view struct {
 	Drawer         *drawerView      // standalone todo detail page (drawer fallback)
 
 	// Endpoints view (SPEC-0013 REQ "Endpoints View and Vend Modal").
-	EndpointCards   []endpointCard // the vended-endpoint cards
-	PersonasEnabled bool           // gates the persona chip on cards + the persona field in the modal
-	VerbOptions     []string       // the vend-modal verb toggle chips (drain-verb vocabulary)
-	VendOpen        bool           // no-JS fallback: render the vend form inline in the page
-	Reveal          *revealView    // set on a no-JS vend to render the one-time credential reveal inline
+	EndpointCards      []endpointCard      // the vended-endpoint cards
+	PersonasEnabled    bool                // gates the persona chip on cards + the persona field in the modal
+	VendPersonaOptions []vendPersonaOption // the vend-modal persona select choices (the human's personas)
+	VerbOptions        []string            // the vend-modal verb toggle chips (drain-verb vocabulary)
+	VendOpen           bool                // no-JS fallback: render the vend form inline in the page
+	Reveal             *revealView         // set on a no-JS vend to render the one-time credential reveal inline
 
 	// Personas view (SPEC-0013 REQ "Personas View"): cards + create/edit modals.
 	Personas *personasView

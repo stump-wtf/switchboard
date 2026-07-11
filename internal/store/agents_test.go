@@ -263,3 +263,137 @@ func TestListEndpointCards(t *testing.T) {
 		t.Error("revoked card must carry a revoked_at stamp (killed · when)")
 	}
 }
+
+// vendParams builds a VendAgentEndpoint input with a fixed scope, distinct credential material, and
+// the given slug — the harness for the atomic-vend and persona-binding tests.
+func vendParams(ownerHumanID, name, slug string) VendParams {
+	return VendParams{
+		OwnerHumanID: ownerHumanID, Name: name,
+		CredHash: "hash-" + slug, CredPrefix: "sbk_" + slug[:min(len(slug), 6)],
+		Slug: slug, Queues: []string{"reviews"}, Verbs: []string{"list_todos", "claim"},
+	}
+}
+
+// A vend is atomic: if the endpoint insert fails after the agent insert (here forced with a duplicate
+// slug), the whole transaction rolls back and no orphan agent is left behind. Governing: SPEC-0013 REQ
+// "Endpoints View and Vend Modal" (agent+endpoint minted together), ADR-0008.
+func TestVendAgentEndpointRollsBackOrphanAgent(t *testing.T) {
+	s, ctx := testStore(t)
+	h := mustHuman(t, s, ctx, "pocket|vend-atomic", "Owner")
+
+	// First vend succeeds and claims the slug.
+	if _, err := s.VendAgentEndpoint(ctx, vendParams(h.ID, "reviewer-bot", "dup-slug-abc")); err != nil {
+		t.Fatalf("first vend should succeed: %v", err)
+	}
+
+	// Second vend reuses the same slug: the agent insert succeeds inside the tx, then the endpoint
+	// insert violates the unique slug index — the tx must roll back, leaving no second agent.
+	if _, err := s.VendAgentEndpoint(ctx, vendParams(h.ID, "orphan-bot", "dup-slug-abc")); err == nil {
+		t.Fatal("second vend with a duplicate slug must fail")
+	}
+
+	agents, err := s.ListAgents(ctx, h.ID)
+	if err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("agent count = %d, want 1 — the failed vend left an orphan agent", len(agents))
+	}
+	if agents[0].Name != "reviewer-bot" {
+		t.Fatalf("surviving agent = %q, want the first vend's reviewer-bot", agents[0].Name)
+	}
+}
+
+// Vending with a persona binds endpoints.persona_id and vends on the persona's OWN backing agent, so
+// the endpoint and persona always share an agent. The bound persona then surfaces on the endpoint
+// card. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" (optional persona), ADR-0009.
+func TestVendAgentEndpointBindsPersona(t *testing.T) {
+	s, ctx := testStore(t)
+	h := mustHuman(t, s, ctx, "pocket|vend-persona", "Owner")
+
+	// A backing agent with a vended grant the persona can be a subset of.
+	base, err := s.VendAgentEndpoint(ctx, vendParams(h.ID, "reviewer-bot", "base-slug-1"))
+	if err != nil {
+		t.Fatalf("base vend: %v", err)
+	}
+	agentID := base.Endpoint.AgentID
+
+	p, err := s.CreatePersona(ctx, CreatePersonaParams{
+		OwnerHumanID: h.ID, AgentID: agentID, Name: "Reviewer",
+		SystemPrompt: "Review carefully.", VerbSubset: []string{"list_todos", "claim"}, Queues: []string{"reviews"},
+	})
+	if err != nil {
+		t.Fatalf("create persona: %v", err)
+	}
+
+	// Vend with the persona: no new agent, endpoint bound to the persona's agent, persona_id set.
+	pp := vendParams(h.ID, "ignored-name", "persona-slug-1")
+	pp.PersonaID = p.ID
+	res, err := s.VendAgentEndpoint(ctx, pp)
+	if err != nil {
+		t.Fatalf("persona vend: %v", err)
+	}
+	if res.Endpoint.AgentID != agentID {
+		t.Fatalf("persona endpoint agent = %s, want the persona's backing agent %s", res.Endpoint.AgentID, agentID)
+	}
+	if res.AgentName != "reviewer-bot" {
+		t.Fatalf("reveal agent name = %q, want the persona's backing agent name", res.AgentName)
+	}
+	// Only one agent exists — the persona path reused it rather than minting a second.
+	if agents, _ := s.ListAgents(ctx, h.ID); len(agents) != 1 {
+		t.Fatalf("agent count = %d, want 1 (persona vend must reuse the backing agent)", len(agents))
+	}
+
+	// The bound persona surfaces on the endpoint card (LEFT JOIN on persona_id).
+	cards, err := s.ListEndpointCards(ctx, h.ID)
+	if err != nil {
+		t.Fatalf("list cards: %v", err)
+	}
+	var bound *EndpointCard
+	for i := range cards {
+		if cards[i].ID == res.Endpoint.ID {
+			bound = &cards[i]
+		}
+	}
+	if bound == nil {
+		t.Fatalf("persona-bound endpoint %s missing from cards", res.Endpoint.ID)
+	}
+	if bound.PersonaName != "Reviewer" {
+		t.Fatalf("card persona = %q, want Reviewer — persona_id was not bound", bound.PersonaName)
+	}
+}
+
+// A vend can never bind a persona owned by another human: the owner-scoped lookup returns no row, so
+// the persona resolves to ErrNotFound and nothing is minted for the vending human. Governing:
+// SPEC-0007 REQ "Human as Accountable Principal", ADR-0009.
+func TestVendAgentEndpointRejectsForeignPersona(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := mustHuman(t, s, ctx, "pocket|persona-real-owner", "Owner")
+	intruder := mustHuman(t, s, ctx, "pocket|persona-intruder", "Intruder")
+
+	base, err := s.VendAgentEndpoint(ctx, vendParams(owner.ID, "reviewer-bot", "owner-slug-1"))
+	if err != nil {
+		t.Fatalf("owner base vend: %v", err)
+	}
+	p, err := s.CreatePersona(ctx, CreatePersonaParams{
+		OwnerHumanID: owner.ID, AgentID: base.Endpoint.AgentID, Name: "Reviewer",
+		SystemPrompt: "…", VerbSubset: []string{"list_todos"}, Queues: []string{"reviews"},
+	})
+	if err != nil {
+		t.Fatalf("create persona: %v", err)
+	}
+
+	// The intruder tries to vend against the owner's persona.
+	pp := vendParams(intruder.ID, "intruder-bot", "intruder-slug-1")
+	pp.PersonaID = p.ID
+	if _, err := s.VendAgentEndpoint(ctx, pp); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign persona vend = %v, want ErrNotFound", err)
+	}
+	// Nothing was minted for the intruder — no agent, no endpoint.
+	if agents, _ := s.ListAgents(ctx, intruder.ID); len(agents) != 0 {
+		t.Fatalf("intruder agent count = %d, want 0", len(agents))
+	}
+	if cards, _ := s.ListEndpointCards(ctx, intruder.ID); len(cards) != 0 {
+		t.Fatalf("intruder endpoint count = %d, want 0", len(cards))
+	}
+}

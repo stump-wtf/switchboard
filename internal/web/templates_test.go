@@ -214,6 +214,30 @@ func TestVendModalRendersFields(t *testing.T) {
 	}
 }
 
+// TestVendModalRendersPersonaSelectWhenEnabled: with personas enabled the vend modal offers the
+// human's personas as a select whose option values are persona ids (what binds endpoints.persona_id),
+// plus a "none" agent-level choice. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" (optional
+// persona), ADR-0009.
+func TestVendModalRendersPersonaSelectWhenEnabled(t *testing.T) {
+	h := newTestHandler(t)
+	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", PersonasEnabled: true, VerbOptions: drainVerbs,
+		VendPersonaOptions: []vendPersonaOption{{ID: "pr_123", Name: "Reviewer"}}})
+	for _, want := range []string{
+		`<select id="sb-vend-persona"`, `name="persona"`, // the persona select posts as name="persona"
+		`<option value="">`,                        // the agent-level (no persona) choice
+		`<option value="pr_123">Reviewer</option>`, // value is the persona id, label the name
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("vend modal (personas on): missing %q", want)
+		}
+	}
+	// With personas OFF the persona slot must not render at all.
+	off := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: drainVerbs})
+	if strings.Contains(off, `name="persona"`) {
+		t.Error("vend modal must not render a persona field while personas are disabled")
+	}
+}
+
 // TestVendRevealShowsCredentialOnceAndHTTPWiring: the one-time reveal shows the plaintext credential
 // once, the minted /mcp/{slug} URL, HTTP-only .mcp.json wiring, and a shown-once warning.
 // Governing: SPEC-0013 (credential reveal is one-time), SPEC-0014 REQ "HTTP Wiring Is the Only Wiring".

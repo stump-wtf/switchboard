@@ -420,8 +420,11 @@
   {{if .PersonasEnabled}}
   <div class="sb-field">
     <label for="sb-vend-persona">Persona (optional)</label>
-    <input id="sb-vend-persona" class="sb-input" name="persona" placeholder="none" autocomplete="off">
-    <p class="sb-help">bind this endpoint to a published persona</p>
+    <select id="sb-vend-persona" class="sb-input" name="persona">
+      <option value="">none — agent-level endpoint</option>
+      {{range .VendPersonaOptions}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+    <p class="sb-help">bind this endpoint to one of your personas (it vends on that persona's agent)</p>
   </div>
   {{end}}
   <div class="sb-field">
