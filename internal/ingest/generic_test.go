@@ -7,13 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/joestump/switchboard/internal/agentapi"
-	"github.com/joestump/switchboard/internal/db"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -174,26 +172,12 @@ func decode(t *testing.T, b []byte, v any) {
 	}
 }
 
-// testIngest connects to the test database and builds a full Ingest for accept-path tests.
-// Skips cleanly without SWITCHBOARD_TEST_DATABASE_URL (Gitea CI is the gate).
+// testIngest builds a full Ingest for accept-path tests against the ingest-owned test database
+// (see ingestTestPool in dedup_test.go). Skips cleanly without SWITCHBOARD_TEST_DATABASE_URL
+// (Gitea CI is the gate).
 func testIngest(t *testing.T, cfg Config) (*Ingest, *store.Store, context.Context, func(string) (trustMode string, verified bool, verifyDetail string)) {
 	t.Helper()
-	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set SWITCHBOARD_TEST_DATABASE_URL to run ingest accept-path tests")
-	}
-	ctx := context.Background()
-	pool, err := db.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	if err := db.Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `TRUNCATE todos, events RESTART IDENTITY CASCADE`); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
+	pool, ctx := ingestTestPool(t)
 	st := store.New(pool)
 	ing := New(st, agentapi.NewHub(), slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
 	eventRow := func(source string) (string, bool, string) {

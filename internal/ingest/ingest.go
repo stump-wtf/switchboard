@@ -134,19 +134,22 @@ func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	event := r.Header.Get("X-GitHub-Event")
-	delivery := r.Header.Get("X-GitHub-Delivery")
+	// Idempotency key from the GitHub delivery GUID; body-hash fallback if the header is absent so a
+	// redelivery can never bypass dedup with a NULL key (SPEC-0001 REQ "Idempotency Key Extraction
+	// and Dedup").
+	key := idempotencyKey(r.Header.Get("X-GitHub-Delivery"), body)
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — persist the event and enqueue its todo in a
 	// single transaction so a CreateTodo failure can never leave an orphaned event row behind.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
 		store.EventInput{
-			Source: "github", Family: "webhook", EventType: event, ExternalID: delivery,
+			Source: "github", Family: "webhook", EventType: event, ExternalID: key,
 			TrustMode: "signed", Verified: true, VerifyDetail: "hmac-sha256 ok",
 			ContentType: r.Header.Get("Content-Type"), Headers: sanitizeHeaders(r.Header),
 			Payload: body, SourceIP: clientIP(r),
 		},
 		store.CreateTodoParams{
 			Queue: i.githubQueue, Source: "github", Kind: event, Title: summarizeGitHub(event, body),
-			Payload: body, IdempotencyKey: delivery,
+			Payload: body, IdempotencyKey: key,
 		})
 	if err != nil {
 		i.log.Error("ingest github delivery", "err", err)

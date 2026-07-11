@@ -49,10 +49,7 @@ func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(body, &p)
 	// Idempotency key from the Stripe event id; body-hash fallback if absent (SPEC-0001 REQ
 	// "Idempotency Key Extraction and Dedup").
-	key := p.ID
-	if key == "" {
-		key = bodyHash(body)
-	}
+	key := idempotencyKey(p.ID, body)
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
 		store.EventInput{
@@ -112,10 +109,7 @@ func (i *Ingest) Slack(w http.ResponseWriter, r *http.Request) {
 	}
 	// Slack supplies an event_id on event callbacks; fall back to a body hash otherwise
 	// (SPEC-0001 REQ "Idempotency Key Extraction and Dedup" — body-hash fallback for Slack).
-	key := p.EventID
-	if key == "" {
-		key = bodyHash(body)
-	}
+	key := idempotencyKey(p.EventID, body)
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
 		store.EventInput{
@@ -237,6 +231,17 @@ func freshTimestamp(ts int64, now time.Time, tolerance time.Duration) bool {
 func bodyHash(body []byte) string {
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// idempotencyKey derives the dedup key for an accepted delivery: the provider delivery id where one
+// exists (GitHub X-GitHub-Delivery, Stripe event id, Slack event_id), with a sha256(body) fallback
+// where the provider supplies none — a key is ALWAYS derived, so a redelivery can never bypass
+// dedup with an empty key. Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup".
+func idempotencyKey(deliveryID string, body []byte) string {
+	if deliveryID != "" {
+		return deliveryID
+	}
+	return bodyHash(body)
 }
 
 // summarizeStripe builds a one-line, legible todo title from a Stripe event type.
