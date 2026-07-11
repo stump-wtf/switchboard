@@ -289,3 +289,137 @@ func TestFriendEdgeOwnershipIsolation(t *testing.T) {
 		t.Fatalf("owner list wrong: %+v, %v", all, err)
 	}
 }
+
+// mustApprovedFriend seeds a pending edge and approves it, returning the edge and its vended
+// endpoint. The requesting persona is "a@a"; the grant is the given queues/verbs (no narrowing).
+func mustApprovedFriend(t *testing.T, s *Store, ctx context.Context, target Human, vendAgent Agent, queues, verbs []string) (FriendEdge, Endpoint) {
+	t.Helper()
+	e := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "a@a", ToPersona: "b@b", ToHuman: target.ID,
+		RequestedQueues: queues, RequestedVerbs: verbs,
+	})
+	slug, _ := MintSlug(vendAgent.Name)
+	edge, ep, err := s.ApproveFriendRequest(ctx, ApproveFriendRequestParams{
+		EdgeID: e.ID, OwnerHumanID: target.ID, AgentID: vendAgent.ID,
+		CredentialHash: "cff-" + vendAgent.ID, CredentialPrefix: "sbk_cff", Slug: slug,
+	})
+	if err != nil {
+		t.Fatalf("approve friend: %v", err)
+	}
+	return edge, ep
+}
+
+// After a grant, cross-agent work lands as a DURABLE TODO in the granted queue via the create_for
+// verb backend — not as an ephemeral A2A task. The todo is attributed to the requesting persona,
+// carries the invoked intent as its kind, and dedups on the idempotency key. Governing: SPEC-0010
+// REQ "Work Flows as Todos, Not A2A Tasks", ADR-0010, ADR-0007.
+func TestCreateForFriendLandsAsTodo(t *testing.T) {
+	s, ctx := testStore(t)
+	target := mustHuman(t, s, ctx, "pocket|cff-tgt", "Target")
+	vendAgent := mustAgent(t, s, ctx, target.ID, "b-persona")
+	_, ep := mustApprovedFriend(t, s, ctx, target, vendAgent,
+		[]string{"reviews", "triage"}, []string{"create_for"})
+
+	td, created, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: ep.ID, Queue: "reviews", Intent: "create_for",
+		Title: "Review PR #42", Payload: []byte(`{"pr":42}`), IdempotencyKey: "handoff-1",
+	})
+	if err != nil {
+		t.Fatalf("create_for friend: %v", err)
+	}
+	if !created {
+		t.Fatal("first handoff must create a new todo")
+	}
+	if td.Queue != "reviews" {
+		t.Fatalf("todo queue=%q want the granted queue reviews", td.Queue)
+	}
+	if td.Source != "a@a" {
+		t.Fatalf("todo must be attributed to the requesting persona, got source=%q", td.Source)
+	}
+	if td.Kind != "create_for" {
+		t.Fatalf("todo kind=%q want the invoked intent", td.Kind)
+	}
+	if td.State != "pending" {
+		t.Fatalf("handoff todo must be claimable/pending, got %q", td.State)
+	}
+
+	// Same idempotency key → the existing todo, not a duplicate (the handoff is dedup'd).
+	td2, created2, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: ep.ID, Queue: "reviews", Intent: "create_for",
+		Title: "Review PR #42", IdempotencyKey: "handoff-1",
+	})
+	if err != nil || created2 {
+		t.Fatalf("duplicate handoff must dedup: created=%v err=%v", created2, err)
+	}
+	if td2.ID != td.ID {
+		t.Fatalf("dedup must return the same todo, got %q want %q", td2.ID, td.ID)
+	}
+}
+
+// The negotiated scope is enforced at the boundary: an intent (verb) outside the granted set, or a
+// queue outside the granted set, is rejected as ErrIntentNotNegotiated and mints no todo — a friend
+// may do exactly what was approved. Governing: SPEC-0010 REQ "Work Flows as Todos, Not A2A Tasks".
+func TestCreateForFriendRejectsUnnegotiatedIntent(t *testing.T) {
+	s, ctx := testStore(t)
+	target := mustHuman(t, s, ctx, "pocket|cff-scope", "Target")
+	vendAgent := mustAgent(t, s, ctx, target.ID, "b-persona")
+	_, ep := mustApprovedFriend(t, s, ctx, target, vendAgent,
+		[]string{"reviews"}, []string{"create_for"})
+
+	// Intent (verb) not in the granted set → rejected.
+	if _, _, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: ep.ID, Queue: "reviews", Intent: "delete_todo", IdempotencyKey: "bad-verb",
+	}); !errors.Is(err, ErrIntentNotNegotiated) {
+		t.Fatalf("un-negotiated intent must be ErrIntentNotNegotiated, got %v", err)
+	}
+	// Queue not in the granted set → rejected (queue scope is enforced too).
+	if _, _, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: ep.ID, Queue: "secrets", Intent: "create_for", IdempotencyKey: "bad-queue",
+	}); !errors.Is(err, ErrIntentNotNegotiated) {
+		t.Fatalf("out-of-scope queue must be ErrIntentNotNegotiated, got %v", err)
+	}
+	// Nothing was minted for either rejected handoff.
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos`).Scan(&n); err != nil {
+		t.Fatalf("count todos: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("rejected handoffs must mint no todo, got %d", n)
+	}
+}
+
+// An inactive friendship grants no transport: a revoked edge (endpoint killed) and a pending edge
+// (no endpoint yet) both reject the handoff as ErrFriendshipInactive, minting nothing. Governing:
+// SPEC-0010 REQ "Work Flows as Todos, Not A2A Tasks", REQ "Per-Direction, Revocable" (revoke kills it).
+func TestCreateForFriendRejectsInactiveFriendship(t *testing.T) {
+	s, ctx := testStore(t)
+	target := mustHuman(t, s, ctx, "pocket|cff-inact", "Target")
+	vendAgent := mustAgent(t, s, ctx, target.ID, "b-persona")
+	edge, ep := mustApprovedFriend(t, s, ctx, target, vendAgent,
+		[]string{"reviews"}, []string{"create_for"})
+
+	// Revoke the friendship (kills the vended endpoint), then a handoff is refused.
+	if _, err := s.RevokeFriendEdge(ctx, edge.ID, target.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, _, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: ep.ID, Queue: "reviews", Intent: "create_for", IdempotencyKey: "post-revoke",
+	}); !errors.Is(err, ErrFriendshipInactive) {
+		t.Fatalf("handoff on a revoked friendship must be ErrFriendshipInactive, got %v", err)
+	}
+
+	// A pending edge has no endpoint at all; an unknown/unbacked endpoint id is likewise inactive.
+	if _, _, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: "00000000-0000-0000-0000-000000000000", Queue: "reviews", Intent: "create_for",
+	}); !errors.Is(err, ErrFriendshipInactive) {
+		t.Fatalf("handoff on an unbacked endpoint must be ErrFriendshipInactive, got %v", err)
+	}
+
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos`).Scan(&n); err != nil {
+		t.Fatalf("count todos: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("inactive-friendship handoffs must mint no todo, got %d", n)
+	}
+}

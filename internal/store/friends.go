@@ -11,8 +11,9 @@ import (
 
 // Governing: ADR-0010 (A2A discovery + human-vended friending), SPEC-0010 REQ "Friend-Request
 // Lifecycle", REQ "Approval Is the Vend, Narrow-Only", REQ "Per-Direction, Revocable, Non-Transitive
-// Edges". This file owns the friend-edge state machine only; the A2A intake route (#62), the
-// approval-todo/web UI (#63), and the cross-agent todo flow (#64) are deliberately out of scope.
+// Edges", REQ "Work Flows as Todos, Not A2A Tasks". This file owns the friend-edge state machine and
+// the cross-agent work-handoff (create_for) flow that turns an accepted intent invocation into a
+// durable todo. The A2A intake route (#62) and the approval-todo/web UI (#63) are out of scope.
 
 // ErrInvalidTransition is returned when a friend-edge lifecycle transition is not legal from the
 // edge's current state (e.g. approving an edge that is not pending, revoking one that is not
@@ -22,6 +23,16 @@ var ErrInvalidTransition = errors.New("store: invalid friend-edge transition")
 // ErrScopeExceedsRequest is returned when an approval's granted_scope is not a subset of the
 // requested_scope — narrow-only approval forbids granting more than was asked for (SPEC-0010).
 var ErrScopeExceedsRequest = errors.New("store: granted scope exceeds requested scope")
+
+// ErrFriendshipInactive is returned when a cross-agent work handoff is attempted against an edge
+// that is not an active friendship — the edge is not approved, or its vended endpoint has been
+// revoked (SPEC-0010 "Work Flows as Todos"; a pending/denied/revoked friendship grants nothing).
+var ErrFriendshipInactive = errors.New("store: friendship not active")
+
+// ErrIntentNotNegotiated is returned when a cross-agent handoff invokes an intent (verb) or targets
+// a queue that is outside the friendship's negotiated (granted) scope. The vended endpoint's verb +
+// queue scope is enforced at the boundary — a friend may only do exactly what was approved (SPEC-0010).
+var ErrIntentNotNegotiated = errors.New("store: intent not negotiated for this friendship")
 
 // FriendEdge is one per-direction, revocable, non-transitive friend link and its lifecycle. A
 // pending edge grants nothing; approval mints EndpointID (the vend); revocation kills it. ADR-0010.
@@ -293,6 +304,68 @@ func (s *Store) ListFriendEdges(ctx context.Context, ownerHumanID string, states
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// CreateForFriendParams are the inputs to CreateForFriend — a cross-agent work handoff. EndpointID is
+// the vended endpoint the presented credential authenticated to (the boundary resolves it via
+// EndpointByCredHash); it identifies the friendship. Intent is the negotiated verb being invoked
+// (e.g. "create_for"); Queue is the target queue. Both MUST fall inside the friendship's granted
+// scope. Title/Payload/IdempotencyKey are the work itself; IdempotencyKey dedups the handoff.
+type CreateForFriendParams struct {
+	EndpointID     string
+	Queue          string
+	Intent         string
+	Title          string
+	Payload        []byte
+	IdempotencyKey string
+}
+
+// CreateForFriend is the create_for verb backend: a friended remote agent, authenticated by its
+// vended MCP endpoint credential, hands work to the target human — and that work lands as a DURABLE
+// TODO in the granted queue, never as an ephemeral A2A peer task (the todo-queue IS the transport).
+// It enforces the friendship is active (edge approved + endpoint live) and that the invoked intent
+// and queue are both inside the negotiated grant, rejecting anything outside it, then enqueues the
+// todo attributed to the requesting persona. Returns ErrFriendshipInactive when no active friendship
+// backs the endpoint, and ErrIntentNotNegotiated when the intent or queue is out of scope. The
+// returned bool reports whether a new todo was created (false = an idempotent duplicate).
+// Governing: ADR-0010 (A2A discovers, the todo-queue transports), SPEC-0010 REQ "Work Flows as
+// Todos, Not A2A Tasks", ADR-0007 (todos as the durable core primitive).
+func (s *Store) CreateForFriend(ctx context.Context, p CreateForFriendParams) (Todo, bool, error) {
+	// Resolve the friendship from the vended endpoint. It must be approved AND its endpoint still
+	// active, so a pending edge (no endpoint), a denied one, or a revoked one (endpoint killed) all
+	// collapse to "no active friendship" — indistinguishable, leaking no lifecycle state. The
+	// endpoint check is an EXISTS subquery (not a JOIN) so the friendEdgeCols projection stays
+	// single-table and its bare `id`/`state` columns never collide with the endpoints table.
+	edge, err := scanFriendEdge(s.pool.QueryRow(ctx, `
+		SELECT `+friendEdgeCols+`
+		FROM friend_edges
+		WHERE endpoint_id = $1 AND state = 'approved'
+		  AND EXISTS (SELECT 1 FROM endpoints e WHERE e.id = friend_edges.endpoint_id AND e.state = 'active')`,
+		p.EndpointID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Todo{}, false, ErrFriendshipInactive
+	}
+	if err != nil {
+		return Todo{}, false, err
+	}
+
+	// Enforce the negotiated scope at the boundary: the invoked intent MUST be a granted verb and the
+	// target queue MUST be a granted queue. A friend may do exactly what was approved, nothing wider.
+	if !isSubset([]string{p.Intent}, edge.GrantedVerbs) || !isSubset([]string{p.Queue}, edge.GrantedQueues) {
+		return Todo{}, false, ErrIntentNotNegotiated
+	}
+
+	// The work is just a todo: durable, owned, dedup'd, leaseable. Attribute it to the requesting
+	// persona (who handed the work) and record the intent as the kind. CreateTodo rings the
+	// LISTEN/NOTIFY doorbell so a worker on the granted queue wakes without polling.
+	return s.CreateTodo(ctx, CreateTodoParams{
+		Queue:          p.Queue,
+		Source:         edge.FromPersona,
+		Kind:           p.Intent,
+		Title:          p.Title,
+		Payload:        p.Payload,
+		IdempotencyKey: p.IdempotencyKey,
+	})
 }
 
 // isSubset reports whether every element of sub is present in super (set containment). Used to
