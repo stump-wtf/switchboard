@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -30,6 +31,11 @@ import (
 
 //go:embed templates/*.html
 var tmplFS embed.FS
+
+// pageNames are the page templates composed with layout.html and the shared fragments. Startup
+// parses every one of them.
+// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
+var pageNames = []string{"login", "board", "dashboard", "agent", "vended"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -65,28 +71,54 @@ type Handler struct {
 // the handler serves traffic; passing nil clears the hook.
 func (h *Handler) SetEndpointRevokedHook(fn func(endpointID string)) { h.endpointRevoked = fn }
 
-// New parses the templates and returns a Handler.
+// New parses the templates and returns a Handler. A parse failure is returned to the caller, so
+// server startup fails loudly instead of serving broken pages (SPEC-0012 "fail startup if any
+// template fails to parse").
 func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error) {
-	funcs := template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod}
-	h := &Handler{store: st, cfg: cfg, log: log, pages: map[string]*template.Template{},
+	pages, err := parsePages(tmplFS)
+	if err != nil {
+		return nil, err
+	}
+	frags, err := parseFrags(tmplFS)
+	if err != nil {
+		return nil, err
+	}
+	h := &Handler{store: st, cfg: cfg, log: log, pages: pages, frags: frags,
 		events: newEventHub(), keepAlive: defaultKeepAlive}
 	h.sseRetryMS = h.sseRetrySetting
-	// fragments.html is parsed into every page set (pages reuse feed rows, tiles, and pills) and
-	// once standalone for the SSE publisher (live.go renders fragments with no page around them).
-	for _, p := range []string{"login", "board", "dashboard", "agent", "vended"} {
-		t, err := template.New(p).Funcs(funcs).ParseFS(tmplFS,
+	return h, nil
+}
+
+// templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
+func templateFuncs() template.FuncMap {
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod}
+}
+
+// parsePages composes layout.html and fragments.html with each page template from fsys
+// (pages reuse the shared feed rows, tiles, and pills). Split from New so tests can prove that a
+// broken or missing template surfaces a startup-failing error.
+// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
+func parsePages(fsys fs.FS) (map[string]*template.Template, error) {
+	pages := make(map[string]*template.Template, len(pageNames))
+	for _, p := range pageNames {
+		t, err := template.New(p).Funcs(templateFuncs()).ParseFS(fsys,
 			"templates/layout.html", "templates/fragments.html", "templates/"+p+".html")
 		if err != nil {
 			return nil, fmt.Errorf("parse templates for %q: %w", p, err)
 		}
-		h.pages[p] = t
+		pages[p] = t
 	}
-	frags, err := template.New("fragments").Funcs(funcs).ParseFS(tmplFS, "templates/fragments.html")
+	return pages, nil
+}
+
+// parseFrags parses fragments.html once standalone for the SSE publisher (live.go renders
+// fragments with no page around them). Like parsePages, a parse failure fails startup.
+func parseFrags(fsys fs.FS) (*template.Template, error) {
+	frags, err := template.New("fragments").Funcs(templateFuncs()).ParseFS(fsys, "templates/fragments.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse fragment templates: %w", err)
 	}
-	h.frags = frags
-	return h, nil
+	return frags, nil
 }
 
 // dict builds a map for passing multiple named args to a sub-template ({{template "x" dict "K" v}}).

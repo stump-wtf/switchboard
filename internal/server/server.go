@@ -100,8 +100,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	webhookRL := newRateLimiter(10, 20)
 
 	// Static assets + health.
-	staticSub, _ := fs.Sub(switchboard.StaticFS, "static")
-	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+	r.Handle("/static/*", staticHandler())
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if err := pool.Ping(ctx); err != nil {
 			http.Error(w, "db down", http.StatusServiceUnavailable)
@@ -196,6 +195,16 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety".
 	<-runnerDone
 	return nil
+}
+
+// staticHandler serves /static/* from the embedded static FS — no runtime CDN, so the UI works
+// offline and under the strict same-origin CSP. Split from Run so tests can exercise the exact
+// production mount without a database.
+// Governing: ADR-0001 (single binary, embedded assets), SPEC-0012 REQ "Server-Rendered Pages from
+// Embedded Templates" (scenario "Static assets served from embed, not a CDN").
+func staticHandler() http.Handler {
+	staticSub, _ := fs.Sub(switchboard.StaticFS, "static")
+	return http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))
 }
 
 // secureHeaders sets defensive response headers on every route (SPEC-0001/0005/0006/0007/0008/0012).
