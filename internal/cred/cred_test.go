@@ -19,8 +19,14 @@ func TestMint(t *testing.T) {
 	if len(hash) != 64 { // sha256 hex
 		t.Fatalf("hash length: %d", len(hash))
 	}
-	if !strings.HasPrefix(disp, "sbk_") || !strings.HasSuffix(disp, "…") {
-		t.Fatalf("display: %q", disp)
+	// Mint's third value is a clean, non-secret prefix: a genuine prefix of the token (so an operator
+	// can visually match the one-time reveal) that is never the full plaintext.
+	if !strings.HasPrefix(disp, "sbk_") || !strings.HasPrefix(tok, disp) || disp == tok {
+		t.Fatalf("mint prefix %q must be a clean, partial prefix of %q", disp, tok)
+	}
+	// Display (UI helper) still elides with an ellipsis.
+	if d := Display(tok); !strings.HasSuffix(d, "…") {
+		t.Fatalf("Display should elide with an ellipsis, got %q", d)
 	}
 	// Distinct each time.
 	tok2, _, _, _ := Mint()

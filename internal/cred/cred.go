@@ -25,7 +25,18 @@ func Mint() (token, hash, display string, err error) {
 		return "", "", "", fmt.Errorf("cred: read random: %w", err)
 	}
 	token = prefix + base64.RawURLEncoding.EncodeToString(b)
-	return token, Hash(token), Display(token), nil
+	return token, Hash(token), Prefix(token), nil
+}
+
+// Prefix returns a clean, non-secret leading slice of the token — a GENUINE prefix (unlike Display,
+// which appends an ellipsis for UI). This is what is stored in endpoints.credential_prefix so an
+// operator can visually match a vended credential against the one-time reveal, and so a stored value
+// is never mistaken for the full plaintext. Governing: SPEC-0007.
+func Prefix(token string) string {
+	if len(token) <= 12 {
+		return token
+	}
+	return token[:12]
 }
 
 // Hash returns the SHA-256 hex of a token (stored + used for lookup).
