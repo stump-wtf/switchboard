@@ -96,6 +96,20 @@ trustworthy as a human-configured one.
 - Reveal the secret on every read: needless additional exposure of key material; one-time reveal at
   create/rotate is sufficient for the agent to configure the producer.
 
+**At-rest encryption (optional hardening, issue #153)**: because the secret must be *recoverable*
+(not hashed), the plaintext-in-`signing_secret` design leaves it readable to anyone with DB access.
+As optional hardening, setting `SWITCHBOARD_SECRET_ENCRYPTION_KEY` (a 32-byte AES-256 key, base64 or
+hex, held **outside** PostgreSQL via env/deploy config) makes `create_webhook`/`rotate_webhook`
+persist the secret as AES-256-GCM ciphertext (`enc:v1:<base64(nonce‖ct)>`) instead of plaintext, and
+the `/webhooks/w/{token}` delivery path decrypts it transparently to recompute the HMAC — **no
+behavior change**, only a stronger at-rest posture. The key is deliberately not co-located with the
+ciphertext, so a DB-only compromise yields ciphertext, not live signing secrets. It is off by default
+(empty key = legacy plaintext), and a store with a key configured still reads legacy plaintext rows
+unchanged (values without the `enc:v1:` marker pass through), so enabling it strands no existing rows.
+The envelope primitive lives in `internal/cred` (`SecretBox`) alongside credential hashing; the store
+seals on write and opens on read in `internal/store/webhooks.go`. Governing: SPEC-0006 REQ
+"Switchboard Owns Secrets, Verification, and Idempotency", ADR-0002 (PostgreSQL is the trust boundary).
+
 ## Architecture
 
 The agent endpoint is one component in the switchboard process, sharing the router, store, and hub

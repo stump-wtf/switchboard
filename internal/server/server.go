@@ -20,6 +20,7 @@ import (
 	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
+	"github.com/joestump/switchboard/internal/cred"
 	"github.com/joestump/switchboard/internal/db"
 	"github.com/joestump/switchboard/internal/ingest"
 	mcpsrv "github.com/joestump/switchboard/internal/mcp"
@@ -39,7 +40,22 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	log.Info("database ready")
 
-	st := store.New(pool)
+	// When SWITCHBOARD_SECRET_ENCRYPTION_KEY is set, hold self-managed webhook signing secrets as
+	// AES-256-GCM ciphertext at rest (key held outside the DB). A malformed key fails startup loudly
+	// rather than silently persisting plaintext. Governing: SPEC-0006 REQ "Switchboard Owns Secrets,
+	// Verification, and Idempotency".
+	var storeOpts []store.Option
+	if key, err := cred.ParseSecretBoxKey(cfg.SecretEncryptionKey); err != nil {
+		return err
+	} else if len(key) > 0 {
+		box, err := cred.NewSecretBox(key)
+		if err != nil {
+			return err
+		}
+		storeOpts = append(storeOpts, store.WithSecretCipher(box))
+		log.Info("webhook signing secrets encrypted at rest")
+	}
+	st := store.New(pool, storeOpts...)
 	hub := agentapi.NewHub()
 	authr, err := auth.New(ctx, cfg, st, log)
 	if err != nil {

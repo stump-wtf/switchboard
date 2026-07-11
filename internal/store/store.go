@@ -43,9 +43,32 @@ type EventHook func(e EventSummary)
 // Governing: SPEC-0013 REQ "Live Updates and Toasts" (endpoint last-seen updates).
 type EndpointSeenHook func(endpointID string, seenAt time.Time)
 
+// SecretCipher seals and opens held secrets that switchboard must keep recoverable (it cannot hash
+// a webhook signing secret it has to recompute HMACs with). It is satisfied by *cred.SecretBox.
+// Decrypt returns a non-prefixed (legacy plaintext) value unchanged, so a store configured with a
+// cipher still reads rows written before encryption was enabled. Governing: SPEC-0006 REQ
+// "Switchboard Owns Secrets, Verification, and Idempotency".
+type SecretCipher interface {
+	Encrypt(plaintext string) (string, error)
+	Decrypt(stored string) (string, error)
+}
+
+// Option configures a Store at construction. Kept variadic so New's signature stays stable for the
+// many existing call sites that pass only a pool.
+type Option func(*Store)
+
+// WithSecretCipher enables at-rest encryption of held secrets (currently self-managed webhook signing
+// secrets). Omit it (or pass nil) to keep the legacy plaintext behavior. Governing: SPEC-0006 REQ
+// "Switchboard Owns Secrets, Verification, and Idempotency".
+func WithSecretCipher(c SecretCipher) Option {
+	return func(s *Store) { s.secretCipher = c }
+}
+
 // Store wraps a pgx pool.
 type Store struct {
 	pool *pgxpool.Pool
+	// secretCipher, when set, encrypts held secrets at rest (webhook signing secrets). nil = plaintext.
+	secretCipher SecretCipher
 	// todoHook/eventHook/endpointSeenHook are read on every transition and set (rarely) at wiring
 	// time; atomic so a late Set*Hook can never race in-flight transitions.
 	todoHook         atomic.Pointer[TodoTransitionHook]
@@ -55,8 +78,14 @@ type Store struct {
 	doorbellHook atomic.Pointer[TodoDoorbellHook]
 }
 
-// New builds a Store over the given pool.
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+// New builds a Store over the given pool, applying any options (e.g. WithSecretCipher).
+func New(pool *pgxpool.Pool, opts ...Option) *Store {
+	s := &Store{pool: pool}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
 
 // SetTodoTransitionHook registers fn to observe committed todo transitions. Safe to call
 // concurrently with store use; passing nil clears the hook.

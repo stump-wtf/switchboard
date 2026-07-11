@@ -75,6 +75,15 @@ func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targe
 		return Webhook{}, fmt.Errorf("store: create webhook lock endpoint: %w", err)
 	}
 
+	// Encrypt the held secret at rest when a cipher is configured: the column stores enc:v1: ciphertext
+	// under a key held outside the database, so a DB-only compromise never yields a live signing secret.
+	// The delivery path (GetWebhookSecretByToken) decrypts transparently, so verification is unchanged.
+	// Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency".
+	storedSecret, err := s.sealSecret(secret)
+	if err != nil {
+		return Webhook{}, err
+	}
+
 	// The CASE keeps the invariant "signing_secret is non-NULL iff trust_mode='signed'": switchboard
 	// holds a secret only for a signed webhook (to recompute the HMAC); a token/open webhook is
 	// authenticated by its unguessable ingest URL and its secret column stays NULL.
@@ -83,7 +92,7 @@ func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targe
 		INSERT INTO endpoint_webhooks (endpoint_id, source_type, target_queue, trust_mode, ingest_token, signing_secret)
 		VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'signed' THEN NULLIF($6, '') ELSE NULL END)
 		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at`,
-		endpointID, sourceType, targetQueue, trustMode, ingestToken, secret,
+		endpointID, sourceType, targetQueue, trustMode, ingestToken, storedSecret,
 	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt)
 	if err != nil {
 		return Webhook{}, fmt.Errorf("store: create webhook insert: %w", err)
@@ -171,7 +180,43 @@ func (s *Store) GetWebhookSecretByToken(ctx context.Context, ingestToken string)
 	if secret != nil {
 		s2 = *secret
 	}
-	return w, s2, nil
+	// Decrypt transparently on the delivery path: the receiver needs the plaintext to recompute the
+	// provider HMAC. openSecret returns legacy plaintext unchanged, so mixed (pre/post-encryption) rows
+	// both verify. Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency".
+	plaintext, err := s.openSecret(s2)
+	if err != nil {
+		return Webhook{}, "", err
+	}
+	return w, plaintext, nil
+}
+
+// sealSecret encrypts a held secret for storage when a SecretCipher is configured, returning the
+// enc:v1: ciphertext form; with no cipher (or an empty secret) it returns the value unchanged so the
+// existing CASE/NULLIF invariants in the SQL still apply. Governing: SPEC-0006 REQ "Switchboard Owns
+// Secrets, Verification, and Idempotency".
+func (s *Store) sealSecret(secret string) (string, error) {
+	if s.secretCipher == nil || secret == "" {
+		return secret, nil
+	}
+	sealed, err := s.secretCipher.Encrypt(secret)
+	if err != nil {
+		return "", fmt.Errorf("store: encrypt webhook secret: %w", err)
+	}
+	return sealed, nil
+}
+
+// openSecret reverses sealSecret on the delivery path. With no cipher it returns the value unchanged
+// (legacy plaintext); with a cipher it decrypts enc:v1: ciphertext and passes legacy plaintext
+// through, so enabling encryption never strands rows written before it was on.
+func (s *Store) openSecret(stored string) (string, error) {
+	if s.secretCipher == nil || stored == "" {
+		return stored, nil
+	}
+	plaintext, err := s.secretCipher.Decrypt(stored)
+	if err != nil {
+		return "", fmt.Errorf("store: decrypt webhook secret: %w", err)
+	}
+	return plaintext, nil
 }
 
 // RotateWebhookSecret stores a freshly minted signing secret and a new ingest token for a webhook the
@@ -183,14 +228,19 @@ func (s *Store) GetWebhookSecretByToken(ctx context.Context, ingestToken string)
 // always mints one. Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency"
 // (rotate mints a new secret and retires the old), ADR-0003 (per-source trust model).
 func (s *Store) RotateWebhookSecret(ctx context.Context, id, endpointID, newSecret, newIngestToken string) (Webhook, error) {
+	// Encrypt the freshly minted secret at rest when a cipher is configured (same envelope as create).
+	storedSecret, err := s.sealSecret(newSecret)
+	if err != nil {
+		return Webhook{}, err
+	}
 	var w Webhook
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		UPDATE endpoint_webhooks
 		SET signing_secret = CASE WHEN trust_mode = 'signed' THEN NULLIF($3, '') ELSE NULL END,
 			ingest_token = $4, rotated_at = now()
 		WHERE id = $1 AND endpoint_id = $2
 		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at`,
-		id, endpointID, newSecret, newIngestToken,
+		id, endpointID, storedSecret, newIngestToken,
 	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, ErrNotFound

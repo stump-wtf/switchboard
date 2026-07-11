@@ -32,6 +32,14 @@ type Config struct {
 	// OIDCRedirectURL defaults to BaseURL + /auth/callback when empty.
 	OIDCRedirectURL string
 
+	// SecretEncryptionKey, when set, enables at-rest encryption of held secrets that switchboard must
+	// keep recoverable — currently self-managed webhook HMAC signing secrets (which cannot be hashed,
+	// since verification recomputes the HMAC). It is a 32-byte AES-256 key supplied as base64 or hex,
+	// held OUTSIDE PostgreSQL so a DB-only compromise yields ciphertext, not live secrets. Empty leaves
+	// the legacy plaintext behavior. (SWITCHBOARD_SECRET_ENCRYPTION_KEY)
+	// Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency", ADR-0002.
+	SecretEncryptionKey string
+
 	// DevLogin, when true, enables a loud, unauthenticated dev-only login that mints a session for a
 	// fixed local human — so the vend → agent → Channels loop is exercisable without a live Pocket ID.
 	// NEVER enable in production. Off by default. (SWITCHBOARD_DEV_LOGIN=1)
@@ -53,16 +61,17 @@ func FromEnv() Config {
 		redirect = base + "/auth/callback"
 	}
 	return Config{
-		Addr:             getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
-		BaseURL:          base,
-		DatabaseURL:      os.Getenv("SWITCHBOARD_DATABASE_URL"),
-		RedisURL:         os.Getenv("SWITCHBOARD_REDIS_URL"),
-		OIDCIssuer:       os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
-		OIDCClientID:     os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
-		OIDCClientSecret: os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
-		OIDCRedirectURL:  redirect,
-		DevLogin:         os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
-		FriendingEnabled: os.Getenv("SWITCHBOARD_FRIENDING") == "1",
+		Addr:                getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
+		BaseURL:             base,
+		DatabaseURL:         os.Getenv("SWITCHBOARD_DATABASE_URL"),
+		RedisURL:            os.Getenv("SWITCHBOARD_REDIS_URL"),
+		OIDCIssuer:          os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
+		OIDCClientID:        os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
+		OIDCClientSecret:    os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
+		OIDCRedirectURL:     redirect,
+		SecretEncryptionKey: os.Getenv("SWITCHBOARD_SECRET_ENCRYPTION_KEY"),
+		DevLogin:            os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
+		FriendingEnabled:    os.Getenv("SWITCHBOARD_FRIENDING") == "1",
 	}
 }
 
