@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -59,8 +60,9 @@ type EndpointStore interface {
 	TouchEndpoint(ctx context.Context, endpointID string) error
 }
 
-// ToolStore is the full store slice the MCP surface consumes: endpoint auth plus the SPEC-0006
-// drain verbs the tool layer wraps (lifecycle semantics live in internal/store per SPEC-0003).
+// ToolStore is the full store slice the MCP surface consumes: endpoint auth, the SPEC-0006 drain
+// verbs the tool layer wraps (lifecycle semantics live in internal/store per SPEC-0003), and the
+// SPEC-0005 event-history reads (events.go).
 type ToolStore interface {
 	EndpointStore
 	ListTodos(ctx context.Context, queues []string, state string, limit int) ([]store.Todo, error)
@@ -69,6 +71,8 @@ type ToolStore interface {
 	HeartbeatTodo(ctx context.Context, id, owner string, ttl time.Duration) (store.Todo, error)
 	CompleteTodo(ctx context.Context, id, owner string, result []byte) (store.Todo, error)
 	FailTodo(ctx context.Context, id, owner string, result []byte) (store.Todo, error)
+	ListEventHistory(ctx context.Context, f store.EventHistoryFilter) ([]store.EventHistoryItem, error)
+	EventHistoryByID(ctx context.Context, id int64) (store.EventHistoryDetail, error)
 }
 
 // Handler mounts the per-endpoint Streamable HTTP MCP sessions, their scope-filtered tool
@@ -82,6 +86,10 @@ type Handler struct {
 	// caller can neither drain a real endpoint's bucket nor grow the map with slug spam.
 	preRL *rateLimiter
 	rl    *rateLimiter
+
+	// providers is the configured-provider snapshot served by list_providers (SPEC-0005),
+	// installed at wiring time via SetProviders. Atomic so live sessions read it race-free.
+	providers atomic.Pointer[[]ProviderStatus]
 
 	idleTimeout time.Duration
 
@@ -291,6 +299,9 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 		},
 	})
 	h.registerTools(srv, ep)
+	// The SPEC-0005 event-history contract (list/get/replay/providers) shares the session and the
+	// same allowlist-filtered registration (events.go).
+	h.registerEventTools(srv, ep)
 	srv.AddReceivingMiddleware(h.scopeGuard(ep))
 	return srv
 }

@@ -36,11 +36,16 @@ type fakeStore struct {
 
 	mu      sync.Mutex
 	todos   map[string]store.Todo
+	events  map[int64]store.EventHistoryDetail // SPEC-0005 event-history rows (events_test.go)
 	failErr error
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{byHash: map[string]store.AuthEndpoint{}, todos: map[string]store.Todo{}}
+	return &fakeStore{
+		byHash: map[string]store.AuthEndpoint{},
+		todos:  map[string]store.Todo{},
+		events: map[int64]store.EventHistoryDetail{},
+	}
 }
 
 func (f *fakeStore) EndpointByCredHash(_ context.Context, hash string) (store.AuthEndpoint, error) {

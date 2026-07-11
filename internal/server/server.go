@@ -6,8 +6,10 @@ import (
 	"context"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -86,6 +88,13 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		Generic:      generic,
 		DevLogin:     cfg.DevLogin,
 	})
+	// list_providers (SPEC-0005) serves this snapshot: presence/absence classification only, never
+	// the secret material. Governing: SPEC-0005 REQ "Provider Enumeration Without Secrets".
+	mcph.SetProviders(providerStatuses(
+		os.Getenv("SWITCHBOARD_GITHUB_SECRET") != "",
+		os.Getenv("SWITCHBOARD_STRIPE_SECRET") != "",
+		os.Getenv("SWITCHBOARD_SLACK_SECRET") != "",
+		generic))
 
 	r := newRouter(routerDeps{
 		st:    st,
@@ -260,6 +269,44 @@ func secureHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// providerStatuses projects the configured inbound providers into the SPEC-0005 list_providers
+// shape. It receives only presence booleans for the signed providers — never the secret values —
+// so no secret material can reach the enumeration surface. Queue-family providers join once the
+// Redis adapters register with the runner (SPEC-0002 chain); until then the webhook family is the
+// whole inventory. Governing: SPEC-0005 REQ "Provider Enumeration Without Secrets".
+func providerStatuses(github, stripe, slack bool, generic map[string]ingest.GenericProvider) []mcpsrv.ProviderStatus {
+	status := func(configured bool) string {
+		if configured {
+			return "configured"
+		}
+		return "missing"
+	}
+	out := []mcpsrv.ProviderStatus{
+		{Name: "github", Family: "webhook", TrustMode: "signed", Enabled: github,
+			SecretStatus: status(github), Path: "/webhooks/github"},
+		{Name: "stripe", Family: "webhook", TrustMode: "signed", Enabled: stripe,
+			SecretStatus: status(stripe), Path: "/webhooks/stripe"},
+		{Name: "slack", Family: "webhook", TrustMode: "signed", Enabled: slack,
+			SecretStatus: status(slack), Path: "/webhooks/slack"},
+	}
+	for _, name := range slices.Sorted(maps.Keys(generic)) {
+		gp := generic[name]
+		ps := mcpsrv.ProviderStatus{Name: name, Family: "webhook", TrustMode: gp.Mode,
+			Path: "/webhooks/generic/" + name}
+		switch gp.Mode {
+		case "token":
+			// A token provider with no token configured is disabled (403s everything) by design.
+			ps.Enabled = gp.Token != ""
+			ps.SecretStatus = status(gp.Token != "")
+		case "open":
+			ps.Enabled = true
+			ps.SecretStatus = "none-by-design"
+		}
+		out = append(out, ps)
+	}
+	return out
 }
 
 // maxBytes caps a request body at n bytes via http.MaxBytesReader, so a read past the limit errors

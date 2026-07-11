@@ -144,15 +144,16 @@ func (h *Handler) registerTools(srv *sdk.Server, ep store.AuthEndpoint) {
 	}
 }
 
-// scopeGuard intercepts tools/call before dispatch: a known agent verb outside the endpoint's
-// allowlist returns a stable scope error (code "forbidden") with no side effects, rather than the
-// SDK's unknown-tool protocol error. Governing: SPEC-0006 REQ "Scope Enforcement at the Boundary".
+// scopeGuard intercepts tools/call before dispatch: a known verb (SPEC-0006 agent verb or
+// SPEC-0005 event-history tool) outside the endpoint's allowlist returns a stable scope error
+// (code "forbidden") with no side effects, rather than the SDK's unknown-tool protocol error.
+// Governing: SPEC-0006 REQ "Scope Enforcement at the Boundary".
 func (h *Handler) scopeGuard(ep store.AuthEndpoint) sdk.Middleware {
 	return func(next sdk.MethodHandler) sdk.MethodHandler {
 		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
 			if method == "tools/call" {
 				if p, ok := req.GetParams().(*sdk.CallToolParamsRaw); ok &&
-					agentVerbs[p.Name] && !hasScope(ep.ScopeVerbs, p.Name) {
+					(agentVerbs[p.Name] || eventVerbs[p.Name]) && !hasScope(ep.ScopeVerbs, p.Name) {
 					h.log.Warn("mcp verb out of scope", "slug", ep.Slug, "tool", p.Name,
 						"err", fmt.Errorf("tools/call %s: %w", p.Name, errForbidden))
 					res := &sdk.CallToolResult{}
