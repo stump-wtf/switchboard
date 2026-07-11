@@ -74,14 +74,27 @@ queue, so the stream can be best-effort without losing work.
 - Blocking/guaranteed delivery: a slow consumer would back-pressure producers and couple ingestion to
   agent liveness.
 
-### Switchboard mints/hashes secrets; agent gets only the URL
+### Switchboard mints and holds the secret; reveals it once; verifies per SPEC-0003
 
-**Choice**: On `create_webhook`/`rotate_webhook`, switchboard mints the signing secret, stores it
-hashed, verifies per SPEC-0003, and returns only the ingest URL + trust_mode.
-**Rationale**: Self-management changes *who created* a webhook, not *how it is verified*; keeping
-secrets and verification with switchboard preserves the trust model and prevents trust-downgrade.
+**Choice**: On `create_webhook`/`rotate_webhook`, switchboard mints the signing secret and holds the
+plaintext server-side (the `signing_secret` column). For a signed-type webhook it reveals that secret
+to the agent **exactly once** in the result — the agent pastes it into the producer (GitHub/Stripe/
+Slack) — and every later read (`list_webhooks`) returns only the ingest URL. On delivery, the
+`/webhooks/w/{token}` receiver recomputes the provider HMAC over the raw body against the held secret
+in constant time (the same `verifyGitHub`/`verifyStripe`/`verifySlack` the operator-configured
+receivers use) and persists `verified=true`/`trust_mode=signed` on a valid signature, failing closed
+(401, nothing persisted) otherwise.
+**Rationale**: Self-management changes *who created* a webhook, not *how it is verified*. Provider
+HMAC verification needs the plaintext secret at both ends — the producer (to sign) and switchboard (to
+recompute) — so switchboard must hold a recoverable secret, not a one-way hash, and hand it to the
+agent once to configure the producer. Switchboard still owns the trust mode (no agent downgrade) and
+never marks a delivery `verified` it did not verify, so a self-created signed webhook is exactly as
+trustworthy as a human-configured one.
 **Alternatives considered**:
-- Return the secret to the agent: leaks key material and lets the agent weaken verification.
+- Store only the hash: precludes recomputing the HMAC, so the secret could never reach the verifier;
+  signed deliveries could not be verified at all.
+- Reveal the secret on every read: needless additional exposure of key material; one-time reveal at
+  create/rotate is sufficient for the agent to configure the producer.
 
 ## Architecture
 

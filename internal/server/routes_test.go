@@ -98,6 +98,9 @@ var publicRoutes = map[string]bool{
 	"POST /webhooks/stripe":         true,
 	"POST /webhooks/slack":          true,
 	"POST /webhooks/generic/{name}": true,
+	// Self-managed webhook receiver: the unguessable path token both routes and authenticates
+	// (SPEC-0006); an unknown token 404s, so it is deliberately session-free.
+	"POST /webhooks/w/{token}": true,
 	// A2A friend-request intake authenticates by the requesting human's OIDC-signed provenance
 	// carried IN-BAND (ADR-0010/0011; SPEC-0010), not via a session cookie or bearer header —
 	// missing/invalid provenance → 401 with no pending edge. Not "ungoverned public": it is

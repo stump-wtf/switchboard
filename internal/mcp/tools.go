@@ -153,7 +153,7 @@ func (h *Handler) scopeGuard(ep store.AuthEndpoint) sdk.Middleware {
 		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
 			if method == "tools/call" {
 				if p, ok := req.GetParams().(*sdk.CallToolParamsRaw); ok &&
-					(agentVerbs[p.Name] || eventVerbs[p.Name]) && !hasScope(ep.ScopeVerbs, p.Name) {
+					(agentVerbs[p.Name] || eventVerbs[p.Name] || webhookVerbs[p.Name]) && !hasScope(ep.ScopeVerbs, p.Name) {
 					h.log.Warn("mcp verb out of scope", "slug", ep.Slug, "tool", p.Name,
 						"err", fmt.Errorf("tools/call %s: %w", p.Name, errForbidden))
 					res := &sdk.CallToolResult{}

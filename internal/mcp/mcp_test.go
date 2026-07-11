@@ -34,19 +34,24 @@ type fakeStore struct {
 	byHash  map[string]store.AuthEndpoint
 	touches atomic.Int64
 
-	mu       sync.Mutex
-	todos    map[string]store.Todo
-	events   map[int64]store.EventHistoryDetail // SPEC-0005 event-history rows (events_test.go)
-	settings map[string]string                  // SPEC-0005 replay knobs (replay_test.go)
-	failErr  error
+	mu             sync.Mutex
+	todos          map[string]store.Todo
+	events         map[int64]store.EventHistoryDetail // SPEC-0005 event-history rows (events_test.go)
+	webhooks       map[string]store.Webhook           // SPEC-0006 self-managed webhooks (webhooks_test.go)
+	webhookSecrets map[string]string                  // minted signing secret held server-side, by webhook id (never surfaced)
+	webhookN       int                                // monotonic id source for created webhooks
+	settings       map[string]string                  // SPEC-0005 replay knobs (replay_test.go)
+	failErr        error
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		byHash:   map[string]store.AuthEndpoint{},
-		todos:    map[string]store.Todo{},
-		events:   map[int64]store.EventHistoryDetail{},
-		settings: map[string]string{},
+		byHash:         map[string]store.AuthEndpoint{},
+		todos:          map[string]store.Todo{},
+		events:         map[int64]store.EventHistoryDetail{},
+		webhooks:       map[string]store.Webhook{},
+		webhookSecrets: map[string]string{},
+		settings:       map[string]string{},
 	}
 }
 
@@ -220,6 +225,106 @@ func (f *fakeStore) todoState(id string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.todos[id].State
+}
+
+// --- SPEC-0006 webhook self-management (mirrors internal/store/webhooks.go semantics) ---
+
+// CreateWebhook mirrors the store's atomic ceiling guard: the speculative insert is rejected with
+// ErrCeilingExceeded if it would push the endpoint past max. The minted signing secret is held
+// server-side (webhookSecrets), mirroring the store's signing_secret column; nothing reads it back
+// except the delivery path, so no list/create metadata ever surfaces it.
+func (f *fakeStore) CreateWebhook(_ context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int) (store.Webhook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Webhook{}, f.failErr
+	}
+	count := 0
+	for _, w := range f.webhooks {
+		if w.EndpointID == endpointID {
+			count++
+		}
+	}
+	if count+1 > max {
+		return store.Webhook{}, store.ErrCeilingExceeded
+	}
+	f.webhookN++
+	w := store.Webhook{
+		ID: "wh-" + itoa(f.webhookN), EndpointID: endpointID, SourceType: sourceType,
+		TargetQueue: targetQueue, TrustMode: trustMode, IngestToken: ingestToken, CreatedAt: time.Now(),
+	}
+	f.webhooks[w.ID] = w
+	f.webhookSecrets[w.ID] = secret
+	return w, nil
+}
+
+func (f *fakeStore) ListWebhooks(_ context.Context, endpointID string) ([]store.Webhook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return nil, f.failErr
+	}
+	var out []store.Webhook
+	for _, w := range f.webhooks {
+		if w.EndpointID == endpointID {
+			out = append(out, w)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (f *fakeStore) RotateWebhookSecret(_ context.Context, id, endpointID, newSecret, newIngestToken string) (store.Webhook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Webhook{}, f.failErr
+	}
+	w, ok := f.webhooks[id]
+	if !ok || w.EndpointID != endpointID {
+		return store.Webhook{}, store.ErrNotFound
+	}
+	now := time.Now()
+	w.IngestToken, w.RotatedAt = newIngestToken, &now
+	f.webhooks[id] = w
+	// Mirror the store's CASE: only a signed webhook retains the rotated secret.
+	if w.TrustMode == trustModeSigned {
+		f.webhookSecrets[id] = newSecret
+	} else {
+		f.webhookSecrets[id] = ""
+	}
+	return w, nil
+}
+
+func (f *fakeStore) DeleteWebhook(_ context.Context, id, endpointID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return f.failErr
+	}
+	w, ok := f.webhooks[id]
+	if !ok || w.EndpointID != endpointID {
+		return store.ErrNotFound
+	}
+	delete(f.webhooks, id)
+	delete(f.webhookSecrets, id)
+	return nil
+}
+
+// itoa is a tiny int→string for synthetic webhook ids (avoids pulling strconv into the test file's
+// existing import set indirectly; the ids are opaque to the tools under test).
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
 }
 
 // vend mints a real credential (like the web vend path) and registers it in the fake store.

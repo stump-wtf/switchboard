@@ -45,10 +45,10 @@ An agent can stand up, rotate, and tear down its own webhooks all day — but on
 
 ### Switchboard's non-negotiable ownership
 
-* **Switchboard mints the signing secret** for each created webhook and stores it **hashed in PostgreSQL** ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)). The **agent never sees or stores the secret.**
-* **Switchboard owns verification.** A created signed-type webhook is verified exactly as [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md) mandates — the agent cannot downgrade a `signed` webhook to `token`/`open`, cannot disable signature checks, cannot alter trust mode. A generic-type webhook remains `token` (or `open`).
+* **Switchboard mints and holds the signing secret** for each created webhook. For a signed-type webhook it stores the **plaintext** secret server-side in PostgreSQL ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)) — not a hash, because switchboard must recompute the provider HMAC over each inbound body to verify it ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)). The secret is revealed to the agent **exactly once**, at create/rotate, so the agent can configure the producer; switchboard never returns it again.
+* **Switchboard owns verification.** A created signed-type webhook is verified exactly as [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md) mandates — switchboard recomputes the HMAC over the raw body against the held secret and marks a delivery `verified=true`/`trust_mode=signed` only on a valid signature (identical to a human-configured signed webhook), failing closed otherwise. The agent cannot downgrade a `signed` webhook to `token`/`open`, cannot disable signature checks, cannot alter trust mode. A generic-type webhook remains `token` (or `open`) and needs no secret — its unguessable ingest URL authenticates the caller.
 * **Switchboard owns idempotency.** Dedup of at-least-once deliveries into one todo ([ADR-0007](ADR-0007-todos-as-core-primitive.md)) is switchboard's behavior, not the agent's.
-* **The agent receives the URL to hand to the producer** (and, for a signed type, arranges for the producer to be configured with the secret out-of-band via switchboard, never by the agent copying it). Create returns the ingest URL; `rotate` issues a new secret/URL and retires the old.
+* **The agent receives the URL to hand to the producer**, and — for a signed type — the signing secret revealed once, which it pastes into the producer's webhook config (GitHub/Stripe/Slack). Create returns the ingest URL (plus the one-time secret for signed types); `rotate` issues a new secret/URL and retires the old.
 
 ### Consequences
 

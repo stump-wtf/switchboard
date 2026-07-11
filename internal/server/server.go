@@ -62,6 +62,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// down on shutdown. Governing: SPEC-0014 REQ "Concurrency Safety".
 	mcph := mcpsrv.New(st, log)
 	defer mcph.Close()
+	// The externally-reachable origin the webhook self-management verbs build ingest URLs from
+	// (SPEC-0006 create_webhook/rotate_webhook return an ingest_url).
+	mcph.SetBaseURL(cfg.BaseURL)
 	// Same committed-transition publish source as the web SSE hub, one consumer per surface:
 	// the store's doorbell hook fans verified todo creations out to in-scope MCP sessions as
 	// notifications/claude/channel doorbells. Governing: SPEC-0014 REQ "Channels Push over the
@@ -201,6 +204,10 @@ func newRouter(d routerDeps) chi.Router {
 		// Generic token/open providers (SPEC-0001): shared-secret token compared constant-time, or
 		// explicit operator-opted-in open mode; unknown names 404, never a fall-through to open.
 		wr.Post("/webhooks/generic/{name}", d.ing.Generic)
+		// Agent self-managed webhooks (SPEC-0006): the ingest_url create_webhook/rotate_webhook hand
+		// back. The unguessable 128-bit path token routes to exactly one webhook; an unknown token
+		// 404s. Delivery → dedup → todo. Governing: ADR-0012.
+		wr.Post("/webhooks/w/{token}", d.ing.SelfManaged)
 	})
 	r.Post("/dev/todos", d.ing.DevCreateTodo)
 

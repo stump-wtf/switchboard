@@ -21,9 +21,11 @@ Every request is authenticated by a bearer credential that resolves to an endpoi
 scope (`internal/agentapi/agentapi.go`). Scope is enforced at the boundary: a verb outside the
 endpoint's `verbs` allowlist, or a queue outside its `queues` grant, is refused with `forbidden`
 before any state changes. Webhook self-management operates strictly within a per-endpoint ceiling
-(max count, allowed source types, allowed target queues); switchboard mints and hashes the signing
-secret and owns verification and idempotency — the agent receives only the ingest URL, never the
-secret. This surface is distinct from, but complements, the shared read-only event-history contract
+(max count, allowed source types, allowed target queues); switchboard mints and **holds** the signing
+secret (server-side, so it can HMAC-verify inbound deliveries per SPEC-0003) and owns verification and
+idempotency. For a signed-type webhook the secret is revealed to the agent exactly once, at
+create/rotate, for the agent to configure the producer; every later read returns only the ingest URL,
+never the secret. This surface is distinct from, but complements, the shared read-only event-history contract
 of [SPEC-0005](../mcp-tools/spec.md); it depends on that contract's shapes/errors and on the trust
 model of [SPEC-0003](../../../adrs/ADR-0003-per-provider-ingestion-and-trust-model.md).
 
@@ -119,9 +121,11 @@ bounded by the endpoint's ceiling: maximum webhook count, allowed source types, 
 queues ([ADR-0012](../../../adrs/ADR-0012-agents-self-manage-webhooks.md)). `create_webhook` MUST be
 refused with `ceiling_exceeded` when it would exceed the max count, `forbidden_source_type` for a
 disallowed source type, and `forbidden` for a target queue outside the grant. `create_webhook` and
-`rotate_webhook` MUST return the ingest URL (and `trust_mode`) and MUST NOT return the signing secret.
-`list_webhooks` MUST return webhook metadata plus the ceiling (max, allowed source types, allowed
-queues, used) and MUST NOT return secret values. `delete_webhook` MUST tear down the webhook.
+`rotate_webhook` MUST return the ingest URL (and `trust_mode`); for a signed-type webhook they MUST
+also reveal the minted signing secret exactly once (for the agent to configure the producer), and
+MUST NOT return it on any later call. `list_webhooks` MUST return webhook metadata plus the ceiling
+(max, allowed source types, allowed queues, used) and MUST NOT return secret values. `delete_webhook`
+MUST tear down the webhook.
 
 #### Scenario: Create beyond the count ceiling is refused
 
@@ -136,24 +140,40 @@ queues, used) and MUST NOT return secret values. `delete_webhook` MUST tear down
 
 ### Requirement: Switchboard Owns Secrets, Verification, and Idempotency
 
-For any self-created webhook, switchboard MUST mint the signing secret and store it **hashed** in
-PostgreSQL; the agent MUST NOT receive or be able to read the secret. A self-created signed-type
-webhook MUST be verified exactly as [SPEC-0003](../../../adrs/ADR-0003-per-provider-ingestion-and-trust-model.md)
-mandates; the agent MUST NOT be able to downgrade its trust mode, disable signature checks, or alter
-verification. Duplicate deliveries to a self-created webhook MUST dedup into a single todo on the
+For any self-created webhook, switchboard MUST mint the signing secret and **hold** it server-side in
+PostgreSQL — the plaintext, not a hash, because switchboard must recompute the provider HMAC over each
+inbound body to verify it. Switchboard reveals the secret to the agent **exactly once**, in the
+`create_webhook`/`rotate_webhook` result for a signed-type webhook, so the agent can configure the
+producer; it MUST NOT return the secret on any later call (e.g. `list_webhooks`). A self-created
+signed-type webhook MUST be verified exactly as
+[SPEC-0003](../../../adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) mandates: switchboard
+recomputes the provider HMAC-SHA256 over the raw body against the held secret in constant time, and on
+a valid signature persists the delivery as `verified=true` under `trust_mode=signed` — identical to a
+human-configured signed webhook — while a missing or invalid signature is rejected and nothing is
+persisted. Switchboard — not the agent — owns the trust mode: the agent MUST NOT be able to downgrade
+the trust mode, disable signature checks, or otherwise alter how a delivery is verified, and
+switchboard MUST NOT report a delivery as `verified` unless it verified the body signature per
+SPEC-0003. Duplicate deliveries to a self-created webhook MUST dedup into a single todo on the
 idempotency key. `rotate_webhook` MUST mint a new secret and retire the old one.
 
-#### Scenario: Secret is never returned to the agent
+#### Scenario: Secret is revealed exactly once to the agent
 
-- **WHEN** an agent calls `create_webhook` or `rotate_webhook`
-- **THEN** the response MUST contain the ingest URL and MUST NOT contain the signing secret; the
-  stored secret MUST be hashed
+- **WHEN** an agent calls `create_webhook` or `rotate_webhook` for a signed-type webhook
+- **THEN** the response MUST contain the ingest URL and the minted signing secret revealed once; the
+  secret MUST be held server-side and MUST NOT be returned again on any later call
+
+#### Scenario: Self-created signed webhook is verified per SPEC-0003
+
+- **WHEN** a delivery arrives at a self-created signed-type webhook signed with the minted secret
+- **THEN** switchboard MUST recompute the provider HMAC over the raw body against the held secret and,
+  on a valid signature, persist the delivery `verified=true` under `trust_mode=signed`; an invalid or
+  missing signature MUST be rejected with nothing persisted
 
 #### Scenario: Trust mode cannot be downgraded by the agent
 
 - **WHEN** an agent attempts to create or alter a `signed`-type webhook to weaken its verification
-- **THEN** switchboard MUST verify the webhook per SPEC-0003 regardless and MUST NOT honor any
-  agent-supplied trust downgrade
+- **THEN** switchboard MUST derive and enforce the trust mode itself, MUST verify the webhook per
+  SPEC-0003 regardless, and MUST NOT honor any agent-supplied trust downgrade
 
 ### Requirement: Structured Output and Stable Error Shape
 
@@ -252,8 +272,9 @@ All HTTP responses on this surface MUST include:
 ### Request Body Size Limits
 
 All verbs accepting request bodies (claim/complete/fail, webhook create/rotate) MUST bound them with
-`http.MaxBytesReader`. Default limit: **256 KiB** per request. Oversized bodies MUST be rejected
-before decoding.
+`http.MaxBytesReader`. Limit: **1 MiB** per request — the MCP-wide cap applied to every `/mcp/*`
+request before JSON-RPC parsing (`maxBodyBytes` in `internal/mcp/mcp.go`), which these verbs ride.
+Oversized bodies MUST be rejected before decoding.
 
 ### CSRF Protection
 

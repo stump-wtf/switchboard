@@ -73,6 +73,14 @@ type ToolStore interface {
 	FailTodo(ctx context.Context, id, owner string, result []byte) (store.Todo, error)
 	ListEventHistory(ctx context.Context, f store.EventHistoryFilter) ([]store.EventHistoryItem, error)
 	EventHistoryByID(ctx context.Context, id int64) (store.EventHistoryDetail, error)
+	// SPEC-0006 webhook self-management (webhooks.go): switchboard mints and HOLDS the signing
+	// secret so it can HMAC-verify inbound deliveries per SPEC-0003; the plaintext secret is
+	// persisted server-side and revealed exactly once at create/rotate time.
+	// Governing: ADR-0012 (agents self-manage webhooks), SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency".
+	CreateWebhook(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int) (store.Webhook, error)
+	ListWebhooks(ctx context.Context, endpointID string) ([]store.Webhook, error)
+	RotateWebhookSecret(ctx context.Context, id, endpointID, newSecret, newIngestToken string) (store.Webhook, error)
+	DeleteWebhook(ctx context.Context, id, endpointID string) error
 	// SettingString backs replay target resolution (SPEC-0005 REQ "Replay Safety"): the
 	// `replay_default_target` fallback and the `replay_allowed_targets` allowlist both read here.
 	SettingString(ctx context.Context, key, def string) (string, error)
@@ -97,6 +105,11 @@ type Handler struct {
 	// providers is the configured-provider snapshot served by list_providers (SPEC-0005),
 	// installed at wiring time via SetProviders. Atomic so live sessions read it race-free.
 	providers atomic.Pointer[[]ProviderStatus]
+
+	// baseURL is the externally-reachable origin used to build the ingest_url returned by
+	// create_webhook/rotate_webhook (SPEC-0006). Installed at wiring time via SetBaseURL; read
+	// atomically so live sessions never race the install.
+	baseURL atomic.Pointer[string]
 
 	idleTimeout time.Duration
 
@@ -312,6 +325,9 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	// The SPEC-0005 event-history contract (list/get/replay/providers) shares the session and the
 	// same allowlist-filtered registration (events.go), plus the read-only recent-events resource.
 	h.registerEventTools(srv, ep)
+	// The SPEC-0006 webhook self-management verbs (create/list/rotate/delete_webhook) share the
+	// session and the same allowlist-filtered registration (webhooks.go).
+	h.registerWebhookTools(srv, ep)
 	h.registerEventResources(srv, ep)
 	srv.AddReceivingMiddleware(h.scopeGuard(ep))
 	return srv

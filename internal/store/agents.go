@@ -37,6 +37,8 @@ type Endpoint struct {
 }
 
 // AuthEndpoint is the minimal view resolved from a presented credential to authorize an agent call.
+// The webhook ceiling (WebhookMax, WebhookSourceTypes, WebhookQueues) is the human-vended policy an
+// agent's webhook self-management verbs operate strictly within (ADR-0012, SPEC-0006).
 type AuthEndpoint struct {
 	ID           string
 	AgentID      string
@@ -45,6 +47,13 @@ type AuthEndpoint struct {
 	Slug         string
 	ScopeQueues  []string
 	ScopeVerbs   []string
+	// Webhook ceiling — the maximum number of self-managed webhooks, the source types an agent may
+	// create, and the target queues those webhooks may route to. Enforced at the boundary before any
+	// webhook mutation. Governing: ADR-0012, SPEC-0006 REQ "Webhook Self-Management Within a Vended
+	// Ceiling".
+	WebhookMax         int
+	WebhookSourceTypes []string
+	WebhookQueues      []string
 }
 
 // CreateAgent registers an agent owned by a human.
@@ -198,11 +207,13 @@ func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID str
 func (s *Store) EndpointByCredHash(ctx context.Context, credHash string) (AuthEndpoint, error) {
 	var a AuthEndpoint
 	err := s.pool.QueryRow(ctx, `
-		SELECT e.id::text, e.agent_id::text, ag.name, ag.owner_human_id::text, e.slug, e.scope_queues, e.scope_verbs
+		SELECT e.id::text, e.agent_id::text, ag.name, ag.owner_human_id::text, e.slug, e.scope_queues, e.scope_verbs,
+		       e.webhook_max, e.webhook_source_types, e.webhook_queues
 		FROM endpoints e JOIN agents ag ON ag.id = e.agent_id
 		WHERE e.credential_hash = $1 AND e.state = 'active'`,
 		credHash,
-	).Scan(&a.ID, &a.AgentID, &a.AgentName, &a.OwnerHumanID, &a.Slug, &a.ScopeQueues, &a.ScopeVerbs)
+	).Scan(&a.ID, &a.AgentID, &a.AgentName, &a.OwnerHumanID, &a.Slug, &a.ScopeQueues, &a.ScopeVerbs,
+		&a.WebhookMax, &a.WebhookSourceTypes, &a.WebhookQueues)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AuthEndpoint{}, ErrNotFound
 	}
