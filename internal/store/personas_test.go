@@ -170,8 +170,8 @@ func TestPersonaOwnershipIsolation(t *testing.T) {
 	}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-owner update must be ErrNotFound, got %v", err)
 	}
-	if _, err := s.PublishPersona(ctx, p.ID, other.ID, true); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-owner publish must be ErrNotFound, got %v", err)
+	if _, err := s.SetPersonaDiscoverable(ctx, p.ID, other.ID, true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-owner set-discoverable must be ErrNotFound, got %v", err)
 	}
 	if err := s.DeletePersona(ctx, p.ID, other.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-owner delete must be ErrNotFound, got %v", err)
@@ -187,10 +187,10 @@ func TestPersonaOwnershipIsolation(t *testing.T) {
 		t.Fatalf("other human must see no personas, got %d (%v)", len(theirs), err)
 	}
 
-	// The true owner can publish and then delete.
-	pub, err := s.PublishPersona(ctx, p.ID, owner.ID, true)
-	if err != nil || !pub.Published {
-		t.Fatalf("owner publish should succeed and set published: %+v, %v", pub, err)
+	// The true owner can mark discoverable and then delete.
+	pub, err := s.SetPersonaDiscoverable(ctx, p.ID, owner.ID, true)
+	if err != nil || !pub.Discoverable {
+		t.Fatalf("owner set-discoverable should succeed and set the flag: %+v, %v", pub, err)
 	}
 	if err := s.DeletePersona(ctx, p.ID, owner.ID); err != nil {
 		t.Fatalf("owner delete: %v", err)

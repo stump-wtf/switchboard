@@ -173,6 +173,9 @@ func newRouter(d routerDeps) chi.Router {
 	// the durable queue stays the source of truth, so throttling only bounds abuse, never drops work.
 	agentRL := newRateLimiter(20, 40) // ~20 req/s per IP, burst 40 — comfortable for real drain loops
 	webhookRL := newRateLimiter(10, 20)
+	// Public A2A Agent Card endpoint (SPEC-0009): per-IP throttle to blunt enumeration of persona ids.
+	// RECOMMENDED default is 60 req/min ≈ 1 req/s; burst 30 absorbs legitimate discovery tooling.
+	cardRL := newRateLimiter(1, 30)
 
 	// Static assets + health.
 	r.Handle("/static/*", staticHandler())
@@ -198,6 +201,17 @@ func newRouter(d routerDeps) chi.Router {
 		wr.Post("/webhooks/generic/{name}", d.ing.Generic)
 	})
 	r.Post("/dev/todos", d.ing.DevCreateTodo)
+
+	// Public A2A Agent Card endpoint (ADR-0009; SPEC-0009). This is a DELIBERATE public route — the
+	// only one in the personas capability — registered outside auth.RequireHuman: A2A discovery
+	// requires peers to read a persona's card before any friendship exists, and the card grants
+	// nothing, exposing only owner-approved discovery metadata (name, description, derived skills,
+	// owner display name). It is served ONLY for personas the owner marked discoverable; every other
+	// slug 404s without leaking existence. GET-only (a state-changing method 405s at the router), per
+	// the read-only requirement, with a per-IP throttle and a default-src 'none' CSP set in the
+	// handler. Governing: SPEC-0009 REQ "Well-Known Card Endpoint", REQ "Discoverability Is
+	// Owner-Controlled", "Security Requirements → Authentication / Rate Limiting".
+	r.With(cardRL.middleware).Get("/a/{persona_id}/.well-known/agent-card.json", d.webh.AgentCard)
 
 	// Vended agent API (bearer-credential auth inside; ADR-0008). 1 MiB body cap + IP rate limit.
 	r.With(agentRL.middleware, maxBytes(1<<20)).Mount("/agent", d.api.Routes())

@@ -89,6 +89,10 @@ var publicRoutes = map[string]bool{
 	"POST /auth/dev-login": true, // 404s unless SWITCHBOARD_DEV_LOGIN=1 (tested below)
 	"GET /healthz":         true, // liveness probe
 	"POST /dev/todos":      true, // 404s unless SWITCHBOARD_DEV_LOGIN=1 (dev loop helper)
+	// Public A2A Agent Card (SPEC-0009): discovery requires peers to read the card before any
+	// friendship exists; it grants nothing, exposes only owner-approved metadata, and 404s for any
+	// persona the owner has not marked discoverable.
+	"GET /a/{persona_id}/.well-known/agent-card.json": true,
 	// Webhook receivers authenticate per-provider (HMAC/token; SPEC-0001), not via session.
 	"POST /webhooks/github":         true,
 	"POST /webhooks/stripe":         true,
@@ -100,6 +104,7 @@ var publicRoutes = map[string]bool{
 func routePath(route string) string {
 	return strings.NewReplacer(
 		"{id}", "00000000-0000-0000-0000-000000000000",
+		"{persona_id}", "00000000-0000-0000-0000-000000000000",
 		"{name}", "x", "{endpoint}", "x", "*", "x",
 	).Replace(route)
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -39,7 +40,7 @@ type Persona struct {
 	VerbSubset   []string
 	Queues       []string
 	Description  string
-	Published    bool
+	Discoverable bool
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -174,10 +175,10 @@ func (s *Store) CreatePersona(ctx context.Context, p CreatePersonaParams) (Perso
 		INSERT INTO personas (owner_human_id, agent_id, name, slug, system_prompt, verb_subset, queues, description)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''))
 		RETURNING id::text, owner_human_id::text, agent_id::text, name, slug, system_prompt,
-		          verb_subset, queues, COALESCE(description, ''), published, created_at, updated_at`,
+		          verb_subset, queues, COALESCE(description, ''), discoverable, created_at, updated_at`,
 		p.OwnerHumanID, p.AgentID, p.Name, slug, p.SystemPrompt, p.VerbSubset, p.Queues, p.Description,
 	).Scan(&out.ID, &out.OwnerHumanID, &out.AgentID, &out.Name, &out.Slug, &out.SystemPrompt,
-		&out.VerbSubset, &out.Queues, &out.Description, &out.Published, &out.CreatedAt, &out.UpdatedAt)
+		&out.VerbSubset, &out.Queues, &out.Description, &out.Discoverable, &out.CreatedAt, &out.UpdatedAt)
 	if isUniqueViolation(err) {
 		return Persona{}, fmt.Errorf("%w: persona slug %q already exists for this owner", ErrConflict, slug)
 	}
@@ -189,13 +190,13 @@ func (s *Store) CreatePersona(ctx context.Context, p CreatePersonaParams) (Perso
 
 // personaCols is the shared projection for reading a persona row.
 const personaCols = `id::text, owner_human_id::text, agent_id::text, name, slug, system_prompt,
-	verb_subset, queues, COALESCE(description, ''), published, created_at, updated_at`
+	verb_subset, queues, COALESCE(description, ''), discoverable, created_at, updated_at`
 
 // scanPersona reads a persona row in personaCols order.
 func scanPersona(row pgx.Row) (Persona, error) {
 	var p Persona
 	err := row.Scan(&p.ID, &p.OwnerHumanID, &p.AgentID, &p.Name, &p.Slug, &p.SystemPrompt,
-		&p.VerbSubset, &p.Queues, &p.Description, &p.Published, &p.CreatedAt, &p.UpdatedAt)
+		&p.VerbSubset, &p.Queues, &p.Description, &p.Discoverable, &p.CreatedAt, &p.UpdatedAt)
 	return p, err
 }
 
@@ -277,20 +278,59 @@ func (s *Store) UpdatePersona(ctx context.Context, p UpdatePersonaParams) (Perso
 	return out, nil
 }
 
-// PublishPersona sets a persona's published (owner-controlled discoverability) flag. Owner-scoped: a
-// cross-owner or missing id is ErrNotFound and nothing changes. Discoverability is an explicit owner
-// choice — a persona is never listed in a directory unless its owner marks it published.
-// Governing: SPEC-0009 REQ "Discoverability Is Owner-Controlled".
-func (s *Store) PublishPersona(ctx context.Context, id, ownerHumanID string, published bool) (Persona, error) {
+// SetPersonaDiscoverable sets a persona's discoverable (owner-controlled discoverability) flag.
+// Owner-scoped: a cross-owner or missing id is ErrNotFound and nothing changes. Discoverability is an
+// explicit owner choice — a persona is never listed in a directory unless its owner marks it
+// discoverable. Governing: SPEC-0009 REQ "Discoverability Is Owner-Controlled".
+func (s *Store) SetPersonaDiscoverable(ctx context.Context, id, ownerHumanID string, discoverable bool) (Persona, error) {
 	out, err := scanPersona(s.pool.QueryRow(ctx, `
-		UPDATE personas SET published = $3, updated_at = now()
+		UPDATE personas SET discoverable = $3, updated_at = now()
 		WHERE id = $1 AND owner_human_id = $2
-		RETURNING `+personaCols, id, ownerHumanID, published))
+		RETURNING `+personaCols, id, ownerHumanID, discoverable))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Persona{}, ErrNotFound
 	}
 	if err != nil {
-		return Persona{}, fmt.Errorf("store: publish persona: %w", err)
+		return Persona{}, fmt.Errorf("store: set persona discoverable: %w", err)
+	}
+	return out, nil
+}
+
+// DiscoverablePersona bundles a discoverable persona with the minimal owner provenance its Agent Card
+// needs — the owner's display name only. It deliberately excludes owner PII (email, OIDC subject) so
+// the public card projection can never leak it. Governing: SPEC-0009 REQ "Agent Card Mapping".
+type DiscoverablePersona struct {
+	Persona
+	OwnerDisplayName string
+}
+
+// GetDiscoverablePersona resolves a persona by id for the PUBLIC Agent Card endpoint — no owner
+// scope, because the card is served to unauthenticated A2A peers. It returns a row ONLY when the
+// persona exists AND its owner has marked it discoverable; an unknown id, a malformed id, or a
+// non-discoverable persona all yield ErrNotFound, byte-for-byte indistinguishable, so the endpoint
+// never leaks the existence of a persona the owner has not published.
+// Governing: SPEC-0009 REQ "Discoverability Is Owner-Controlled", REQ "Well-Known Card Endpoint".
+func (s *Store) GetDiscoverablePersona(ctx context.Context, id string) (DiscoverablePersona, error) {
+	// A path segment that is not a valid UUID cannot match any row; short-circuit to ErrNotFound so
+	// pgx never surfaces a 22P02 (invalid_text_representation) as a 500 for arbitrary public input.
+	if _, err := uuid.Parse(id); err != nil {
+		return DiscoverablePersona{}, ErrNotFound
+	}
+	var out DiscoverablePersona
+	err := s.pool.QueryRow(ctx, `
+		SELECT p.id::text, p.owner_human_id::text, p.agent_id::text, p.name, p.slug, p.system_prompt,
+		       p.verb_subset, p.queues, COALESCE(p.description, ''), p.discoverable,
+		       p.created_at, p.updated_at, COALESCE(h.display_name, '')
+		FROM personas p JOIN humans h ON h.id = p.owner_human_id
+		WHERE p.id = $1 AND p.discoverable = true`, id,
+	).Scan(&out.ID, &out.OwnerHumanID, &out.AgentID, &out.Name, &out.Slug, &out.SystemPrompt,
+		&out.VerbSubset, &out.Queues, &out.Description, &out.Discoverable,
+		&out.CreatedAt, &out.UpdatedAt, &out.OwnerDisplayName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DiscoverablePersona{}, ErrNotFound
+	}
+	if err != nil {
+		return DiscoverablePersona{}, fmt.Errorf("store: get discoverable persona: %w", err)
 	}
 	return out, nil
 }
