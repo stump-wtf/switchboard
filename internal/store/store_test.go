@@ -83,9 +83,28 @@ func TestHumanAgentVend(t *testing.T) {
 		t.Fatalf("auth slug=%q want %q", auth.Slug, slug)
 	}
 
-	// Successful auth stamps last-seen (SPEC-0014).
+	// Successful auth stamps last-seen (SPEC-0014) and fires the endpoint-seen hook after the
+	// commit (SPEC-0013 endpoint_seen typed event).
+	var hookID string
+	var hookSeen time.Time
+	s.SetEndpointSeenHook(func(id string, seenAt time.Time) { hookID, hookSeen = id, seenAt })
 	if err := s.TouchEndpoint(ctx, ep.ID); err != nil {
 		t.Fatalf("touch endpoint: %v", err)
+	}
+	s.SetEndpointSeenHook(nil)
+	if hookID != ep.ID || hookSeen.IsZero() {
+		t.Fatalf("endpoint-seen hook: id=%q seen=%v", hookID, hookSeen)
+	}
+	eps, err := s.ListEndpoints(ctx, ag.ID)
+	if err != nil || len(eps) != 1 {
+		t.Fatalf("list endpoints: %v (%d)", err, len(eps))
+	}
+	if eps[0].LastSeenAt == nil {
+		t.Fatal("touched endpoint should carry last_seen_at")
+	}
+	// Touching a nonexistent endpoint is a silent no-op (nothing to stamp, nothing to announce).
+	if err := s.TouchEndpoint(ctx, "00000000-0000-0000-0000-000000000000"); err != nil {
+		t.Fatalf("touch missing endpoint: %v", err)
 	}
 
 	// Revoke → credential no longer resolves.

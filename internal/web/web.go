@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -30,18 +31,28 @@ import (
 //go:embed templates/*.html
 var tmplFS embed.FS
 
+// operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
+// the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
+const operatorLeaseTTL = 5 * time.Minute
+
 // Handler serves the web UI.
 type Handler struct {
 	store *store.Store
 	cfg   config.Config
 	log   *slog.Logger
 	pages map[string]*template.Template
+	frags *template.Template // shared live fragments (templates/fragments.html), standalone-renderable
 
 	// SSE plumbing (SPEC-0012 "Live Updates via SSE"). sseRetryMS and keepAlive are fields so
 	// tests can shrink intervals; production values come from New.
 	events     *EventHub
 	sseRetryMS func(ctx context.Context) int
 	keepAlive  time.Duration
+
+	// Ordered live-publish queue (SPEC-0013 typed events; live.go). Lazily started on first
+	// publish so template-only construction never spins a worker.
+	liveOnce sync.Once
+	liveCh   chan func(context.Context)
 
 	// endpointRevoked, when set, observes successful endpoint revocations (endpoint id). The
 	// server wires it to the MCP mount so revoking an endpoint also closes its live notification
@@ -56,18 +67,50 @@ func (h *Handler) SetEndpointRevokedHook(fn func(endpointID string)) { h.endpoin
 
 // New parses the templates and returns a Handler.
 func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error) {
-	funcs := template.FuncMap{"reltime": relTime, "tag": providerTag}
+	funcs := template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod}
 	h := &Handler{store: st, cfg: cfg, log: log, pages: map[string]*template.Template{},
 		events: newEventHub(), keepAlive: defaultKeepAlive}
 	h.sseRetryMS = h.sseRetrySetting
+	// fragments.html is parsed into every page set (pages reuse feed rows, tiles, and pills) and
+	// once standalone for the SSE publisher (live.go renders fragments with no page around them).
 	for _, p := range []string{"login", "board", "dashboard", "agent", "vended"} {
-		t, err := template.New(p).Funcs(funcs).ParseFS(tmplFS, "templates/layout.html", "templates/"+p+".html")
+		t, err := template.New(p).Funcs(funcs).ParseFS(tmplFS,
+			"templates/layout.html", "templates/fragments.html", "templates/"+p+".html")
 		if err != nil {
 			return nil, fmt.Errorf("parse templates for %q: %w", p, err)
 		}
 		h.pages[p] = t
 	}
+	frags, err := template.New("fragments").Funcs(funcs).ParseFS(tmplFS, "templates/fragments.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse fragment templates: %w", err)
+	}
+	h.frags = frags
 	return h, nil
+}
+
+// dict builds a map for passing multiple named args to a sub-template ({{template "x" dict "K" v}}).
+func dict(pairs ...any) (map[string]any, error) {
+	if len(pairs)%2 != 0 {
+		return nil, errors.New("dict: arguments must be key/value pairs")
+	}
+	m := make(map[string]any, len(pairs)/2)
+	for i := 0; i < len(pairs); i += 2 {
+		k, ok := pairs[i].(string)
+		if !ok {
+			return nil, fmt.Errorf("dict: key %v is not a string", pairs[i])
+		}
+		m[k] = pairs[i+1]
+	}
+	return m, nil
+}
+
+// stageMod maps a todo state onto the feed row's stage class modifier ("" = still verifying).
+func stageMod(state string) string {
+	if state == "" {
+		return "verifying"
+	}
+	return state
 }
 
 // shell carries the layout-shell state every authenticated view renders: the active rail entry,
@@ -88,8 +131,8 @@ type view struct {
 	Shell          shell
 	OIDCConfigured bool
 	DevLogin       bool
-	Stats          store.BoardStats
-	Events         []store.EventSummary
+	Tiles          tilesView // Board stat band (stats + activity bars)
+	Rows           []feedRow // Board incoming-lines feed
 	Agents         []store.Agent
 	Agent          *store.Agent
 	Endpoints      []store.Endpoint
@@ -123,25 +166,66 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "login", view{Title: "Log in", OIDCConfigured: h.cfg.OIDCConfigured(), DevLogin: h.cfg.DevLogin})
 }
 
-// Board renders the landing view: trust legend, stat tiles, and the recent-events feed, all
-// server-rendered from the database (SSE live updates are a separate story). Requires human.
-// Governing: SPEC-0013 REQ "Board View — Live Incoming Lines" (static slice).
+// Board renders the landing view: trust legend, stat tiles (throughput + activity bars), and the
+// incoming-lines feed with lifecycle stages, all server-rendered from the database — the same
+// fragments the SSE stream then keeps live, so reload always renders authoritative state.
+// Requires human. Governing: SPEC-0013 REQ "Board View — Live Incoming Lines".
 func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	sh, stats := h.buildShell(r.Context(), "board", &human)
-	var events []store.EventSummary
+	var rows []feedRow
+	var bars []bar
 	if sh.DBConnected {
-		var err error
-		if events, err = h.store.RecentEvents(r.Context(), 12); err != nil {
+		events, err := h.store.RecentEvents(r.Context(), feedCap)
+		if err != nil {
 			// Suppressed to a log so the Board still renders its shell (with whatever tiles
 			// resolved); the feed shows its empty state.
 			h.log.Warn("board recent events", "err", err)
 		}
+		for _, e := range events {
+			rows = append(rows, feedRowFromEvent(e, false))
+		}
+		buckets, err := h.store.EventBuckets(r.Context(), activityBuckets)
+		if err != nil {
+			h.log.Warn("board event buckets", "err", err)
+		}
+		bars = activityBars(buckets)
 	}
 	h.render(w, "board", view{
 		Title: "The Board", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
-		Shell: sh, Stats: stats, Events: events,
+		Shell: sh, Tiles: tilesView{Stats: stats, Bars: bars}, Rows: rows,
 	})
+}
+
+// ClaimTodo claims a pending todo under a lease as the operator (the feed row's Claim action).
+// Responds with the refreshed feed-row fragment for the HTMX outerHTML swap; the SSE
+// todo_claimed frame updates every other open view. Requires human (session + CSRF via the
+// layout's hx-headers). Governing: SPEC-0013 endpoints table POST /todos/{id}/claim, SPEC-0003
+// claim-under-lease semantics (the UI implements no lifecycle rules of its own).
+func (h *Handler) ClaimTodo(w http.ResponseWriter, r *http.Request) {
+	human, _ := auth.FromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	t, err := h.store.ClaimTodo(r.Context(), id, "op:"+human.ID, operatorLeaseTTL)
+	switch {
+	case errors.Is(err, store.ErrConflict):
+		// Raced by an agent (or not claimable): generic conflict; the SSE stage update tells the
+		// operator who won. No internal detail leaks (SPEC-0013 error handling).
+		http.Error(w, "conflict", http.StatusConflict)
+		return
+	case errors.Is(err, store.ErrNotFound):
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	case err != nil:
+		h.fail(w, err)
+		return
+	}
+	frag, err := h.renderFragment("feed_row", h.feedRowFromTodo(r.Context(), t, false))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(frag))
 }
 
 // Dashboard lists the human's agents (surfaced as "Endpoints" in the rail until the SPEC-0013

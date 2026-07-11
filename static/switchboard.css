@@ -101,16 +101,14 @@ a:hover {
   letter-spacing: 0.06em;
 }
 
-/* Receiving lamp: the SSE-subscribed live region (SPEC-0012). Present in the DOM before any
-   event arrives; htmx-ext-sse swaps its inner label on each `todo` event. */
-.sb-lamp {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--sb-live);
-  font-family: var(--sb-font-mono);
-  font-size: 11px;
-  letter-spacing: 0.06em;
+/* Idle zero-state: the pill is always present (it is the counts frame's SSE swap target) but
+   reads muted with a still dot until traffic arrives (SPEC-0013 top-bar live rate). */
+.sb-live--idle {
+  background: var(--sb-header-strip);
+  color: var(--sb-faint-2);
+}
+.sb-live--idle .sb-live__dot {
+  animation: none;
 }
 
 .sb-live__dot {
@@ -557,6 +555,80 @@ a:hover {
   white-space: nowrap;
 }
 
+/* Lifecycle stage (SPEC-0013): dot + mono label advancing verifying… → patched → todo →
+   claimed · <agent> → done ✓, updated live via out-of-band SSE swaps. */
+.sb-feed__stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.sb-feed__stage--verifying {
+  color: var(--sb-trust-token-dot);
+}
+.sb-feed__stage--pending {
+  color: var(--sb-status-pending);
+}
+.sb-feed__stage--claimed {
+  color: var(--sb-status-claimed);
+}
+.sb-feed__stage--done {
+  color: var(--sb-status-done);
+}
+.sb-feed__stage--failed {
+  color: var(--sb-status-failed);
+}
+
+/* Ringing pulse: a just-received line, still verifying. */
+.sb-feed__pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: sb-ring-pulse var(--sb-dur-pulse) var(--sb-ease) infinite;
+}
+
+/* Claim (mono action, brass-bordered) on pending feed rows. */
+.sb-btn--claim {
+  border-color: var(--sb-brass);
+  color: var(--sb-trust-token);
+  background: var(--sb-trust-token-bg);
+}
+.sb-btn--claim:hover {
+  background: var(--sb-trust-token-bg);
+  border-color: var(--sb-brass-bright);
+  color: var(--sb-trust-token);
+}
+
+/* Throughput tile activity bars: 24 per-minute buckets, brass bars, current minute oxblood
+   (design record 03-components "Throughput tile"). Heights are server-stamped inline styles. */
+.sb-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 42px;
+  margin-top: 10px;
+}
+.sb-bars__bar {
+  flex: 1 1 0;
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--sb-brass-chart);
+}
+.sb-bars__bar--now {
+  background: var(--sb-oxblood);
+}
+.sb-bars__axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--sb-font-mono);
+  font-size: 9.5px;
+  color: var(--sb-faint-2);
+  margin-top: 3px;
+}
+
 .sb-empty {
   font-family: var(--sb-font-mono);
   font-size: 12px;
@@ -809,6 +881,7 @@ pre code {
 
 @media (prefers-reduced-motion: reduce) {
   .sb-live__dot,
+  .sb-feed__pulse,
   .sb-ring {
     animation: none;
   }

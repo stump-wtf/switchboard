@@ -1,6 +1,8 @@
 {{define "content"}}
-{{/* Governing: SPEC-0013 REQ "Board View — Live Incoming Lines" (server-rendered slice; SSE wiring
-     lands with the live-updates story). */}}
+{{/* Governing: SPEC-0013 REQ "Board View — Live Incoming Lines" — trust legend, stat tiles, and
+     the newest-first incoming-lines feed, server-rendered from the database and kept live by the
+     typed SSE events (event_received prepends rows; todo_* frames advance stages out-of-band;
+     counts refreshes the tiles). Reload always renders authoritative state. */}}
 <h1 class="sb-page-title">The Board</h1>
 <p class="sb-tagline">many lines in · each verified · patched through</p>
 
@@ -11,45 +13,12 @@
   <li><span class="sb-badge sb-badge--queue">queue</span></li>
 </ul>
 
-<section class="sb-tiles" aria-label="Queue summary">
-  <div class="sb-tile">
-    <span class="sb-microlabel">Todos today</span>
-    <div class="sb-tile__value">{{.Stats.TodosToday}}</div>
-    <div class="sb-tile__unit">created since midnight</div>
-  </div>
-  <div class="sb-tile">
-    <span class="sb-microlabel">In flight</span>
-    <div class="sb-tile__value">{{.Stats.InFlight}}</div>
-    <div class="sb-tile__unit">claimed under lease</div>
-  </div>
-  <div class="sb-tile{{if gt .Stats.AwaitingClaim 0}} sb-tile--alert{{end}}">
-    <span class="sb-microlabel">Awaiting claim</span>
-    <div class="sb-tile__value">{{.Stats.AwaitingClaim}}</div>
-    <div class="sb-tile__unit">pending in queue</div>
-  </div>
-  <div class="sb-tile">
-    <span class="sb-microlabel">Verified</span>
-    <div class="sb-tile__value">{{.Stats.VerifiedPct}}%</div>
-    <div class="sb-tile__unit">of today's events signed</div>
-  </div>
-</section>
+{{template "tiles" .Tiles}}
 
-<h2 class="sb-section-title">Recent lines in</h2>
-{{if .Events}}
-<ul class="sb-feed" aria-live="polite">
-  {{range .Events}}
-  <li class="sb-feed__row">
-    <span class="sb-tag" aria-hidden="true">{{tag .Source}}</span>
-    <span>
-      <span class="sb-feed__source">{{.Source}}</span>
-      <span class="sb-feed__type">{{.EventType}}</span>
-    </span>
-    <span class="sb-badge sb-badge--{{.TrustMode}}">{{.TrustMode}}</span>
-    <span class="sb-feed__age">{{reltime .ReceivedAt}}</span>
-  </li>
-  {{end}}
-</ul>
-{{else}}
-<p class="sb-empty">no lines in yet · the board is quiet</p>
-{{end}}
+<h2 class="sb-section-title">Incoming lines</h2>
+{{/* The feed is a live region that exists before the first frame: new rows enter at the top via
+     sse-swap afterbegin; sb.js trims to the visible cap and hides the empty state. */}}
+<ul id="sb-feed" class="sb-feed" aria-live="polite" sse-swap="event_received" hx-swap="afterbegin" data-sb-feed-cap="8">{{range .Rows}}{{template "feed_row" .}}
+{{end}}</ul>
+<p class="sb-empty" data-sb-feed-empty{{if .Rows}} hidden{{end}}>no lines in yet · the board is quiet</p>
 {{end}}

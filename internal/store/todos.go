@@ -29,6 +29,7 @@ type Todo struct {
 	Kind           string
 	Title          string
 	Payload        []byte // raw JSON (jsonb)
+	EventID        *int64 // originating inbound event, when webhook-born (links Board feed rows)
 	IdempotencyKey string
 	Assignee       string
 	State          string
@@ -42,15 +43,15 @@ type Todo struct {
 	CompletedAt    *time.Time
 }
 
-const todoCols = `id, queue, COALESCE(source,''), COALESCE(kind,''), title, payload,
+const todoCols = `id, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
 	COALESCE(idempotency_key,''), COALESCE(assignee,''), state, COALESCE(owner,''),
 	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at`
 
 func scanTodo(row pgx.Row) (Todo, error) {
 	var t Todo
-	err := row.Scan(&t.ID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.IdempotencyKey,
-		&t.Assignee, &t.State, &t.Owner, &t.LeaseExpiresAt, &t.Attempt, &t.MaxAttempts, &t.Result,
-		&t.CreatedAt, &t.ClaimedAt, &t.CompletedAt)
+	err := row.Scan(&t.ID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
+		&t.IdempotencyKey, &t.Assignee, &t.State, &t.Owner, &t.LeaseExpiresAt, &t.Attempt,
+		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt)
 	return t, err
 }
 
@@ -92,17 +93,23 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 	}
 	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
 
-	eventID, err := insertEvent(ctx, tx, e)
+	ev, inserted, err := insertEvent(ctx, tx, e)
 	if err != nil {
 		return 0, Todo{}, false, err
 	}
-	p.EventID = &eventID
+	p.EventID = &ev.ID
 	t, created, err := createTodo(ctx, tx, p)
 	if err != nil {
 		return 0, Todo{}, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, Todo{}, false, err
+	}
+	// Hooks fire only after the durable commit, event before todo, mirroring the Board's
+	// lifecycle order (event_received → todo_created). Governing: SPEC-0013 REQ "Board View —
+	// Live Incoming Lines".
+	if inserted {
+		s.fireEventHook(ev)
 	}
 	if created {
 		s.notifyTodoReady(ctx, t.Queue)
@@ -114,7 +121,7 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 			s.fireDoorbell(t)
 		}
 	}
-	return eventID, t, created, nil
+	return ev.ID, t, created, nil
 }
 
 // createTodo is the querier-based core of CreateTodo: it runs on either the pool or a transaction and
@@ -313,17 +320,35 @@ func (s *Store) GetTodo(ctx context.Context, id string) (Todo, error) {
 }
 
 // ReapExpired requeues (or dead-letters) todos whose lease has expired — crash safety (ADR-0002 reaper).
-// Returns the number of todos reaped.
+// Returns the number of todos reaped. Each reaped row fires the transition hook with its committed
+// outcome (pending = re-surfaced, failed = dead-lettered) so the UI can announce reaper re-surfaces.
+// Governing: SPEC-0013 REQ "Live Updates and Toasts" (reaper re-surface is visible).
 func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
-	ct, err := s.pool.Exec(ctx, `
+	rows, err := s.pool.Query(ctx, `
 		UPDATE todos SET
 			state = CASE WHEN attempt >= max_attempts THEN 'failed' ELSE 'pending' END,
 			owner = NULL, lease_expires_at = NULL, updated_at = now()
-		WHERE state='claimed' AND lease_expires_at < now()`)
+		WHERE state='claimed' AND lease_expires_at < now()
+		RETURNING `+todoCols)
 	if err != nil {
 		return 0, err
 	}
-	return ct.RowsAffected(), nil
+	defer rows.Close()
+	var reaped []Todo
+	for rows.Next() {
+		t, err := scanTodo(rows)
+		if err != nil {
+			return 0, err
+		}
+		reaped = append(reaped, t)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, t := range reaped {
+		s.fireTodoHook(t.State, t)
+	}
+	return int64(len(reaped)), nil
 }
 
 // classifyMiss distinguishes "todo absent" (ErrNotFound) from "todo present but not in the expected
@@ -355,30 +380,42 @@ type EventInput struct {
 }
 
 // InsertEvent records an accepted delivery, deduping on (source, external_id). Returns the event id
-// (existing id on a duplicate delivery).
+// (existing id on a duplicate delivery). Newly inserted events fire the event hook.
 func (s *Store) InsertEvent(ctx context.Context, e EventInput) (int64, error) {
-	return insertEvent(ctx, s.pool, e)
+	ev, inserted, err := insertEvent(ctx, s.pool, e)
+	if err != nil {
+		return 0, err
+	}
+	if inserted {
+		s.fireEventHook(ev)
+	}
+	return ev.ID, nil
 }
 
-// insertEvent is the querier-based core of InsertEvent, runnable on the pool or inside a transaction.
-func insertEvent(ctx context.Context, q querier, e EventInput) (int64, error) {
-	var id int64
+// insertEvent is the querier-based core of InsertEvent, runnable on the pool or inside a
+// transaction. The returned bool reports whether a NEW row was inserted (false = duplicate
+// delivery, existing row returned). The EventSummary carries the fields the Board feed renders.
+func insertEvent(ctx context.Context, q querier, e EventInput) (EventSummary, bool, error) {
+	ev := EventSummary{Source: e.Source, EventType: e.EventType, TrustMode: e.TrustMode}
 	err := q.QueryRow(ctx, `
 		INSERT INTO events (source, family, event_type, external_id, trust_mode, verified, verify_detail,
 			content_type, headers, payload, payload_size, source_ip)
 		VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,NULLIF($12,'')::inet)
 		ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL DO NOTHING
-		RETURNING id`,
+		RETURNING id, received_at`,
 		e.Source, e.Family, e.EventType, e.ExternalID, e.TrustMode, e.Verified, e.VerifyDetail,
-		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP).Scan(&id)
+		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP).Scan(&ev.ID, &ev.ReceivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Duplicate delivery — fetch the existing id.
+		// Duplicate delivery — fetch the existing row.
 		if err2 := q.QueryRow(ctx,
-			`SELECT id FROM events WHERE source=$1 AND external_id=$2`, e.Source, e.ExternalID,
-		).Scan(&id); err2 != nil {
-			return 0, err2
+			`SELECT id, received_at FROM events WHERE source=$1 AND external_id=$2`, e.Source, e.ExternalID,
+		).Scan(&ev.ID, &ev.ReceivedAt); err2 != nil {
+			return EventSummary{}, false, err2
 		}
-		return id, nil
+		return ev, false, nil
 	}
-	return id, err
+	if err != nil {
+		return EventSummary{}, false, err
+	}
+	return ev, true, nil
 }

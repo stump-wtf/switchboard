@@ -17,9 +17,9 @@ var ErrNotFound = errors.New("store: not found")
 
 // TodoTransitionHook observes committed todo lifecycle transitions for best-effort in-process
 // fan-out (e.g. the web UI's SSE hub). verb is one of created|claimed|done|failed|pending
-// (pending = a retry/requeue). Implementations MUST NOT block: delivery is presentation only —
-// PostgreSQL remains the source of truth and a missed call costs nothing but a UI refresh.
-// Governing: SPEC-0012 REQ "Live Updates via SSE" (best-effort presentation).
+// (pending = a retry/requeue/reaper re-surface). Implementations MUST NOT block: delivery is
+// presentation only — PostgreSQL remains the source of truth and a missed call costs nothing but a
+// UI refresh. Governing: SPEC-0012 REQ "Live Updates via SSE" (best-effort presentation).
 type TodoTransitionHook func(verb string, t Todo)
 
 // TodoDoorbellHook observes committed todo creations that are eligible for a channel push. The
@@ -31,12 +31,26 @@ type TodoTransitionHook func(verb string, t Todo)
 // Governing: SPEC-0011 REQ "Sender Gate and Injection Safety", ADR-0013.
 type TodoDoorbellHook func(t Todo)
 
+// EventHook observes newly committed inbound events (accepted deliveries) for best-effort
+// in-process fan-out — the Board's live "incoming lines" feed. Duplicate deliveries (idempotent
+// event dedup) do not fire. Same contract as TodoTransitionHook: never block, never authoritative.
+// Governing: SPEC-0013 REQ "Board View — Live Incoming Lines".
+type EventHook func(e EventSummary)
+
+// EndpointSeenHook observes committed endpoint last-seen stamps (a vended credential just
+// authenticated successfully) for best-effort in-process fan-out — the endpoint_seen typed SSE
+// event. Same contract as TodoTransitionHook: never block, never authoritative.
+// Governing: SPEC-0013 REQ "Live Updates and Toasts" (endpoint last-seen updates).
+type EndpointSeenHook func(endpointID string, seenAt time.Time)
+
 // Store wraps a pgx pool.
 type Store struct {
 	pool *pgxpool.Pool
-	// todoHook is read on every todo transition and set (rarely) at wiring time; atomic so a
-	// late SetTodoTransitionHook can never race in-flight transitions.
-	todoHook atomic.Pointer[TodoTransitionHook]
+	// todoHook/eventHook/endpointSeenHook are read on every transition and set (rarely) at wiring
+	// time; atomic so a late Set*Hook can never race in-flight transitions.
+	todoHook         atomic.Pointer[TodoTransitionHook]
+	eventHook        atomic.Pointer[EventHook]
+	endpointSeenHook atomic.Pointer[EndpointSeenHook]
 	// doorbellHook mirrors todoHook for push-eligible creations (the MCP channel doorbell).
 	doorbellHook atomic.Pointer[TodoDoorbellHook]
 }
@@ -59,6 +73,42 @@ func (s *Store) SetTodoTransitionHook(fn TodoTransitionHook) {
 func (s *Store) fireTodoHook(verb string, t Todo) {
 	if fn := s.todoHook.Load(); fn != nil {
 		(*fn)(verb, t)
+	}
+}
+
+// SetEventHook registers fn to observe newly committed inbound events. Safe to call concurrently
+// with store use; passing nil clears the hook.
+func (s *Store) SetEventHook(fn EventHook) {
+	if fn == nil {
+		s.eventHook.Store(nil)
+		return
+	}
+	s.eventHook.Store(&fn)
+}
+
+// fireEventHook invokes the registered event hook, if any. Called only after the event row has
+// durably committed (post-Commit for transactional inserts).
+func (s *Store) fireEventHook(e EventSummary) {
+	if fn := s.eventHook.Load(); fn != nil {
+		(*fn)(e)
+	}
+}
+
+// SetEndpointSeenHook registers fn to observe committed endpoint last-seen stamps. Safe to call
+// concurrently with store use; passing nil clears the hook.
+func (s *Store) SetEndpointSeenHook(fn EndpointSeenHook) {
+	if fn == nil {
+		s.endpointSeenHook.Store(nil)
+		return
+	}
+	s.endpointSeenHook.Store(&fn)
+}
+
+// fireEndpointSeenHook invokes the registered endpoint-seen hook, if any. Called only after the
+// last_seen_at stamp has durably committed.
+func (s *Store) fireEndpointSeenHook(endpointID string, seenAt time.Time) {
+	if fn := s.endpointSeenHook.Load(); fn != nil {
+		(*fn)(endpointID, seenAt)
 	}
 }
 

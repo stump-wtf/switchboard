@@ -4,21 +4,19 @@
 // (no SSE library), subscribed from the DOM by the vendored htmx-ext-sse extension. Delivery is
 // best-effort presentation: buffers are bounded and drop-on-full, because PostgreSQL is the
 // authoritative state and a reload always renders current truth. The SPEC-0013 typed event
-// taxonomy layers on top of this hub separately (#101); this file is the baseline transport.
+// taxonomy (live.go) layers on top of this hub; this file is the baseline transport.
 package web
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/store"
 )
 
 const (
@@ -99,16 +97,6 @@ func (h *EventHub) Publish(e Event) {
 		default: // slow consumer: drop — best-effort presentation
 		}
 	}
-}
-
-// PublishTodoTransition adapts a committed todo lifecycle transition (store.TodoTransitionHook)
-// into a live-region fragment. verb comes from the store's fixed vocabulary; the queue name is
-// attacker-influenced (webhook payloads) so it is HTML-escaped, and the SSE framing layer strips
-// newlines so no payload can forge extra frames.
-func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
-	frag := `<span aria-hidden="true">●</span> live · todo ` +
-		template.HTMLEscapeString(verb) + ` · ` + template.HTMLEscapeString(t.Queue)
-	h.events.Publish(Event{Name: "todo", Data: frag})
 }
 
 // Events streams live UI updates over SSE. Requires human (mounted behind RequireHuman).

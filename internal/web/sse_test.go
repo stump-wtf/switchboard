@@ -70,24 +70,37 @@ func TestEventsStreamingHeadersRetryAndKeepAlive(t *testing.T) {
 	}
 }
 
+// Governing: SPEC-0013 REQ "Live Updates and Toasts" — a committed transition arrives as its
+// TYPED named event carrying the pre-rendered fragment set. Attacker-influenced fields (source,
+// event type from webhook payloads) must arrive HTML-escaped and newline-stripped, so a payload
+// can neither inject markup into the live region nor forge extra SSE frames.
 func TestEventsDeliversPublishedTodoTransition(t *testing.T) {
-	h := testSSEHandler(1500, time.Hour /* isolate: no keep-alives */)
-	rec := runEvents(t, h, 80*time.Millisecond, func() {
+	h := newTestHandler(t)  // full template set (no store: counts frames are skipped)
+	h.keepAlive = time.Hour /* isolate: no keep-alives */
+	h.sseRetryMS = func(context.Context) int { return 1500 }
+	rec := runEvents(t, h, 250*time.Millisecond, func() {
 		time.Sleep(20 * time.Millisecond) // let the handler subscribe + write the retry frame
-		// Queue name is attacker-influenced: must arrive HTML-escaped and newline-stripped, so a
-		// payload can neither inject markup into the live region nor forge extra SSE frames.
-		h.PublishTodoTransition("claimed", store.Todo{Queue: "ci\nx <img>"})
+		h.PublishTodoTransition("claimed", store.Todo{
+			ID: "td_1", Queue: "ci", Source: "ci\nx <img>", Kind: "push", State: "claimed",
+			Owner: "agent:0a1b2c3d", CreatedAt: time.Now(),
+		})
 	})
 
 	body := rec.Body.String()
 	if !strings.HasPrefix(body, "retry: 1500\n\n") {
 		t.Fatalf("retry frame missing or wrong:\n%q", body)
 	}
-	if !strings.Contains(body, "event: todo\n") {
-		t.Fatalf("todo event not delivered:\n%q", body)
+	if !strings.Contains(body, "event: todo_claimed\n") {
+		t.Fatalf("typed todo_claimed event not delivered:\n%q", body)
 	}
-	if !strings.Contains(body, "todo claimed · ci x &lt;img&gt;") {
+	if !strings.Contains(body, "ci x &lt;img&gt;") {
 		t.Fatalf("payload not escaped/sanitized:\n%q", body)
+	}
+	if !strings.Contains(body, "claimed · agent · 0a1b2c3") {
+		t.Fatalf("lifecycle stage fragment missing:\n%q", body)
+	}
+	if !strings.Contains(body, "td_1 · claimed") {
+		t.Fatalf("toast with the todo id missing:\n%q", body)
 	}
 	if strings.Contains(body, "<img>") || strings.Contains(body, "ci\nx") {
 		t.Fatalf("raw attacker input leaked into the stream:\n%q", body)

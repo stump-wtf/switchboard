@@ -1,0 +1,58 @@
+{{/* Shared live fragments (SPEC-0013 REQ "Board View — Live Incoming Lines", REQ "Live Updates
+     and Toasts"). Every fragment renders BOTH server-side into full pages and standalone as an
+     SSE payload; the OOB variants carry hx-swap-oob so one named event can update its feed row,
+     the count pills, and the toast region atomically. All dynamic strings pass through
+     html/template's contextual escaping, and the SSE framing layer strips newlines, so
+     attacker-influenced fields (source, event type, owner) can neither inject markup nor forge
+     frames. */}}
+
+{{/* feed_row — one Board incoming line. Data: web.feedRow. */}}
+{{define "feed_row"}}<li id="{{.RowID}}" class="sb-feed__row"{{if .OOB}} hx-swap-oob="true"{{end}}><span class="sb-tag" aria-hidden="true">{{tag .Source}}</span><span><span class="sb-feed__source">{{.Source}}</span><span class="sb-feed__type">{{.EventType}}</span></span><span class="sb-badge sb-badge--{{.TrustMode}}">{{.TrustMode}}</span><span class="sb-feed__stage sb-feed__stage--{{.State | stagemod}}">{{if eq .State ""}}<span class="sb-feed__pulse" aria-hidden="true"></span>verifying…{{else if eq .State "pending"}}patched → todo{{else if eq .State "claimed"}}claimed · {{.OwnerLabel}}{{else if eq .State "done"}}done ✓{{else}}failed{{end}}</span>{{if and (eq .State "pending") .TodoID}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.TodoID}}/claim" hx-target="closest li" hx-swap="outerHTML">Claim</button>{{end}}<span class="sb-feed__age">{{reltime .ReceivedAt}}</span></li>{{end}}
+
+{{/* tiles — the Board stat band (throughput + in flight + awaiting claim + verified %).
+     Data: web.tilesView. Replaced wholesale by counts events (id sb-tiles). */}}
+{{define "tiles"}}<section id="sb-tiles" class="sb-tiles" aria-label="Queue summary"{{if .OOB}} hx-swap-oob="true"{{end}}>
+  <div class="sb-tile sb-tile--throughput">
+    <span class="sb-microlabel">Throughput</span>
+    <div class="sb-tile__value">{{.Stats.EventsPerMin}}</div>
+    <div class="sb-tile__unit">events/min</div>
+    {{if .Bars}}<div class="sb-bars" role="img" aria-label="Inbound activity, one bar per minute over the last {{len .Bars}} minutes">{{range .Bars}}<span class="sb-bars__bar{{if .Current}} sb-bars__bar--now{{end}}" style="height:{{.Pct}}%"></span>{{end}}</div>
+    <div class="sb-bars__axis" aria-hidden="true"><span>−{{len .Bars}}m</span><span>now</span></div>{{end}}
+  </div>
+  <div class="sb-tile">
+    <span class="sb-microlabel">In flight</span>
+    <div class="sb-tile__value">{{.Stats.InFlight}}</div>
+    <div class="sb-tile__unit">claimed under lease</div>
+  </div>
+  <div class="sb-tile{{if gt .Stats.AwaitingClaim 0}} sb-tile--alert{{end}}">
+    <span class="sb-microlabel">Awaiting claim</span>
+    <div class="sb-tile__value">{{.Stats.AwaitingClaim}}</div>
+    <div class="sb-tile__unit">pending in queue</div>
+  </div>
+  <div class="sb-tile">
+    <span class="sb-microlabel">Verified</span>
+    <div class="sb-tile__value">{{.Stats.VerifiedPct}}%</div>
+    <div class="sb-tile__unit">of today's events signed</div>
+  </div>
+</section>{{end}}
+
+{{/* live_pill — the top-bar throughput pill. Always rendered (SPEC-0013: the top bar shows the
+     live rate); at zero it renders in its idle state rather than disappearing, so the SSE swap
+     target always exists. Args via dict: Rate int, OOB bool. */}}
+{{define "live_pill"}}<span id="sb-live" class="sb-live{{if not .Rate}} sb-live--idle{{end}}"{{if .OOB}} hx-swap-oob="true"{{end}} role="status"><span class="sb-live__dot" aria-hidden="true"></span>LIVE · {{.Rate}}/min</span>{{end}}
+
+{{/* todo_count — the rail's live Todos count. Args via dict: Count int, OOB bool. */}}
+{{define "todo_count"}}<span id="sb-todo-count" class="sb-rail__count"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Count}}</span>{{end}}
+
+{{/* counts — the OOB bundle published after every committed transition: tiles + rail count +
+     LIVE pill. Data: web.countsView. */}}
+{{define "counts"}}{{template "tiles" .Tiles}}{{template "todo_count" dict "Count" .Tiles.Stats.AwaitingClaim "OOB" true}}{{template "live_pill" dict "Rate" .Tiles.Stats.EventsPerMin "OOB" true}}{{end}}
+
+{{/* toast — a transient announcement prepended into the aria-live toast region. Data: string. */}}
+{{define "toast"}}<div class="sb-toast" role="status" hx-swap-oob="afterbegin:#sb-toasts">{{.}}</div>{{end}}
+
+{{/* endpoint_seen — one endpoint's last-seen stamp (SPEC-0013 "Live Updates and Toasts": endpoint
+     last-seen updates). Data: web.endpointSeenView. Endpoint screens render it inline (OOB false)
+     so the sb-ep-seen-<id> swap target exists before the first live frame; the endpoint_seen SSE
+     event replaces it OOB whenever that credential authenticates. */}}
+{{define "endpoint_seen"}}<span id="sb-ep-seen-{{.ID}}" class="sb-muted"{{if .OOB}} hx-swap-oob="true"{{end}}>seen {{reltime .SeenAt}}</span>{{end}}

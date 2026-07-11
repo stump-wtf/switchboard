@@ -33,6 +33,7 @@ type Endpoint struct {
 	Mutability       string
 	State            string
 	CreatedAt        time.Time
+	LastSeenAt       *time.Time // nil until the credential first authenticates (TouchEndpoint)
 }
 
 // AuthEndpoint is the minimal view resolved from a presented credential to authorize an agent call.
@@ -135,7 +136,7 @@ func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefi
 // ListEndpoints returns an agent's endpoints, newest first.
 func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at
+		SELECT id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at, last_seen_at
 		FROM endpoints WHERE agent_id = $1 ORDER BY created_at DESC`, agentID)
 	if err != nil {
 		return nil, err
@@ -144,7 +145,7 @@ func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, 
 	var out []Endpoint
 	for rows.Next() {
 		var e Endpoint
-		if err := rows.Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt, &e.LastSeenAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -186,11 +187,21 @@ func (s *Store) EndpointByCredHash(ctx context.Context, credHash string) (AuthEn
 }
 
 // TouchEndpoint stamps an endpoint's last_seen_at, recording that its credential just authenticated
-// successfully. Governing: SPEC-0014 REQ "Bearer Authentication Bound to the Vended Endpoint".
+// successfully, and fires the endpoint-seen hook after the stamp commits (the SPEC-0013
+// endpoint_seen typed SSE event). Governing: SPEC-0014 REQ "Bearer Authentication Bound to the
+// Vended Endpoint", SPEC-0013 REQ "Live Updates and Toasts".
 func (s *Store) TouchEndpoint(ctx context.Context, endpointID string) error {
-	if _, err := s.pool.Exec(ctx,
-		`UPDATE endpoints SET last_seen_at = now() WHERE id = $1`, endpointID); err != nil {
+	var seenAt time.Time
+	err := s.pool.QueryRow(ctx,
+		`UPDATE endpoints SET last_seen_at = now() WHERE id = $1 RETURNING last_seen_at`,
+		endpointID).Scan(&seenAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Endpoint vanished between auth and stamp: nothing to record, nothing to announce.
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("store: touch endpoint: %w", err)
 	}
+	s.fireEndpointSeenHook(endpointID, seenAt)
 	return nil
 }

@@ -42,13 +42,16 @@ func testHuman() *store.Human {
 
 func TestBoardRendersShellAndTiles(t *testing.T) {
 	h := newTestHandler(t)
+	stats := store.BoardStats{TodosToday: 12, InFlight: 2, AwaitingClaim: 3, VerifiedPct: 83, EventsPerMin: 7}
 	body := renderPage(t, h, "board", view{
 		Title: "The Board", Human: testHuman(), CSRF: "tok",
 		Shell: shell{Active: "board", TodoCount: 3, LiveRate: 7, DBConnected: true, Initials: "JS"},
-		Stats: store.BoardStats{TodosToday: 12, InFlight: 2, AwaitingClaim: 3, VerifiedPct: 83, EventsPerMin: 7},
-		Events: []store.EventSummary{
-			{ID: 1, Source: "github", EventType: "push", TrustMode: "signed", ReceivedAt: time.Now().Add(-2 * time.Minute)},
-			{ID: 2, Source: "stripe", EventType: "invoice.paid", TrustMode: "token", ReceivedAt: time.Now().Add(-3 * time.Hour)},
+		Tiles: tilesView{Stats: stats, Bars: activityBars([]int{0, 3, 7, 1})},
+		Rows: []feedRow{
+			feedRowFromEvent(store.EventSummary{ID: 1, Source: "github", EventType: "push", TrustMode: "signed",
+				ReceivedAt: time.Now().Add(-2 * time.Minute), TodoID: "td_1", TodoState: "pending"}, false),
+			feedRowFromEvent(store.EventSummary{ID: 2, Source: "stripe", EventType: "invoice.paid", TrustMode: "token",
+				ReceivedAt: time.Now().Add(-3 * time.Hour), TodoID: "td_2", TodoState: "claimed", TodoOwner: "agent:0a1b2c3d-x"}, false),
 		},
 	})
 
@@ -66,9 +69,23 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 		"83%",            // verified pct tile
 		">GH<", ">ST<",   // provider tags
 		"2m ago", "3h ago", // relative ages
+		"id=\"sb-tiles\"",                  // tiles band is the counts swap target
+		"sb-bars__bar--now",                // throughput activity bars w/ current bucket
+		"events/min",                       // throughput tile unit
+		"patched → todo",                   // pending row lifecycle stage
+		"claimed · agent · 0a1b2c3",        // claimed row stage with owner label
+		"hx-post=\"/todos/td_1/claim\"",    // Claim action on the pending row
+		"id=\"sb-ev-1\"", "id=\"sb-ev-2\"", // stable row ids for OOB stage updates
+		"sse-connect=\"/events\"",     // one authenticated stream per page
+		"sse-swap=\"event_received\"", // feed subscribes to new lines
+		"hx-swap=\"afterbegin\"",      // rows enter at the top
+		"sse-swap=\"todo_created,todo_claimed,todo_completed,todo_failed,todo_resurfaced,counts\"", // OOB sink
+		"hx-headers='{\"X-CSRF-Token\":\"tok\"}'",                                                  // CSRF injected into HTMX requests
 		"aria-live=\"polite\"",            // live regions present in DOM
 		"id=\"sb-overlay\"",               // overlay slot present-but-empty
 		"id=\"sb-toasts\"",                // toast region
+		"id=\"sb-todo-count\"",            // rail count pill is a swap target
+		"/static/sb.js",                   // toast TTL / feed cap helper
 		">JS</span>",                      // avatar initials
 		"/static/switchboard.css",         // component layer linked
 		"aria-label=\"Switchboard mark\"", // accessible inline-SVG mark
@@ -82,17 +99,27 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 	}
 }
 
-func TestLivePillHiddenWhenRateZero(t *testing.T) {
+// Carry-over decision from the wave-1 verification pass (#101): the LIVE pill is ALWAYS rendered
+// so the SSE counts frame has a swap target before the first event; at zero rate it renders the
+// muted idle state instead of disappearing. Governing: SPEC-0013 REQ "Information Architecture
+// and Navigation" (top bar shows the live rate).
+func TestLivePillIdleAtZeroRate(t *testing.T) {
 	h := newTestHandler(t)
 	body := renderPage(t, h, "board", view{
 		Title: "The Board", Human: testHuman(),
 		Shell: shell{Active: "board", DBConnected: true, Initials: "JS"},
 	})
-	if strings.Contains(body, "sb-live") {
-		t.Error("LIVE pill should be hidden when the rate is zero")
+	if !strings.Contains(body, "sb-live--idle") {
+		t.Error("LIVE pill should render its idle state when the rate is zero")
+	}
+	if !strings.Contains(body, "LIVE · 0/min") {
+		t.Error("LIVE pill zero-state should still show the rate")
 	}
 	if !strings.Contains(body, "no lines in yet") {
 		t.Error("empty feed state missing")
+	}
+	if !strings.Contains(body, "id=\"sb-feed\"") {
+		t.Error("feed live region must exist in the DOM before the first SSE frame")
 	}
 }
 
@@ -139,10 +166,21 @@ func TestEndpointsScreensRender(t *testing.T) {
 	}
 
 	agent := renderPage(t, h, "agent", view{Title: ag.Name, Human: testHuman(), CSRF: "tok", Shell: sh, Agent: ag, Endpoints: []store.Endpoint{*ep}})
-	for _, want := range []string{"sbk_ab12cd", "sb-badge--active", "Vend endpoint"} {
+	for _, want := range []string{
+		"sbk_ab12cd", "sb-badge--active", "Vend endpoint",
+		`id="sb-ep-seen-e1"`, ">never<", // last-seen swap target exists before the first frame
+		`sse-swap="endpoint_seen"`, // page-local sink subscribes the endpoint screen
+	} {
 		if !strings.Contains(agent, want) {
 			t.Errorf("agent: missing %q", want)
 		}
+	}
+	seen := time.Now().Add(-2 * time.Minute)
+	ep2 := *ep
+	ep2.LastSeenAt = &seen
+	agentSeen := renderPage(t, h, "agent", view{Title: ag.Name, Human: testHuman(), CSRF: "tok", Shell: sh, Agent: ag, Endpoints: []store.Endpoint{ep2}})
+	if !strings.Contains(agentSeen, "seen 2m ago") {
+		t.Error("agent: touched endpoint missing rendered last-seen stamp")
 	}
 
 	vended := renderPage(t, h, "vended", view{Title: "Vended", Human: testHuman(), CSRF: "tok", Shell: sh, Agent: ag, Endpoint: ep, Token: "sbk_secret", MCPJSON: "{}"})

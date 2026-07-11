@@ -46,10 +46,14 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Feed the web SSE hub from committed todo lifecycle transitions (process-local publish hook).
-	// Best-effort by design: the hub drops on full buffers and PostgreSQL stays authoritative.
-	// Governing: SPEC-0012 REQ "Live Updates via SSE".
+	// Feed the web SSE hub from committed transitions (process-local publish hooks): todo
+	// lifecycle changes, newly accepted inbound events, and endpoint last-seen stamps become
+	// the SPEC-0013 typed event stream. Best-effort by design: the hub drops on full buffers
+	// and PostgreSQL stays authoritative. Governing: SPEC-0012 REQ "Live Updates via SSE",
+	// SPEC-0013 REQ "Live Updates and Toasts".
 	st.SetTodoTransitionHook(webh.PublishTodoTransition)
+	st.SetEventHook(webh.PublishEventReceived)
+	st.SetEndpointSeenHook(webh.PublishEndpointSeen)
 
 	// The MCP mount owns live Streamable HTTP sessions; Close tears them (and their goroutines)
 	// down on shutdown. Governing: SPEC-0014 REQ "Concurrency Safety".
@@ -146,6 +150,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		pr.Get("/agents", webh.Dashboard)
 		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
 		pr.Get("/events", webh.Events)
+		// Operator claim from the Board feed (SPEC-0013 endpoints table). CSRF arrives via the
+		// layout's hx-headers token; the group's RequireCSRF validates it.
+		pr.Post("/todos/{id}/claim", webh.ClaimTodo)
 		pr.Post("/agents", webh.CreateAgent)
 		pr.Get("/agents/{id}", webh.Agent)
 		pr.Post("/agents/{id}/vend", webh.Vend)

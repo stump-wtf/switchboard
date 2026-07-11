@@ -27,7 +27,7 @@
 <h2 class="sb-section-title">Endpoints</h2>
 {{if .Endpoints}}
 <table class="sb-table">
-  <thead><tr><th>Credential</th><th>Queues</th><th>Verbs</th><th>State</th><th></th></tr></thead>
+  <thead><tr><th>Credential</th><th>Queues</th><th>Verbs</th><th>State</th><th>Last seen</th><th></th></tr></thead>
   <tbody>
   {{range .Endpoints}}
     <tr>
@@ -35,10 +35,18 @@
       <td class="sb-muted sb-mono">{{range .ScopeQueues}}{{.}} {{end}}</td>
       <td class="sb-muted sb-mono">{{range .ScopeVerbs}}{{.}} {{end}}</td>
       <td><span class="sb-badge sb-badge--{{.State}}">{{.State}}</span></td>
+      {{/* Server render and the endpoint_seen SSE frame share the fragment, so the OOB swap target
+           (sb-ep-seen-<id>) exists before the first live frame (SPEC-0013 "Live Updates and
+           Toasts": endpoint last-seen updates). */}}
+      <td>{{if .LastSeenAt}}{{template "endpoint_seen" dict "ID" .ID "SeenAt" .LastSeenAt.UTC "OOB" false}}{{else}}<span id="sb-ep-seen-{{.ID}}" class="sb-muted">never</span>{{end}}</td>
       <td>{{if eq .State "active"}}<form method="post" action="/endpoints/{{.ID}}/revoke"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="sb-btn sb-btn--danger">Revoke</button></form>{{end}}</td>
     </tr>
   {{end}}
   </tbody>
 </table>
+{{/* Page-local SSE sink: only screens rendering endpoint last-seen targets subscribe to the
+     endpoint_seen typed event — subscribing from the layout would orphan the OOB swap on every
+     other view. The layout's sse-connect stream carries the frames; htmx extracts the OOB span. */}}
+<div class="sb-sse-sink" hidden aria-hidden="true" sse-swap="endpoint_seen"></div>
 {{else}}<p class="sb-empty">no endpoints vended yet</p>{{end}}
 {{end}}

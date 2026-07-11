@@ -161,7 +161,7 @@
   /* shape */
   --sb-radius-card: 12px;
   --sb-radius-modal: 14px;
-  --sb-radius-btn: 8px;
+  --sb-radius-btn: 9px; /* design record: primary buttons are 9px (reconciled per #101 carry-over) */
   --sb-radius-chip: 6px;
   --sb-radius-pill: 999px;
 

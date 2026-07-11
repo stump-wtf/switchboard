@@ -9,9 +9,15 @@
 {{/* Vendored + embedded per ADR-0001 (no CDN; CSP script-src 'self'). SSE live regions: SPEC-0012. */}}
 <script src="/static/vendor/htmx.min.js" defer></script>
 <script src="/static/vendor/htmx-ext-sse.min.js" defer></script>
+<script src="/static/sb.js" defer></script>
 </head>
-<body>
-<div class="sb-app">
+{{/* hx-headers injects the per-session CSRF synchronizer token into every HTMX request
+     uniformly (SPEC-0013 "CSRF over HTMX"; auth.RequireCSRF reads X-CSRF-Token). */}}
+<body{{if .Human}} hx-headers='{"X-CSRF-Token":"{{.CSRF}}"}'{{end}}>
+{{/* One authenticated UI SSE stream per page (SPEC-0013 "Live Updates and Toasts"): descendants
+     subscribe to named events via sse-swap. Dropped frames only stale a region — a reload
+     renders authoritative database state. */}}
+<div class="sb-app"{{if .Human}} hx-ext="sse" sse-connect="/events"{{end}}>
 {{/* Governing: SPEC-0013 REQ "Information Architecture and Navigation" — persistent top bar
      (mark + wordmark + LIVE pill + avatar) as the banner landmark. */}}
 <header class="sb-topbar">
@@ -25,13 +31,9 @@
   <span class="sb-context">operator board</span>
   <span class="sb-topbar__spacer"></span>
   {{if .Human}}
-    {{/* Live receiving lamp (SPEC-0012): subscribed via htmx-ext-sse; the region exists in the DOM
-         before any event arrives and is aria-live=polite so the first swap is announced. A dropped
-         event only stales this label — reload renders authoritative state from PostgreSQL. */}}
-    <span class="sb-lamp" hx-ext="sse" sse-connect="/events" role="status" aria-live="polite" aria-label="Live update status">
-      <span sse-swap="todo"><span aria-hidden="true">●</span> receiving</span>
-    </span>
-    {{if gt .Shell.LiveRate 0}}<span class="sb-live"><span class="sb-live__dot" aria-hidden="true"></span>LIVE · {{.Shell.LiveRate}}/min</span>{{end}}
+    {{/* Live throughput pill (SPEC-0013 IA & Navigation): always present — the idle zero-state
+         keeps the SSE swap target in the DOM before the first counts frame arrives. */}}
+    {{template "live_pill" dict "Rate" .Shell.LiveRate}}
     <span class="sb-avatar" title="{{.Human.DisplayName}}" aria-label="Signed in as {{.Human.DisplayName}}">{{.Shell.Initials}}</span>
     <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="sb-linklike">log out</button></form>
   {{else}}
@@ -46,7 +48,7 @@
 <nav class="sb-rail" aria-label="Primary">
   <ul class="sb-rail__list">
     <li><a class="sb-rail__item" href="/"{{if eq .Shell.Active "board"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Board</span></a></li>
-    <li><a class="sb-rail__item" href="/"{{if eq .Shell.Active "todos"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Todos</span><span class="sb-rail__count">{{.Shell.TodoCount}}</span></a></li>
+    <li><a class="sb-rail__item" href="/"{{if eq .Shell.Active "todos"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Todos</span>{{template "todo_count" dict "Count" .Shell.TodoCount}}</a></li>
     <li><a class="sb-rail__item" href="/agents"{{if eq .Shell.Active "endpoints"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Endpoints</span></a></li>
   </ul>
   <p class="sb-rail__foot sb-conn{{if not .Shell.DBConnected}} sb-conn--down{{end}}"><span class="sb-conn__dot" aria-hidden="true"></span><span class="sb-conn__label">postgres · {{if .Shell.DBConnected}}connected{{else}}disconnected{{end}}</span></p>
@@ -54,9 +56,18 @@
 {{end}}
 <main class="sb-main">{{template "content" .}}</main>
 </div>
-{{/* Overlay slot + toast region: present-but-empty; the SSE/overlay stories wire them up. */}}
+{{/* Overlay slot (drawer/modal stories) + toast region. The toast region exists in the DOM before
+     any update and is aria-live so background transitions are announced (SPEC-0013 "Live Updates
+     and Toasts"); sb.js expires each toast after a short TTL. */}}
 <div id="sb-overlay" class="sb-overlay" hidden></div>
 <div id="sb-toasts" class="sb-toasts" aria-live="polite"></div>
+{{if .Human}}
+{{/* SSE sink: subscribes the page to the typed events whose payloads are entirely out-of-band
+     (hx-swap-oob) swaps — feed-row stage updates, count pills, toasts. htmx extracts the OOB
+     elements; nothing renders inside this node. Governing: SPEC-0013 REQ "Live Updates and
+     Toasts". */}}
+<div class="sb-sse-sink" hidden aria-hidden="true" sse-swap="todo_created,todo_claimed,todo_completed,todo_failed,todo_resurfaced,counts"></div>
+{{end}}
 </div>
 </body>
 </html>{{end}}
