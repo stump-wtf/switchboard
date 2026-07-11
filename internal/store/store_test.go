@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -11,8 +12,12 @@ import (
 	"github.com/joestump/switchboard/internal/db"
 )
 
-// testStore connects to the test database (SWITCHBOARD_TEST_DATABASE_URL), migrates, and truncates.
-// Tests skip cleanly when no test DB is configured, so `go test ./...` stays green without Postgres.
+// testStore connects to a store-package-OWNED database derived from SWITCHBOARD_TEST_DATABASE_URL
+// (created on first use), migrates, and truncates. `go test ./...` runs packages in parallel against
+// the same test DSN, so truncating the shared database here would race the ingest/server/db
+// packages' tests; a dedicated database (switchboard_test_store) isolates them fully. Tests skip
+// cleanly when no test DB is configured, so `go test ./...` stays green without Postgres.
+// Governing: issue #133 (per-package DB isolation for concurrent TRUNCATE).
 func testStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
@@ -20,7 +25,27 @@ func testStore(t *testing.T) (*Store, context.Context) {
 		t.Skip("set SWITCHBOARD_TEST_DATABASE_URL to run store tests")
 	}
 	ctx := context.Background()
-	pool, err := db.Connect(ctx, dsn)
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse test dsn: %v", err)
+	}
+	const testDB = "switchboard_test_store"
+	if u.Path != "/"+testDB {
+		admin, err := db.Connect(ctx, dsn)
+		if err != nil {
+			t.Fatalf("connect (admin): %v", err)
+		}
+		// CREATE DATABASE has no IF NOT EXISTS; a duplicate from an earlier run is fine. Tests
+		// within one package run sequentially, so no concurrent CREATE races this.
+		if _, err := admin.Exec(ctx, "CREATE DATABASE "+testDB); err != nil &&
+			!strings.Contains(err.Error(), "42P04") { // duplicate_database: already provisioned
+			admin.Close()
+			t.Fatalf("create store test database: %v", err)
+		}
+		admin.Close()
+		u.Path = "/" + testDB
+	}
+	pool, err := db.Connect(ctx, u.String())
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

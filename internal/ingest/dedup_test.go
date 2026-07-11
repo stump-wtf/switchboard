@@ -93,7 +93,12 @@ func ingestTestPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 	if err := db.Migrate(ctx, pool); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `TRUNCATE todos, events RESTART IDENTITY CASCADE`); err != nil {
+	// Truncate every table the accept-path tests seed — not just todos/events. The self-managed
+	// receiver tests seed humans → agents → endpoints → endpoint_webhooks (via seedWebhook), and the
+	// test database persists across runs; leaving those rows behind makes a second `go test` run fail
+	// on a duplicate endpoint credhash. Clearing the full set keeps repeated runs idempotent.
+	if _, err := pool.Exec(ctx,
+		`TRUNCATE humans, agents, endpoints, endpoint_webhooks, todos, events RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return pool, ctx

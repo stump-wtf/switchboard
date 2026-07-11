@@ -179,6 +179,34 @@ make fmt    # auto-format
 make test   # go test ./...
 ```
 
+### Database-backed tests
+
+Most unit tests run without a database. The store/ingest/server integration tests need a real
+Postgres and skip cleanly when one is not configured — point them at a database with
+`SWITCHBOARD_TEST_DATABASE_URL` (a superuser DSN, since each package provisions its own database on
+first use):
+
+```bash
+export SWITCHBOARD_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable'
+go test ./...
+```
+
+Each DB-backed package derives its **own** database from that DSN rather than sharing one, so
+`go test ./...` is safe at the default (parallel) parallelism — no `-p 1` required. Every package's
+setup helper truncates between tests, and running them concurrently against a single shared database
+would race those truncations and drop another package's rows mid-run. The isolation avoids that:
+
+| Package | Test database |
+|---|---|
+| `internal/store` | `switchboard_test_store` |
+| `internal/ingest` | `switchboard_ingest_test` |
+| `internal/server` | `switchboard_test_server` |
+| `internal/db` (migrations) | a throwaway `sb_migrate_test_*` per test, dropped on cleanup |
+
+Each package `CREATE DATABASE`s its target on first use (tolerating the `42P04 duplicate_database`
+from a prior run), migrates it, and truncates between tests. The databases persist across runs; drop
+them with `DROP DATABASE switchboard_test_store` (etc.) if you want a clean slate.
+
 The docs site builds with Docusaurus and deploys to **GitHub Pages** via `.github/workflows/pages.yml`.
 
 ## Repository hosting
