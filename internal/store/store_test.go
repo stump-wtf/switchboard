@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"os"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/joestump/switchboard/internal/db"
+	"github.com/joestump/switchboard/internal/secret"
 )
 
 // testStore connects to the test database (SWITCHBOARD_TEST_DATABASE_URL), migrates, and truncates.
@@ -32,7 +34,25 @@ func testStore(t *testing.T) (*Store, context.Context) {
 		`TRUNCATE humans, agents, endpoints, personas, friend_edges, todos, events, sessions, adapters RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	return New(pool), ctx
+	s := New(pool)
+	s.SetSecretCipher(testCipher(t))
+	return s, ctx
+}
+
+// testCipher builds a deterministic-per-run AES-GCM cipher so webhook store tests exercise the
+// real encrypt→store→decrypt path (SPEC-0006 at-rest hardening) instead of NULs. A random key per
+// run is fine — each test creates and reads its own webhooks within one Store.
+func testCipher(t *testing.T) *secret.Cipher {
+	t.Helper()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand key: %v", err)
+	}
+	c, err := secret.New(key)
+	if err != nil {
+		t.Fatalf("new cipher: %v", err)
+	}
+	return c
 }
 
 func TestHumanAgentVend(t *testing.T) {

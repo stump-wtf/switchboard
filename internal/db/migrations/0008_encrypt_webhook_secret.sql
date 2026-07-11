@@ -1,0 +1,21 @@
+-- 0008_encrypt_webhook_secret — encrypt the minted per-webhook HMAC signing secret at rest.
+--
+-- endpoint_webhooks.signing_secret held the plaintext HMAC secret switchboard mints and recomputes
+-- deliveries against (0007). Correct for the mint-and-hold model — a hash cannot verify — but a
+-- DB-only compromise then yielded live signing secrets directly. This migration retypes the column
+-- to bytea so the application can store AES-256-GCM ciphertext (nonce||ciphertext) sealed with a key
+-- supplied out-of-band via SWITCHBOARD_SECRET_KEY, never stored beside the ciphertext.
+--
+-- The application, not SQL, holds the key, so any pre-existing plaintext cannot be re-encrypted in
+-- this migration; it is dropped to NULL rather than reinterpreted as bytea (which would leave a
+-- plaintext-in-bytea value the app would then fail to decrypt). This is safe because no signed
+-- self-managed webhook secrets exist in production yet — the mint-and-hold feature has not shipped to
+-- a deployed instance — and a dropped secret simply requires the owning agent to rotate_webhook,
+-- which mints a fresh (now-encrypted) secret. The column stays nullable: it is non-NULL iff the
+-- webhook is signed, exactly as before.
+--
+-- Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency"
+-- (optional hardening — encrypt held signing secrets at rest with a key not stored alongside the
+-- ciphertext), ADR-0012 (agents self-manage webhooks within a vended ceiling).
+ALTER TABLE endpoint_webhooks
+    ALTER COLUMN signing_secret TYPE bytea USING NULL::bytea;

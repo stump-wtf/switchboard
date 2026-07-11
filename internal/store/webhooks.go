@@ -2,9 +2,12 @@ package store
 
 // Self-managed webhook records: an agent creates/rotates/deletes its own ingestion webhooks through
 // the vended MCP endpoint, bounded by the endpoint's ceiling. For a signed-type webhook switchboard
-// MINTS the HMAC signing secret and HOLDS the plaintext here — it must recompute the provider HMAC
-// over every inbound body to verify the delivery per SPEC-0003, which a one-way hash could not do.
-// The plaintext is revealed to the agent exactly once (at create/rotate) so it can configure the
+// MINTS the HMAC signing secret and HOLDS it here in a recoverable form — it must recompute the
+// provider HMAC over every inbound body to verify the delivery per SPEC-0003, which a one-way hash
+// could not do. The secret is encrypted at rest (AES-256-GCM, internal/secret) under a key supplied
+// via SWITCHBOARD_SECRET_KEY and never stored beside the ciphertext, so a DB-only compromise does
+// not yield live signing secrets; the delivery-path read decrypts it transparently to recompute the
+// HMAC. The plaintext is revealed to the agent exactly once (at create/rotate) so it can configure the
 // producer; the ListWebhooks path deliberately never selects it. The count ceiling is enforced under
 // a per-endpoint row lock (SELECT … FOR UPDATE on endpoints) inside CreateWebhook, so two concurrent
 // creates at a full ceiling serialize behind that lock and can never both slip past.
@@ -19,6 +22,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/joestump/switchboard/internal/secret"
 )
 
 // ErrCeilingExceeded is returned by CreateWebhook when creating another webhook would exceed the
@@ -52,8 +57,16 @@ type Webhook struct {
 // concurrent creates for the same endpoint to run one at a time, matching the house FOR UPDATE
 // pattern in todos.go and closing the check-then-act race (SPEC-0006 REQ "Concurrency Safety").
 // secret is the minted HMAC signing secret switchboard holds so it can verify signed deliveries; it
-// is stored in plaintext (an empty string persists NULL, for token/open webhooks that need none).
+// is encrypted at rest (AES-256-GCM) before storage so a DB-only compromise does not yield live
+// secrets, and only for a signed webhook — a token/open webhook stores NULL (see encryptSecret).
 func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int) (Webhook, error) {
+	// Encrypt the held secret before it ever reaches SQL: signed webhooks store ciphertext, token/open
+	// webhooks store NULL. Done outside the tx so an encryption failure aborts before any DB work.
+	enc, err := s.encryptSecret(trustMode, secret)
+	if err != nil {
+		return Webhook{}, err
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Webhook{}, fmt.Errorf("store: create webhook begin: %w", err)
@@ -75,15 +88,15 @@ func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targe
 		return Webhook{}, fmt.Errorf("store: create webhook lock endpoint: %w", err)
 	}
 
-	// The CASE keeps the invariant "signing_secret is non-NULL iff trust_mode='signed'": switchboard
-	// holds a secret only for a signed webhook (to recompute the HMAC); a token/open webhook is
-	// authenticated by its unguessable ingest URL and its secret column stays NULL.
+	// encryptSecret already enforced the invariant "signing_secret is non-NULL iff trust_mode='signed'":
+	// enc is the AES-GCM ciphertext for a signed webhook and nil (→ SQL NULL) otherwise. A token/open
+	// webhook is authenticated by its unguessable ingest URL and its secret column stays NULL.
 	var w Webhook
 	err = tx.QueryRow(ctx, `
 		INSERT INTO endpoint_webhooks (endpoint_id, source_type, target_queue, trust_mode, ingest_token, signing_secret)
-		VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'signed' THEN NULLIF($6, '') ELSE NULL END)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at`,
-		endpointID, sourceType, targetQueue, trustMode, ingestToken, secret,
+		endpointID, sourceType, targetQueue, trustMode, ingestToken, enc,
 	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt)
 	if err != nil {
 		return Webhook{}, fmt.Errorf("store: create webhook insert: %w", err)
@@ -156,22 +169,32 @@ func (s *Store) GetWebhookByToken(ctx context.Context, ingestToken string) (Webh
 // Idempotency" (switchboard holds the secret and verifies), SPEC-0003 (per-provider HMAC).
 func (s *Store) GetWebhookSecretByToken(ctx context.Context, ingestToken string) (Webhook, string, error) {
 	var w Webhook
-	var secret *string
+	// signing_secret is bytea (AES-GCM ciphertext) or SQL NULL; pgx scans NULL into a nil []byte.
+	var enc []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, signing_secret
 		FROM endpoint_webhooks WHERE ingest_token = $1`, ingestToken,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &secret)
+	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &enc)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, "", ErrNotFound
 	}
 	if err != nil {
 		return Webhook{}, "", fmt.Errorf("store: get webhook secret by token: %w", err)
 	}
-	s2 := ""
-	if secret != nil {
-		s2 = *secret
+	// A token/open webhook holds no secret (NULL) → return "". A signed webhook's ciphertext is
+	// decrypted transparently here so the delivery path recomputes the HMAC against the plaintext —
+	// no behavior change from the pre-encryption code, just an at-rest transform.
+	if len(enc) == 0 {
+		return w, "", nil
 	}
-	return w, s2, nil
+	if s.cipher == nil {
+		return Webhook{}, "", ErrNoSecretCipher
+	}
+	pt, err := s.cipher.Decrypt(enc)
+	if err != nil {
+		return Webhook{}, "", fmt.Errorf("store: decrypt webhook secret: %w", err)
+	}
+	return w, string(pt), nil
 }
 
 // RotateWebhookSecret stores a freshly minted signing secret and a new ingest token for a webhook the
@@ -183,14 +206,22 @@ func (s *Store) GetWebhookSecretByToken(ctx context.Context, ingestToken string)
 // always mints one. Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency"
 // (rotate mints a new secret and retires the old), ADR-0003 (per-source trust model).
 func (s *Store) RotateWebhookSecret(ctx context.Context, id, endpointID, newSecret, newIngestToken string) (Webhook, error) {
+	// Encrypt the freshly minted secret before storage. The row's own trust_mode (not a param) still
+	// governs whether the secret is retained: the SQL CASE writes the ciphertext only for a signed
+	// webhook and NULL otherwise, preserving the invariant even if the caller minted a secret for a
+	// token webhook. enc is nil for an empty newSecret, which the CASE also collapses to NULL.
+	enc, err := encryptNonEmpty(s.cipher, newSecret)
+	if err != nil {
+		return Webhook{}, err
+	}
 	var w Webhook
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		UPDATE endpoint_webhooks
-		SET signing_secret = CASE WHEN trust_mode = 'signed' THEN NULLIF($3, '') ELSE NULL END,
+		SET signing_secret = CASE WHEN trust_mode = 'signed' THEN $3::bytea ELSE NULL END,
 			ingest_token = $4, rotated_at = now()
 		WHERE id = $1 AND endpoint_id = $2
 		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at`,
-		id, endpointID, newSecret, newIngestToken,
+		id, endpointID, enc, newIngestToken,
 	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, ErrNotFound
@@ -199,6 +230,36 @@ func (s *Store) RotateWebhookSecret(ctx context.Context, id, endpointID, newSecr
 		return Webhook{}, fmt.Errorf("store: rotate webhook: %w", err)
 	}
 	return w, nil
+}
+
+// encryptSecret returns the at-rest bytes for a webhook's signing_secret column, enforcing the
+// invariant "signing_secret is non-NULL iff trust_mode='signed'": a nil result (→ SQL NULL) for any
+// non-signed webhook (regardless of what the caller minted) and AES-GCM ciphertext for a signed
+// webhook with a non-empty secret. A signed webhook created without a secret also stores NULL — the
+// self-managed receiver refuses to fake trust for it. Governing: SPEC-0006 REQ "Switchboard Owns
+// Secrets, Verification, and Idempotency" (encrypt held secrets at rest).
+func (s *Store) encryptSecret(trustMode, plaintext string) ([]byte, error) {
+	if trustMode != "signed" {
+		return nil, nil
+	}
+	return encryptNonEmpty(s.cipher, plaintext)
+}
+
+// encryptNonEmpty seals a non-empty plaintext with the cipher, returning nil for an empty plaintext
+// (→ SQL NULL) and ErrNoSecretCipher if a secret must be sealed but no cipher was wired — the
+// fail-closed guard that keeps switchboard from ever writing a plaintext secret.
+func encryptNonEmpty(c *secret.Cipher, plaintext string) ([]byte, error) {
+	if plaintext == "" {
+		return nil, nil
+	}
+	if c == nil {
+		return nil, ErrNoSecretCipher
+	}
+	box, err := c.Encrypt([]byte(plaintext))
+	if err != nil {
+		return nil, fmt.Errorf("store: encrypt webhook secret: %w", err)
+	}
+	return box, nil
 }
 
 // DeleteWebhook tears down a webhook the given endpoint owns. The endpoint_id guard is the ownership

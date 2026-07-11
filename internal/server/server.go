@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"maps"
@@ -23,6 +24,7 @@ import (
 	"github.com/joestump/switchboard/internal/db"
 	"github.com/joestump/switchboard/internal/ingest"
 	mcpsrv "github.com/joestump/switchboard/internal/mcp"
+	"github.com/joestump/switchboard/internal/secret"
 	"github.com/joestump/switchboard/internal/store"
 	"github.com/joestump/switchboard/internal/web"
 )
@@ -40,6 +42,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	log.Info("database ready")
 
 	st := store.New(pool)
+	// Wire the at-rest cipher for held webhook signing secrets (SPEC-0006 hardening). Fail startup
+	// loudly if SWITCHBOARD_SECRET_KEY is unset or malformed — switchboard MUST NOT silently store
+	// signing secrets in plaintext. Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification,
+	// and Idempotency" (encrypt held secrets at rest with a key not stored alongside the ciphertext).
+	cipher, err := secret.Parse(cfg.SecretKey)
+	if err != nil {
+		return fmt.Errorf("server: at-rest secret key (SWITCHBOARD_SECRET_KEY): %w", err)
+	}
+	st.SetSecretCipher(cipher)
 	hub := agentapi.NewHub()
 	authr, err := auth.New(ctx, cfg, st, log)
 	if err != nil {

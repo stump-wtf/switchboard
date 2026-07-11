@@ -22,6 +22,15 @@ import (
 	"github.com/joestump/switchboard/internal/store"
 )
 
+// withCipher wires the shared fixed-key test cipher onto the store so signed webhooks seeded here
+// exercise the SPEC-0006 encrypt→store→decrypt path and interoperate with the Ingest's own store
+// (which uses the same key via testIngestDeps). Returns the store for chaining.
+func withCipher(t *testing.T, st *store.Store) *store.Store {
+	t.Helper()
+	st.SetSecretCipher(ingestTestCipher(t))
+	return st
+}
+
 // selfManagedRequest builds a POST /webhooks/w/{token} request with the chi URL param populated,
 // mirroring how the router invokes the handler (the plain `post` helper does not set route params).
 func selfManagedRequest(token, body string, hdr map[string]string) *http.Request {
@@ -93,7 +102,7 @@ func seedWebhook(t *testing.T, st *store.Store, ctx context.Context, sourceType,
 // Verification, and Idempotency"; SPEC-0003 (per-provider HMAC).
 func TestSelfManagedSignedVerifiedRoundTrip(t *testing.T) {
 	ing, _, pool, ctx := testIngestDeps(t, Config{})
-	st := store.New(pool)
+	st := withCipher(t, store.New(pool))
 	const secret = "whsec_roundtripsecret"
 	seedWebhook(t, st, ctx, "github", "signed", "reviews", "route-token-signed", secret)
 
@@ -143,7 +152,7 @@ func TestSelfManagedSignedVerifiedRoundTrip(t *testing.T) {
 // Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency"; SPEC-0003.
 func TestSelfManagedSignedWrongSignatureRejected(t *testing.T) {
 	ing, _, pool, ctx := testIngestDeps(t, Config{})
-	st := store.New(pool)
+	st := withCipher(t, store.New(pool))
 	seedWebhook(t, st, ctx, "github", "signed", "reviews", "route-token-badsig", "whsec_realsecret")
 
 	body := `{"action":"opened","number":9}`
@@ -172,7 +181,7 @@ func TestSelfManagedSignedWrongSignatureRejected(t *testing.T) {
 // honestly with verified=false and trust_mode=token — never presented as signed.
 func TestSelfManagedTokenModeUnverified(t *testing.T) {
 	ing, _, pool, ctx := testIngestDeps(t, Config{})
-	st := store.New(pool)
+	st := withCipher(t, store.New(pool))
 	seedWebhook(t, st, ctx, "generic", "token", "reviews", "route-token-tokenmode", "")
 
 	body := `{"hello":"world"}`

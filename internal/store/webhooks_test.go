@@ -4,6 +4,9 @@ package store
 // SWITCHBOARD_TEST_DATABASE_URL like every other store test; Gitea CI is the gate.
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sync"
@@ -218,6 +221,80 @@ func TestGetWebhookSecretByToken(t *testing.T) {
 	if _, _, err := s.GetWebhookSecretByToken(ctx, "no-such-token"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown token err = %v, want ErrNotFound", err)
 	}
+}
+
+// TestWebhookSecretEncryptedAtRest proves the SPEC-0006 at-rest hardening end to end: the minted
+// signing secret is stored as AES-GCM ciphertext (a raw DB read of signing_secret never contains the
+// plaintext), yet GetWebhookSecretByToken decrypts it transparently so the delivery path can still
+// recompute a matching provider HMAC — the encrypt→store→decrypt→verify round-trip with no behavior
+// change. Rotation re-encrypts a fresh secret the same way. Governing: SPEC-0006 REQ "Switchboard
+// Owns Secrets, Verification, and Idempotency" (encrypt held secrets at rest with a key not stored
+// alongside the ciphertext; delivery-path verification transparently decrypts, no behavior change).
+func TestWebhookSecretEncryptedAtRest(t *testing.T) {
+	s, ctx := testStore(t)
+
+	h := mustHuman(t, s, ctx, "pocket|whenc", "Joe")
+	ag := mustAgent(t, s, ctx, h.ID, "hook-bot")
+	slug, _ := MintSlug(ag.Name)
+	ep, err := s.CreateEndpoint(ctx, ag.ID, "credhash-whenc", "sbk_wh0006", slug, []string{"reviews"}, []string{"create_webhook"})
+	if err != nil {
+		t.Fatalf("vend endpoint: %v", err)
+	}
+
+	const plaintext = "whsec_supersecretvalue"
+	if _, err := s.CreateWebhook(ctx, ep.ID, "github", "reviews", "signed", "enc-tok", plaintext, 3); err != nil {
+		t.Fatalf("create signed webhook: %v", err)
+	}
+
+	// A raw DB read of the column returns opaque ciphertext bytes — never the plaintext secret.
+	var raw []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT signing_secret FROM endpoint_webhooks WHERE ingest_token = 'enc-tok'`).Scan(&raw); err != nil {
+		t.Fatalf("raw read: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Fatalf("raw signing_secret is empty, want ciphertext")
+	}
+	if bytes.Contains(raw, []byte(plaintext)) {
+		t.Fatalf("raw signing_secret contains the plaintext secret — not encrypted at rest")
+	}
+
+	// The delivery path decrypts transparently and recomputes a matching HMAC over a body.
+	_, got, err := s.GetWebhookSecretByToken(ctx, "enc-tok")
+	if err != nil {
+		t.Fatalf("get secret by token: %v", err)
+	}
+	if got != plaintext {
+		t.Fatalf("decrypted secret = %q, want %q", got, plaintext)
+	}
+	body := []byte(`{"action":"opened"}`)
+	if !hmac.Equal(hmacSHA256(plaintext, body), hmacSHA256(got, body)) {
+		t.Fatalf("recomputed HMAC with decrypted secret does not match the original secret's HMAC")
+	}
+
+	// Rotation re-encrypts a fresh secret: new ciphertext at rest, new plaintext on read.
+	const rotated = "whsec_rotatedvalue"
+	w, _ := s.GetWebhookByToken(ctx, "enc-tok")
+	if _, err := s.RotateWebhookSecret(ctx, w.ID, ep.ID, rotated, "enc-tok-2"); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	var raw2 []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT signing_secret FROM endpoint_webhooks WHERE ingest_token = 'enc-tok-2'`).Scan(&raw2); err != nil {
+		t.Fatalf("raw read after rotate: %v", err)
+	}
+	if bytes.Contains(raw2, []byte(rotated)) || bytes.Equal(raw2, raw) {
+		t.Fatalf("rotated signing_secret is plaintext or unchanged, want fresh ciphertext")
+	}
+	if _, got2, _ := s.GetWebhookSecretByToken(ctx, "enc-tok-2"); got2 != rotated {
+		t.Fatalf("rotated decrypted secret = %q, want %q", got2, rotated)
+	}
+}
+
+func hmacSHA256(secret string, body []byte) []byte {
+	m := hmac.New(sha256.New, []byte(secret))
+	m.Write(body)
+	return m.Sum(nil)
 }
 
 // TestWebhookOwnershipGuard: rotate/delete of another endpoint's webhook is ErrNotFound — the

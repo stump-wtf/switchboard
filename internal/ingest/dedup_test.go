@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joestump/switchboard/internal/agentapi"
 	"github.com/joestump/switchboard/internal/db"
+	"github.com/joestump/switchboard/internal/secret"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -106,7 +107,27 @@ func testIngestDeps(t *testing.T, cfg Config) (*Ingest, *agentapi.Hub, *pgxpool.
 	pool, ctx := ingestTestPool(t)
 	hub := agentapi.NewHub()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(store.New(pool), hub, log, cfg), hub, pool, ctx
+	// The Ingest's store shares the fixed test cipher key so the delivery path can decrypt signing
+	// secrets a separately-constructed seeding store encrypted (both use ingestTestCipher).
+	st := store.New(pool)
+	st.SetSecretCipher(ingestTestCipher(t))
+	return New(st, hub, log, cfg), hub, pool, ctx
+}
+
+// ingestTestCipher builds an AES-GCM cipher from a fixed key so every store constructed in the
+// ingest tests (the Ingest's own store and the seeding store) can decrypt what any other encrypted —
+// the delivery path recomputes the HMAC against the transparently-decrypted secret (SPEC-0006).
+func ingestTestCipher(t *testing.T) *secret.Cipher {
+	t.Helper()
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	c, err := secret.New(key)
+	if err != nil {
+		t.Fatalf("new cipher: %v", err)
+	}
+	return c
 }
 
 // post drives a handler with the given raw body and headers, returning the recorder.

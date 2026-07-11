@@ -30,6 +30,9 @@ services:
       SWITCHBOARD_OIDC_CLIENT_ID: ${SWITCHBOARD_OIDC_CLIENT_ID:-}
       SWITCHBOARD_OIDC_CLIENT_SECRET: ${SWITCHBOARD_OIDC_CLIENT_SECRET:-}
       SWITCHBOARD_GITHUB_SECRET: ${SWITCHBOARD_GITHUB_SECRET:-}
+      # Required: AES-256 key (64-char hex or base64 of 32 bytes) that encrypts held webhook signing
+      # secrets at rest (SPEC-0006). Startup fails without it. Generate once: openssl rand -hex 32
+      SWITCHBOARD_SECRET_KEY: ${SWITCHBOARD_SECRET_KEY:?set SWITCHBOARD_SECRET_KEY (openssl rand -hex 32)}
       # SWITCHBOARD_DEV_LOGIN: "1"   # dev only — bypasses OIDC
     ports:
       # Bind to loopback on the host. switchboard is a self-contained OIDC relying party (ADR-011),

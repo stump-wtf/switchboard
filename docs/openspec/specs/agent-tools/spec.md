@@ -156,6 +156,24 @@ switchboard MUST NOT report a delivery as `verified` unless it verified the body
 SPEC-0003. Duplicate deliveries to a self-created webhook MUST dedup into a single todo on the
 idempotency key. `rotate_webhook` MUST mint a new secret and retire the old one.
 
+The held signing secret MUST be encrypted at rest with a key that is not stored alongside the
+ciphertext, so that a database-only compromise does not directly yield live signing secrets. The key
+is injected out-of-band via `SWITCHBOARD_SECRET_KEY` (a 32-byte AES-256 key, hex or base64) and the
+service MUST fail startup loudly when it is unset rather than persist a signing secret in plaintext.
+The value is sealed with AES-256-GCM (`nonce||ciphertext`) before storage and the delivery path
+decrypts it transparently to recompute the HMAC — no change to verification behavior, and the reveal
+at `create_webhook`/`rotate_webhook` still returns the plaintext to the agent exactly once. This is
+at-rest hardening only: PostgreSQL remains the trust boundary for every other stored credential
+(session tokens and vended-credential hashes), and a signing secret is usable only to forge
+deliveries into that one agent's already-scoped queue.
+
+#### Scenario: Held signing secret is encrypted at rest
+
+- **WHEN** switchboard mints and holds a signing secret for a signed-type self-created webhook
+- **THEN** the value MUST be stored encrypted under a key not kept beside the ciphertext, the delivery
+  path MUST transparently decrypt it to recompute the HMAC with no behavior change, and startup MUST
+  fail when the encryption key (`SWITCHBOARD_SECRET_KEY`) is unset rather than store it in plaintext
+
 #### Scenario: Secret is revealed exactly once to the agent
 
 - **WHEN** an agent calls `create_webhook` or `rotate_webhook` for a signed-type webhook

@@ -10,10 +10,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/joestump/switchboard/internal/secret"
 )
 
 // ErrNotFound is returned when a lookup matches no row.
 var ErrNotFound = errors.New("store: not found")
+
+// ErrNoSecretCipher is returned when a webhook operation needs to encrypt or decrypt a signing
+// secret but no at-rest cipher was wired (SetSecretCipher never called). It is a fail-closed guard:
+// switchboard MUST NOT silently store a signing secret in plaintext, so a store built without a
+// cipher refuses to handle held secrets rather than degrading. In production the cipher is always
+// wired from SWITCHBOARD_SECRET_KEY at startup (server.Run), which fails loudly if the key is unset.
+// Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency" (encrypt held
+// secrets at rest with a key not stored alongside the ciphertext).
+var ErrNoSecretCipher = errors.New("store: no secret cipher configured (SWITCHBOARD_SECRET_KEY)")
 
 // TodoTransitionHook observes committed todo lifecycle transitions for best-effort in-process
 // fan-out (e.g. the web UI's SSE hub). verb is one of created|claimed|done|failed|pending
@@ -46,6 +57,10 @@ type EndpointSeenHook func(endpointID string, seenAt time.Time)
 // Store wraps a pgx pool.
 type Store struct {
 	pool *pgxpool.Pool
+	// cipher encrypts/decrypts held signing secrets at rest (SPEC-0006 hardening). nil until
+	// SetSecretCipher is called; webhook methods that must touch a secret fail closed with
+	// ErrNoSecretCipher rather than storing plaintext. Set once at wiring time, read on the hot path.
+	cipher *secret.Cipher
 	// todoHook/eventHook/endpointSeenHook are read on every transition and set (rarely) at wiring
 	// time; atomic so a late Set*Hook can never race in-flight transitions.
 	todoHook         atomic.Pointer[TodoTransitionHook]
@@ -57,6 +72,11 @@ type Store struct {
 
 // New builds a Store over the given pool.
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+
+// SetSecretCipher wires the at-rest cipher used to encrypt held webhook signing secrets. Call once
+// at startup, before serving; it is not safe to swap while requests are in flight. Governing:
+// SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency" (at-rest encryption).
+func (s *Store) SetSecretCipher(c *secret.Cipher) { s.cipher = c }
 
 // SetTodoTransitionHook registers fn to observe committed todo transitions. Safe to call
 // concurrently with store use; passing nil clears the hook.

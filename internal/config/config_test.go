@@ -35,3 +35,16 @@ func TestFromEnvOverride(t *testing.T) {
 		t.Fatalf("override Addr: got %q, want 0.0.0.0:9000", got)
 	}
 }
+
+// SPEC-0006 at-rest hardening: the key that encrypts held signing secrets comes from
+// SWITCHBOARD_SECRET_KEY and defaults to empty (which server.Run rejects at startup).
+func TestFromEnvSecretKey(t *testing.T) {
+	_ = os.Unsetenv("SWITCHBOARD_SECRET_KEY")
+	if got := FromEnv().SecretKey; got != "" {
+		t.Fatalf("default SecretKey: got %q, want empty", got)
+	}
+	t.Setenv("SWITCHBOARD_SECRET_KEY", "deadbeef")
+	if got := FromEnv().SecretKey; got != "deadbeef" {
+		t.Fatalf("SecretKey: got %q, want the env value", got)
+	}
+}

@@ -43,6 +43,13 @@ type Config struct {
 	// Navigation" (views whose backing capability is not enabled are hidden, not rendered broken).
 	// (SWITCHBOARD_FRIENDING=1)
 	FriendingEnabled bool
+
+	// SecretKey is the AES-256 key (64-char hex or base64 of 32 bytes) that encrypts held secrets at
+	// rest — currently the minted per-webhook HMAC signing secrets switchboard recomputes deliveries
+	// against (SPEC-0006). It is injected via SWITCHBOARD_SECRET_KEY and never stored beside the
+	// ciphertext. Startup MUST fail loudly when it is unset rather than store signing secrets in
+	// plaintext (see server.Run, which parses it through internal/secret). (SWITCHBOARD_SECRET_KEY)
+	SecretKey string
 }
 
 // FromEnv builds a Config from environment variables, applying defaults.
@@ -63,6 +70,7 @@ func FromEnv() Config {
 		OIDCRedirectURL:  redirect,
 		DevLogin:         os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
 		FriendingEnabled: os.Getenv("SWITCHBOARD_FRIENDING") == "1",
+		SecretKey:        os.Getenv("SWITCHBOARD_SECRET_KEY"),
 	}
 }
 
