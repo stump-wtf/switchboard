@@ -154,7 +154,9 @@ Tools MUST raise MCP tool errors with a stable machine `code` and a human `messa
 MUST NOT contain any secret material. The defined codes are: `not_found` (unknown event id),
 `invalid_argument` (bad input — missing replay target with no default, non-http(s) target, malformed
 cursor, out-of-range limit), `replay_failed` (replay could not connect to or complete against the
-target), and `internal` (unexpected server-side failure).
+target), `rate_limited` (the caller's per-endpoint replay budget is exhausted — see Rate Limiting;
+distinct from `invalid_argument` and `replay_failed` so a caller can back off deterministically), and
+`internal` (unexpected server-side failure).
 
 #### Scenario: Unknown id raises not_found
 

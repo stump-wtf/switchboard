@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -43,17 +45,31 @@ type EventHistoryDetail struct {
 }
 
 // EventHistoryFilter bounds a ListEventHistory scan. Zero values mean "no filter"; Limit is
-// clamped to [1, 200] with a default of 50 (SPEC-0005). Keyset (since/cursor) bounds are layered
-// on by the pagination work (#39); the stable ORDER BY received_at DESC, id DESC is already the
-// cursor-ready sort.
+// clamped to [1, 200] with a default of 50 (SPEC-0005). The scan is keyset-paginated on the stable
+// `received_at DESC, id DESC` order: SinceTime/SinceID bound the lower (older) edge inclusively,
+// while CursorTime/CursorID are the exclusive upper bound carried across pages so that concurrent
+// inserts on an always-on receiver never produce a duplicate or a gap.
+// Governing: ADR-0005 (cursor over offset), SPEC-0005 REQ "Deterministic Pagination and Filtering".
 type EventHistoryFilter struct {
 	Provider  string
 	EventType string
 	Limit     int
+	// SinceTime / SinceID bound the lower edge inclusively. `since` is supplied over MCP as either an
+	// ISO-8601 timestamp (→ SinceTime, received_at >= t) or an event id (→ SinceID, id >= i); the tool
+	// layer decides which. Both may be zero (no lower bound).
+	SinceTime time.Time
+	SinceID   int64
+	// CursorTime / CursorID are the exclusive keyset upper bound decoded from an opaque cursor: only
+	// rows strictly older than this (received_at, id) tuple are returned. Zero (CursorTime.IsZero())
+	// means the first page.
+	CursorTime time.Time
+	CursorID   int64
 }
 
 // ListEventHistory returns event summaries newest first under the stable
 // `received_at DESC, id DESC` order SPEC-0005 REQ "Deterministic Pagination and Filtering" pins.
+// Filters and the keyset cursor are composed as AND-ed conditions with ordinal placeholders so a
+// zero-valued filter field contributes no predicate at all.
 func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]EventHistoryItem, error) {
 	limit := f.Limit
 	if limit <= 0 {
@@ -62,12 +78,45 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 	if limit > 200 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, `
+
+	var (
+		conds []string
+		args  []any
+	)
+	ph := func(v any) string {
+		args = append(args, v)
+		return "$" + strconv.Itoa(len(args))
+	}
+	if f.Provider != "" {
+		conds = append(conds, "source = "+ph(f.Provider))
+	}
+	if f.EventType != "" {
+		conds = append(conds, "event_type = "+ph(f.EventType))
+	}
+	if !f.SinceTime.IsZero() {
+		conds = append(conds, "received_at >= "+ph(f.SinceTime))
+	}
+	if f.SinceID > 0 {
+		conds = append(conds, "id >= "+ph(f.SinceID))
+	}
+	if !f.CursorTime.IsZero() {
+		// Keyset upper bound: strictly older than the last (received_at, id) the caller saw. Row-value
+		// comparison matches the ORDER BY exactly, so pagination is exhaustive and gap-free even as new
+		// rows land at the head between requests.
+		conds = append(conds, "(received_at, id) < ("+ph(f.CursorTime)+", "+ph(f.CursorID)+")")
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	query := fmt.Sprintf(`
 		SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at
 		FROM events
-		WHERE ($1 = '' OR source = $1) AND ($2 = '' OR event_type = $2)
+		%s
 		ORDER BY received_at DESC, id DESC
-		LIMIT $3`, f.Provider, f.EventType, limit)
+		LIMIT %s`, where, ph(limit))
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list event history: %w", err)
 	}

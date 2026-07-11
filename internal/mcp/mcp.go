@@ -310,8 +310,9 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	})
 	h.registerTools(srv, ep)
 	// The SPEC-0005 event-history contract (list/get/replay/providers) shares the session and the
-	// same allowlist-filtered registration (events.go).
+	// same allowlist-filtered registration (events.go), plus the read-only recent-events resource.
 	h.registerEventTools(srv, ep)
+	h.registerEventResources(srv, ep)
 	srv.AddReceivingMiddleware(h.scopeGuard(ep))
 	return srv
 }

@@ -45,12 +45,33 @@ func (f *fakeStore) ListEventHistory(_ context.Context, flt store.EventHistoryFi
 	if limit > 200 {
 		limit = 200
 	}
+	// olderThan reports whether (ta, ia) sorts strictly after (tb, ib) under received_at DESC, id
+	// DESC — i.e. a is "older" and belongs on a later page than the cursor tuple (tb, ib).
+	olderThan := func(ta time.Time, ia int64, tb time.Time, ib int64) bool {
+		if !ta.Equal(tb) {
+			return ta.Before(tb)
+		}
+		return ia < ib
+	}
 	var out []store.EventHistoryItem
 	for _, e := range f.events {
-		if (flt.Provider == "" || e.Provider == flt.Provider) &&
-			(flt.EventType == "" || e.EventType == flt.EventType) {
-			out = append(out, e.EventHistoryItem)
+		it := e.EventHistoryItem
+		if flt.Provider != "" && it.Provider != flt.Provider {
+			continue
 		}
+		if flt.EventType != "" && it.EventType != flt.EventType {
+			continue
+		}
+		if !flt.SinceTime.IsZero() && it.ReceivedAt.Before(flt.SinceTime) {
+			continue
+		}
+		if flt.SinceID > 0 && it.ID < flt.SinceID {
+			continue
+		}
+		if !flt.CursorTime.IsZero() && !olderThan(it.ReceivedAt, it.ID, flt.CursorTime, flt.CursorID) {
+			continue
+		}
+		out = append(out, it)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].ReceivedAt.Equal(out[j].ReceivedAt) {
@@ -378,6 +399,181 @@ func TestEventStoreFailureIsGenericToClient(t *testing.T) {
 			t.Fatalf("log missing %q; logs:\n%s", want, logs)
 		}
 	}
+}
+
+// TestListWebhookEventsCursorPagination: paging with each response's next_cursor as the next
+// request's cursor walks the whole log newest-first with no duplicates or gaps, a full page always
+// yields a cursor and the final short page yields none, and a malformed cursor is invalid_argument.
+// Governing: SPEC-0005 scenario "Cursor round-trip has no duplicates or gaps", REQ "Deterministic
+// Pagination and Filtering".
+func TestListWebhookEventsCursorPagination(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	base := time.Now().Truncate(time.Second)
+	f := newFakeStore()
+	// 5 events; ids 4 and 5 share a received_at so the id tiebreak is exercised across a page edge.
+	f.putEvent(mkEvent(1, "github", "push", base.Add(1*time.Second)))
+	f.putEvent(mkEvent(2, "github", "push", base.Add(2*time.Second)))
+	f.putEvent(mkEvent(3, "stripe", "charge", base.Add(3*time.Second)))
+	f.putEvent(mkEvent(4, "github", "pull", base.Add(4*time.Second)))
+	f.putEvent(mkEvent(5, "github", "push", base.Add(4*time.Second)))
+	cs := session(t, ctx, f, []string{"reviews"}, eventVerbNames)
+
+	var seen []int64
+	cursor := ""
+	for page := 0; page < 10; page++ {
+		args := map[string]any{"limit": 2}
+		if cursor != "" {
+			args["cursor"] = cursor
+		}
+		var out listWebhookEventsOut
+		callOK(t, ctx, cs, "list_webhook_events", args, &out)
+		for _, e := range out.Events {
+			seen = append(seen, e.ID)
+		}
+		if out.NextCursor == "" {
+			break
+		}
+		if len(out.Events) != 2 {
+			t.Fatalf("page %d returned %d events with a next_cursor set", page, len(out.Events))
+		}
+		cursor = out.NextCursor
+	}
+	// Newest-first, exhaustive, no dupes: ids 5,4 share a timestamp so id DESC breaks the tie.
+	want := []int64{5, 4, 3, 2, 1}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("paged ids = %v, want %v (newest-first, no dupes/gaps)", seen, want)
+	}
+
+	// A malformed cursor is a stable invalid_argument, never a silent empty page.
+	callErr(t, ctx, cs, "list_webhook_events", map[string]any{"cursor": "not-a-cursor"}, "invalid_argument")
+}
+
+// TestListWebhookEventsFiltering: provider, event_type, and since (timestamp or id) narrow the scan
+// end-to-end, and a malformed since is invalid_argument.
+// Governing: SPEC-0005 REQ "Deterministic Pagination and Filtering".
+func TestListWebhookEventsFiltering(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	base := time.Now().Truncate(time.Second)
+	f := newFakeStore()
+	f.putEvent(mkEvent(1, "github", "push", base.Add(1*time.Second)))
+	f.putEvent(mkEvent(2, "stripe", "charge", base.Add(2*time.Second)))
+	f.putEvent(mkEvent(3, "github", "pull", base.Add(3*time.Second)))
+	f.putEvent(mkEvent(4, "github", "push", base.Add(4*time.Second)))
+	cs := session(t, ctx, f, []string{"reviews"}, eventVerbNames)
+
+	// Provider + event_type filter.
+	var out listWebhookEventsOut
+	callOK(t, ctx, cs, "list_webhook_events",
+		map[string]any{"provider": "github", "event_type": "push"}, &out)
+	if got := idsOf(out.Events); !slices.Equal(got, []int64{4, 1}) {
+		t.Fatalf("github/push ids = %v, want [4 1]", got)
+	}
+
+	// since as a timestamp bounds the lower edge inclusively.
+	callOK(t, ctx, cs, "list_webhook_events",
+		map[string]any{"since": base.Add(3 * time.Second).UTC().Format(time.RFC3339)}, &out)
+	if got := idsOf(out.Events); !slices.Equal(got, []int64{4, 3}) {
+		t.Fatalf("since-timestamp ids = %v, want [4 3]", got)
+	}
+
+	// since as an event id bounds by id >= n.
+	callOK(t, ctx, cs, "list_webhook_events", map[string]any{"since": "3"}, &out)
+	if got := idsOf(out.Events); !slices.Equal(got, []int64{4, 3}) {
+		t.Fatalf("since-id ids = %v, want [4 3]", got)
+	}
+
+	// A since that is neither a timestamp nor an id is invalid_argument.
+	callErr(t, ctx, cs, "list_webhook_events", map[string]any{"since": "yesterday"}, "invalid_argument")
+}
+
+// TestRecentEventsResource: the read-only recent-events resource is advertised, returns the same
+// newest-first EventSummary shape as list_webhook_events with trust metadata present, and is gated
+// on the list_webhook_events read scope.
+// Governing: SPEC-0005 REQ "Read-Only Recent-Events Resource", scenario "Resource returns
+// summaries, never mutates".
+func TestRecentEventsResource(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	base := time.Now().Truncate(time.Second)
+	f := newFakeStore()
+	f.putEvent(mkEvent(1, "github", "push", base.Add(1*time.Second)))
+	f.putEvent(mkEvent(2, "dockerhub", "push", base.Add(2*time.Second)))
+	// Give event 2 token trust so we can assert verified:false travels with the resource.
+	e2 := f.events[2]
+	e2.TrustMode, e2.Verified = "token", false
+	f.events[2] = e2
+	cs := session(t, ctx, f, []string{"reviews"}, eventVerbNames)
+
+	resources, err := cs.ListResources(ctx, nil)
+	if err != nil {
+		t.Fatalf("resources/list: %v", err)
+	}
+	if len(resources.Resources) != 1 || resources.Resources[0].URI != recentEventsURI {
+		t.Fatalf("advertised resources = %+v, want exactly %s", resources.Resources, recentEventsURI)
+	}
+	if resources.Resources[0].MIMEType != "application/json" {
+		t.Fatalf("resource MIME = %q, want application/json", resources.Resources[0].MIMEType)
+	}
+
+	res, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: recentEventsURI})
+	if err != nil {
+		t.Fatalf("resources/read: %v", err)
+	}
+	if len(res.Contents) != 1 || res.Contents[0].MIMEType != "application/json" {
+		t.Fatalf("resource contents = %+v", res.Contents)
+	}
+	var body struct {
+		Events []map[string]any `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(res.Contents[0].Text), &body); err != nil {
+		t.Fatalf("unmarshal resource body: %v", err)
+	}
+	if len(body.Events) != 2 || body.Events[0]["id"] != float64(2) {
+		t.Fatalf("resource events = %v, want 2 rows newest-first", body.Events)
+	}
+	// Trust metadata always travels with the resource, and a token event reports verified:false.
+	if body.Events[0]["trust_mode"] != "token" || body.Events[0]["verified"] != false {
+		t.Fatalf("resource trust = %v/%v, want token/false", body.Events[0]["trust_mode"], body.Events[0]["verified"])
+	}
+	// Summaries omit heavy fields on the resource too.
+	if _, has := body.Events[0]["payload"]; has {
+		t.Fatalf("resource summary leaked payload: %v", body.Events[0])
+	}
+
+	// An endpoint without the list_webhook_events read scope is not offered the resource.
+	f2 := newFakeStore()
+	cs2 := session(t, ctx, f2, []string{"reviews"}, []string{"list_todos"})
+	r2, err := cs2.ListResources(ctx, nil)
+	if err != nil {
+		t.Fatalf("resources/list (narrow scope): %v", err)
+	}
+	if len(r2.Resources) != 0 {
+		t.Fatalf("narrow-scope endpoint advertised resources = %+v, want none", r2.Resources)
+	}
+}
+
+// mkEvent builds a minimal signed EventHistoryDetail for the pagination/filter/resource tests.
+func mkEvent(id int64, provider, eventType string, receivedAt time.Time) store.EventHistoryDetail {
+	return store.EventHistoryDetail{
+		EventHistoryItem: store.EventHistoryItem{
+			ID: id, Provider: provider, EventType: eventType, TrustMode: "signed",
+			Verified: true, PayloadSize: 2, ReceivedAt: receivedAt,
+		},
+		Payload: []byte(`{}`),
+	}
+}
+
+func idsOf(events []eventSummaryOut) []int64 {
+	out := make([]int64, 0, len(events))
+	for _, e := range events {
+		out = append(out, e.ID)
+	}
+	return out
 }
 
 // routesFor mounts a handler under /mcp exactly as internal/server does.

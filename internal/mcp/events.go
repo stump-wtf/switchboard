@@ -17,9 +17,11 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -47,6 +49,11 @@ const (
 const (
 	defaultEventListLimit = 50
 	maxEventListLimit     = 200
+
+	// recentEventsURI is the read-only recent-events resource (#38); recentEventsLimit caps it.
+	// Governing: SPEC-0005 REQ "Read-Only Recent-Events Resource".
+	recentEventsURI   = "switchboard://events/recent"
+	recentEventsLimit = 50
 )
 
 // eventVerbs is the SPEC-0005 event-history tool surface. Like agentVerbs, a tools/call naming
@@ -94,14 +101,69 @@ type eventDetailOut struct {
 type listWebhookEventsIn struct {
 	Provider  string `json:"provider,omitempty" jsonschema:"restrict to one provider name"`
 	EventType string `json:"event_type,omitempty" jsonschema:"restrict to one event type"`
+	Since     string `json:"since,omitempty" jsonschema:"lower-edge bound (inclusive): an RFC 3339 timestamp or an event id"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"maximum events to return (default 50, minimum 1, maximum 200)"`
+	Cursor    string `json:"cursor,omitempty" jsonschema:"opaque pagination cursor from a previous response's next_cursor"`
 }
 
 type listWebhookEventsOut struct {
 	Events []eventSummaryOut `json:"events" jsonschema:"event summaries, newest first (received_at DESC, id DESC)"`
-	// NextCursor is part of the declared SPEC-0005 output shape; the opaque-cursor pagination that
-	// populates it (and the since/cursor inputs) lands with #39.
+	// NextCursor encodes the last (received_at, id) seen; present only when the result filled the
+	// limit, so the caller feeds it back as `cursor` to fetch the next, older page.
+	// Governing: SPEC-0005 REQ "Deterministic Pagination and Filtering".
 	NextCursor string `json:"next_cursor,omitempty" jsonschema:"opaque cursor for the next page when the result was truncated at limit"`
+}
+
+// eventCursor is the opaque pagination token: the last (received_at, id) a page returned. It is
+// base64url-encoded JSON on the wire — clients MUST treat it as opaque and pass it back verbatim.
+// Governing: ADR-0005 (opaque cursor), SPEC-0005 REQ "Deterministic Pagination and Filtering".
+type eventCursor struct {
+	ReceivedAt time.Time `json:"t"`
+	ID         int64     `json:"i"`
+}
+
+func encodeEventCursor(c eventCursor) string {
+	b, _ := json.Marshal(c)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// decodeEventCursor parses an opaque cursor. A malformed token is a stable invalid_argument, never
+// a silent empty page. Governing: SPEC-0005 scenario "A malformed cursor MUST raise invalid_argument".
+func decodeEventCursor(s string) (eventCursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return eventCursor{}, err
+	}
+	var c eventCursor
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return eventCursor{}, err
+	}
+	if c.ReceivedAt.IsZero() || c.ID <= 0 {
+		return eventCursor{}, fmt.Errorf("cursor missing (received_at, id)")
+	}
+	return c, nil
+}
+
+// parseSince resolves the `since` lower-edge bound: an all-digit value is an event id (id >= n), an
+// RFC 3339 value is a timestamp (received_at >= t). Anything else is a stable invalid_argument.
+// Governing: SPEC-0005 REQ "Deterministic Pagination and Filtering".
+func parseSince(since string, f *store.EventHistoryFilter) error {
+	if since == "" {
+		return nil
+	}
+	if id, err := strconv.ParseInt(since, 10, 64); err == nil {
+		if id <= 0 {
+			return fmt.Errorf("since id must be positive")
+		}
+		f.SinceID = id
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, since)
+	if err != nil {
+		return fmt.Errorf("since must be an RFC 3339 timestamp or an event id")
+	}
+	f.SinceTime = t
+	return nil
 }
 
 type getWebhookEventIn struct {
@@ -177,6 +239,50 @@ func (h *Handler) registerEventTools(srv *sdk.Server, ep store.AuthEndpoint) {
 	}
 }
 
+// registerEventResources installs the SPEC-0005 read-only recent-events resource on the per-session
+// server. It is gated on the same `list_webhook_events` read scope as the tool it mirrors: an
+// endpoint that may not scan the event log over tools must not read it as a resource either. The
+// resource is strictly read-only — all mutation/replay stays in tools.
+// Governing: SPEC-0005 REQ "Read-Only Recent-Events Resource".
+func (h *Handler) registerEventResources(srv *sdk.Server, ep store.AuthEndpoint) {
+	if !hasScope(ep.ScopeVerbs, "list_webhook_events") {
+		return
+	}
+	srv.AddResource(&sdk.Resource{
+		URI:         recentEventsURI,
+		Name:        "recent_webhook_events",
+		Description: "The most recent stored webhook/queue event summaries, newest first. Read-only.",
+		MIMEType:    "application/json",
+	}, h.recentEventsResource(ep))
+}
+
+// recentEventsResource serves switchboard://events/recent: the same EventSummary shape as
+// list_webhook_events (trust metadata always present), newest-first and capped, with no filters and
+// no mutation. Governing: SPEC-0005 REQ "Read-Only Recent-Events Resource", scenario "Resource
+// returns summaries, never mutates".
+func (h *Handler) recentEventsResource(ep store.AuthEndpoint) sdk.ResourceHandler {
+	return func(ctx context.Context, _ *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+		items, err := h.store.ListEventHistory(ctx, store.EventHistoryFilter{Limit: recentEventsLimit})
+		if err != nil {
+			return nil, h.mapEventStoreErr(ep, "resources/read events/recent", err)
+		}
+		body := listWebhookEventsOut{Events: make([]eventSummaryOut, 0, len(items))}
+		for _, it := range items {
+			body.Events = append(body.Events, toEventSummaryOut(it))
+		}
+		payload, err := json.Marshal(body)
+		if err != nil {
+			h.log.Error("mcp recent-events resource marshal", "slug", ep.Slug, "err", err)
+			return nil, &toolError{codeInternal, "internal error"}
+		}
+		return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{{
+			URI:      recentEventsURI,
+			MIMEType: "application/json",
+			Text:     string(payload),
+		}}}, nil
+	}
+}
+
 // --- tool handlers (the three reads are thin wrappers over internal/store and mutate nothing) ---
 
 func (h *Handler) listWebhookEventsTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[listWebhookEventsIn, listWebhookEventsOut] {
@@ -190,15 +296,32 @@ func (h *Handler) listWebhookEventsTool(ep store.AuthEndpoint) sdk.ToolHandlerFo
 		if limit == 0 {
 			limit = defaultEventListLimit
 		}
-		items, err := h.store.ListEventHistory(ctx, store.EventHistoryFilter{
-			Provider: in.Provider, EventType: in.EventType, Limit: limit,
-		})
+		filter := store.EventHistoryFilter{Provider: in.Provider, EventType: in.EventType, Limit: limit}
+		if err := parseSince(in.Since, &filter); err != nil {
+			return nil, listWebhookEventsOut{}, &toolError{codeInvalidArgument, err.Error()}
+		}
+		if in.Cursor != "" {
+			c, err := decodeEventCursor(in.Cursor)
+			if err != nil {
+				// Governing: SPEC-0005 scenario "A malformed cursor MUST raise invalid_argument".
+				return nil, listWebhookEventsOut{}, &toolError{codeInvalidArgument, "malformed cursor"}
+			}
+			filter.CursorTime, filter.CursorID = c.ReceivedAt, c.ID
+		}
+		items, err := h.store.ListEventHistory(ctx, filter)
 		if err != nil {
 			return nil, listWebhookEventsOut{}, h.mapEventStoreErr(ep, "list_webhook_events", err)
 		}
 		out := listWebhookEventsOut{Events: make([]eventSummaryOut, 0, len(items))}
 		for _, it := range items {
 			out.Events = append(out.Events, toEventSummaryOut(it))
+		}
+		// A full page means there may be more: emit the keyset cursor for the last (received_at, id)
+		// so the next request continues strictly older, with no duplicates or gaps under concurrent
+		// ingest. Governing: SPEC-0005 scenario "Cursor round-trip has no duplicates or gaps".
+		if len(items) == limit {
+			last := items[len(items)-1]
+			out.NextCursor = encodeEventCursor(eventCursor{ReceivedAt: last.ReceivedAt, ID: last.ID})
 		}
 		return nil, out, nil
 	}

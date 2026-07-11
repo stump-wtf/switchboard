@@ -293,23 +293,31 @@ func secureHeaders(next http.Handler) http.Handler {
 
 // providerStatuses projects the configured inbound providers into the SPEC-0005 list_providers
 // shape. It receives only presence booleans for the signed providers — never the secret values —
-// so no secret material can reach the enumeration surface. Queue-family providers join once the
-// Redis adapters register with the runner (SPEC-0002 chain); until then the webhook family is the
-// whole inventory. Governing: SPEC-0005 REQ "Provider Enumeration Without Secrets".
+// so no secret material can reach the enumeration surface. A built-in signed provider (github,
+// stripe, slack) is only enumerated when its secret is actually configured: with no secret the
+// route rejects every delivery, so advertising it would misrepresent an unreachable provider as
+// part of the inventory. Generic providers already appear only when the operator declares them.
+// Queue-family providers join once the Redis adapters register with the runner (SPEC-0002 chain);
+// until then the webhook family is the whole inventory.
+// Governing: SPEC-0005 REQ "Provider Enumeration Without Secrets" ("for each configured provider").
 func providerStatuses(github, stripe, slack bool, generic map[string]ingest.GenericProvider) []mcpsrv.ProviderStatus {
-	status := func(configured bool) string {
-		if configured {
-			return "configured"
-		}
-		return "missing"
+	var out []mcpsrv.ProviderStatus
+	builtin := []struct {
+		name, path string
+		configured bool
+	}{
+		{"github", "/webhooks/github", github},
+		{"stripe", "/webhooks/stripe", stripe},
+		{"slack", "/webhooks/slack", slack},
 	}
-	out := []mcpsrv.ProviderStatus{
-		{Name: "github", Family: "webhook", TrustMode: "signed", Enabled: github,
-			SecretStatus: status(github), Path: "/webhooks/github"},
-		{Name: "stripe", Family: "webhook", TrustMode: "signed", Enabled: stripe,
-			SecretStatus: status(stripe), Path: "/webhooks/stripe"},
-		{Name: "slack", Family: "webhook", TrustMode: "signed", Enabled: slack,
-			SecretStatus: status(slack), Path: "/webhooks/slack"},
+	for _, b := range builtin {
+		if !b.configured {
+			continue
+		}
+		out = append(out, mcpsrv.ProviderStatus{
+			Name: b.name, Family: "webhook", TrustMode: "signed", Enabled: true,
+			SecretStatus: "configured", Path: b.path,
+		})
 	}
 	for _, name := range slices.Sorted(maps.Keys(generic)) {
 		gp := generic[name]
@@ -317,9 +325,13 @@ func providerStatuses(github, stripe, slack bool, generic map[string]ingest.Gene
 			Path: "/webhooks/generic/" + name}
 		switch gp.Mode {
 		case "token":
-			// A token provider with no token configured is disabled (403s everything) by design.
-			ps.Enabled = gp.Token != ""
-			ps.SecretStatus = status(gp.Token != "")
+			// A token provider with no token configured is disabled (403s everything) by design, so
+			// it is an unreachable route — skip it, matching the built-in "only configured" rule.
+			if gp.Token == "" {
+				continue
+			}
+			ps.Enabled = true
+			ps.SecretStatus = "configured"
 		case "open":
 			ps.Enabled = true
 			ps.SecretStatus = "none-by-design"
