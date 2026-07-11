@@ -491,6 +491,20 @@ func (s *Store) CreateForFriend(ctx context.Context, p CreateForFriendParams) (T
 		return Todo{}, false, ErrIntentNotNegotiated
 	}
 
+	// Governing: SPEC-0010 REQ "Work Flows as Todos, Not A2A Tasks". Namespace the caller-supplied
+	// idempotency key by the friendship identity (the friend-edge id) before it reaches the flat,
+	// global (queue, idempotency_key) dedup namespace. Two friends granted the same queue would
+	// otherwise share one namespace: friend B replaying friend A's key on a shared queue would get
+	// created=false, mint nothing, AND receive A's existing Todo — Payload and Source included — back
+	// from the store. Prefixing with the edge id isolates each friendship's keyspace so B can neither
+	// collide with, suppress, nor read A's handoff. A friend's own legitimate retry keeps the same
+	// endpoint → same edge → same prefix, so idempotent replay for the rightful sender is preserved.
+	// An empty key stays empty (never namespaced) so it continues to opt out of dedup entirely.
+	idempotencyKey := p.IdempotencyKey
+	if idempotencyKey != "" {
+		idempotencyKey = "friend:" + edge.ID + ":" + idempotencyKey
+	}
+
 	// The work is just a todo: durable, owned, dedup'd, leaseable. Attribute it to the requesting
 	// persona (who handed the work) and record the intent as the kind. CreateTodo rings the
 	// LISTEN/NOTIFY doorbell so a worker on the granted queue wakes without polling.
@@ -500,7 +514,7 @@ func (s *Store) CreateForFriend(ctx context.Context, p CreateForFriendParams) (T
 		Kind:           p.Intent,
 		Title:          p.Title,
 		Payload:        p.Payload,
-		IdempotencyKey: p.IdempotencyKey,
+		IdempotencyKey: idempotencyKey,
 	})
 }
 

@@ -463,3 +463,101 @@ func TestCreateForFriendRejectsInactiveFriendship(t *testing.T) {
 		t.Fatalf("inactive-friendship handoffs must mint no todo, got %d", n)
 	}
 }
+
+// approvedFriendFrom seeds and approves a friendship with caller-chosen personas so a single target
+// human can hold several distinct friendships at once (the live partial unique index forbids two
+// live edges sharing (from_persona, to_persona, direction), so each friend needs its own personas).
+func approvedFriendFrom(t *testing.T, s *Store, ctx context.Context, target Human, vendAgent Agent,
+	fromPersona, toPersona, credHash string, queues, verbs []string) Endpoint {
+	t.Helper()
+	e := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: fromPersona, ToPersona: toPersona, ToHuman: target.ID,
+		RequestedQueues: queues, RequestedVerbs: verbs,
+	})
+	slug, _ := MintSlug(vendAgent.Name)
+	_, ep, err := s.ApproveFriendRequest(ctx, ApproveFriendRequestParams{
+		EdgeID: e.ID, OwnerHumanID: target.ID, AgentID: vendAgent.ID,
+		CredentialHash: credHash, CredentialPrefix: "sbk_iso", Slug: slug,
+	})
+	if err != nil {
+		t.Fatalf("approve friend %s: %v", fromPersona, err)
+	}
+	return ep
+}
+
+// Two friends granted the SAME queue must not share one idempotency-key dedup namespace. The
+// (queue, idempotency_key) uniqueness is global, so an un-namespaced key would let friend B replay
+// friend A's key on the shared queue and get created=false with A's existing Todo — Payload and
+// Source included — handed back. CreateForFriend namespaces the key by the friend-edge id so B can
+// neither suppress nor read A's handoff: B's colliding key mints B's OWN todo, and A's payload never
+// leaks. A friend's own legitimate retry still dedups (same endpoint → same edge → same namespace).
+// Governing: SPEC-0010 REQ "Work Flows as Todos, Not A2A Tasks" (cross-friend isolation, payload-disclosure guard).
+func TestCreateForFriendIdempotencyKeyIsNamespacedPerFriend(t *testing.T) {
+	s, ctx := testStore(t)
+	target := mustHuman(t, s, ctx, "pocket|iso-tgt", "Target")
+	agentA := mustAgent(t, s, ctx, target.ID, "friend-a-agent")
+	agentB := mustAgent(t, s, ctx, target.ID, "friend-b-agent")
+
+	// Two DISTINCT friendships, both granted the same shared queue + verb.
+	epA := approvedFriendFrom(t, s, ctx, target, agentA, "alice@a", "hostA@t", "iso-a",
+		[]string{"shared"}, []string{"create_for"})
+	epB := approvedFriendFrom(t, s, ctx, target, agentB, "bob@b", "hostB@t", "iso-b",
+		[]string{"shared"}, []string{"create_for"})
+
+	const sharedKey = "collide-1"
+	secretPayload := []byte(`{"secret":"friend-A-only"}`)
+
+	// Friend A hands off work carrying a private payload under the shared key.
+	tdA, createdA, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: epA.ID, Queue: "shared", Intent: "create_for",
+		Title: "A's work", Payload: secretPayload, IdempotencyKey: sharedKey,
+	})
+	if err != nil || !createdA {
+		t.Fatalf("friend A handoff: created=%v err=%v", createdA, err)
+	}
+
+	// Friend B replays the SAME key on the SAME queue. It must mint B's OWN todo (created=true),
+	// never dedup against A, and never return A's row/payload/source.
+	tdB, createdB, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: epB.ID, Queue: "shared", Intent: "create_for",
+		Title: "B's work", Payload: []byte(`{"benign":true}`), IdempotencyKey: sharedKey,
+	})
+	if err != nil {
+		t.Fatalf("friend B colliding handoff: %v", err)
+	}
+	if !createdB {
+		t.Fatal("friend B must mint its OWN todo, not silently dedup against friend A's key")
+	}
+	if tdB.ID == tdA.ID {
+		t.Fatal("cross-friend key collision must not return friend A's todo to friend B")
+	}
+	if tdB.Source == tdA.Source {
+		t.Fatalf("friend B's todo must be attributed to B (%q), not A (%q)", "bob@b", tdB.Source)
+	}
+	if string(tdB.Payload) == string(secretPayload) {
+		t.Fatal("payload-disclosure: friend B must never receive friend A's payload")
+	}
+
+	// Friend A's own retry under the same key STILL dedups to A's original todo (idempotency for the
+	// rightful sender is preserved by same-endpoint → same-edge → same namespace).
+	tdARetry, createdARetry, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: epA.ID, Queue: "shared", Intent: "create_for",
+		Title: "A's work retry", IdempotencyKey: sharedKey,
+	})
+	if err != nil {
+		t.Fatalf("friend A retry: %v", err)
+	}
+	if createdARetry || tdARetry.ID != tdA.ID {
+		t.Fatalf("friend A's own retry must dedup to its original todo: created=%v id=%s want %s",
+			createdARetry, tdARetry.ID, tdA.ID)
+	}
+
+	// Exactly two todos exist on the shared queue: one per friend, fully isolated.
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos WHERE queue = 'shared'`).Scan(&n); err != nil {
+		t.Fatalf("count todos: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("expected exactly 2 isolated todos on the shared queue, got %d", n)
+	}
+}
