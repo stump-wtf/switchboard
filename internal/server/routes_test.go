@@ -78,6 +78,10 @@ var sessionRoutes = map[string]bool{
 	"POST /todos/{id}/extend":     true, // operator extend lease / heartbeat (SPEC-0013)
 	"POST /todos/{id}/release":    true, // operator release lease back to pending (SPEC-0013)
 	"POST /endpoints/{id}/revoke": true,
+	"GET /personas":               true, // Personas view (SPEC-0013; capability-gated in the handler)
+	"POST /personas":              true, // create persona
+	"POST /personas/{id}":         true, // update persona (incl. publish toggle)
+	"POST /personas/{id}/delete":  true, // delete persona
 	"POST /logout":                true,
 }
 

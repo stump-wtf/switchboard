@@ -225,9 +225,13 @@ func (s *Store) GetPersona(ctx context.Context, id, ownerHumanID string) (Person
 // Discovery and Quotas" (discovery bounded to advertised personas), SPEC-0009 (personas as cards).
 func (s *Store) PublishedPersonaByID(ctx context.Context, id string) (Persona, error) {
 	// Compare on id::text so an arbitrary (attacker-supplied) non-uuid string yields no rows →
-	// ErrNotFound, rather than a SQL "invalid input syntax for type uuid" error.
+	// ErrNotFound, rather than a SQL "invalid input syntax for type uuid" error. Gated on
+	// discoverable (migration 0006 renamed the `published` column to `discoverable` to agree with
+	// SPEC-0009 REQ "Discoverability Is Owner-Controlled"): the well-known card and friend-request
+	// intake resolve the SAME owner-controlled flag, so a persona is reachable by id here only while
+	// its owner keeps it discoverable — consistent with GetDiscoverablePersona.
 	p, err := scanPersona(s.pool.QueryRow(ctx,
-		`SELECT `+personaCols+` FROM personas WHERE id::text = $1 AND published = true`, id))
+		`SELECT `+personaCols+` FROM personas WHERE id::text = $1 AND discoverable = true`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Persona{}, ErrNotFound
 	}

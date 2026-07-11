@@ -49,6 +49,11 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Enable the SPEC-0013 Personas view by feature detection: the personas store and the well-known
+	// Agent Card route (registered below) are both wired in this Run, so the capability has landed and
+	// the rail entry + /personas routes come alive. Governing: SPEC-0013 REQ "Personas View"
+	// (capability-gated), design.md "Capability gating for Personas and Friends".
+	webh.SetPersonasEnabled(true)
 	// Feed the web SSE hub from committed transitions (process-local publish hooks): todo
 	// lifecycle changes, newly accepted inbound events, and endpoint last-seen stamps become
 	// the SPEC-0013 typed event stream. Best-effort by design: the hub drops on full buffers
@@ -300,6 +305,13 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/todos/{id}/extend", d.webh.ExtendTodo)
 		pr.Post("/todos/{id}/release", d.webh.ReleaseTodo)
 		pr.Post("/endpoints/{id}/revoke", d.webh.Revoke)
+		// Personas view (SPEC-0013 endpoints table). Capability-gated inside the handler: while the
+		// personas capability is disabled these 404 (hidden-not-broken); the routes stay session- and
+		// CSRF-gated like every other web mutation. Governing: SPEC-0013 REQ "Personas View".
+		pr.Get("/personas", d.webh.Personas)
+		pr.Post("/personas", d.webh.CreatePersona)
+		pr.Post("/personas/{id}", d.webh.UpdatePersona)
+		pr.Post("/personas/{id}/delete", d.webh.DeletePersona)
 		pr.Post("/logout", d.authr.Logout)
 	})
 

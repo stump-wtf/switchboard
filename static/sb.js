@@ -172,6 +172,102 @@
     });
   }
 
+  // ---- persona modal: open a hidden <template> into the overlay, drive the live agent-card URL
+  // preview and the verb/queue chip constraint. Presentation only — the server validates every
+  // subset against the backing agent's vended grant (SPEC-0009); this just hides what the human
+  // cannot choose. Governing: SPEC-0013 REQ "Personas View" (create/edit modal). ----
+
+  // slugify mirrors the store's slugifyPersona so the URL preview matches the persisted slug.
+  function slugify(name) {
+    var out = "";
+    var prevDash = true;
+    var lower = (name || "").toLowerCase();
+    for (var i = 0; i < lower.length; i++) {
+      var c = lower[i];
+      if ((c >= "a" && c <= "z") || (c >= "0" && c <= "9")) {
+        out += c;
+        prevDash = false;
+      } else if (!prevDash) {
+        out += "-";
+        prevDash = true;
+      }
+    }
+    out = out.replace(/-+$/, "");
+    return out || "persona";
+  }
+
+  // renderChips rebuilds a chip container's checkboxes from a verb/queue list, preserving any values
+  // that were checked before the swap. name is the form field ("verbs" / "queues").
+  function renderChips(container, values, name) {
+    if (!container) return;
+    var checked = {};
+    container.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
+      if (cb.checked) checked[cb.value] = true;
+    });
+    if (!values.length) {
+      container.innerHTML = '<span class="sb-muted">the backing agent vends no ' + name + "</span>";
+      return;
+    }
+    container.innerHTML = values
+      .map(function (v) {
+        return (
+          '<label class="sb-chip sb-chip--check"><input type="checkbox" name="' +
+          name +
+          '" value="' +
+          v +
+          '"' +
+          (checked[v] ? " checked" : "") +
+          "> " +
+          v +
+          "</label>"
+        );
+      })
+      .join("");
+  }
+
+  // wireModal binds the live URL preview and the agent-driven chip constraint on a freshly opened modal.
+  function wireModal(modal) {
+    if (!modal) return;
+    var nameInput = modal.querySelector("[data-sb-slug-source]");
+    var preview = modal.querySelector("[data-sb-url-preview]");
+    var slugBase = modal.getAttribute("data-sb-slug-base");
+    if (nameInput && preview && slugBase) {
+      var update = function () {
+        preview.textContent =
+          slugBase.replace(/\/$/, "") + "/a/" + slugify(nameInput.value) + "/.well-known/agent-card.json";
+      };
+      nameInput.addEventListener("input", update);
+      update();
+    }
+    var select = modal.querySelector("[data-sb-agent-select]");
+    if (select) {
+      select.addEventListener("change", function () {
+        var opt = select.options[select.selectedIndex];
+        var verbs = (opt.getAttribute("data-verbs") || "").split(",").filter(Boolean);
+        var queues = (opt.getAttribute("data-queues") || "").split(",").filter(Boolean);
+        renderChips(modal.querySelector("[data-sb-verb-chips]"), verbs, "verbs");
+        renderChips(modal.querySelector("[data-sb-queue-chips]"), queues, "queues");
+      });
+    }
+  }
+
+  // initModals opens a persona modal (referenced by data-sb-open-modal → a hidden <template> id) into
+  // the shared overlay; the overlay watcher then shows and focuses it.
+  function initModals() {
+    document.body.addEventListener("click", function (e) {
+      var trigger = e.target.closest ? e.target.closest("[data-sb-open-modal]") : null;
+      if (!trigger) return;
+      e.preventDefault();
+      if (!overlay) return;
+      var tpl = document.getElementById(trigger.getAttribute("data-sb-open-modal"));
+      if (!tpl || !("content" in tpl)) return;
+      lastFocused = trigger; // return focus here on close
+      overlay.innerHTML = "";
+      overlay.appendChild(tpl.content.cloneNode(true));
+      wireModal(overlay.querySelector("[data-sb-modal]"));
+    });
+  }
+
   // ---- vend modal: live scope validation + queue chip preview ----
   // Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" ("MUST refuse submission until name, at
   // least one queue, and at least one verb are chosen"). Presentation-only: it disables the submit
@@ -221,6 +317,7 @@
     initFeed();
     initOverlay();
     initCloseControls();
+    initModals();
     initVend();
     tickCountdowns();
     setInterval(tickCountdowns, 1000);

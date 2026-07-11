@@ -1180,6 +1180,186 @@ pre code {
   }
 }
 
+/* ---- Personas view (SPEC-0013) ---- */
+
+.sb-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.sb-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+  margin: 16px 0;
+}
+
+.sb-persona {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+.sb-persona__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sb-persona__name {
+  font-family: var(--sb-font-display);
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--sb-ink);
+  margin: 0;
+}
+.sb-persona__agent {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-faint);
+  margin: 2px 0 0;
+}
+.sb-persona__prompt {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--sb-brass);
+  background: var(--sb-code-bg);
+  border-radius: var(--sb-radius-btn);
+  font-size: 13px;
+  color: var(--sb-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sb-persona__url {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sb-persona__urllink {
+  font-size: 11px;
+  color: var(--sb-secondary);
+  overflow-wrap: anywhere;
+}
+.sb-persona__acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+.sb-persona__acts form {
+  margin: 0;
+}
+.sb-persona__pinned {
+  margin: 0;
+  padding: 8px 11px;
+  border: 1px dashed var(--sb-input-border-soft);
+  border-radius: var(--sb-radius-btn);
+  color: var(--sb-body);
+}
+
+/* chips: derived skills, advertised verbs, and selectable verb/queue checkboxes */
+.sb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--sb-radius-pill);
+  border: 1px solid var(--sb-input-border-soft);
+  background: var(--sb-panel);
+  color: var(--sb-secondary);
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+}
+.sb-chip--skill {
+  color: var(--sb-ink);
+  background: var(--sb-nav-active-bg);
+  border-color: var(--sb-brass);
+}
+.sb-chip--mono {
+  color: var(--sb-body);
+}
+.sb-chip--check {
+  cursor: pointer;
+}
+.sb-chip--check input {
+  width: auto;
+  margin: 0;
+}
+.sb-help--inline {
+  display: inline;
+  margin: 0;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* create/edit modal — a centered dialog in the shared overlay slot */
+.sb-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(540px, 94vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border-strong);
+  border-radius: var(--sb-radius-card);
+  box-shadow: var(--sb-shadow-drawer);
+  padding: 20px 22px 24px;
+  animation: sb-drawer-in var(--sb-dur-enter) var(--sb-ease);
+}
+.sb-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.sb-modal__title {
+  font-family: var(--sb-font-display);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--sb-ink);
+  margin: 0;
+}
+.sb-modal__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+.sb-modal__foot-spacer {
+  flex: 1;
+}
+.sb-modal__foot form {
+  margin: 0;
+}
+.sb-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--sb-font-sans, var(--sb-font-mono));
+  font-size: 13px;
+  color: var(--sb-body);
+}
+.sb-toggle input {
+  width: auto;
+  margin: 0;
+}
+.sb-field textarea {
+  max-width: 100%;
+  resize: vertical;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sb-live__dot,
   .sb-feed__pulse,

@@ -34,7 +34,7 @@ var tmplFS embed.FS
 // pageNames are the page templates composed with layout.html and the shared fragments. Startup
 // parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
-var pageNames = []string{"login", "board", "todos", "todo", "endpoints"}
+var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "personas"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -48,10 +48,11 @@ type Handler struct {
 	pages map[string]*template.Template
 	frags *template.Template // shared live fragments (templates/fragments.html), standalone-renderable
 
-	// personasEnabled gates the persona chip on endpoint cards and the persona field in the vend
-	// modal (SPEC-0013 "bound persona when personas are enabled"). It stays false until the Personas
-	// view + capability ship; the field lets the Endpoints surface render the persona slot correctly
-	// the moment that capability is wired, without any change here.
+	// personasEnabled gates the SPEC-0013 Personas view AND the persona chip on endpoint cards +
+	// the persona field in the vend modal. The server sets it by feature detection (personas store +
+	// well-known Agent Card route both wired); while false the Personas rail entry is hidden, every
+	// /personas route 404s, and the Endpoints surface renders no persona slot. Governing: SPEC-0013
+	// REQ "Personas View" (capability-gated), REQ "Endpoints View and Vend Modal".
 	personasEnabled bool
 
 	// SSE plumbing (SPEC-0012 "Live Updates via SSE"). sseRetryMS and keepAlive are fields so
@@ -154,11 +155,12 @@ func stageMod(state string) string {
 // live counts, database connectivity, and the avatar initials.
 // Governing: SPEC-0013 REQ "Information Architecture and Navigation".
 type shell struct {
-	Active      string // board | todos | endpoints — marks aria-current on the rail
-	TodoCount   int    // pending todos, shown beside the Todos rail entry
-	LiveRate    int    // events/min for the LIVE pill (hidden when zero)
-	DBConnected bool   // pool ping result — the rail footer indicator
-	Initials    string // avatar initials
+	Active          string // board | todos | endpoints | personas — marks aria-current on the rail
+	TodoCount       int    // pending todos, shown beside the Todos rail entry
+	LiveRate        int    // events/min for the LIVE pill (hidden when zero)
+	DBConnected     bool   // pool ping result — the rail footer indicator
+	Initials        string // avatar initials
+	PersonasEnabled bool   // render the Personas rail entry only when the capability is enabled
 }
 
 type view struct {
@@ -182,13 +184,16 @@ type view struct {
 	VerbOptions     []string       // the vend-modal verb toggle chips (drain-verb vocabulary)
 	VendOpen        bool           // no-JS fallback: render the vend form inline in the page
 	Reveal          *revealView    // set on a no-JS vend to render the one-time credential reveal inline
+
+	// Personas view (SPEC-0013 REQ "Personas View"): cards + create/edit modals.
+	Personas *personasView
 }
 
 // buildShell computes the layout-shell state. Store errors are logged and rendered as the
 // degraded shell (zero counts, disconnected indicator) rather than failing the page — the shell's
 // job is precisely to show that degradation (SPEC-0013 "Database connectivity is reflected").
 func (h *Handler) buildShell(ctx context.Context, active string, human *store.Human) (shell, store.BoardStats) {
-	sh := shell{Active: active, Initials: initials(human)}
+	sh := shell{Active: active, Initials: initials(human), PersonasEnabled: h.personasEnabled}
 	if err := h.store.Ping(ctx); err != nil {
 		h.log.Warn("shell db ping", "err", err)
 		return sh, store.BoardStats{}

@@ -108,6 +108,100 @@
   <td class="sb-trow__act">{{if eq .State "pending"}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.ID}}/claim" hx-target="closest tr" hx-swap="outerHTML">Claim</button>{{else if eq .State "claimed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/complete" hx-target="closest tr" hx-swap="outerHTML">Complete</button>{{else if eq .State "failed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/retry" hx-target="closest tr" hx-swap="outerHTML">Retry</button>{{else}}<span class="sb-muted">—</span>{{end}}</td>
 </tr>{{end}}
 
+{{/* ============================ Personas view (SPEC-0013) ============================ */}}
+
+{{/* persona_card — one persona: name, backing agent, published/draft pill, quoted system prompt,
+     advertised skill + verb chips, the resolvable agent-card URL, and Edit + Publish/Unpublish.
+     Publish/Unpublish is a CSRF-guarded form that flips only the discoverable flag (toggle_discoverable),
+     taking effect on the well-known endpoint immediately. Edit opens the per-persona modal into the
+     shared overlay. Data: web.personaCardView. Governing: SPEC-0013 REQ "Personas View". */}}
+{{define "persona_card"}}<article id="sb-persona-{{.ID}}" class="sb-card sb-persona" role="listitem">
+  <div class="sb-persona__head">
+    <div>
+      <h3 class="sb-persona__name">{{.Name}}</h3>
+      <p class="sb-persona__agent">backing agent · <span class="sb-mono">{{if .AgentName}}{{.AgentName}}{{else}}—{{end}}</span></p>
+    </div>
+    {{if .Discoverable}}<span class="sb-badge sb-badge--active" title="Discoverable — the agent card resolves">published</span>{{else}}<span class="sb-badge sb-badge--revoked" title="Draft — the agent card 404s until published">draft</span>{{end}}
+  </div>
+  <blockquote class="sb-persona__prompt">{{.SystemPrompt}}</blockquote>
+  {{if .Skills}}<div class="sb-chips" aria-label="Advertised skills">{{range .Skills}}<span class="sb-chip sb-chip--skill" title="{{.Description}}">{{.Name}}</span>{{end}}</div>{{end}}
+  <div class="sb-chips sb-chips--verbs" aria-label="Advertised verbs">{{range .Verbs}}<span class="sb-chip sb-chip--mono">{{.}}</span>{{else}}<span class="sb-muted">no verbs advertised</span>{{end}}</div>
+  <div class="sb-persona__url">
+    <span class="sb-microlabel">Agent card</span>
+    <a class="sb-mono sb-persona__urllink" href="{{.AgentCardURL}}">{{.AgentCardURL}}</a>
+  </div>
+  <div class="sb-persona__acts">
+    <button type="button" class="sb-btn sb-btn--secondary" data-sb-open-modal="sb-persona-modal-edit-{{.ID}}" aria-haspopup="dialog">Edit</button>
+    <form method="post" action="/personas/{{.ID}}" hx-post="/personas/{{.ID}}" hx-swap="none">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="toggle_discoverable" value="1">
+      <input type="hidden" name="discoverable" value="{{if .Discoverable}}0{{else}}1{{end}}">
+      <button type="submit" class="sb-btn sb-btn--mono">{{if .Discoverable}}Unpublish{{else}}Publish{{end}}</button>
+    </form>
+  </div>
+</article>{{end}}
+
+{{/* persona_modal — the create (Edit=false) / edit (Edit=true) overlay. Create posts to /personas
+     with a selectable backing agent; edit posts to /personas/{id} with the backing agent pinned
+     (immutable, ADR-0008) and a Delete action. The verb/queue chips are the SELECTED agent's vended
+     grant (constrained: a verb the agent lacks is not rendered as selectable); sb.js rebuilds them
+     when the backing agent changes and drives the live agent-card URL preview from the name. All
+     mutations carry CSRF (hidden field + the layout's hx-headers). Data: web.personaModalView.
+     Governing: SPEC-0013 REQ "Personas View" (scenario "Verb subset is constrained"). */}}
+{{define "persona_modal"}}<div class="sb-modal" role="dialog" aria-modal="true" aria-label="{{if .Edit}}Edit persona{{else}}New persona{{end}}" data-sb-modal tabindex="-1"{{if not .Edit}} data-sb-slug-base="{{.BaseURL}}"{{end}}>
+  <div class="sb-modal__head">
+    <h2 class="sb-modal__title">{{if .Edit}}Edit persona{{else}}New persona{{end}}</h2>
+    <button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button>
+  </div>
+  <form class="sb-modal__form" method="post" action="{{if .Edit}}/personas/{{.Persona.ID}}{{else}}/personas{{end}}" hx-post="{{if .Edit}}/personas/{{.Persona.ID}}{{else}}/personas{{end}}" hx-swap="none">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="sb-field">
+      <label for="sb-persona-name{{if .Edit}}-{{.Persona.ID}}{{end}}">Name</label>
+      <input id="sb-persona-name{{if .Edit}}-{{.Persona.ID}}{{end}}" name="name" required autocomplete="off" data-sb-slug-source value="{{if .Edit}}{{.Persona.Name}}{{end}}" placeholder="reviewer">
+    </div>
+    <div class="sb-field">
+      <label for="sb-persona-agent{{if .Edit}}-{{.Persona.ID}}{{end}}">Backing agent</label>
+      {{if .Edit}}
+      <p class="sb-mono sb-persona__pinned">{{.Selected.Name}}</p>
+      <p class="sb-help">the backing agent is immutable — delete and recreate to change it</p>
+      {{else}}
+      <select id="sb-persona-agent" name="agent_id" data-sb-agent-select required>
+        {{range .Agents}}<option value="{{.ID}}" data-verbs="{{range $i, $v := .Verbs}}{{if $i}},{{end}}{{$v}}{{end}}" data-queues="{{range $i, $q := .Queues}}{{if $i}},{{end}}{{$q}}{{end}}">{{.Name}}</option>{{end}}
+      </select>
+      {{end}}
+    </div>
+    <div class="sb-field">
+      <label for="sb-persona-prompt{{if .Edit}}-{{.Persona.ID}}{{end}}">System prompt</label>
+      <textarea id="sb-persona-prompt{{if .Edit}}-{{.Persona.ID}}{{end}}" name="system_prompt" rows="4" placeholder="You are a code reviewer…">{{if .Edit}}{{.Persona.SystemPrompt}}{{end}}</textarea>
+    </div>
+    <div class="sb-field">
+      <span class="sb-label">Verbs <span class="sb-help sb-help--inline">only the backing agent's vended verbs are selectable</span></span>
+      <div class="sb-chips sb-chips--select" data-sb-verb-chips>
+        {{range .Selected.Verbs}}<label class="sb-chip sb-chip--check"><input type="checkbox" name="verbs" value="{{.}}"{{if index $.CheckedVerbs .}} checked{{end}}> {{.}}</label>{{else}}<span class="sb-muted">the backing agent vends no verbs</span>{{end}}
+      </div>
+    </div>
+    {{if .Selected.Queues}}
+    <div class="sb-field">
+      <span class="sb-label">Queues <span class="sb-help sb-help--inline">bounded to the agent's vended queues</span></span>
+      <div class="sb-chips sb-chips--select" data-sb-queue-chips>
+        {{range .Selected.Queues}}<label class="sb-chip sb-chip--check"><input type="checkbox" name="queues" value="{{.}}"{{if index $.CheckedQueues .}} checked{{end}}> {{.}}</label>{{end}}
+      </div>
+    </div>
+    {{end}}
+    <div class="sb-field">
+      <label class="sb-toggle"><input type="checkbox" name="discoverable" value="1"{{if .Discoverable}} checked{{end}}> <span>Discoverable — publish the agent card</span></label>
+      <p class="sb-help">agent card · <span class="sb-mono" data-sb-url-preview>{{.URLPreview}}</span></p>
+    </div>
+    <div class="sb-modal__foot">
+      {{if .Edit}}<button type="submit" class="sb-btn sb-btn--danger" form="sb-persona-delete-{{.Persona.ID}}">Delete</button>{{end}}
+      <span class="sb-modal__foot-spacer"></span>
+      <button type="button" class="sb-btn sb-btn--secondary" data-sb-close>Cancel</button>
+      <button type="submit" class="sb-btn">{{if .Edit}}Save{{else}}Create persona{{end}}</button>
+    </div>
+  </form>
+  {{if .Edit}}<form id="sb-persona-delete-{{.Persona.ID}}" method="post" action="/personas/{{.Persona.ID}}/delete" hx-post="/personas/{{.Persona.ID}}/delete" hx-swap="none"><input type="hidden" name="csrf_token" value="{{.CSRF}}"></form>{{end}}
+</div>{{end}}
+
 {{/* ============================ Todo detail drawer (SPEC-0013) ============================ */}}
 
 {{/* drawer — the right-hand todo detail overlay: lease/retry cards, metadata, escaped payload,

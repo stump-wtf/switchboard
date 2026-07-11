@@ -1,0 +1,34 @@
+{{define "content"}}
+{{/* Governing: SPEC-0013 REQ "Personas View" — persona cards (name, backing agent, published/draft
+     pill, quoted system prompt, advertised verb/skill chips, agent-card URL) with Edit and
+     Publish/Unpublish, plus a create/edit modal opened into the shared #sb-overlay slot. The view is
+     capability-gated: the handler 404s and the rail entry hides until the personas capability lands
+     (design.md "hidden-not-broken"). All mutations are CSRF-guarded HTMX POSTs (the layout's body
+     hx-headers carries the token). */}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">Personas</h1>
+    <p class="sb-tagline">named, scoped faces of your agents · each a discoverable card</p>
+  </div>
+  {{if .Personas.Agents}}
+  <button type="button" class="sb-btn" data-sb-open-modal="sb-persona-modal-new" aria-haspopup="dialog">New persona</button>
+  {{end}}
+</div>
+
+{{if not .Personas.Agents}}
+<div class="sb-callout sb-callout--warn">Vend an MCP endpoint for an agent first — a persona is a scoped face of a vended grant, so it needs an agent with at least one active endpoint before it can be created.</div>
+{{end}}
+
+{{if .Personas.Cards}}
+<div class="sb-cards" role="list">
+  {{range .Personas.Cards}}{{template "persona_card" .}}{{end}}
+</div>
+{{else}}
+<p class="sb-empty">no personas yet{{if .Personas.Agents}} · create one to publish a discoverable agent card{{end}}</p>
+{{end}}
+
+{{/* Hidden modal templates opened into #sb-overlay by sb.js (data-sb-open-modal). Rendering them
+     inline keeps the SPEC-0013 routes table to its four persona routes — no extra modal-fetch GET. */}}
+<template id="sb-persona-modal-new">{{template "persona_modal" .Personas.NewModal}}</template>
+{{range .Personas.Cards}}<template id="sb-persona-modal-edit-{{.ID}}">{{template "persona_modal" (index $.Personas.EditModal .ID)}}</template>{{end}}
+{{end}}

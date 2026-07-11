@@ -86,6 +86,9 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
+	// The personas capability has landed (store + well-known route wired), so the DB-backed router
+	// enables it exactly as Run does — the Personas view and its routes are live for these tests.
+	webh.SetPersonasEnabled(true)
 	hub := agentapi.NewHub()
 	r := newRouter(routerDeps{
 		st:    st,
