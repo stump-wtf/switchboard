@@ -1,0 +1,181 @@
+// Route-table security baseline tests for the switchboard HTTP surface. These build the REAL
+// router (the same newRouter Run uses) and walk its route table, so every registered route must be
+// explicitly classified — session-gated, bearer-gated, or deliberately public — and a new route
+// that is not classified fails the suite. Auth-by-default, enforced by test.
+// Governing: SPEC-0012 REQ "Screen Set and Routes" (public GET /login; everything else behind
+// RequireHuman); SPEC-0013 REQ "Information Architecture and Navigation" (GET / Board is gated).
+package server
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/joestump/switchboard/internal/agentapi"
+	"github.com/joestump/switchboard/internal/auth"
+	"github.com/joestump/switchboard/internal/config"
+	"github.com/joestump/switchboard/internal/ingest"
+	mcpsrv "github.com/joestump/switchboard/internal/mcp"
+	"github.com/joestump/switchboard/internal/store"
+	"github.com/joestump/switchboard/internal/web"
+)
+
+// newTestRouter builds the production route table without a database. That is safe for anonymous
+// requests: RequireHuman rejects on the missing session cookie and the bearer surfaces reject on
+// the missing Authorization header, both before any store call.
+func newTestRouter(t *testing.T) chi.Router {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{BaseURL: "https://sb.example.com"}
+	st := store.New(nil)
+	authr, err := auth.New(context.Background(), cfg, st, log)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+	webh, err := web.New(st, cfg, log)
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	hub := agentapi.NewHub()
+	mcph := mcpsrv.New(st, log)
+	t.Cleanup(mcph.Close)
+	return newRouter(routerDeps{
+		st:    st,
+		authr: authr,
+		webh:  webh,
+		api:   agentapi.New(st, hub, log),
+		ing:   ingest.New(st, hub, log, ingest.Config{}),
+		mcp:   mcph,
+		ping:  func(context.Context) error { return nil },
+		log:   log,
+	})
+}
+
+// sessionRoutes is the exact set of session-gated (RequireHuman) web routes — the SPEC-0012 screen
+// set plus the SPEC-0013 Board landing and the SSE stream. Anonymous requests MUST be redirected
+// to /login, and the set itself is asserted, so dropping a route from the RequireHuman group (or
+// adding one without updating this contract) fails.
+var sessionRoutes = map[string]bool{
+	"GET /":                       true, // Board landing (SPEC-0013) — gated, per PR #120 wiring
+	"GET /agents":                 true,
+	"GET /agents/{id}":            true,
+	"GET /events":                 true,
+	"POST /agents":                true,
+	"POST /todos/{id}/claim":      true, // operator claim from the Board feed (SPEC-0013)
+	"POST /agents/{id}/vend":      true,
+	"POST /endpoints/{id}/revoke": true,
+	"POST /logout":                true,
+}
+
+// publicRoutes are the routes deliberately reachable without a session or bearer credential, each
+// with its justification (SPEC-0012 security checklist: "public routes explicitly justified").
+var publicRoutes = map[string]bool{
+	"GET /login":           true, // the login screen itself (SPEC-0012: public GET /login)
+	"GET /auth/login":      true, // OIDC initiation — must be reachable to authenticate
+	"GET /auth/callback":   true, // OIDC redirect target — verified by state/nonce, not session
+	"POST /auth/dev-login": true, // 404s unless SWITCHBOARD_DEV_LOGIN=1 (tested below)
+	"GET /healthz":         true, // liveness probe
+	"POST /dev/todos":      true, // 404s unless SWITCHBOARD_DEV_LOGIN=1 (dev loop helper)
+	// Webhook receivers authenticate per-provider (HMAC/token; SPEC-0001), not via session.
+	"POST /webhooks/github":         true,
+	"POST /webhooks/stripe":         true,
+	"POST /webhooks/slack":          true,
+	"POST /webhooks/generic/{name}": true,
+}
+
+// routePath turns a chi route pattern into a concrete request path.
+func routePath(route string) string {
+	return strings.NewReplacer(
+		"{id}", "00000000-0000-0000-0000-000000000000",
+		"{name}", "x", "{endpoint}", "x", "*", "x",
+	).Replace(route)
+}
+
+func anonRequest(t *testing.T, r chi.Router, method, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+	return rec
+}
+
+// TestEveryRouteClassifiedAndAnonymousRejected walks the full route table and enforces the
+// authentication boundary route by route:
+//   - session routes (RequireHuman group) redirect anonymous requests to /login;
+//   - the bearer surfaces (/agent, /mcp) reject anonymous requests with 401;
+//   - static assets stay public;
+//   - anything else must appear in publicRoutes, or the test fails (auth-by-default).
+func TestEveryRouteClassifiedAndAnonymousRejected(t *testing.T) {
+	r := newTestRouter(t)
+	walked := map[string]bool{}
+	err := chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		key := method + " " + route
+		walked[key] = true
+		switch {
+		case sessionRoutes[key]:
+			rec := anonRequest(t, r, method, routePath(route))
+			if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+				t.Errorf("%s: anonymous got %d → %q, want 302 → /login", key, rec.Code, rec.Header().Get("Location"))
+			}
+		case strings.HasPrefix(route, "/agent/") || strings.HasPrefix(route, "/mcp/"):
+			// Bearer-credential surfaces (ADR-0008; SPEC-0014): no Authorization header → 401.
+			rec := anonRequest(t, r, method, routePath(route))
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("%s: anonymous got %d, want 401", key, rec.Code)
+			}
+		case strings.HasPrefix(route, "/static/"):
+			// Embedded assets are public by design (SPEC-0012 "Static assets served from embed").
+		case publicRoutes[key]:
+			// Deliberately public; justified in the map above.
+		default:
+			t.Errorf("%s: unclassified route — new routes must be session-gated, bearer-gated, or "+
+				"explicitly justified as public in this test (auth-by-default)", key)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	// The screen set itself: every SPEC-0012/0013 route must actually be registered (and gated —
+	// asserted above). Catches the Board landing being dropped or moved out of RequireHuman.
+	for key := range sessionRoutes {
+		if !walked[key] {
+			t.Errorf("%s: required session-gated route missing from the router table", key)
+		}
+	}
+	for key := range publicRoutes {
+		if !walked[key] {
+			t.Errorf("%s: expected public route missing from the router table", key)
+		}
+	}
+}
+
+// TestLoginPagePublic: the login screen renders for anonymous users — the one public web page
+// (SPEC-0012 scenario "Login is public").
+func TestLoginPagePublic(t *testing.T) {
+	r := newTestRouter(t)
+	rec := anonRequest(t, r, http.MethodGet, "/login")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /login anonymous: got %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Log in") {
+		t.Fatalf("login page should render the login screen, got: %.200s", body)
+	}
+}
+
+// TestDevLoginDisabledIs404: without SWITCHBOARD_DEV_LOGIN the dev-login route exists but denies
+// (404), so the public classification above never opens an unauthenticated login path in prod.
+func TestDevLoginDisabledIs404(t *testing.T) {
+	r := newTestRouter(t)
+	if rec := anonRequest(t, r, http.MethodPost, "/auth/dev-login"); rec.Code != http.StatusNotFound {
+		t.Fatalf("POST /auth/dev-login with dev mode off: got %d, want 404", rec.Code)
+	}
+	if rec := anonRequest(t, r, http.MethodPost, "/dev/todos"); rec.Code != http.StatusNotFound {
+		t.Fatalf("POST /dev/todos with dev mode off: got %d, want 404", rec.Code)
+	}
+}

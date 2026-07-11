@@ -87,80 +87,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		DevLogin:     cfg.DevLogin,
 	})
 
-	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
-	// Governing: SPEC-0001/0005/0006/0007/0008/0012 REQ "Security headers on all responses". Applied
-	// as the outermost app middleware so every surface (webhook, /agent, MCP, web, errors) carries them.
-	r.Use(secureHeaders)
-
-	// Rate limiters (SPEC-0006 webhook self-mgmt MUST, todo drain SHOULD; SPEC-0009 persona card).
-	// The agent API (todo drain + webhook self-management verbs) and inbound webhook get IP throttles;
-	// the durable queue stays the source of truth, so throttling only bounds abuse, never drops work.
-	agentRL := newRateLimiter(20, 40) // ~20 req/s per IP, burst 40 — comfortable for real drain loops
-	webhookRL := newRateLimiter(10, 20)
-
-	// Static assets + health.
-	r.Handle("/static/*", staticHandler())
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if err := pool.Ping(ctx); err != nil {
-			http.Error(w, "db down", http.StatusServiceUnavailable)
-			return
-		}
-		_, _ = w.Write([]byte("ok\n"))
-	})
-
-	// Inbound ingestion (verified per-provider; ADR-0003). MaxBytesReader inside each receiver
-	// bounds the body to 5 MiB → 413 before HMAC verification (SPEC-0001). Stripe/Slack add a
-	// replay window over the signed timestamp; GitHub's scheme signs no timestamp, so none is
-	// fabricated (SPEC-0001 REQ "Replay-Window Enforcement for Timestamped Signatures").
-	r.Group(func(wr chi.Router) {
-		wr.Use(webhookRL.middleware)
-		wr.Post("/webhooks/github", ing.GitHub)
-		wr.Post("/webhooks/stripe", ing.Stripe)
-		wr.Post("/webhooks/slack", ing.Slack)
-		// Generic token/open providers (SPEC-0001): shared-secret token compared constant-time, or
-		// explicit operator-opted-in open mode; unknown names 404, never a fall-through to open.
-		wr.Post("/webhooks/generic/{name}", ing.Generic)
-	})
-	r.Post("/dev/todos", ing.DevCreateTodo)
-
-	// Vended agent API (bearer-credential auth inside; ADR-0008). 1 MiB body cap + IP rate limit.
-	r.With(agentRL.middleware, maxBytes(1<<20)).Mount("/agent", api.Routes())
-
-	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, rate limits,
-	// and the 1 MiB body cap all live inside the package's own middleware stack.
-	r.Mount("/mcp", mcph.Routes())
-
-	// Auth (OIDC RP against Pocket ID; ADR-0011).
-	r.Get("/login", webh.Login)
-	r.Get("/auth/login", authr.Login)
-	r.Get("/auth/callback", authr.Callback)
-	// Dev-login is config-gated (404 unless SWITCHBOARD_DEV_LOGIN) and, like every auth form POST,
-	// bounds its body at 64 KiB. Governing: SPEC-0008 REQ "Development Login Guard",
-	// REQ "Request Body Size Limits".
-	r.With(maxBytes(64<<10)).Post("/auth/dev-login", authr.DevLogin)
-
-	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB;
-	// RequireCSRF guards every state-changing form with a per-session synchronizer token (SPEC-0008).
-	// Logout is a session-gated POST — never a GET — so it cannot be triggered cross-site.
-	r.Group(func(pr chi.Router) {
-		pr.Use(maxBytes(1 << 20))
-		pr.Use(authr.RequireHuman)
-		pr.Use(authr.RequireCSRF)
-		// Governing: SPEC-0013 REQ "Information Architecture and Navigation" — GET / renders the
-		// Board; the agents screen moves to /agents (surfaced as "Endpoints" in the rail).
-		pr.Get("/", webh.Board)
-		pr.Get("/agents", webh.Dashboard)
-		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
-		pr.Get("/events", webh.Events)
-		// Operator claim from the Board feed (SPEC-0013 endpoints table). CSRF arrives via the
-		// layout's hx-headers token; the group's RequireCSRF validates it.
-		pr.Post("/todos/{id}/claim", webh.ClaimTodo)
-		pr.Post("/agents", webh.CreateAgent)
-		pr.Get("/agents/{id}", webh.Agent)
-		pr.Post("/agents/{id}/vend", webh.Vend)
-		pr.Post("/endpoints/{id}/revoke", webh.Revoke)
-		pr.Post("/logout", authr.Logout)
+	r := newRouter(routerDeps{
+		st:    st,
+		authr: authr,
+		webh:  webh,
+		api:   api,
+		ing:   ing,
+		mcp:   mcph,
+		ping:  pool.Ping,
+		log:   log,
 	})
 
 	go reaper(ctx, st, log)
@@ -195,6 +130,106 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety".
 	<-runnerDone
 	return nil
+}
+
+// routerDeps carries the wired components newRouter assembles into the HTTP surface. Extracted from
+// Run so tests can build the REAL route table (auth grouping included) without a database.
+type routerDeps struct {
+	st    *store.Store
+	authr *auth.Authenticator
+	webh  *web.Handler
+	api   *agentapi.API
+	ing   *ingest.Ingest
+	mcp   *mcpsrv.Handler             // the Run-wired MCP handler (doorbell + revocation hooks attached)
+	ping  func(context.Context) error // /healthz DB probe
+	log   *slog.Logger
+}
+
+// newRouter builds the full switchboard route table. Route grouping is the security baseline:
+// everything not explicitly registered as a public route sits behind bearer auth (/agent, /mcp) or
+// auth.RequireHuman (the web UI, including the Board landing at GET /).
+// Governing: SPEC-0012 REQ "Screen Set and Routes", REQ "Authentication Boundary";
+// SPEC-0013 REQ "Information Architecture and Navigation".
+func newRouter(d routerDeps) chi.Router {
+	r := chi.NewRouter()
+	r.Use(middleware.Recoverer)
+	// Governing: SPEC-0001/0005/0006/0007/0008/0012 REQ "Security headers on all responses". Applied
+	// as the outermost app middleware so every surface (webhook, /agent, MCP, web, errors) carries them.
+	r.Use(secureHeaders)
+
+	// Rate limiters (SPEC-0006 webhook self-mgmt MUST, todo drain SHOULD; SPEC-0009 persona card).
+	// The agent API (todo drain + webhook self-management verbs) and inbound webhook get IP throttles;
+	// the durable queue stays the source of truth, so throttling only bounds abuse, never drops work.
+	agentRL := newRateLimiter(20, 40) // ~20 req/s per IP, burst 40 — comfortable for real drain loops
+	webhookRL := newRateLimiter(10, 20)
+
+	// Static assets + health.
+	r.Handle("/static/*", staticHandler())
+	r.Get("/healthz", func(w http.ResponseWriter, req *http.Request) {
+		if err := d.ping(req.Context()); err != nil {
+			http.Error(w, "db down", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok\n"))
+	})
+
+	// Inbound ingestion (verified per-provider; ADR-0003). MaxBytesReader inside each receiver
+	// bounds the body to 5 MiB → 413 before HMAC verification (SPEC-0001). Stripe/Slack add a
+	// replay window over the signed timestamp; GitHub's scheme signs no timestamp, so none is
+	// fabricated (SPEC-0001 REQ "Replay-Window Enforcement for Timestamped Signatures").
+	r.Group(func(wr chi.Router) {
+		wr.Use(webhookRL.middleware)
+		wr.Post("/webhooks/github", d.ing.GitHub)
+		wr.Post("/webhooks/stripe", d.ing.Stripe)
+		wr.Post("/webhooks/slack", d.ing.Slack)
+		// Generic token/open providers (SPEC-0001): shared-secret token compared constant-time, or
+		// explicit operator-opted-in open mode; unknown names 404, never a fall-through to open.
+		wr.Post("/webhooks/generic/{name}", d.ing.Generic)
+	})
+	r.Post("/dev/todos", d.ing.DevCreateTodo)
+
+	// Vended agent API (bearer-credential auth inside; ADR-0008). 1 MiB body cap + IP rate limit.
+	r.With(agentRL.middleware, maxBytes(1<<20)).Mount("/agent", d.api.Routes())
+
+	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, per-endpoint
+	// rate limit, and the 1 MiB body cap all live inside the package's own middleware stack.
+	// The handler is Run-wired (doorbell + revocation hooks) and passed in — never constructed here.
+	r.Mount("/mcp", d.mcp.Routes())
+
+	// Auth (OIDC RP against Pocket ID; ADR-0011). The login screen is the ONLY public web page
+	// (SPEC-0012 "Security Requirements → Authentication"; REQ "Screen Set and Routes": public GET /login).
+	r.Get("/login", d.webh.Login)
+	r.Get("/auth/login", d.authr.Login)
+	r.Get("/auth/callback", d.authr.Callback)
+	// Dev-login is config-gated (404 unless SWITCHBOARD_DEV_LOGIN) and, like every auth form POST,
+	// bounds its body at 64 KiB. Governing: SPEC-0008 REQ "Development Login Guard",
+	// REQ "Request Body Size Limits".
+	r.With(maxBytes(64<<10)).Post("/auth/dev-login", d.authr.DevLogin)
+
+	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB;
+	// RequireCSRF guards every state-changing form with a per-session synchronizer token (SPEC-0008).
+	// Logout is a session-gated POST — never a GET — so it cannot be triggered cross-site.
+	r.Group(func(pr chi.Router) {
+		pr.Use(maxBytes(1 << 20))
+		pr.Use(d.authr.RequireHuman)
+		pr.Use(d.authr.RequireCSRF)
+		// Governing: SPEC-0013 REQ "Information Architecture and Navigation" — GET / renders the
+		// Board; the agents screen moves to /agents (surfaced as "Endpoints" in the rail).
+		pr.Get("/", d.webh.Board)
+		pr.Get("/agents", d.webh.Dashboard)
+		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
+		pr.Get("/events", d.webh.Events)
+		// Operator claim from the Board feed (SPEC-0013 endpoints table). CSRF arrives via the
+		// layout's hx-headers token; the group's RequireCSRF validates it.
+		pr.Post("/todos/{id}/claim", d.webh.ClaimTodo)
+		pr.Post("/agents", d.webh.CreateAgent)
+		pr.Get("/agents/{id}", d.webh.Agent)
+		pr.Post("/agents/{id}/vend", d.webh.Vend)
+		pr.Post("/endpoints/{id}/revoke", d.webh.Revoke)
+		pr.Post("/logout", d.authr.Logout)
+	})
+
+	return r
 }
 
 // staticHandler serves /static/* from the embedded static FS — no runtime CDN, so the UI works
