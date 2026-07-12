@@ -69,8 +69,8 @@ func TestRegisterQueueAdaptersAttachesRegistryRows(t *testing.T) {
 	st := &fakeQueueAdapterStore{rows: []store.Adapter{
 		queueRow("deploys", `{"transport":"redis","mode":"stream","stream":"deploys","group":"g","consumer":"c"}`),
 		disabled,
-		queueRow("future", `{"transport":"sqs","mode":"stream"}`),      // unimplemented transport: skip
-		queueRow("broken", `{"transport":"redis","mode":"nope"}`),      // invalid config: fail soft
+		queueRow("future", `{"transport":"sqs","mode":"stream"}`),               // unimplemented transport: skip
+		queueRow("broken", `{"transport":"redis","mode":"nope"}`),               // invalid config: fail soft
 		{Name: "github", Family: "webhook", TrustMode: "signed", Enabled: true}, // push family: not ours
 	}}
 	run := &fakeAdder{}

@@ -125,8 +125,8 @@ func TestFactoryFromRegistryConfigErrors(t *testing.T) {
 		{``, "has no config"},
 		{`{not json`, "parse registry config"},
 		{`{"transport":"redis","mode":"carrier-pigeon"}`, "unknown mode"},
-		{`{"transport":"redis","mode":"stream"}`, "requires stream"},   // NewStream validation, wrapped
-		{`{"transport":"redis","mode":"list"}`, "requires a source"},   // NewList validation, wrapped
+		{`{"transport":"redis","mode":"stream"}`, "requires stream"},    // NewStream validation, wrapped
+		{`{"transport":"redis","mode":"list"}`, "requires a source"},    // NewList validation, wrapped
 		{`{"transport":"redis","mode":"pubsub"}`, "requires a channel"}, // NewPubSub validation, wrapped
 	}
 	for _, tc := range cases {
