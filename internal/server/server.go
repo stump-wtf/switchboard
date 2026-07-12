@@ -1,6 +1,6 @@
 // Package server wires the switchboard HTTP surface: webhooks, the human web UI, the vended MCP
-// endpoints (Streamable HTTP; ADR-0017), static assets, and a background lease reaper — one chi
-// router, one PostgreSQL layer.
+// endpoints (Streamable HTTP; ADR-0017), static assets, and background workers (lease reaper,
+// retention pruner) — one chi router, one PostgreSQL layer.
 package server
 
 import (
@@ -135,6 +135,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	})
 
 	go reaper(ctx, st, log)
+	// Retention pruner: the periodic task SPEC-0004 mandates so events and terminal todos cannot
+	// grow unbounded. Same lifecycle pattern as the reaper — context-managed, exits on shutdown.
+	go pruner(ctx, st, log, pruneInterval)
 
 	// Pull-adapter poll loops (ADR-0014; SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety"):
 	// each registered adapter runs as a context-managed worker — enabled-flag gated, backing off on
@@ -434,6 +437,55 @@ func maxBytes(n int64) func(http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// pruneInterval is how often retention runs. The retention bounds are coarse — days of age and
+// hundreds of thousands of rows — so enforcement lagging the bound by up to an hour is invisible,
+// while hourly (vs. the reaper's 30s) keeps the four DELETE scans off the hot path. Prune is a
+// cheap no-op when nothing qualifies, so the steady-state cost is one short transaction per hour.
+const pruneInterval = time.Hour
+
+// pruneStore is the single store seam the pruner needs; *store.Store satisfies it. Narrowed to an
+// interface so the loop wiring is unit-testable without a database.
+type pruneStore interface {
+	Prune(ctx context.Context) (store.PruneResult, error)
+}
+
+// pruner periodically enforces the hybrid age + row-cap retention policy by invoking store.Prune,
+// which deletes over-age events/terminal todos then trims past the row cap in ONE transaction
+// (policy read from the settings table: retention_max_age_days / retention_max_rows). It runs once
+// at startup — restart-heavy deployments still get at-least-once enforcement per process — then on
+// every tick, and exits when ctx is cancelled (graceful shutdown, mirroring the reaper). Errors are
+// logged and the loop keeps going: a transient DB failure must not disable retention for the life
+// of the process. Governing: SPEC-0004 REQ "Hybrid Retention and Bounded Growth", ADR-0002.
+func pruner(ctx context.Context, st pruneStore, log *slog.Logger, interval time.Duration) {
+	prune := func() {
+		res, err := st.Prune(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return // shutdown cancelled the in-flight prune; not a failure worth logging
+			}
+			log.Warn("retention prune failed", "err", err)
+			return
+		}
+		if res.Total() > 0 {
+			log.Info("retention pruned",
+				"events_aged", res.EventsAged, "events_capped", res.EventsCapped,
+				"todos_aged", res.TodosAged, "todos_capped", res.TodosCapped,
+				"total", res.Total())
+		}
+	}
+	prune()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			prune()
+		}
 	}
 }
 
