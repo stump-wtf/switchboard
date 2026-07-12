@@ -74,8 +74,9 @@ Machine-readable interface definitions in `docs/reference/`:
 
 ## Open questions / to confirm
 
-Decisions recorded as *proposed* that Joe should confirm before the code hardens them in. Each is
-also tracked in the relevant spec's `design.md` **Open Questions** section.
+Decision points Joe should confirm before the code hardens them in further. The ADRs and specs are
+now *accepted*/*implemented* (the code follows the proposed defaults below), but each default remains
+open to confirmation and is also tracked in the relevant spec's `design.md` **Open Questions** section.
 
 1. **Immutable vs. mutable vended scope** *(proposed: immutable)* —
    [ADR-0008](adrs/ADR-0008-human-principal-vended-endpoints.md),

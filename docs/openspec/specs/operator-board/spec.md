@@ -1,5 +1,5 @@
 ---
-status: draft
+status: implemented
 date: 2026-07-10
 implements: [ADR-0016, ADR-0001]
 requires: [SPEC-0003, SPEC-0007, SPEC-0012]
@@ -141,7 +141,9 @@ endpoint was killed.
 
 When the personas capability ([SPEC-0009](../personas/spec.md)) is enabled, the Personas view MUST
 list personas as cards showing name, backing agent, published/draft state, the human-authored system
-prompt, the advertised verb subset, and the agent-card URL (`/.well-known/agent-card/{slug}`), with
+prompt, the advertised verb subset, and the agent-card URL
+(`/a/{persona_id}/.well-known/agent-card.json`, the per-persona well-known path of
+[SPEC-0009](../personas/spec.md)), with
 **Edit** and **Publish/Unpublish** actions. A create/edit modal MUST collect name (with a live
 agent-card URL preview), backing agent, system prompt, verb subset (constrained to the backing
 endpoint's vended verbs), and a published toggle; deleting MUST be available only from the edit
@@ -231,13 +233,17 @@ All error-producing operations MUST follow structured error handling:
 | POST | `/todos/{id}/extend` | Required | Extend lease (heartbeat) |
 | POST | `/todos/{id}/release` | Required | Release lease back to pending |
 | GET | `/endpoints` | Required | Endpoints view |
-| POST | `/endpoints` | Required | Vend a scoped endpoint (modal submit) |
+| GET | `/endpoints/vend` | Required | Vend-endpoint modal fragment |
+| POST | `/endpoints/vend` | Required | Vend a scoped endpoint (modal submit) |
 | POST | `/endpoints/{id}/revoke` | Required | Revoke (kill) an endpoint |
+| GET | `/agents`, `/agents/{id}` | Required | Legacy SPEC-0012 paths; redirect to `/endpoints` |
 | GET | `/personas` | Required | Personas view (capability-gated) |
 | POST | `/personas` | Required | Create persona |
 | POST | `/personas/{id}` | Required | Update persona (incl. publish toggle) |
 | POST | `/personas/{id}/delete` | Required | Delete persona |
 | GET | `/friends` | Required | Friends view (capability-gated) |
+| GET | `/friends/new` | Required | Add-friend modal fragment |
+| GET | `/friends/resolve` | Required | Resolve a friend handle (live card preview fragment) |
 | POST | `/friends` | Required | Send friendship request |
 | POST | `/friends/{id}/approve` | Required | Approve incoming request |
 | POST | `/friends/{id}/decline` | Required | Decline incoming request |

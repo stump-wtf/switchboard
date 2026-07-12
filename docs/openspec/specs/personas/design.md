@@ -16,12 +16,15 @@ of the agent's vended verbs. Each persona is published as an [A2A](https://a2a-p
 so it is discoverable by any A2A-speaking peer, and its advertised skills are **derived** from its
 vended verb subset so it can never claim a capability it does not hold.
 
-The current codebase implements the agent/endpoint substrate but not personas: the `endpoints` table
-carries a nullable `persona_id uuid` column (`internal/db/migrations/0001_init.sql`, commented
-"ADR-0009; null = agent-level endpoint"), but there is **no `personas` table, no persona store code, no
-Agent Card route, and no `/.well-known/agent-card.json` handler**. This spec is therefore grounded
-primarily in the ADR and the contract doc `docs/specs/personas-and-agent-cards.md`, and it records the
-implementation gap explicitly in Open Questions.
+When this spec was drafted, the codebase implemented the agent/endpoint substrate but not personas:
+the `endpoints` table carried a nullable `persona_id uuid` column
+(`internal/db/migrations/0001_init.sql`, commented "ADR-0009; null = agent-level endpoint") and
+nothing else. That gap has since been closed — the `personas` table
+(`internal/db/migrations/0004_personas.sql`, discoverability flag in `0006_persona_discoverable.sql`),
+persona store code (`internal/store/personas.go`), the verb→skill projector
+(`internal/persona/skills.go`), and the public well-known card handler (`internal/web/agentcard.go`,
+mounted in `internal/server/server.go`) are all implemented; the spec's frontmatter status reflects
+that.
 
 ## Goals / Non-Goals
 
@@ -146,8 +149,9 @@ erDiagram
 
 ## Migration Plan
 
-The persona substrate is a partial stub today: `endpoints.persona_id` exists, but the `personas` table,
-store code, card route, and well-known handler do not. Realizing this spec requires:
+At drafting time the persona substrate was a partial stub — `endpoints.persona_id` existed, but the
+`personas` table, store code, card route, and well-known handler did not. Realizing this spec required
+(all four steps have since shipped):
 
 1. A migration adding a `personas` table (and a `discoverable` flag) joined to `agents`, with
    `verb_subset`/`queues` subset-of-vended-scope enforced at write time.
@@ -163,9 +167,9 @@ endpoints remain valid agent-level grants.
 
 ## Open Questions
 
-- **Not yet implemented.** There is no `personas` table, persona store code, verb→skill projector, card
-  route, or well-known handler in the current tree. Only `endpoints.persona_id` (nullable) exists. The
-  ADR + contract doc define the intended shape; this design records it and the gap.
+- **Resolved (2026-07): implemented.** The `personas` table, persona store code, verb→skill projector
+  (`internal/persona/skills.go`), card route, and well-known handler all exist in the current tree; the
+  drafting-time gap this design originally recorded is closed.
 - **Authoritative verb→skill map location.** The contract doc gives an illustrative map
   (`list_todos+claim+complete → process-work`, `create_for → delegate-work`, etc.); the canonical map
   must live in code with a covering test. Its exact grouping semantics (all-of vs any-of a verb group)

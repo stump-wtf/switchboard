@@ -1,5 +1,5 @@
 ---
-status: draft
+status: implemented
 date: 2026-07-06
 implements: [ADR-0010]
 requires: [SPEC-0009]

@@ -194,8 +194,12 @@ func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": td.ID, "queue": td.Queue, "verified": true})
 }
 
-// DevCreateTodo creates a todo directly, for exercising the vend → agent → Channels loop without a
-// real provider. Guarded by dev mode: POST /dev/todos {queue,title,kind?,payload?}.
+// DevCreateTodo creates a todo directly, for exercising the vend → agent drain loop (list_todos /
+// claim / complete over a vended endpoint) without a real provider. Note it does NOT ring the
+// Channels doorbell: it uses plain CreateTodo, and the store's SPEC-0011 sender gate fires the
+// doorbell hook only for todos persisted together with a verified delivery event — dev todos have
+// none, so they surface by pull (and via this package's Hub for the web UI), losing nothing.
+// Guarded by dev mode: POST /dev/todos {queue,title,kind?,payload?}.
 func (i *Ingest) DevCreateTodo(w http.ResponseWriter, r *http.Request) {
 	if !i.devLogin {
 		http.NotFound(w, r)
