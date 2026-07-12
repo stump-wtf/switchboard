@@ -24,25 +24,30 @@ exact analogue of Amazon SQS's visibility-timeout mechanism: `claim` ≈ `Receiv
 message reappearing on the queue.
 
 The reference implementation is `internal/store/todos.go` (the `Todo` type, `CreateTodo`,
-`ClaimTodo`, `ClaimNext`, `CompleteTodo`, `FailTodo`, `ListTodos`, `GetTodo`, `ReapExpired`) over the
-`todos` table in `internal/db/migrations/0001_init.sql`.
+`ClaimTodo`, `ClaimNext`, `CompleteTodo`, `FailTodo`, `ListTodos`, `GetTodo`, `ReapExpired`,
+`RequeueDueRetries`) over the `todos` table in `internal/db/migrations/0001_init.sql` (plus the
+`next_retry_at` retry-window column from `0008_todo_retry_backoff.sql`).
 
 ## Requirements
 
 ### Requirement: Todo Lifecycle State Machine
 
 A todo MUST occupy exactly one of four states: `pending`, `claimed`, `done`, `failed`. `done` and
-`failed` are terminal. `retry` is a transition, not a state — a failed or lease-expired todo
-transitions back to `pending` with `attempt` incremented. The permitted transitions are:
+`failed` are terminal (a `failed` todo with an open retry window is terminal-unless-retried: it
+re-enters `pending` only through the scheduled backoff elapsing or an explicit retry). `retry` is a
+transition, not a state — a failed or lease-expired todo transitions back to `pending` with
+`attempt` incremented on the next claim. The permitted transitions are:
 
 - `create → pending`
 - `pending → claimed` (atomic claim, sets owner + lease + `claimed_at`, `attempt++`)
 - `claimed → claimed` (heartbeat extends the lease)
 - `claimed → done` (complete)
-- `claimed → pending | failed` (fail: retry while `attempt < max_attempts`, else dead-letter)
+- `claimed → failed` (fail: below `max_attempts` the todo parks in `failed` with a scheduled
+  retry window (`next_retry_at`, exponential backoff); at the cap it dead-letters with no window)
 - `claimed → pending | failed` (lease expiry: requeue while `attempt < max_attempts`, else
   dead-letter)
-- `failed → pending` (operator/agent retry of a dead-lettered todo)
+- `failed → pending` (scheduled-backoff retry once `next_retry_at` elapses — via the retry
+  scheduler or a due claim — or an explicit operator/agent retry)
 
 Any transition not in this set MUST be rejected. Terminal todos MUST persist as audit records subject
 to retention ([SPEC-0004](../persistence/spec.md)).
@@ -55,9 +60,10 @@ to retention ([SPEC-0004](../persistence/spec.md)).
 
 #### Scenario: Terminal states are final
 
-- **WHEN** a todo is `done` or `failed`
+- **WHEN** a todo is `done`, or `failed` with no open retry window
 - **THEN** it MUST NOT be claimed again by a normal claim, and it MAY only re-enter `pending` through
-  an explicit operator/agent retry of a dead-lettered (`failed`) todo
+  an explicit operator/agent retry of a dead-lettered (`failed`) todo (a `failed` todo whose
+  `next_retry_at` window is open additionally re-enters `pending` when that window elapses)
 
 ### Requirement: Atomic Claim with FOR UPDATE SKIP LOCKED
 
@@ -129,15 +135,30 @@ and consumers MUST be idempotent.
 ### Requirement: Bounded Retries via max_attempts
 
 Every todo MUST carry an `attempt` counter (incremented on each claim) and a `max_attempts` cap
-(default 5). On `fail`, if `attempt < max_attempts` the todo MUST return to `pending` for retry;
-otherwise it MUST transition to `failed` (dead-letter). Retries MUST NOT loop unbounded. A
-dead-lettered (`failed`) todo MAY be re-queued only by an explicit operator/agent retry.
+(default 5). On `fail`, if `attempt < max_attempts` the todo MUST transition to `failed` with a
+scheduled retry window: `next_retry_at = now() + backoff(attempt)`, where the backoff grows
+exponentially from a 30-second base, doubling per attempt and capped at 15 minutes (attempt 1 →
+30s, 2 → 1m, 3 → 2m, 4 → 4m, 5 → 8m, 6+ → 15m). While the window is open the todo MUST NOT be
+claimable. Once `next_retry_at` elapses the todo MUST return to `pending`: a background retry
+scheduler MUST re-queue due retries (clearing `owner`/`lease_expires_at`/`next_retry_at`), and the
+claim scan MAY claim a due retry directly so re-queue latency never depends on the scheduler tick.
+If `attempt >= max_attempts` the todo MUST transition to `failed` with no retry window
+(dead-letter). Retries MUST NOT loop unbounded. A dead-lettered todo MAY be re-queued only by an
+explicit operator/agent retry; the same explicit retry MAY also override an open retry window,
+re-queuing immediately.
 
-#### Scenario: Fail below cap retries, at cap dead-letters
+#### Scenario: Fail below cap schedules a backoff retry, at cap dead-letters
 
 - **WHEN** the owner fails a claimed todo whose `attempt < max_attempts`
-- **THEN** the todo MUST return to `pending` with `owner`/`lease_expires_at` cleared; **but WHEN**
-  `attempt >= max_attempts`, it MUST transition to `failed`
+- **THEN** the todo MUST park in `failed` with `lease_expires_at` cleared and `next_retry_at`
+  stamped, and MUST NOT be claimable before `next_retry_at`; **but WHEN** `attempt >=
+  max_attempts`, it MUST transition to `failed` with `next_retry_at` NULL
+
+#### Scenario: Elapsed backoff re-queues
+
+- **WHEN** a failed todo's `next_retry_at` elapses
+- **THEN** the retry scheduler MUST return it to `pending` with `owner`, `lease_expires_at`, and
+  `next_retry_at` cleared, and a claim arriving after the window MAY take it directly
 
 ### Requirement: Idempotent Enqueue and Dedup
 

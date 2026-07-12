@@ -125,6 +125,73 @@ func TestTodoRowCountdownContract(t *testing.T) {
 	}
 }
 
+// retryRowFixture builds the failed-with-scheduled-retry render model (SPEC-0003 scheduled
+// backoff): attempt 2 of 5 with a live retry window stamped at a fixed unix-ms deadline.
+func retryRowFixture(deadline int64) todoRow {
+	row := rowFixture("failed")
+	row.Attempt = 2
+	row.RetryScheduled = true
+	row.RetrySecs = 30
+	row.RetryDeadlineMS = deadline
+	return row
+}
+
+// TestDrawerRetryBackoffCardContract pins the drawer failed-card for a scheduled retry (design:
+// "retry with backoff · attempt N" + live ↻ countdown; SPEC-0003 REQ "Bounded Retries via
+// max_attempts", scheduled backoff): the card carries the design copy, the countdown element ticks
+// via the same sb.js mechanism as the lease (data-sb-countdown toward the server-stamped
+// deadline), and the dead-letter callout is NOT rendered while a retry is scheduled. "Retry now"
+// stays in the footer as the manual override.
+func TestDrawerRetryBackoffCardContract(t *testing.T) {
+	h := newTestHandler(t)
+	const deadline = int64(1730000456000)
+	out, err := h.renderFragment("drawer", drawerView{Row: retryRowFixture(deadline), IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatalf("render drawer: %v", err)
+	}
+	for _, want := range []string{
+		`retry with backoff · attempt 2`,       // the design failed-card copy
+		`↻ 30s`,                                // server-rendered countdown seed before the first JS tick
+		`data-sb-countdown`,                    // sb.js re-labels it each tick
+		`data-sb-deadline="1730000456000"`,     // the server-stamped retry deadline flows through verbatim
+		`data-sb-prefix="↻ "`,                  // sb.js keeps the ↻ glyph in front of the ticking seconds
+		`role="timer"`,                         // announced as a timer (AT)
+		`hx-post="/todos/td_failed0000/retry"`, // "Retry now" remains the manual override
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("drawer retry card contract: missing %q", want)
+		}
+	}
+	if strings.Contains(out, "Dead-lettered") {
+		t.Errorf("drawer with a scheduled retry must not render the dead-letter callout: %q", out)
+	}
+}
+
+// TestTodoRowRetryCountdownContract pins the todos-table failed-row sub-line for a scheduled retry
+// (design sub-line "↻ retry Ns"): the same data-sb-countdown mechanism, prefixed, replacing the
+// static attempts sub-line while the window is open.
+func TestTodoRowRetryCountdownContract(t *testing.T) {
+	h := newTestHandler(t)
+	const deadline = int64(1730000789000)
+	out, err := h.renderFragment("todo_row", retryRowFixture(deadline))
+	if err != nil {
+		t.Fatalf("render todo_row: %v", err)
+	}
+	for _, want := range []string{
+		`↻ retry 30s`, // server-rendered seed of the design sub-line
+		`data-sb-countdown`,
+		`data-sb-deadline="1730000789000"`,
+		`data-sb-prefix="↻ retry "`, // sb.js renders "↻ retry <secs>s" from this prefix
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("todo_row retry countdown contract: missing %q in %q", want, out)
+		}
+	}
+	if strings.Contains(out, "attempts</span>") {
+		t.Errorf("failed row with a scheduled retry should show the countdown, not the static attempts sub-line: %q", out)
+	}
+}
+
 // TestDrawerFocusTrapContract pins the DOM hooks static/sb.js uses to open the overlay, trap Tab
 // focus, and close on Escape / scrim / the close button (with focus return). Without these the
 // focus trap and Escape-to-close silently stop working, so the template must always emit them.

@@ -74,8 +74,10 @@ compact todo rows filtered to the endpoint's granted queues (optionally narrowed
 `state` filter within scope) with a bounded `limit` (default 50). `claim` MUST atomically transition
 a `pending` todo to `claimed`, acquiring a lease with a caller-supplied or default TTL, and MUST fail
 with `conflict` if the todo is not in the expected claimable state. `complete` MUST transition a
-todo the endpoint holds to `done`. `fail` MUST transition a leased todo back to `pending` if attempts
-remain, otherwise dead-letter it to `failed`. The todo owner MUST be recorded as the acting agent
+todo the endpoint holds to `done`. `fail` MUST park a leased todo in `failed` with a scheduled
+backoff retry window if attempts remain — it re-enters `pending` when the window elapses, per
+[SPEC-0003](../todo-queue/spec.md) Bounded Retries — otherwise dead-letter it to `failed` with no
+window. The todo owner MUST be recorded as the acting agent
 identity (`agent:<agent_id>`). A todo returned or transitioned MUST carry at minimum `id`, `queue`,
 `state`, and `attempt`.
 
@@ -87,8 +89,9 @@ identity (`agent:<agent_id>`). A todo returned or transitioned MUST carry at min
 #### Scenario: Fail retries until attempts are exhausted
 
 - **WHEN** `fail` is called on a leased todo and retry attempts remain
-- **THEN** the todo MUST return to `pending` with an incremented `attempt`; when no attempts remain
-  it MUST transition to `failed`
+- **THEN** the todo MUST park in `failed` with a scheduled retry window (`next_retry_at`) and
+  return to `pending` once the window elapses; when no attempts remain it MUST transition to
+  `failed` with no retry window
 
 #### Scenario: List is confined to granted queues
 

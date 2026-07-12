@@ -90,8 +90,10 @@ clean outcome and collapsing duplicate webhook deliveries into one todo.
 ## Architecture
 
 The state machine as implemented: `create` yields `pending`; an atomic claim moves it to `claimed`
-under a lease; the owner completes (→`done`), fails (→`pending` retry or `failed` dead-letter), or
-lets the lease lapse (reaper → `pending` or `failed`).
+under a lease; the owner completes (→`done`), fails (→`failed`, with a scheduled backoff retry
+window (`next_retry_at`) below the attempt cap or dead-lettered at the cap), or lets the lease
+lapse (reaper → `pending` or `failed`). A failed todo with an open window returns to `pending`
+when the window elapses (retry scheduler, or the claim scan once due).
 
 ```mermaid
 stateDiagram-v2
@@ -99,12 +101,13 @@ stateDiagram-v2
   pending --> claimed : claim (SKIP LOCKED)\nowner + lease, attempt++
   claimed --> claimed : heartbeat\nextend lease_expires_at
   claimed --> done : complete (owner acks)
-  claimed --> pending : fail & attempt < max_attempts
-  claimed --> failed : fail & attempt >= max_attempts
+  claimed --> failed : fail & attempt < max_attempts\n(next_retry_at = now + backoff)
+  claimed --> failed : fail & attempt >= max_attempts\n(dead-letter, no retry window)
   claimed --> pending : lease expiry & attempt < max_attempts\n(reaper — crash safety)
   claimed --> failed : lease expiry & attempt >= max_attempts\n(dead-letter)
   claimed --> pending : release (owner gives up lease)
-  failed --> pending : operator/agent retry
+  failed --> pending : next_retry_at elapsed\n(retry scheduler / due claim)
+  failed --> pending : operator/agent retry (manual override)
   done --> [*]
   failed --> [*]
 ```

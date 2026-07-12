@@ -1043,6 +1043,37 @@ pre code {
   margin-top: 12px;
 }
 
+/* Failed-with-retry card (drawer): the scheduled-backoff countdown toward next_retry_at.
+   Design failed-card ("retry with backoff · attempt N" + live ↻ countdown); SPEC-0003 scheduled
+   backoff. Mirrors .sb-lease's card shape in the failed status tint. */
+.sb-retry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--sb-input-border-soft);
+  border-radius: var(--sb-radius-card);
+  background: var(--sb-status-failed-bg);
+  padding: 12px 14px;
+  margin: 12px 0;
+}
+.sb-retry__label {
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-status-failed);
+}
+.sb-retry__count {
+  font-family: var(--sb-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sb-status-failed);
+  white-space: nowrap;
+}
+/* Todos-table failed-row retry sub-line ticks in the failed tint too. */
+.sb-trow__sub--retry {
+  color: var(--sb-status-failed);
+}
+
 .sb-meta {
   display: grid;
   grid-template-columns: 1fr 1fr;

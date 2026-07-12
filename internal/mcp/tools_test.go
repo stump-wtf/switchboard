@@ -189,8 +189,10 @@ func TestClaimCompleteLifecycle(t *testing.T) {
 	callErr(t, ctx, cs, "claim", map[string]any{"id": "td_1"}, "conflict")
 }
 
-// TestFailRetriesThenDeadLetters: fail returns a claimed todo to pending while attempts remain and
-// dead-letters it once exhausted (SPEC-0006 scenario "Fail retries until attempts are exhausted").
+// TestFailRetriesThenDeadLetters: fail parks a claimed todo in `failed` with a scheduled backoff
+// retry window while attempts remain — unclaimable until the window elapses — and dead-letters it
+// once exhausted (SPEC-0006 scenario "Fail retries until attempts are exhausted"; SPEC-0003
+// REQ "Bounded Retries via max_attempts", scheduled backoff).
 func TestFailRetriesThenDeadLetters(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -205,9 +207,19 @@ func TestFailRetriesThenDeadLetters(t *testing.T) {
 	}
 	callOK(t, ctx, cs, "claim", map[string]any{"id": "td_1"}, &out)
 	callOK(t, ctx, cs, "fail", map[string]any{"id": "td_1"}, &out)
-	if out.State != "pending" || out.Attempt != 1 {
-		t.Fatalf("first fail = %+v, want pending attempt 1", out)
+	if out.State != "failed" || out.Attempt != 1 {
+		t.Fatalf("first fail = %+v, want failed attempt 1 (retry scheduled)", out)
 	}
+	// The retry window is open: an immediate re-claim conflicts (SPEC-0003 "MUST NOT be claimable
+	// before next_retry_at").
+	callErr(t, ctx, cs, "claim", map[string]any{"id": "td_1"}, "conflict")
+	// Rewind the window so the scheduled retry is due, making the todo claimable again.
+	f.mu.Lock()
+	td := f.todos["td_1"]
+	past := time.Now().Add(-time.Second)
+	td.NextRetryAt = &past
+	f.todos["td_1"] = td
+	f.mu.Unlock()
 	callOK(t, ctx, cs, "claim", map[string]any{"id": "td_1"}, &out)
 	callOK(t, ctx, cs, "fail", map[string]any{"id": "td_1", "result": map[string]any{"reason": "gave up"}}, &out)
 	if out.State != "failed" {

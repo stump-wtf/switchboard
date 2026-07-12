@@ -64,8 +64,9 @@ func TestBoundedRetries(t *testing.T) {
 		t.Fatalf("default max_attempts = %d, want 5", td.MaxAttempts)
 	}
 
-	// Fail repeatedly: below the cap it returns to pending; at the cap it dead-letters. It must never
-	// loop unbounded — after max_attempts failures the state is terminal 'failed'.
+	// Fail repeatedly: below the cap it parks in 'failed' with a scheduled retry window (rewound
+	// here so the next claim is due); at the cap it dead-letters. It must never loop unbounded —
+	// after max_attempts failures the state is terminal 'failed' with no retry window.
 	var last Todo
 	for i := 1; i <= td.MaxAttempts; i++ {
 		c, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour)
@@ -79,8 +80,16 @@ func TestBoundedRetries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fail #%d: %v", i, err)
 		}
+		if i < td.MaxAttempts {
+			if _, err := s.pool.Exec(ctx, `UPDATE todos SET next_retry_at = now() - interval '1 second' WHERE id=$1`, td.ID); err != nil {
+				t.Fatalf("rewind retry window #%d: %v", i, err)
+			}
+		}
 	}
 	if last.State != "failed" {
 		t.Fatalf("after %d failures state=%s, want failed", td.MaxAttempts, last.State)
+	}
+	if last.NextRetryAt != nil {
+		t.Fatalf("after %d failures NextRetryAt=%v, want nil (dead-letter)", td.MaxAttempts, last.NextRetryAt)
 	}
 }

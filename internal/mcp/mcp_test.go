@@ -135,12 +135,15 @@ func (f *fakeStore) ClaimTodo(_ context.Context, id, owner string, ttl time.Dura
 		return store.Todo{}, store.ErrNotFound
 	}
 	expired := t.State == "claimed" && t.LeaseExpiresAt != nil && t.LeaseExpiresAt.Before(time.Now()) && t.Attempt < t.MaxAttempts
-	if !(t.State == "pending" || expired) || (t.Assignee != "" && t.Assignee != owner) {
+	// A failed todo with an elapsed retry window is claimable directly (SPEC-0003 scheduled
+	// backoff); one whose window is still open is not.
+	retryDue := t.State == "failed" && t.NextRetryAt != nil && !t.NextRetryAt.After(time.Now()) && t.Attempt < t.MaxAttempts
+	if !(t.State == "pending" || expired || retryDue) || (t.Assignee != "" && t.Assignee != owner) {
 		return store.Todo{}, store.ErrConflict
 	}
 	now := time.Now()
 	lease := now.Add(ttl)
-	t.State, t.Owner, t.LeaseExpiresAt, t.ClaimedAt = "claimed", owner, &lease, &now
+	t.State, t.Owner, t.LeaseExpiresAt, t.ClaimedAt, t.NextRetryAt = "claimed", owner, &lease, &now, nil
 	t.Attempt++
 	f.todos[id] = t
 	return t, nil
@@ -197,10 +200,14 @@ func (f *fakeStore) FailTodo(_ context.Context, id, owner string, result []byte)
 	if t.State != "claimed" || t.Owner != owner {
 		return store.Todo{}, store.ErrConflict
 	}
-	if t.Attempt >= t.MaxAttempts {
-		t.State = "failed"
+	// Mirror the store's scheduled-backoff fail (SPEC-0003 Bounded Retries): below the cap the todo
+	// parks in `failed` with a retry window; at the cap it dead-letters with no window.
+	t.State = "failed"
+	if t.Attempt < t.MaxAttempts {
+		next := time.Now().Add(30 * time.Second)
+		t.NextRetryAt = &next
 	} else {
-		t.State, t.Owner = "pending", ""
+		t.NextRetryAt = nil
 	}
 	t.LeaseExpiresAt, t.Result = nil, result
 	f.todos[id] = t

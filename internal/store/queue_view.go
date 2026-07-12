@@ -58,14 +58,15 @@ type TodoItem struct {
 // todoColsT is todoCols aliased to the `t` table for the joined listing queries.
 const todoColsT = `t.id, t.queue, COALESCE(t.source,''), COALESCE(t.kind,''), t.title, t.payload, t.event_id,
 	COALESCE(t.idempotency_key,''), COALESCE(t.assignee,''), t.state, COALESCE(t.owner,''),
-	t.lease_expires_at, t.attempt, t.max_attempts, t.result, t.created_at, t.claimed_at, t.completed_at`
+	t.lease_expires_at, t.attempt, t.max_attempts, t.result, t.created_at, t.claimed_at, t.completed_at,
+	t.next_retry_at`
 
 // scanTodoItem scans todoColsT plus the joined trust mode and dedup count.
 func scanTodoItem(row pgx.Row) (TodoItem, error) {
 	var it TodoItem
 	err := row.Scan(&it.ID, &it.Queue, &it.Source, &it.Kind, &it.Title, &it.Payload, &it.EventID,
 		&it.IdempotencyKey, &it.Assignee, &it.State, &it.Owner, &it.LeaseExpiresAt, &it.Attempt,
-		&it.MaxAttempts, &it.Result, &it.CreatedAt, &it.ClaimedAt, &it.CompletedAt,
+		&it.MaxAttempts, &it.Result, &it.CreatedAt, &it.ClaimedAt, &it.CompletedAt, &it.NextRetryAt,
 		&it.TrustMode, &it.DedupCount)
 	return it, err
 }

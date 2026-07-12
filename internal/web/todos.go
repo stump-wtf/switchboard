@@ -27,8 +27,8 @@ import (
 const todoListCap = 100
 
 // todoRow is the render model for one Todos table row (fragments.html "todo_row") and the drawer
-// header. The lease sub-line countdown is driven by a server-stamped deadline (data attribute) that
-// sb.js animates toward — the UI never computes lifecycle, only presents it.
+// header. The lease and retry-backoff countdowns are driven by server-stamped deadlines (data
+// attributes) that sb.js animates toward — the UI never computes lifecycle, only presents it.
 type todoRow struct {
 	ID              string
 	ShortID         string
@@ -40,6 +40,9 @@ type todoRow struct {
 	HasLease        bool
 	LeaseSecs       int   // remaining lease seconds at render time (claimed)
 	LeaseDeadlineMS int64 // unix-ms lease deadline for the sb.js countdown
+	RetryScheduled  bool  // failed with a backoff retry pending (SPEC-0003 scheduled backoff)
+	RetrySecs       int   // seconds until the scheduled retry at render time (failed)
+	RetryDeadlineMS int64 // unix-ms retry deadline for the sb.js countdown
 	Attempt         int
 	MaxAttempts     int
 	DedupCount      int
@@ -313,6 +316,18 @@ func (h *Handler) todoRowFromItem(ctx context.Context, it store.TodoItem, oob, f
 		row.HasLease = true
 		row.LeaseSecs = secs
 		row.LeaseDeadlineMS = it.LeaseExpiresAt.UnixMilli()
+	}
+	// A failed todo with a retry window renders the scheduled-backoff countdown (drawer card + row
+	// sub-line); one without (next_retry_at NULL) is a dead-letter — retry is manual-only.
+	// Governing: SPEC-0003 REQ "Bounded Retries via max_attempts" (scheduled backoff).
+	if it.State == "failed" && it.NextRetryAt != nil {
+		secs := int(time.Until(*it.NextRetryAt).Seconds())
+		if secs < 0 {
+			secs = 0
+		}
+		row.RetryScheduled = true
+		row.RetrySecs = secs
+		row.RetryDeadlineMS = it.NextRetryAt.UnixMilli()
 	}
 	return row
 }

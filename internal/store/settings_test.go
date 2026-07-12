@@ -45,6 +45,11 @@ func TestTodoTransitionHookFires(t *testing.T) {
 	if _, err := s.FailTodo(ctx, td.ID, "w", nil); err != nil {
 		t.Fatalf("fail: %v", err)
 	}
+	// A below-cap fail parks in 'failed' with a scheduled retry window (SPEC-0003 scheduled
+	// backoff); rewind it so the re-claim is due.
+	if _, err := s.pool.Exec(ctx, `UPDATE todos SET next_retry_at = now() - interval '1 second' WHERE id=$1`, td.ID); err != nil {
+		t.Fatalf("rewind retry window: %v", err)
+	}
 	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
 		t.Fatalf("re-claim: %v", err)
 	}
@@ -52,7 +57,7 @@ func TestTodoTransitionHookFires(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	want := []string{"created", "claimed", "pending", "claimed", "done"}
+	want := []string{"created", "claimed", "failed", "claimed", "done"}
 	if len(verbs) != len(want) {
 		t.Fatalf("hook verbs = %v, want %v", verbs, want)
 	}

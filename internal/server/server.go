@@ -495,7 +495,10 @@ func pruner(ctx context.Context, st pruneStore, log *slog.Logger, interval time.
 	}
 }
 
-// reaper periodically requeues (or dead-letters) todos with expired leases — crash safety (ADR-0002).
+// reaper periodically requeues (or dead-letters) todos with expired leases — crash safety (ADR-0002)
+// — and re-queues failed todos whose scheduled retry backoff has elapsed (SPEC-0003 REQ "Bounded
+// Retries via max_attempts", scheduled backoff). The claim scan also picks up due retries directly,
+// so this loop only bounds how long a due retry can sit without a claimant asking.
 func reaper(ctx context.Context, st *store.Store, log *slog.Logger) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
@@ -508,6 +511,11 @@ func reaper(ctx context.Context, st *store.Store, log *slog.Logger) {
 				log.Warn("reaper", "err", err)
 			} else if n > 0 {
 				log.Info("reaped expired leases", "count", n)
+			}
+			if n, err := st.RequeueDueRetries(ctx); err != nil {
+				log.Warn("retry scheduler", "err", err)
+			} else if n > 0 {
+				log.Info("re-queued scheduled retries", "count", n)
 			}
 		}
 	}
