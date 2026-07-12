@@ -76,6 +76,44 @@ func TestAdapterRegistry(t *testing.T) {
 	}
 }
 
+// Server startup enumerates the queue family via ListAdaptersByFamily to attach poll loops:
+// family-scoped, name-ordered, and INCLUDING disabled rows (the runner honors the enabled flag at
+// runtime, so a disabled row can be re-enabled without a restart).
+func TestListAdaptersByFamily(t *testing.T) {
+	s, ctx := testStore(t)
+
+	for _, a := range []struct{ name, family string }{
+		{"redis-jobs", "queue"},
+		{"redis-deploys", "queue"},
+		{"github", "webhook"},
+	} {
+		if _, err := s.RegisterAdapter(ctx, a.name, a.family, "queue", nil); err != nil {
+			t.Fatalf("register %s: %v", a.name, err)
+		}
+	}
+	if err := s.SetAdapterEnabled(ctx, "redis-jobs", false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	got, err := s.ListAdaptersByFamily(ctx, "queue")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "redis-deploys" || got[1].Name != "redis-jobs" {
+		t.Fatalf("queue family = %+v, want [redis-deploys redis-jobs] in name order", got)
+	}
+	if got[1].Enabled {
+		t.Fatal("disabled rows must still be listed (runtime flag is the runner's to honor)")
+	}
+
+	if got, err := s.ListAdaptersByFamily(ctx, "webhook"); err != nil || len(got) != 1 || got[0].Name != "github" {
+		t.Fatalf("webhook family = %+v err=%v, want just github", got, err)
+	}
+	if got, err := s.ListAdaptersByFamily(ctx, "carrier-pigeon"); err != nil || len(got) != 0 {
+		t.Fatalf("unknown family = %+v err=%v, want empty", got, err)
+	}
+}
+
 // SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety": the poll-loop runner stamps each
 // consume attempt's outcome (last poll time + last error) on the adapter's registry row so an
 // operator can see a degraded adapter without shell access.

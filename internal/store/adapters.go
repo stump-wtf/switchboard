@@ -54,6 +54,30 @@ func (s *Store) RegisterAdapter(ctx context.Context, name, family, trustMode str
 	return scanAdapter(row)
 }
 
+// ListAdaptersByFamily returns every registry row with the given family (e.g. "queue"), ordered by
+// name. Server startup reads the queue family through this to know which pull adapters to attach to
+// the poll-loop runner; disabled rows are included — the runner itself honors the enabled flag at
+// runtime, so a row disabled at startup can be re-enabled without a restart.
+//
+// Governing: ADR-0014 (adapter registry), SPEC-0002 REQ "Adapter Interface and Trust Mode".
+func (s *Store) ListAdaptersByFamily(ctx context.Context, family string) ([]Adapter, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+adapterCols+` FROM adapters WHERE family = $1 ORDER BY name`, family)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Adapter
+	for rows.Next() {
+		a, err := scanAdapter(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // GetAdapter returns the registry row for name, or ErrNotFound.
 func (s *Store) GetAdapter(ctx context.Context, name string) (Adapter, error) {
 	row := s.pool.QueryRow(ctx, `SELECT `+adapterCols+` FROM adapters WHERE name = $1`, name)
