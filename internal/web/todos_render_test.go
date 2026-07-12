@@ -192,6 +192,103 @@ func TestTodoRowRetryCountdownContract(t *testing.T) {
 	}
 }
 
+// TestDrawerIdentityBlock pins the drawer identity block the design puts at the top of the body
+// (detail.tag / detail.src / detail.type, issue #178): the trust-tinted provider tag chip beside
+// the source name and event type. Governing: SPEC-0013 REQ "Todo Detail Drawer".
+func TestDrawerIdentityBlock(t *testing.T) {
+	h := newTestHandler(t)
+	out, err := h.renderFragment("drawer", drawerView{Row: rowFixture("pending"), IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatalf("render drawer: %v", err)
+	}
+	for _, want := range []string{
+		`class="sb-identity"`,              // the block itself, before the meta grid
+		`class="sb-tag sb-tag--signed"`,    // provider tag tinted by the trust mode
+		`>GH<`,                             // github → GH per providerTag
+		`class="sb-identity__src">github<`, // the source name
+		`class="sb-identity__type">push<`,  // the event type
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("drawer identity block: missing %q", want)
+		}
+	}
+}
+
+// TestDrawerVisibilityLeaseCopy pins the design copy on the claimed drawer's lease card (#178):
+// the "Visibility lease · {agent}" label, the reaper hint line, and the "Ns left" countdown seed
+// (data-sb-suffix so sb.js keeps the phrasing on every tick). Governing: SPEC-0013 REQ "Todo
+// Detail Drawer" (lease card), SPEC-0003 REQ "Visibility Window, Lease, Heartbeat".
+func TestDrawerVisibilityLeaseCopy(t *testing.T) {
+	h := newTestHandler(t)
+	out, err := h.renderFragment("drawer", drawerView{Row: rowFixture("claimed"), IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatalf("render drawer: %v", err)
+	}
+	for _, want := range []string{
+		"Visibility lease · agent · reviewer-bot",                             // label carries the leasing agent
+		"if the lease expires, the reaper re-surfaces this todo to the queue", // reaper hint
+		`data-sb-suffix=" left"`,                                              // sb.js renders "<secs>s left" from this suffix
+		">240s left</span>",                                                   // server-rendered seed before the first JS tick
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("drawer lease card copy: missing %q", want)
+		}
+	}
+}
+
+// TestDrawerDoneTerminalFooter pins the terminal footer for done todos (#178): where the action
+// buttons would be, a finished todo shows the design's "✓ completed · acked to source" line (the
+// footer was previously empty). Governing: SPEC-0013 REQ "Todo Detail Drawer" (footer actions
+// appropriate to the state).
+func TestDrawerDoneTerminalFooter(t *testing.T) {
+	h := newTestHandler(t)
+	out, err := h.renderFragment("drawer", drawerView{Row: rowFixture("done"), IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatalf("render drawer: %v", err)
+	}
+	if !strings.Contains(out, `class="sb-drawer__done">✓ completed · acked to source<`) {
+		t.Errorf("done drawer: missing terminal footer: %q", out)
+	}
+	// Terminal means read-only: the footer line must not appear on live states.
+	for _, state := range []string{"pending", "claimed", "failed"} {
+		live, err := h.renderFragment("drawer", drawerView{Row: rowFixture(state), IdempotencyKey: "k"})
+		if err != nil {
+			t.Fatalf("render drawer (%s): %v", state, err)
+		}
+		if strings.Contains(live, "acked to source") {
+			t.Errorf("%s drawer must not render the done terminal footer", state)
+		}
+	}
+}
+
+// TestDrawerDedupLineAlwaysRendered pins the dedupLine sentence under the idempotency key (#178):
+// always present — "N duplicate deliveries collapsed via idempotency key" once the key has
+// collapsed deliveries, and the "no duplicate deliveries" baseline otherwise. The count is the
+// store's DedupCount (events sharing the todo's idempotency key; see store/queue_view.go).
+// Governing: SPEC-0013 REQ "Todo Detail Drawer" (idempotency key with a dedup summary).
+func TestDrawerDedupLineAlwaysRendered(t *testing.T) {
+	h := newTestHandler(t)
+	baseline, err := h.renderFragment("drawer", drawerView{Row: rowFixture("pending"), IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatalf("render drawer: %v", err)
+	}
+	if !strings.Contains(baseline, "no duplicate deliveries") {
+		t.Errorf("drawer without dedup: missing baseline dedupLine: %q", baseline)
+	}
+	row := rowFixture("pending")
+	row.DedupCount = 3
+	collapsed, err := h.renderFragment("drawer", drawerView{Row: row, IdempotencyKey: "gh-key-1"})
+	if err != nil {
+		t.Fatalf("render drawer: %v", err)
+	}
+	if !strings.Contains(collapsed, "3 duplicate deliveries collapsed via idempotency key") {
+		t.Errorf("drawer with dedup ×3: missing collapsed dedupLine: %q", collapsed)
+	}
+	if strings.Contains(collapsed, "no duplicate deliveries") {
+		t.Errorf("drawer with dedup ×3 must not also render the baseline line: %q", collapsed)
+	}
+}
+
 // TestDrawerFocusTrapContract pins the DOM hooks static/sb.js uses to open the overlay, trap Tab
 // focus, and close on Escape / scrim / the close button (with focus return). Without these the
 // focus trap and Escape-to-close silently stop working, so the template must always emit them.

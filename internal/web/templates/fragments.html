@@ -204,20 +204,36 @@
 
 {{/* ============================ Todo detail drawer (SPEC-0013) ============================ */}}
 
-{{/* drawer — the right-hand todo detail overlay: lease/retry cards, metadata, escaped payload,
-     lifecycle timeline, and state-appropriate footer actions. Rendered into #sb-overlay on HTMX and
-     inline on the standalone /todos/{id} page. All actions are HTMX POSTs (CSRF via the layout's
-     body hx-headers). Data: web.drawerView. */}}
+{{/* drawer — the right-hand todo detail overlay: identity block, lease/retry cards, metadata,
+     escaped payload, lifecycle timeline, and state-appropriate footer actions. Rendered into
+     #sb-overlay on HTMX and inline on the standalone /todos/{id} page. All actions are HTMX POSTs
+     (CSRF via the layout's body hx-headers). Data: web.drawerView. */}}
 {{define "drawer"}}<div class="sb-drawer" role="dialog" aria-modal="true" aria-label="Todo {{.Row.ShortID}}" data-sb-drawer tabindex="-1">
   <div class="sb-drawer__head">
     <div class="sb-drawer__title"><span class="sb-drawer__id sb-mono">{{.Row.ShortID}}</span><span class="sb-status sb-status--{{.Row.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.Row.State}}</span></div>
     <button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button>
   </div>
+  {{/* Identity block — the trust-tinted provider tag, the source, and the event type (design
+       drawer: detail.tag / detail.src / detail.type). Governing: SPEC-0013 REQ "Todo Detail
+       Drawer", DESIGN (drawer identity block, #178). */}}
+  <div class="sb-identity">
+    <span class="sb-tag sb-tag--{{.Row.TrustMode}}" aria-hidden="true">{{tag .Row.Source}}</span>
+    <div class="sb-identity__text">
+      <span class="sb-identity__src">{{if .Row.Source}}{{.Row.Source}}{{else}}—{{end}}</span>
+      <span class="sb-identity__type">{{.Row.Kind}}</span>
+    </div>
+  </div>
   {{if and (eq .Row.State "claimed") .Row.HasLease}}
+  {{/* Visibility-lease card (design: "Visibility lease · {agent}" + live countdown + reaper hint).
+       Governing: SPEC-0013 REQ "Todo Detail Drawer" (lease card), SPEC-0003 REQ "Visibility Window,
+       Lease, Heartbeat" (reaper re-surface). */}}
   <div class="sb-lease">
-    <span class="sb-microlabel">Lease</span>
-    <div class="sb-lease__count" data-sb-countdown data-sb-deadline="{{.Row.LeaseDeadlineMS}}" role="timer" aria-live="off">{{.Row.LeaseSecs}}s</div>
+    <div class="sb-lease__head">
+      <span class="sb-microlabel">Visibility lease{{if .Row.OwnerLabel}} · {{.Row.OwnerLabel}}{{end}}</span>
+      <span class="sb-lease__count" data-sb-countdown data-sb-deadline="{{.Row.LeaseDeadlineMS}}" data-sb-suffix=" left" role="timer" aria-live="off">{{.Row.LeaseSecs}}s left</span>
+    </div>
     <div class="sb-lease__track" aria-hidden="true"><div class="sb-lease__bar" data-sb-leasebar data-sb-deadline="{{.Row.LeaseDeadlineMS}}" style="width:100%"></div></div>
+    <p class="sb-lease__hint">if the lease expires, the reaper re-surfaces this todo to the queue</p>
     <div class="sb-drawer__acts">
       <button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.Row.ID}}/extend" hx-target="#sb-overlay" hx-swap="innerHTML">Extend lease</button>
       <button type="button" class="sb-btn sb-btn--mono sb-btn--secondary" hx-post="/todos/{{.Row.ID}}/release" hx-target="#sb-overlay" hx-swap="innerHTML">Release</button>
@@ -241,7 +257,11 @@
     <div class="sb-meta__cell"><dt>Attempts</dt><dd>{{.Row.Attempt}}/{{.Row.MaxAttempts}}</dd></div>
     <div class="sb-meta__cell"><dt>Age</dt><dd>{{reltime .Row.CreatedAt}}</dd></div>
   </dl>
-  <div class="sb-meta__idem"><span class="sb-microlabel">Idempotency key</span><code class="sb-code">{{if .IdempotencyKey}}{{.IdempotencyKey}}{{else}}—{{end}}</code>{{if gt .Row.DedupCount 1}} <span class="sb-dedup">dedup ×{{.Row.DedupCount}}</span>{{end}}</div>
+  <div class="sb-meta__idem"><span class="sb-microlabel">Idempotency key</span><code class="sb-code">{{if .IdempotencyKey}}{{.IdempotencyKey}}{{else}}—{{end}}</code>{{if gt .Row.DedupCount 1}} <span class="sb-dedup">dedup ×{{.Row.DedupCount}}</span>{{end}}
+    {{/* dedupLine — always rendered (design: "N duplicate deliveries collapsed via idempotency
+         key" / "no duplicate deliveries"). Governing: SPEC-0013 REQ "Todo Detail Drawer"
+         (idempotency key with a dedup summary), DESIGN (drawer dedupLine, #178). */}}
+    <span class="sb-meta__dedupline">{{if gt .Row.DedupCount 1}}{{.Row.DedupCount}} duplicate deliveries collapsed via idempotency key{{else}}no duplicate deliveries{{end}}</span></div>
   <span class="sb-microlabel">Payload</span>
   <pre class="sb-pre sb-drawer__payload">{{.PayloadJSON}}</pre>
   <span class="sb-microlabel">Lifecycle</span>
@@ -254,7 +274,11 @@
   <div class="sb-drawer__foot">
     {{if eq .Row.State "pending"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/claim" hx-target="#sb-overlay" hx-swap="innerHTML">Claim under lease</button>
     {{else if eq .Row.State "claimed"}}<button type="button" class="sb-btn sb-btn--success" hx-post="/todos/{{.Row.ID}}/complete" hx-target="#sb-overlay" hx-swap="innerHTML">Complete · ack</button><button type="button" class="sb-btn sb-btn--danger" hx-post="/todos/{{.Row.ID}}/fail" hx-target="#sb-overlay" hx-swap="innerHTML">Fail</button>
-    {{else if eq .Row.State "failed"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/retry" hx-target="#sb-overlay" hx-swap="innerHTML">Retry now</button>{{end}}
+    {{else if eq .Row.State "failed"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/retry" hx-target="#sb-overlay" hx-swap="innerHTML">Retry now</button>
+    {{/* Terminal footer for done todos (design: detail.isDone → "✓ completed · acked to source").
+         Governing: SPEC-0013 REQ "Todo Detail Drawer" (footer appropriate to the state), DESIGN
+         (drawer terminal state, #178). */}}
+    {{else if eq .Row.State "done"}}<span class="sb-drawer__done">✓ completed · acked to source</span>{{end}}
   </div>
 </div>{{end}}
 

@@ -434,6 +434,24 @@ a:hover {
   color: var(--sb-secondary);
   background: var(--sb-code-bg);
 }
+/* Trust-tinted provider tag (design drawer identity block: the tag chip carries the trust
+   badge's colors). Shares the --sb-trust-* token family with .sb-badge--*. */
+.sb-tag--signed {
+  color: var(--sb-trust-signed);
+  background: var(--sb-trust-signed-bg);
+}
+.sb-tag--token {
+  color: var(--sb-trust-token);
+  background: var(--sb-trust-token-bg);
+}
+.sb-tag--open {
+  color: var(--sb-trust-open);
+  background: var(--sb-trust-open-bg);
+}
+.sb-tag--queue {
+  color: var(--sb-trust-queue);
+  background: var(--sb-trust-queue-bg);
+}
 
 .sb-status {
   display: inline-flex;
@@ -1012,6 +1030,32 @@ pre code {
   color: var(--sb-ink);
 }
 
+/* Identity block — trust-tinted provider tag beside the source name and event type, at the top
+   of the drawer body (design drawer: detail.tag / detail.src / detail.type). */
+.sb-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 2px;
+}
+.sb-identity__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.sb-identity__src {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--sb-ink);
+}
+.sb-identity__type {
+  font-family: var(--sb-font-mono);
+  font-size: 11.5px;
+  color: var(--sb-secondary);
+  word-break: break-word;
+}
+
 .sb-lease {
   border: 1px solid var(--sb-input-border-soft);
   border-radius: var(--sb-radius-card);
@@ -1019,12 +1063,30 @@ pre code {
   padding: 12px 14px;
   margin: 12px 0;
 }
+/* Card head row: "Visibility lease · {agent}" label left, the live countdown right (design). */
+.sb-lease__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.sb-lease .sb-microlabel {
+  color: var(--sb-status-claimed);
+}
 .sb-lease__count {
   font-family: var(--sb-font-mono);
-  font-size: 22px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--sb-status-claimed);
-  margin: 2px 0 8px;
+  white-space: nowrap;
+}
+/* Reaper hint (design: "if the lease expires, the reaper re-surfaces this todo to the queue"). */
+.sb-lease__hint {
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-status-claimed);
+  margin: 8px 0 0;
 }
 .sb-lease__track {
   height: 6px;
@@ -1100,6 +1162,15 @@ pre code {
   gap: 8px;
   margin: 12px 0;
 }
+/* dedupLine — the always-present dedup summary sentence under the idempotency key (design:
+   "N duplicate deliveries collapsed via idempotency key" / "no duplicate deliveries"). */
+.sb-meta__dedupline {
+  display: block;
+  width: 100%;
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-faint-2);
+}
 
 .sb-drawer__payload {
   max-height: 240px;
@@ -1144,6 +1215,16 @@ pre code {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
+}
+/* Terminal footer for done todos (design: "✓ completed · acked to source" where the action
+   buttons would be — a finished todo is read-only). */
+.sb-drawer__done {
+  flex: 1;
+  text-align: center;
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  color: var(--sb-status-done);
+  padding: 10px 0;
 }
 
 /* ---- login (public page, no rail) ---- */
