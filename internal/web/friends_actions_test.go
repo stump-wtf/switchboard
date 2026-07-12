@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/store"
@@ -99,21 +100,57 @@ func TestFailFriendActionMapsStoreErrors(t *testing.T) {
 }
 
 func TestFriendGroupForEdge(t *testing.T) {
+	// Labels are the design canvas badge copy (DESIGN Friends FR_STATUS; #175): incoming ·
+	// awaiting · active · blocked. The blocked meta line, not the badge, distinguishes
+	// declined from revoked.
 	cases := []struct {
-		state, direction, wantGroup string
+		state, direction, wantGroup, wantLabel string
 	}{
-		{"pending", "", "incoming"},         // inbound intake (store default direction)
-		{"pending", "outbound", "incoming"}, // inbound intake, explicit default
-		{"pending", "outgoing", "outgoing"}, // locally sent → Outgoing group (#174)
-		{"approved", "", "active"},
-		{"approved", "outgoing", "active"}, // an accepted outgoing request is just active
-		{"denied", "", "blocked"},
-		{"denied", "outgoing", "blocked"},
-		{"revoked", "", "blocked"},
+		{"pending", "", "incoming", "incoming"},         // inbound intake (store default direction)
+		{"pending", "outbound", "incoming", "incoming"}, // inbound intake, explicit default
+		{"pending", "outgoing", "outgoing", "awaiting"}, // locally sent → Outgoing group (#174)
+		{"approved", "", "active", "active"},
+		{"approved", "outgoing", "active", "active"}, // an accepted outgoing request is just active
+		{"denied", "", "blocked", "blocked"},
+		{"denied", "outgoing", "blocked", "blocked"},
+		{"revoked", "", "blocked", "blocked"},
 	}
 	for _, c := range cases {
-		if g, _ := friendGroupForEdge(c.state, c.direction); g != c.wantGroup {
-			t.Errorf("friendGroupForEdge(%q, %q) group = %q, want %q", c.state, c.direction, g, c.wantGroup)
+		g, l := friendGroupForEdge(c.state, c.direction)
+		if g != c.wantGroup || l != c.wantLabel {
+			t.Errorf("friendGroupForEdge(%q, %q) = (%q, %q), want (%q, %q)",
+				c.state, c.direction, g, l, c.wantGroup, c.wantLabel)
+		}
+	}
+}
+
+// TestFriendMetaForEdge pins the footer meta line (#175 / DESIGN Friends): relative request/sent
+// ages, the active edge's last A2A activity from its vended endpoint's last-seen (there is no
+// per-edge call counter — epic #173), declined-vs-revoked preserved on blocked entries, and zero
+// times degrading to an empty meta instead of a bogus age.
+func TestFriendMetaForEdge(t *testing.T) {
+	now := time.Now()
+	seen := now.Add(-2 * time.Minute)
+	decided := now.Add(-3 * 24 * time.Hour)
+	revoked := now.Add(-5 * 24 * time.Hour)
+	cases := []struct {
+		name string
+		edge store.FriendEdge
+		want string
+	}{
+		{"incoming", store.FriendEdge{State: "pending", CreatedAt: now.Add(-8 * time.Minute)}, "requested 8m ago"},
+		{"outgoing", store.FriendEdge{State: "pending", Direction: "outgoing", CreatedAt: now.Add(-1 * time.Hour)}, "sent 1h ago · awaiting them"},
+		{"active seen", store.FriendEdge{State: "approved", EndpointLastSeenAt: &seen}, "last A2A call 2m ago"},
+		{"active never", store.FriendEdge{State: "approved"}, "no A2A calls yet"},
+		{"declined", store.FriendEdge{State: "denied", DecidedAt: &decided}, "declined 3d ago"},
+		{"revoked", store.FriendEdge{State: "revoked", RevokedAt: &revoked}, "revoked 5d ago"},
+		{"zero-time incoming", store.FriendEdge{State: "pending"}, ""},
+		{"zero-time blocked", store.FriendEdge{State: "denied"}, ""},
+	}
+	for _, c := range cases {
+		group, _ := friendGroupForEdge(c.edge.State, c.edge.Direction)
+		if got := friendMetaForEdge(c.edge, group); got != c.want {
+			t.Errorf("%s: friendMetaForEdge = %q, want %q", c.name, got, c.want)
 		}
 	}
 }
@@ -171,10 +208,14 @@ func TestFriendCountsAndFilter(t *testing.T) {
 	if got := filterFriendCards(cards, "blocked"); len(got) != 2 {
 		t.Errorf("blocked filter returned %d cards, want 2", len(got))
 	}
-	// The ledger under "all" always surfaces the four canonical groups (even the empty Outgoing).
+	// The ledger surfaces every POPULATED group in canonical order (sample data fills all four);
+	// empty groups are dropped per the design canvas (#175).
 	groups := groupFriendCards(cards, "all")
 	if len(groups) != 4 {
 		t.Fatalf("all-filter groups = %d, want 4", len(groups))
+	}
+	if got := groupFriendCards(cards[:1], "all"); len(got) != 1 || got[0].Key != "incoming" {
+		t.Errorf("sparse groups = %+v, want only the populated incoming section", got)
 	}
 	// A specific filter narrows to that one section.
 	if g := groupFriendCards(cards, "active"); len(g) != 1 || g[0].Key != "active" {

@@ -5,11 +5,12 @@
      panel so a card moves between groups live. Reload always renders authoritative state. */}}
 <div class="sb-page-head">
   <div>
-    <h1 class="sb-page-title">Friends</h1>
-    <p class="sb-tagline">mutual · non-transitive · pending until they approve</p>
+    {{/* Header copy per the design canvas (DESIGN Friends; #175). */}}
+    <h1 class="sb-page-title">Friends · agent-to-agent</h1>
+    <p class="sb-tagline">agents discover each other over A2A · no one talks by default · links are mutual and non-transitive — both operators must approve</p>
   </div>
   {{/* Add friend opens the modal into the shared overlay slot (focus-trapped like the drawer). */}}
-  <button type="button" class="sb-btn" hx-get="/friends/new" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">Add friend</button>
+  <button type="button" class="sb-btn" hx-get="/friends/new" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">+ Add friend</button>
 </div>
 
 <div id="sb-friends-panel">{{template "friends_panel" dict "Layout" .FriendLayout "Filter" .FriendFilter "Counts" .FriendCounts "Groups" .FriendGroups "Cards" .FriendCards "Agents" .Agents "CSRF" .CSRF "Filtered" (ne .FriendFilter "all")}}</div>

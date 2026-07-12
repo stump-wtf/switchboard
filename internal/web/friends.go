@@ -24,14 +24,24 @@ import (
 	"github.com/joestump/switchboard/internal/store"
 )
 
-// friendGroups is the canonical ordered ledger grouping (SPEC-0013 Incoming / Outgoing / Active /
-// Blocked). The filter pills are these four plus "all".
-var friendGroupOrder = []struct{ Key, Label string }{
-	{"incoming", "Incoming"},
-	{"outgoing", "Outgoing"},
-	{"active", "Active"},
+// friendGroupOrder is the canonical ordered ledger grouping (SPEC-0013 Incoming / Outgoing / Active
+// / Blocked). The filter pills are these four keys plus "all"; Title is the ledger (2b) section
+// heading per the design canvas (DESIGN Friends: "Incoming requests" / "Outgoing · pending" /
+// "Active friendships" / "Blocked").
+var friendGroupOrder = []struct{ Key, Title string }{
+	{"incoming", "Incoming requests"},
+	{"outgoing", "Outgoing · pending"},
+	{"active", "Active friendships"},
 	{"blocked", "Blocked"},
 }
+
+// friendIntentOptions is the add-friend modal's "Requested intents" chip vocabulary: the verbs a
+// remote board can grant on a vended friend endpoint — the SPEC-0007 work-handoff verb (create_for,
+// the primary A2A intent, pre-checked so the no-JS form still submits a valid scope) followed by
+// the SPEC-0006 drain verbs (mirrors drainVerbs in endpoints.go). Toggle chips, not free text, per
+// the design canvas (DESIGN Friends add-modal; story #175). Governing: SPEC-0010 REQ
+// "Friend-Request Lifecycle" (requested_scope verbs).
+var friendIntentOptions = []string{"create_for", "list_todos", "claim", "complete", "fail"}
 
 // friendCard is the render model for one friendship (a single friend edge) in both the cards and the
 // grouped-ledger layouts. Governing: SPEC-0013 REQ "Friends View" (each friendship shows local agent,
@@ -50,14 +60,15 @@ type friendCard struct {
 	Intents      []string // negotiated (granted) verbs when active, else the requested verbs
 	Negotiated   bool     // true when Intents are the negotiated grant (active), false when requested
 	Queues       []string // negotiated or requested queues (same rule as Intents)
-	Reason       string   // the requester's legible reason
+	Reason       string   // the requester's legible reason (quoted-callout note on incoming cards)
+	Meta         string   // the footer meta line ("requested 8m ago" / "last A2A call 2m ago", DESIGN Friends)
 	OOB          bool     // render as an hx-swap-oob replacement (live SSE update)
 }
 
-// friendGroup is one ledger section (a group key + its label + its cards).
+// friendGroup is one ledger section (a group key + its design heading + its cards).
 type friendGroup struct {
 	Key   string
-	Label string
+	Title string
 	Cards []friendCard
 }
 
@@ -77,11 +88,14 @@ type friendPanelView struct {
 	Layout   string // cards | ledger
 	Filter   string // all | incoming | outgoing | active | blocked
 	Counts   friendCounts
-	Groups   []friendGroup // the four ledger sections (already filtered)
+	Groups   []friendGroup // the ledger (2b) sections — unfiltered, empty groups dropped (DESIGN Friends)
 	Cards    []friendCard  // the flat, filtered card list (cards layout)
 	Agents   []store.Agent // the human's local agents (approve target + add-friend local agent)
 	CSRF     string
 	Filtered bool // whether a non-"all" filter is active (affects empty-state copy)
+	// IntentOptions is the add-friend modal's requested-intent chip vocabulary (friendIntentOptions);
+	// only the modal render populates it.
+	IntentOptions []string
 }
 
 // friendCountsView feeds the "friend_counts" fragment: the Friends filter-pill counts and the rail
@@ -130,25 +144,63 @@ func normalizeFriendFilter(s string) string {
 // Non-Transitive Edges"; story #174 (persist outgoing requests; direction semantics).
 const friendDirectionOutgoing = "outgoing"
 
-// friendGroupForEdge maps a friend-edge (state, direction) onto its ledger group and a human status
-// label. A pending edge is an Incoming request when it arrived over A2A intake, and an Outgoing
-// request when this human sent it (direction=outgoing, awaiting the remote operator); approved is
-// Active; denied/revoked are Blocked regardless of who initiated.
+// friendGroupForEdge maps a friend-edge (state, direction) onto its ledger group and the design
+// canvas's status-badge label (DESIGN Friends FR_STATUS: incoming / awaiting / active / blocked). A
+// pending edge is an Incoming request when it arrived over A2A intake, and an Outgoing request when
+// this human sent it (direction=outgoing, awaiting the remote operator); approved is Active;
+// denied/revoked are Blocked regardless of who initiated (the meta line preserves the
+// declined-vs-revoked distinction).
 func friendGroupForEdge(state, direction string) (group, label string) {
 	switch state {
 	case "pending":
 		if direction == friendDirectionOutgoing {
-			return "outgoing", "requested"
+			return "outgoing", "awaiting"
 		}
-		return "incoming", "pending"
+		return "incoming", "incoming"
 	case "approved":
 		return "active", "active"
-	case "denied":
-		return "blocked", "declined"
-	case "revoked":
-		return "blocked", "revoked"
+	case "denied", "revoked":
+		return "blocked", "blocked"
 	default:
 		return "blocked", state
+	}
+}
+
+// friendMetaForEdge renders the card/row footer meta line per the design canvas (DESIGN Friends:
+// "324 A2A calls · last 2m ago" / "requested 8m ago" / "sent 1h ago · awaiting them" / "blocked 3d
+// ago"). The store keeps no per-edge A2A call COUNTER (out of scope for #175; the wire layer lands
+// with epic #173), so the active line surfaces the vended endpoint's last-seen stamp — every
+// authenticated A2A call touches it — instead of a count. Zero/absent times render no clause, so
+// legacy rows and DB-less fixtures degrade to an empty meta rather than a bogus age.
+func friendMetaForEdge(e store.FriendEdge, group string) string {
+	switch group {
+	case "incoming":
+		if e.CreatedAt.IsZero() {
+			return ""
+		}
+		return "requested " + relTime(e.CreatedAt)
+	case "outgoing":
+		if e.CreatedAt.IsZero() {
+			return ""
+		}
+		return "sent " + relTime(e.CreatedAt) + " · awaiting them"
+	case "active":
+		if e.EndpointLastSeenAt != nil {
+			return "last A2A call " + relTime(*e.EndpointLastSeenAt)
+		}
+		return "no A2A calls yet"
+	default: // blocked — keep the declined-vs-revoked distinction the badge label folds away
+		verb, at := "declined", e.DecidedAt
+		if e.State == "revoked" {
+			verb, at = "revoked", e.RevokedAt
+		}
+		if at == nil {
+			if e.CreatedAt.IsZero() {
+				return ""
+			}
+			at = &e.CreatedAt
+		}
+		return verb + " " + relTime(*at)
 	}
 }
 
@@ -220,6 +272,7 @@ func friendCardFromEdge(e store.FriendEdge) friendCard {
 		Negotiated:   negotiated,
 		Queues:       queues,
 		Reason:       e.Reason,
+		Meta:         friendMetaForEdge(e, group),
 	}
 }
 
@@ -264,9 +317,9 @@ func filterFriendCards(cards []friendCard, filter string) []friendCard {
 	return out
 }
 
-// groupFriendCards buckets the (already filter-visible) cards into the canonical ledger sections,
-// preserving order. Empty sections are retained under the "all" filter so the ledger always shows the
-// four groups; under a specific filter only the matching section is returned.
+// groupFriendCards buckets cards into the canonical ledger sections, preserving order. Empty
+// sections are dropped (the design canvas ledger renders only populated groups; the whole-ledger
+// empty state covers "none at all"); under a specific filter only the matching section is returned.
 func groupFriendCards(cards []friendCard, filter string) []friendGroup {
 	byKey := map[string][]friendCard{}
 	for _, card := range cards {
@@ -277,7 +330,10 @@ func groupFriendCards(cards []friendCard, filter string) []friendGroup {
 		if filter != "all" && filter != g.Key {
 			continue
 		}
-		groups = append(groups, friendGroup{Key: g.Key, Label: g.Label, Cards: byKey[g.Key]})
+		if len(byKey[g.Key]) == 0 {
+			continue
+		}
+		groups = append(groups, friendGroup{Key: g.Key, Title: g.Title, Cards: byKey[g.Key]})
 	}
 	return groups
 }
@@ -339,14 +395,16 @@ func (h *Handler) Friends(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// friendPanelView assembles the panel render model: counts over ALL cards, with the groups and the
-// flat card list scoped to the active filter.
+// friendPanelView assembles the panel render model: counts over ALL cards, the flat card list
+// scoped to the active filter (cards layout), and the ledger groups over ALL cards — the design
+// canvas's ledger (2b) always shows every populated group and carries no filter pills, its group
+// headings ARE the grouping.
 func (h *Handler) friendPanelView(cards []friendCard, agents []store.Agent, layout, filter, csrf string) friendPanelView {
 	return friendPanelView{
 		Layout:   layout,
 		Filter:   filter,
 		Counts:   friendCountsFrom(cards),
-		Groups:   groupFriendCards(filterFriendCards(cards, filter), filter),
+		Groups:   groupFriendCards(cards, "all"),
 		Cards:    filterFriendCards(cards, filter),
 		Agents:   agents,
 		CSRF:     csrf,
@@ -366,7 +424,9 @@ func (h *Handler) AddFriendModal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.log.Warn("add-friend agents", "err", err)
 	}
-	frag, err := h.renderFragment("add_friend_modal", friendPanelView{Agents: agents, CSRF: auth.CSRFFromContext(r.Context())})
+	frag, err := h.renderFragment("add_friend_modal", friendPanelView{
+		Agents: agents, CSRF: auth.CSRFFromContext(r.Context()), IntentOptions: friendIntentOptions,
+	})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -412,7 +472,9 @@ func (h *Handler) AddFriend(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	agentID := strings.TrimSpace(r.FormValue("agent_id"))
 	handle := strings.TrimSpace(r.FormValue("handle"))
-	intents := splitCSV(r.FormValue("intents"))
+	// The modal's intent toggle chips submit one value per checked box; multiValues also accepts a
+	// single comma-separated value so a hand-rolled or legacy client degrades to the same scope.
+	intents := multiValues(r, "intents")
 	if agentID == "" || handle == "" || len(intents) == 0 {
 		http.Error(w, "local agent, remote handle, and at least one intent are required", http.StatusBadRequest)
 		return
@@ -443,7 +505,9 @@ func (h *Handler) AddFriend(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	h.respondFriendAction(w, r, human, "friend request sent · "+handle+" · pending remote approval")
+	// closeOverlay: a successful submit dismisses the add-friend modal in the same response (#175);
+	// an error response (4xx above) swaps nothing, so the modal stays open for correction.
+	h.respondFriendAction(w, r, human, "request sent to "+handle+" · awaiting their operator", true)
 }
 
 // ApproveFriend approves an incoming request (POST /friends/{id}/approve). Approval IS the vend: it
@@ -505,7 +569,7 @@ func (h *Handler) ApproveFriend(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.ResolveApprovalTodo(r.Context(), edgeID); err != nil {
 		h.log.Warn("resolve approval todo", "edge", edgeID, "err", err)
 	}
-	h.respondFriendAction(w, r, human, "friend request approved · endpoint vended")
+	h.respondFriendAction(w, r, human, "friend request approved · endpoint vended", false)
 }
 
 // DeclineFriend declines an incoming request (POST /friends/{id}/decline) → terminal denied, no vend.
@@ -523,7 +587,7 @@ func (h *Handler) DeclineFriend(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.ResolveApprovalTodo(r.Context(), edgeID); err != nil {
 		h.log.Warn("resolve approval todo", "edge", edgeID, "err", err)
 	}
-	h.respondFriendAction(w, r, human, "friend request declined")
+	h.respondFriendAction(w, r, human, "friend request declined", false)
 }
 
 // RevokeFriend revokes an active link (POST /friends/{id}/revoke) → kills the vended endpoint, one
@@ -544,7 +608,7 @@ func (h *Handler) RevokeFriend(w http.ResponseWriter, r *http.Request) {
 	if edge.EndpointID != "" && h.endpointRevoked != nil {
 		h.endpointRevoked(edge.EndpointID)
 	}
-	h.respondFriendAction(w, r, human, "friendship revoked · endpoint killed")
+	h.respondFriendAction(w, r, human, "friendship revoked · endpoint killed", false)
 }
 
 // WithdrawFriend withdraws an outgoing pending request (POST /friends/{id}/withdraw) → removes the
@@ -559,7 +623,7 @@ func (h *Handler) WithdrawFriend(w http.ResponseWriter, r *http.Request) {
 		h.failFriendAction(w, "WithdrawFriend", edgeID, err)
 		return
 	}
-	h.respondFriendAction(w, r, human, "request withdrawn")
+	h.respondFriendAction(w, r, human, "request withdrawn", false)
 }
 
 // UnblockFriend removes a blocked (declined/revoked) entry from the ledger (POST
@@ -575,7 +639,7 @@ func (h *Handler) UnblockFriend(w http.ResponseWriter, r *http.Request) {
 		h.failFriendAction(w, "UnblockFriend", edgeID, err)
 		return
 	}
-	h.respondFriendAction(w, r, human, "entry removed")
+	h.respondFriendAction(w, r, human, "entry removed", false)
 }
 
 // failFriendAction maps a friend-edge store transition error onto a generic HTTP status with no
@@ -597,9 +661,11 @@ func (h *Handler) failFriendAction(w http.ResponseWriter, handler, edgeID string
 
 // respondFriendAction re-renders the Friends panel (in the operator's current layout/filter, read
 // from the POST) so an action that moves a card between groups reflects immediately, and prepends a
-// toast. A non-HTMX submit redirects back to the view. Requires the human to rebuild their scoped
-// listing. Governing: SPEC-0013 REQ "Friends View", REQ "Live Updates and Toasts".
-func (h *Handler) respondFriendAction(w http.ResponseWriter, r *http.Request, human store.Human, toast string) {
+// toast. closeOverlay additionally clears the shared overlay OOB in the same response — the
+// add-friend modal dismisses itself on a successful submit (#175) — while card-level actions leave
+// the overlay alone. A non-HTMX submit redirects back to the view. Requires the human to rebuild
+// their scoped listing. Governing: SPEC-0013 REQ "Friends View", REQ "Live Updates and Toasts".
+func (h *Handler) respondFriendAction(w http.ResponseWriter, r *http.Request, human store.Human, toast string, closeOverlay bool) {
 	if !isHTMX(r) {
 		// Post-action redirects target a fixed same-origin path (no user-supplied target).
 		http.Redirect(w, r, "/friends", http.StatusSeeOther)
@@ -632,6 +698,13 @@ func (h *Handler) respondFriendAction(w http.ResponseWriter, r *http.Request, hu
 	// Refresh the rail badge + filter-pill counts OOB alongside the panel swap.
 	if cf, err := h.renderFragment("friend_counts", friendCountsView{Counts: panel.Counts, OOB: true}); err == nil {
 		frag += cf
+	}
+	if closeOverlay {
+		if oc, err := h.renderFragment("overlay_clear", nil); err == nil {
+			frag += oc
+		} else {
+			h.log.Error("render overlay clear", "err", err)
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(frag))
