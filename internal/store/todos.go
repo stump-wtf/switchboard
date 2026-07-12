@@ -96,8 +96,10 @@ type CreateTodoParams struct {
 	Assignee       string
 }
 
-// CreateTodo inserts a todo, deduping on (queue, idempotency_key) among non-terminal rows. The bool
-// reports whether a new row was created (false = an existing non-terminal todo already covers it). ADR-0007.
+// CreateTodo inserts a todo, deduping on (queue, idempotency_key) among LIVE rows — pending,
+// claimed, or a parked retry (failed with an open next_retry_at window); only `done` and true
+// dead-letters leave dedup. The bool reports whether a new row was created (false = an existing
+// live todo already covers it). ADR-0007; SPEC-0003 REQ "Idempotent Enqueue and Dedup".
 func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool, error) {
 	t, created, err := createTodo(ctx, s.pool, p)
 	if err == nil && created {
@@ -155,13 +157,20 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 
 // createTodo is the querier-based core of CreateTodo: it runs on either the pool or a transaction and
 // performs no LISTEN/NOTIFY (the caller nudges only after a durable commit).
+//
+// The ON CONFLICT clause mirrors the idx_todos_dedupe partial-index predicate (0008): a LIVE row is
+// anything not `done` and not a true dead-letter — a parked retry (`failed` with an open
+// next_retry_at window, SPEC-0003 scheduled backoff) still holds its dedup slot, so a redelivery
+// during the backoff collapses onto it instead of minting a duplicate active todo (which the
+// re-queue transition would then collide with, SQLSTATE 23505).
 func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool, error) {
 	id := "td_" + uuid.NewString()
 	row := q.QueryRow(ctx, `
 		INSERT INTO todos (id, queue, source, kind, title, payload, event_id, idempotency_key, assignee)
 		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), $5, $6, $7, NULLIF($8,''), NULLIF($9,''))
 		ON CONFLICT (queue, idempotency_key)
-			WHERE idempotency_key IS NOT NULL AND state <> 'done' AND state <> 'failed'
+			WHERE idempotency_key IS NOT NULL AND state <> 'done'
+				AND (state <> 'failed' OR next_retry_at IS NOT NULL)
 			DO NOTHING
 		RETURNING `+todoCols,
 		id, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee)
@@ -172,9 +181,10 @@ func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool,
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, false, err
 	}
-	// Conflict: return the existing non-terminal todo.
+	// Conflict: return the existing live todo (pending/claimed, or a parked retry).
 	row = q.QueryRow(ctx, `SELECT `+todoCols+` FROM todos
-		WHERE queue = $1 AND idempotency_key = $2 AND state <> 'done' AND state <> 'failed'
+		WHERE queue = $1 AND idempotency_key = $2 AND state <> 'done'
+			AND (state <> 'failed' OR next_retry_at IS NOT NULL)
 		ORDER BY created_at LIMIT 1`, p.Queue, p.IdempotencyKey)
 	t, err = scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {

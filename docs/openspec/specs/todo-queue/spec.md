@@ -162,26 +162,38 @@ re-queuing immediately.
 
 ### Requirement: Idempotent Enqueue and Dedup
 
-Creating a todo MUST be idempotent on `(queue, idempotency_key)` among non-terminal rows. When a
-producer creates a todo whose `(queue, idempotency_key)` already matches a non-terminal
-(`state <> 'done' AND state <> 'failed'`) todo, the store MUST NOT create a second row — it MUST
-return the existing todo and signal that no new row was created. This MUST be implemented with an
-atomic `INSERT … ON CONFLICT … DO NOTHING` against the partial unique dedupe index, so that
-at-least-once ingestion (e.g. a webhook delivered twice with the same provider delivery id) collapses
-into exactly one work-item. A null `idempotency_key` MUST NOT participate in dedup.
+Creating a todo MUST be idempotent on `(queue, idempotency_key)` among LIVE rows. A row is live
+when it is not `done` and not a true dead-letter — i.e. `state <> 'done' AND (state <> 'failed' OR
+next_retry_at IS NOT NULL)`: a parked retry (failed with an open backoff window) keeps its dedup
+slot, so a redelivery during the window collapses onto it rather than minting a duplicate active
+todo (which the re-queue transition would then collide with under the unique index). When a
+producer creates a todo whose `(queue, idempotency_key)` already matches a live todo, the store
+MUST NOT create a second row — it MUST return the existing todo and signal that no new row was
+created. This MUST be implemented with an atomic `INSERT … ON CONFLICT … DO NOTHING` against the
+partial unique dedupe index (whose predicate MUST match the live-row definition above), so that
+at-least-once ingestion (e.g. a webhook delivered twice with the same provider delivery id)
+collapses into exactly one work-item. A null `idempotency_key` MUST NOT participate in dedup.
 
 #### Scenario: Duplicate delivery collapses to one todo
 
 - **WHEN** two create calls arrive with the same `queue` and `idempotency_key` while the first todo
-  is still non-terminal
+  is still live (pending, claimed, or a parked retry)
 - **THEN** exactly one todo MUST exist, the second call MUST return that same todo, and the call MUST
   report that no new row was created
 
 #### Scenario: A terminal todo does not block a new one
 
-- **WHEN** a create arrives with a `(queue, idempotency_key)` that matches only a `done` or `failed`
-  todo
+- **WHEN** a create arrives with a `(queue, idempotency_key)` that matches only a `done` todo or a
+  dead-lettered `failed` todo (no retry window)
 - **THEN** a new `pending` todo MUST be created (terminal rows are excluded from the dedupe index)
+
+#### Scenario: Redelivery during a backoff window does not duplicate
+
+- **WHEN** a create arrives with a `(queue, idempotency_key)` matching a `failed` todo whose
+  `next_retry_at` window is open
+- **THEN** no new row MUST be created — the parked retry MUST be returned as the existing live
+  todo, and its later re-queue (scheduler, due claim, or manual retry) MUST succeed without a
+  uniqueness violation
 
 ### Requirement: Concurrency Safety of Queue Workers
 

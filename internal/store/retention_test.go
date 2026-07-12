@@ -183,3 +183,37 @@ func seedTerminal(t *testing.T, s *Store, ctx context.Context, queue, title, sta
 	}
 	return id
 }
+
+// A parked retry (failed with an open next_retry_at window, SPEC-0003 scheduled backoff) is LIVE
+// work awaiting re-queue — the pruner must never delete it, by age or by cap, or a scheduled retry
+// silently vanishes. Only true dead-letters (failed, no window) are prunable terminal records.
+func TestPruneNeverDeletesParkedRetries(t *testing.T) {
+	s, ctx := testStore(t)
+	setSetting(t, s, ctx, "retention_max_age_days", "7")
+	setSetting(t, s, ctx, "retention_max_rows", "0") // maximally aggressive cap: everything eligible is trimmed
+
+	// A parked retry: fail below the cap so FailTodo stamps a window, then backdate it far past
+	// the age bound (and keep the window open) — retention must still skip it.
+	parked := seedPending(t, s, ctx, "qret", "parked")
+	if _, err := s.ClaimTodo(ctx, parked, "w", time.Hour); err != nil {
+		t.Fatalf("claim parked: %v", err)
+	}
+	if _, err := s.FailTodo(ctx, parked, "w", nil); err != nil {
+		t.Fatalf("fail parked: %v", err)
+	}
+	backdate(t, s, ctx, "todos", "updated_at", "id = '"+parked+"'", 30*24*time.Hour)
+
+	// A true dead-letter, equally old — this one IS prunable.
+	dead := seedTerminal(t, s, ctx, "qret", "dead", "failed")
+	backdate(t, s, ctx, "todos", "updated_at", "id = '"+dead+"'", 30*24*time.Hour)
+
+	if _, err := s.Prune(ctx); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if n := count(t, s, ctx, "todos", "id = '"+parked+"'"); n != 1 {
+		t.Fatalf("parked retry was pruned (age/cap), want it kept: count=%d", n)
+	}
+	if n := count(t, s, ctx, "todos", "id = '"+dead+"'"); n != 0 {
+		t.Fatalf("dead-letter should have been pruned: count=%d", n)
+	}
+}

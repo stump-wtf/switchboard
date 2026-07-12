@@ -157,3 +157,75 @@ func TestDeadLetterHasNoRetryWindowAndManualRetryOverrides(t *testing.T) {
 			rt.State, rt.NextRetryAt, rt.Attempt)
 	}
 }
+
+// Regression for the parked-retry dedup defect: with the 0001 dedup predicate (`state <> 'done'
+// AND state <> 'failed'`), a failed-below-cap todo LEFT the partial unique index while it waited
+// out its backoff, so (1) a redelivery with the same (queue, idempotency_key) inserted a duplicate
+// active todo, and (2) the re-queue transition moved the parked row back under the index and
+// collided with that duplicate — SQLSTATE 23505 aborting the whole RequeueDueRetries batch (every
+// 30s, server-wide) and erroring ClaimNext, leaving the queue undrainable. The 0008 predicate
+// keeps a parked retry live (`state <> 'failed' OR next_retry_at IS NOT NULL`), and createTodo's
+// ON CONFLICT clause mirrors it. Governing: SPEC-0003 REQ "Idempotent Enqueue and Dedup"
+// (scenario "Redelivery during a backoff window does not duplicate").
+func TestRedeliveryDuringBackoffWindowDedupes(t *testing.T) {
+	s, ctx := testStore(t)
+
+	const key = "rb-redeliver"
+	td, created, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "qrd", Title: "flaky", IdempotencyKey: key})
+	if err != nil || !created {
+		t.Fatalf("create: created=%v err=%v", created, err)
+	}
+	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	ft, err := s.FailTodo(ctx, td.ID, "w", nil)
+	if err != nil || ft.NextRetryAt == nil {
+		t.Fatalf("fail: retry=%v err=%v, want a scheduled window", ft.NextRetryAt, err)
+	}
+
+	// Redelivery while the backoff window is open MUST collapse onto the parked retry — no new row.
+	dup, created2, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "qrd", Title: "flaky again", IdempotencyKey: key})
+	if err != nil {
+		t.Fatalf("redeliver during window: %v", err)
+	}
+	if created2 || dup.ID != td.ID {
+		t.Fatalf("redeliver during window: created=%v id=%s, want the parked retry %s with created=false",
+			created2, dup.ID, td.ID)
+	}
+
+	// The re-queue transition (the old 23505 site) succeeds: the parked row never left the index,
+	// so no duplicate exists to collide with.
+	if _, err := s.pool.Exec(ctx, `UPDATE todos SET next_retry_at = now() - interval '1 second' WHERE id=$1`, td.ID); err != nil {
+		t.Fatalf("rewind retry window: %v", err)
+	}
+	if n, err := s.RequeueDueRetries(ctx); err != nil || n != 1 {
+		t.Fatalf("RequeueDueRetries = %d, %v; want 1, nil (no uniqueness violation)", n, err)
+	}
+
+	// Exactly one row carries the key, and the queue drains normally.
+	var rows int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos WHERE queue='qrd' AND idempotency_key=$1`, key).Scan(&rows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("todos carrying the key = %d, want exactly 1 (dedup held through the window)", rows)
+	}
+	c, err := s.ClaimNext(ctx, []string{"qrd"}, "w2", time.Hour)
+	if err != nil || c.ID != td.ID {
+		t.Fatalf("ClaimNext after requeue = id:%s err:%v, want the re-queued todo claimable", c.ID, err)
+	}
+
+	// Once dead-lettered (window gone), the key is free again — a redelivery mints a NEW todo
+	// (SPEC-0003 scenario "A terminal todo does not block a new one").
+	if _, err := s.pool.Exec(ctx, `UPDATE todos SET attempt=max_attempts WHERE id=$1`, td.ID); err != nil {
+		t.Fatalf("exhaust attempts: %v", err)
+	}
+	dl, err := s.FailTodo(ctx, td.ID, "w2", nil)
+	if err != nil || dl.NextRetryAt != nil {
+		t.Fatalf("dead-letter: retry=%v err=%v, want failed with no window", dl.NextRetryAt, err)
+	}
+	fresh, created3, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "qrd", Title: "third time", IdempotencyKey: key})
+	if err != nil || !created3 || fresh.ID == td.ID {
+		t.Fatalf("redeliver after dead-letter: created=%v id=%s err=%v, want a NEW todo", created3, fresh.ID, err)
+	}
+}
