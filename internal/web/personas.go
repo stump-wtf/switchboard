@@ -64,8 +64,11 @@ type personaAgentOption struct {
 // posts to /personas with a selectable backing agent; edit posts to /personas/{id} with the backing
 // agent pinned (immutable, ADR-0008) and a Delete action. Selected is the agent whose verb/queue
 // chips are rendered server-side (the initially-checked constraint); Checked* pre-check the persona's
-// current scope. URLPreview is the live agent-card URL preview. Governing: SPEC-0013 REQ "Personas
-// View".
+// current scope. URLPreview is the agent-card URL shown under the name field: the persona's real
+// resolvable URL in edit mode, or the id-based URL shape (with an "{id}" placeholder — ids are
+// assigned on create) in create mode, so the modal never previews a URL shape the well-known
+// endpoint cannot resolve. Governing: SPEC-0013 REQ "Personas View", SPEC-0009 REQ "Well-Known Card
+// Endpoint".
 type personaModalView struct {
 	Edit          bool
 	CSRF          string
@@ -76,7 +79,6 @@ type personaModalView struct {
 	CheckedQueues map[string]bool
 	Discoverable  bool
 	URLPreview    string
-	BaseURL       string
 }
 
 // personasView is the whole-page model: the persona cards plus the create modal (and per-persona edit
@@ -87,7 +89,6 @@ type personasView struct {
 	NewModal  personaModalView
 	EditModal map[string]personaModalView // keyed by persona id
 	CSRF      string
-	BaseURL   string
 }
 
 // agentCardURL builds a persona's canonical, resolvable well-known Agent Card path. It mirrors the
@@ -98,36 +99,13 @@ func agentCardURL(baseURL, personaID string) string {
 	return strings.TrimRight(baseURL, "/") + "/a/" + personaID + "/.well-known/agent-card.json"
 }
 
-// personaSlug derives the human-meaningful URL slug from a persona name, mirroring the store's
-// slugifyPersona so the modal's live URL preview matches the slug the store will persist. Presentation
-// only — the store remains authoritative.
-func personaSlug(name string) string {
-	var b strings.Builder
-	prevDash := true
-	for _, r := range strings.ToLower(name) {
-		switch {
-		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
-			b.WriteRune(r)
-			prevDash = false
-		case !prevDash:
-			b.WriteByte('-')
-			prevDash = true
-		}
-	}
-	base := strings.TrimSuffix(b.String(), "-")
-	if base == "" {
-		return "persona"
-	}
-	return base
-}
-
-// slugPreviewURL is the create-modal's illustrative agent-card URL preview, keyed on the slug derived
-// from the persona name (the persona has no id until saved). Edit modals show the real id-based
-// AgentCardURL instead. Governing: SPEC-0013 REQ "Personas View" (name with a live agent-card URL
-// preview).
-func slugPreviewURL(baseURL, name string) string {
-	return strings.TrimRight(baseURL, "/") + "/a/" + personaSlug(name) + "/.well-known/agent-card.json"
-}
+// pendingCardURLID is the placeholder path segment the create modal previews in place of the persona
+// id (ids are minted by the store on create, so the real resolvable URL cannot exist yet). The edit
+// modal — and every card — shows the real AgentCardURL instead. Using the id-based shape (never a
+// name/slug-derived one) keeps the preview honest: the well-known endpoint resolves ONLY
+// /a/{persona_id}/…, so a slug URL would never resolve. Governing: SPEC-0009 REQ "Well-Known Card
+// Endpoint", SPEC-0013 REQ "Personas View" (agent-card URL preview).
+const pendingCardURLID = "{id}"
 
 // personaCardViewFrom projects a store persona plus its backing agent name into the card render model,
 // deriving the advertised skills and the resolvable agent-card URL.
@@ -253,7 +231,6 @@ func (h *Handler) Personas(w http.ResponseWriter, r *http.Request) {
 		Cards:     cards,
 		Agents:    agents,
 		CSRF:      csrf,
-		BaseURL:   h.cfg.BaseURL,
 		NewModal:  h.buildPersonaModal(csrf, agents, nil),
 		EditModal: map[string]personaModalView{},
 	}
@@ -278,13 +255,14 @@ func (h *Handler) buildPersonaModal(csrf string, agents []personaAgentOption, ca
 		Agents:        agents,
 		CheckedVerbs:  map[string]bool{},
 		CheckedQueues: map[string]bool{},
-		BaseURL:       h.cfg.BaseURL,
 	}
 	if card == nil {
 		if len(agents) > 0 {
 			m.Selected = agents[0]
 		}
-		m.URLPreview = slugPreviewURL(h.cfg.BaseURL, "")
+		// The id-based URL shape with the "{id}" placeholder — the real id (and so the real
+		// resolvable URL, shown on the card after create) does not exist until the store mints it.
+		m.URLPreview = agentCardURL(h.cfg.BaseURL, pendingCardURLID)
 		return m
 	}
 	// Edit: pin the persona's backing agent as the selected constraint and pre-check its scope.

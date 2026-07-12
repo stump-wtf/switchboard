@@ -172,29 +172,13 @@
     });
   }
 
-  // ---- persona modal: open a hidden <template> into the overlay, drive the live agent-card URL
-  // preview and the verb/queue chip constraint. Presentation only — the server validates every
-  // subset against the backing agent's vended grant (SPEC-0009); this just hides what the human
-  // cannot choose. Governing: SPEC-0013 REQ "Personas View" (create/edit modal). ----
-
-  // slugify mirrors the store's slugifyPersona so the URL preview matches the persisted slug.
-  function slugify(name) {
-    var out = "";
-    var prevDash = true;
-    var lower = (name || "").toLowerCase();
-    for (var i = 0; i < lower.length; i++) {
-      var c = lower[i];
-      if ((c >= "a" && c <= "z") || (c >= "0" && c <= "9")) {
-        out += c;
-        prevDash = false;
-      } else if (!prevDash) {
-        out += "-";
-        prevDash = true;
-      }
-    }
-    out = out.replace(/-+$/, "");
-    return out || "persona";
-  }
+  // ---- persona modal: open a hidden <template> into the overlay and drive the verb/queue chip
+  // constraint. Presentation only — the server validates every subset against the backing agent's
+  // vended grant (SPEC-0009); this just hides what the human cannot choose. The agent-card URL under
+  // the name is server-rendered (the id-based shape the well-known endpoint resolves; ids are
+  // assigned on create) so there is no client-side URL derivation to drift from the endpoint.
+  // Governing: SPEC-0013 REQ "Personas View" (create/edit modal), SPEC-0009 REQ "Well-Known Card
+  // Endpoint". ----
 
   // renderChips rebuilds a chip container's checkboxes from a verb/queue list, preserving any values
   // that were checked before the swap. name is the form field ("verbs" / "queues").
@@ -225,20 +209,9 @@
       .join("");
   }
 
-  // wireModal binds the live URL preview and the agent-driven chip constraint on a freshly opened modal.
+  // wireModal binds the agent-driven chip constraint on a freshly opened modal.
   function wireModal(modal) {
     if (!modal) return;
-    var nameInput = modal.querySelector("[data-sb-slug-source]");
-    var preview = modal.querySelector("[data-sb-url-preview]");
-    var slugBase = modal.getAttribute("data-sb-slug-base");
-    if (nameInput && preview && slugBase) {
-      var update = function () {
-        preview.textContent =
-          slugBase.replace(/\/$/, "") + "/a/" + slugify(nameInput.value) + "/.well-known/agent-card.json";
-      };
-      nameInput.addEventListener("input", update);
-      update();
-    }
     var select = modal.querySelector("[data-sb-agent-select]");
     if (select) {
       select.addEventListener("change", function () {
