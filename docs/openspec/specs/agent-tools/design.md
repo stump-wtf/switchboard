@@ -185,9 +185,13 @@ by this spec/design pair.
 
 ## Open Questions
 
-- The current code exposes todo drain verbs and the SSE doorbell; `heartbeat`/`release` and the four
-  webhook self-management verbs are specified here as REQUIRED/RECOMMENDED surface but may be wired in
-  a subsequent code session — the spec is the target the code converges to.
+- **Resolved (2026-07):** `heartbeat` and the four webhook self-management verbs are implemented on
+  the vended surface (`internal/mcp/tools.go`, `internal/mcp/webhooks.go`). The optional `release`
+  verb (a MAY under SPEC-0006 "Lease Lifecycle and Crash Safety") is **consciously deferred**, not an
+  oversight: an agent that wants to hand a todo back can stop heartbeating and let the lease expire —
+  the reaper requeues it, losing nothing — and the operator board already exposes a human release
+  action (`POST /todos/{id}/release`, SPEC-0013). Revisit only if lease TTLs grow long enough that
+  expiry-as-release costs real latency.
 - Whether the friending verbs (`send_friend_request`, `approve`/`deny`, `revoke`) live on this same
   endpoint or a distinct capability is out of scope here; they are noted in the old contract and
   belong to the A2A/vending ADRs.

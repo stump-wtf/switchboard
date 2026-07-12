@@ -18,13 +18,14 @@ strength**: A2A discovers, a human-approved **friend request** vends access, and
 as durable **todos** ([ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md)) — never as A2A
 tasks.
 
-The vend target already exists in code: the `endpoints` table and `store.CreateEndpoint` /
-`store.RevokeEndpoint` (`internal/store/agents.go`) mint and kill scoped credentials, and
-`agentapi` enforces verb+queue scope at the boundary. What does **not** exist yet is the friending layer
-itself: there is **no friend-edge table, no friend-request/approve/deny/revoke store code, and no A2A
-intake route**. This spec is therefore grounded in the ADR and the contract doc
-`docs/specs/friend-requests.md`, reusing the existing endpoint substrate as the thing approval mints,
-and records the implementation gap in Open Questions.
+The vend target already existed in code when this spec was drafted: the `endpoints` table and
+`store.CreateEndpoint` / `store.RevokeEndpoint` (`internal/store/agents.go`) mint and kill scoped
+credentials, with verb+queue scope enforced at the boundary. The friending layer itself — friend-edge
+table, request/approve/deny/revoke store code, A2A intake route — did **not** yet exist; it has since
+shipped (`internal/db/migrations/0005_friend_edges.sql`, `internal/store/friends.go`,
+`internal/server/friend_intake.go`, and the web-UI friend handlers in `internal/web/friends.go`),
+reusing the existing endpoint substrate as the thing approval mints, and the spec's frontmatter status
+reflects that.
 
 ## Goals / Non-Goals
 
@@ -156,9 +157,9 @@ stateDiagram-v2
 
 ## Migration Plan
 
-The friending layer is unimplemented. The endpoint substrate it mints onto already exists
-(`endpoints` table, `store.CreateEndpoint`, `store.RevokeEndpoint`, boundary enforcement in
-`internal/agentapi/agentapi.go`). Realizing this spec requires:
+At drafting time the friending layer was unimplemented; the endpoint substrate it mints onto already
+existed (`endpoints` table, `store.CreateEndpoint`, `store.RevokeEndpoint`, boundary enforcement at
+the vended surface). Realizing this spec required (all four steps have since shipped):
 
 1. A migration adding a `friend_edges` table keyed by (from_persona, to_persona, direction) with a
    `state` column (`pending|approved|denied|revoked`), the `requested_scope`, `granted_scope`,
@@ -176,10 +177,11 @@ No data migration of existing rows is needed.
 
 ## Open Questions
 
-- **Not yet implemented.** There is no friend-edge table, no friend-request/approve/deny/revoke store
-  code, and no A2A intake route in the current tree. The vend target (`endpoints`) exists; the friending
-  layer that drives it does not. The ADR + contract doc define the intended shape; this design records it
-  and the gap.
+- **Resolved (2026-07): implemented.** The friend-edge table
+  (`internal/db/migrations/0005_friend_edges.sql`), request/approve/deny/revoke store code
+  (`internal/store/friends.go`), and the A2A intake route (`internal/server/friend_intake.go`,
+  `POST /a2a/friend-requests`) all exist in the current tree; the drafting-time gap this design
+  originally recorded is closed.
 - **Scope-narrowing representation.** How `granted_scope ⊆ requested_scope` is checked for queues/verbs
   (set containment) and stored alongside the edge vs. only on the minted endpoint is TBD.
 - **Bounded-directory mechanics.** What constitutes the "known set" of directories, how personas join

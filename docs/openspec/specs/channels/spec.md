@@ -1,5 +1,5 @@
 ---
-status: approved
+status: implemented
 date: 2026-07-10
 implements: [ADR-0013]
 requires: [SPEC-0007, SPEC-0008, SPEC-0014]
