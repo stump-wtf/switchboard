@@ -2,20 +2,32 @@
 {{/* Governing: SPEC-0013 REQ "Board View — Live Incoming Lines" — trust legend, stat tiles, and
      the newest-first incoming-lines feed, server-rendered from the database and kept live by the
      typed SSE events (event_received prepends rows; todo_* frames advance stages out-of-band;
-     counts refreshes the tiles). Reload always renders authoritative state. */}}
-<h1 class="sb-page-title">The Board</h1>
-<p class="sb-tagline">many lines in · each verified · patched through</p>
-
-<ul class="sb-legend" aria-label="Trust modes">
-  <li><span class="sb-badge sb-badge--signed">signed</span></li>
-  <li><span class="sb-badge sb-badge--token">token</span></li>
-  <li><span class="sb-badge sb-badge--open">open</span></li>
-  <li><span class="sb-badge sb-badge--queue">queue</span></li>
-</ul>
+     counts refreshes the tiles). Reload always renders authoritative state. The header carries the
+     design record's trust-legend dot prefixes and the reaper pill (the Board summarizes the same
+     durable queue the reaper re-surfaces into); the feed section head carries the right-aligned
+     'newest first · live' hint (#179). */}}
+<div class="sb-view-head">
+  <div>
+    <h1 class="sb-page-title">The Board</h1>
+    <p class="sb-tagline">many lines in · each verified · patched through</p>
+  </div>
+  <div class="sb-view-head__aside">
+    <ul class="sb-legend" aria-label="Trust modes">
+      <li><span class="sb-badge sb-badge--signed"><span aria-hidden="true">● </span>signed</span></li>
+      <li><span class="sb-badge sb-badge--token"><span aria-hidden="true">● </span>token</span></li>
+      <li><span class="sb-badge sb-badge--open"><span aria-hidden="true">● </span>open</span></li>
+      <li><span class="sb-badge sb-badge--queue"><span aria-hidden="true">● </span>queue</span></li>
+    </ul>
+    {{template "reaper_pill"}}
+  </div>
+</div>
 
 {{template "tiles" .Tiles}}
 
-<h2 class="sb-section-title">Incoming lines</h2>
+<div class="sb-section-head">
+  <h2 class="sb-section-title">Incoming lines</h2>
+  <span class="sb-section-hint">newest first · live</span>
+</div>
 {{/* The feed is a live region that exists before the first frame: new rows enter at the top via
      sse-swap afterbegin; sb.js trims to the visible cap and hides the empty state. */}}
 <ul id="sb-feed" class="sb-feed" aria-live="polite" sse-swap="event_received" hx-swap="afterbegin" data-sb-feed-cap="8">{{range .Rows}}{{template "feed_row" .}}

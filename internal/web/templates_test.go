@@ -124,6 +124,22 @@ func TestLivePillIdleAtZeroRate(t *testing.T) {
 	}
 }
 
+// TestLivePillDecayContract pins the template↔sb.js contract for the #179 live-rate decay: every
+// rendered pill (busy or idle, page or OOB frame) stamps data-sb-live-decay="75000" — the silence
+// window (ms) after which sb.js returns the pill to its idle zero-state. The value must exceed the
+// rate's trailing 1-minute DB window (store.BoardStats.EventsPerMin) so the client only zeroes the
+// display once the true rate is already zero. sb.js has no JS runner in this gate; this template
+// assertion is the browser-independent guard (same pattern as the countdown contracts).
+func TestLivePillDecayContract(t *testing.T) {
+	h := newTestHandler(t)
+	for _, rate := range []int{0, 7} {
+		out := renderFrag(t, h, "live_pill", map[string]any{"Rate": rate, "OOB": true})
+		if !strings.Contains(out, `data-sb-live-decay="75000"`) {
+			t.Errorf("live_pill (rate %d): missing data-sb-live-decay stamp (75s > the 60s rate window): %q", rate, out)
+		}
+	}
+}
+
 func TestDisconnectedIndicator(t *testing.T) {
 	h := newTestHandler(t)
 	body := renderPage(t, h, "board", view{

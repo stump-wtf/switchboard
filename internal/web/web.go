@@ -156,7 +156,7 @@ func stageMod(state string) string {
 // Governing: SPEC-0013 REQ "Information Architecture and Navigation".
 type shell struct {
 	Active          string // board | todos | endpoints | personas | friends — marks aria-current on the rail
-	TodoCount       int    // pending todos, shown beside the Todos rail entry
+	TodoCount       int    // total todos (every state), shown beside the Todos rail entry (design record, #179)
 	LiveRate        int    // events/min for the LIVE pill (hidden when zero)
 	DBConnected     bool   // pool ping result — the rail footer indicator
 	Initials        string // avatar initials
@@ -232,7 +232,10 @@ func (h *Handler) buildShell(ctx context.Context, active string, human *store.Hu
 		h.log.Warn("shell board stats", "err", err)
 		return sh, store.BoardStats{}
 	}
-	sh.TodoCount = stats.AwaitingClaim
+	// The rail badge is the SIZE of the durable queue (all states, design record) — the same number
+	// the counts SSE frame swaps in ({{template "counts"}} binds .Todos.All), so page render and
+	// live update never disagree.
+	sh.TodoCount = stats.TotalTodos
 	sh.LiveRate = stats.EventsPerMin
 	return sh, stats
 }

@@ -340,6 +340,80 @@ func TestTodosPageLiveRegionsAndDrawerTrigger(t *testing.T) {
 	}
 }
 
+// TestTodosHeaderDurableQueueCopy pins the #179 header copy from the design record: the page
+// heading is 'Durable queue' with the queue-semantics tagline, and the animated reaper pill sits
+// in the header ("the view MUST surface that the reaper is active" — SPEC-0013 REQ "Todos View —
+// Durable Queue"). The rail entry stays 'Todos'.
+func TestTodosHeaderDurableQueueCopy(t *testing.T) {
+	h := newTestHandler(t)
+	body := renderPage(t, h, "todos", view{
+		Title: "Todos", Human: testHuman(), CSRF: "tok",
+		Shell:  shell{Active: "todos", DBConnected: true, Initials: "JS"},
+		Filter: "all",
+	})
+	for _, want := range []string{
+		`<h1 class="sb-page-title">Durable queue</h1>`,
+		"claim under a lease · complete with an ack · dedup by idempotency key · at-least-once",
+		`class="sb-reaper"`,
+		"lease reaper active · re-surfaces abandoned work",
+		`<span class="sb-rail__label">Todos</span>`, // the rail entry keeps its nav name
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("todos header: missing %q", want)
+		}
+	}
+}
+
+// TestTodoRowWholeRowOpenContract pins the #179 whole-row affordance contract sb.js drives: the
+// <tr> carries data-sb-row-open + tabindex="0" (focusable, Enter/Space forwarded) and the id
+// cell's drawer button carries data-sb-row-trigger, so a click anywhere on the row body lands on
+// the same accessible, HTMX-wired trigger. The <tr> keeps its native row role — no role override —
+// so the table stays a table for AT.
+func TestTodoRowWholeRowOpenContract(t *testing.T) {
+	h := newTestHandler(t)
+	out, err := h.renderFragment("todo_row", rowFixture("pending"))
+	if err != nil {
+		t.Fatalf("render todo_row: %v", err)
+	}
+	for _, want := range []string{
+		`data-sb-row-open`,               // the row-open scope sb.js delegates on
+		`tabindex="0"`,                   // the row is keyboard-focusable
+		`data-sb-row-trigger`,            // the forwarding target inside the id cell
+		`hx-get="/todos/td_pending0000"`, // ...which stays the HTMX drawer trigger
+		`aria-haspopup="dialog"`,         // ...announced as a dialog trigger
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("todo_row row-open contract: missing %q in %q", want, out)
+		}
+	}
+	if strings.Contains(out, "<tr role=") {
+		t.Errorf("todo_row must keep its native row role (no role override): %q", out)
+	}
+}
+
+// TestTodoRowCarriesSourceTag pins the #179 two-letter provider tag on todo rows: the same sb-tag
+// chip the Board feed renders, aria-hidden (AT reads the full source name beside it), and absent
+// entirely when the row has no source to abbreviate.
+func TestTodoRowCarriesSourceTag(t *testing.T) {
+	h := newTestHandler(t)
+	out, err := h.renderFragment("todo_row", rowFixture("pending")) // Source: github
+	if err != nil {
+		t.Fatalf("render todo_row: %v", err)
+	}
+	if !strings.Contains(out, `<span class="sb-tag" aria-hidden="true">GH</span>`) {
+		t.Errorf("todo_row: missing two-letter source tag chip: %q", out)
+	}
+	bare := rowFixture("pending")
+	bare.Source = ""
+	out, err = h.renderFragment("todo_row", bare)
+	if err != nil {
+		t.Fatalf("render todo_row (no source): %v", err)
+	}
+	if strings.Contains(out, "sb-tag") {
+		t.Errorf("todo_row without a source must not render a tag chip: %q", out)
+	}
+}
+
 // TestTodoPillsActiveStateAcrossFilters rounds out the filter-pill coverage: every one of the five
 // SPEC-0013 pills (All/Pending/Claimed/Done/Failed) becomes the single active pill for its filter,
 // and its aria-selected flips to true. todos_test.go covers all/failed; this covers the rest,

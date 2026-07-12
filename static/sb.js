@@ -2,9 +2,11 @@
  *
  * Governing: SPEC-0013 REQ "Live Updates and Toasts", REQ "Todo Detail Drawer", design.md ("thin
  * vanilla-JS layer"): this file NEVER mutates domain state — it expires toasts, trims the Board feed,
- * animates lease countdowns toward server-stamped deadlines, and manages the drawer overlay (open on
- * swap-in, close on Escape / overlay-click / close button, with a focus trap and focus return). The
- * server renders truth; a reload discards everything here.
+ * animates lease countdowns toward server-stamped deadlines, decays the top-bar LIVE pill to its
+ * idle state when counts frames stop arriving, forwards whole-row clicks/Enter on todo rows to the
+ * row's drawer trigger, and manages the drawer overlay (open on swap-in, close on Escape /
+ * overlay-click / close button, with a focus trap and focus return). The server renders truth; a
+ * reload discards everything here.
  */
 (function () {
   "use strict";
@@ -72,6 +74,61 @@
       }
       var pct = Math.max(0, Math.min(100, Math.round((remaining / total) * 100)));
       el.style.width = pct + "%";
+    });
+  }
+
+  // ---- LIVE pill decay: return the top-bar pill to its idle zero-state when traffic stops ----
+  // Counts frames are published only on committed events/transitions (live.go), so a quiet board
+  // would pin the last nonzero rate forever. The server stamps data-sb-live-decay (ms) on the pill
+  // (fragments.html "live_pill"); the window exceeds the rate's trailing 1-minute DB window, so by
+  // the time it elapses with no swap the true rate IS zero — this only catches the display up.
+  // Every SSE counts swap replaces the element wholesale (new node → the timer re-arms), and the
+  // next frame replaces our decayed pill with server truth. Presentation-only, like everything here.
+  var livePillNode = null;
+  var livePillSince = 0;
+
+  function tickLiveDecay() {
+    var pill = document.getElementById("sb-live");
+    if (!pill) return;
+    var decay = parseInt(pill.getAttribute("data-sb-live-decay"), 10);
+    if (!decay) return;
+    if (pill !== livePillNode) {
+      // Fresh render (page load or an SSE counts swap): re-arm the silence window.
+      livePillNode = pill;
+      livePillSince = Date.now();
+      return;
+    }
+    if (pill.classList.contains("sb-live--idle") || Date.now() - livePillSince < decay) return;
+    pill.classList.add("sb-live--idle");
+    Array.prototype.forEach.call(pill.childNodes, function (n) {
+      if (n.nodeType === Node.TEXT_NODE) n.nodeValue = "LIVE · 0/min";
+    });
+  }
+
+  // ---- whole-row drawer open (Todos table) ----
+  // The design record makes the entire todo row clickable. The id cell's button
+  // ([data-sb-row-trigger]) stays the accessible, HTMX-wired trigger; a click on the row body (not
+  // on a real control) or Enter/Space while the row itself is focused (tabindex="0" on the <tr>)
+  // just forwards to it, so focus return and the drawer wiring stay on one path.
+  function rowTrigger(target) {
+    var row = target && target.closest ? target.closest("[data-sb-row-open]") : null;
+    if (!row) return null;
+    return row.querySelector("[data-sb-row-trigger]");
+  }
+
+  function initRowOpen() {
+    document.body.addEventListener("click", function (e) {
+      if (e.target.closest && e.target.closest("button,a,form,input,select,textarea,label")) return;
+      var trigger = rowTrigger(e.target);
+      if (trigger) trigger.click();
+    });
+    document.body.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      var row = e.target.closest ? e.target.closest("[data-sb-row-open]") : null;
+      if (!row || e.target !== row) return; // only when the ROW is focused — controls keep their keys
+      e.preventDefault();
+      var trigger = row.querySelector("[data-sb-row-trigger]");
+      if (trigger) trigger.click();
     });
   }
 
@@ -301,8 +358,13 @@
     initCloseControls();
     initModals();
     initVend();
+    initRowOpen();
     tickCountdowns();
-    setInterval(tickCountdowns, 1000);
+    tickLiveDecay();
+    setInterval(function () {
+      tickCountdowns();
+      tickLiveDecay();
+    }, 1000);
   }
 
   if (document.readyState === "loading") {

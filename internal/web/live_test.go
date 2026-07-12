@@ -95,7 +95,7 @@ func TestCountsFragmentCarriesOOBBundle(t *testing.T) {
 		`id="sb-tc-all"`, `id="sb-tc-pending"`, `id="sb-tc-failed"`, // Todos view pill-count targets
 		"sb-tile--alert", // awaiting-claim emphasis travels with the fragment
 		"LIVE · 3/min",   // pill rate
-		">5</span>",      // rail count
+		`id="sb-todo-count" class="sb-rail__count" hx-swap-oob="true">9<`, // rail badge = TOTAL todos (design record, #179)
 		"sb-bars__bar--now",
 	} {
 		if !strings.Contains(out, want) {

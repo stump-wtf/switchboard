@@ -60,6 +60,7 @@ func TestBoardStats(t *testing.T) {
 		t.Fatalf("board stats (seeded): %v", err)
 	}
 	want := BoardStats{
+		TotalTodos:    3,
 		TodosToday:    3,
 		InFlight:      1,
 		AwaitingClaim: 2,

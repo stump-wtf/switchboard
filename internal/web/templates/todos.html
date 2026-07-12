@@ -2,10 +2,17 @@
 {{/* Governing: SPEC-0013 REQ "Todos View — Durable Queue" — filter pills with live counts, a search
      over id/source/event, and the durable-queue table, all server-rendered from the database and
      kept live by the typed SSE events (todo_* frames replace rows OOB; the counts frame refreshes the
-     pill numbers). The pills+table live inside #sb-todos-panel, which HTMX filter/search GETs swap
-     wholesale; the drawer opens into the shared #sb-overlay slot. Reload always renders truth. */}}
-<h1 class="sb-page-title">Todos</h1>
-<p class="sb-tagline">the durable queue · every line accounted for</p>
+     pill numbers). The header is the design record's Durable-queue heading: the queue-semantics
+     tagline plus the animated reaper pill ("the view MUST surface that the reaper is active", #179).
+     The pills+table live inside #sb-todos-panel, which HTMX filter/search GETs swap wholesale; the
+     drawer opens into the shared #sb-overlay slot. Reload always renders truth. */}}
+<div class="sb-view-head">
+  <div>
+    <h1 class="sb-page-title">Durable queue</h1>
+    <p class="sb-tagline">claim under a lease · complete with an ack · dedup by idempotency key · at-least-once</p>
+  </div>
+  {{template "reaper_pill"}}
+</div>
 
 <div id="sb-todos-panel">{{template "todos_panel" dict "Filter" .Filter "Query" .Query "Counts" .Counts "Rows" .TodoItems}}</div>
 {{end}}
