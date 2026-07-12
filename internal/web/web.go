@@ -184,7 +184,8 @@ type view struct {
 	EndpointCards      []endpointCard      // the vended-endpoint cards
 	PersonasEnabled    bool                // gates the persona chip on cards + the persona field in the modal
 	VendPersonaOptions []vendPersonaOption // the vend-modal persona select choices (the human's personas)
-	VerbOptions        []string            // the vend-modal verb toggle chips (drain-verb vocabulary)
+	VerbOptions        []vendVerbOption    // the vend-modal verb toggle chips (the agent-tools surface)
+	QueueOptions       []string            // the vend-modal queue toggle chips (queues known to the store)
 	VendOpen           bool                // no-JS fallback: render the vend form inline in the page
 	Reveal             *revealView         // set on a no-JS vend to render the one-time credential reveal inline
 
@@ -460,7 +461,7 @@ func providerTag(source string) string {
 // Governing: SPEC-0014 REQ "HTTP Wiring Is the Only Wiring" (scenario "Vend reveal shows HTTP
 // wiring"), SPEC-0012 REQ "Vend Flow and One-Time Credential Reveal".
 func buildMCPJSON(baseURL, slug, token string) string {
-	mcpURL := strings.TrimRight(baseURL, "/") + "/mcp/" + slug
+	mcpURL := mcpEndpointURL(baseURL, slug)
 	m := map[string]any{"mcpServers": map[string]any{"switchboard": map[string]any{
 		"type":    "http",
 		"url":     mcpURL,
@@ -468,4 +469,10 @@ func buildMCPJSON(baseURL, slug, token string) string {
 	}}}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	return string(b)
+}
+
+// mcpEndpointURL is the minted endpoint's Streamable-HTTP URL — the same value the reveal shows as
+// its standalone "MCP endpoint URL" field and embeds in the .mcp.json wiring (SPEC-0014).
+func mcpEndpointURL(baseURL, slug string) string {
+	return strings.TrimRight(baseURL, "/") + "/mcp/" + slug
 }

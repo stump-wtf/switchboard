@@ -59,10 +59,7 @@ const (
 // eventVerbs is the SPEC-0005 event-history tool surface. Like agentVerbs, a tools/call naming
 // one of these outside the endpoint's allowlist is a scope violation (stable "forbidden" code via
 // scopeGuard), distinguishable from an unknown tool.
-var eventVerbs = map[string]bool{
-	"list_webhook_events": true, "get_webhook_event": true,
-	"replay_webhook_event": true, "list_providers": true,
-}
+var eventVerbs = verbSet(EventVerbs())
 
 // --- tool input/output shapes (SDK-inferred JSON schemas) ---
 

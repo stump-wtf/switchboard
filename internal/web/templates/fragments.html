@@ -378,6 +378,9 @@
 {{define "endpoint_card"}}{{$c := .C}}<article id="sb-ep-{{$c.ID}}" class="sb-epcard{{if eq $c.State "revoked"}} sb-epcard--revoked{{end}}">
   <div class="sb-epcard__head">
     <div class="sb-epcard__ident">
+      {{/* Two-letter initials avatar tile per the design canvas (Endpoints cards). Decorative — the
+           agent name follows as text. */}}
+      <span class="sb-epcard__avatar" aria-hidden="true">{{$c.Initials}}</span>
       <span class="sb-epcard__agent">{{$c.AgentName}}</span>
       {{if and .PersonasEnabled $c.PersonaName}}<span class="sb-chip sb-chip--persona">{{$c.PersonaName}}</span>{{end}}
     </div>
@@ -407,21 +410,25 @@
 </article>{{end}}
 
 {{/* vend_form — the vend field set, shared by the modal (overlay) and the no-JS inline panel. Data:
-     web.view (CSRF, PersonasEnabled, VerbOptions). Queues are a comma-separated field (open-ended, no
-     registry) that sb.js enhances into a live chip preview; verbs are toggle chips (checkboxes, all on
-     by default). The submit stays enabled in markup so a no-JS post still reaches the server, which
-     re-validates scope (400, mints nothing, on an empty name/queue/verb). */}}
+     web.view (CSRF, PersonasEnabled, VerbOptions, QueueOptions). Scoped queues and allowed verbs are
+     toggle chips (checkboxes — SPEC-0013 "via toggle chips", per the design canvas): queue chips
+     enumerate the queues already known to the store, verb chips the agent-tools surface with the
+     drain verbs pre-checked. When the store knows no queues yet the queue field degrades to the
+     free-text comma-separated input so a first vend is never blocked. Cancel closes the overlay
+     (sb.js data-sb-close) or, on the no-JS inline form, navigates back to /endpoints. The submit
+     stays enabled in markup so a no-JS post still reaches the server, which re-validates scope
+     (400, mints nothing, on an empty name/queue/verb). */}}
 {{define "vend_form"}}<form id="sb-vend-form" class="sb-vend" method="post" action="/endpoints/vend"
     hx-post="/endpoints/vend" hx-target="#sb-overlay" hx-swap="innerHTML" data-sb-vend>
   <input type="hidden" name="csrf_token" value="{{.CSRF}}">
   <div class="sb-field">
     <label for="sb-vend-name">Agent name</label>
-    <input id="sb-vend-name" class="sb-input" name="name" placeholder="reviewer-bot" required autocomplete="off" data-sb-vend-name>
+    <input id="sb-vend-name" class="sb-input" name="name" placeholder="e.g. release-bot" required autocomplete="off" data-sb-vend-name>
     <p class="sb-help">the agent this scoped line belongs to</p>
   </div>
   {{if .PersonasEnabled}}
   <div class="sb-field">
-    <label for="sb-vend-persona">Persona (optional)</label>
+    <label for="sb-vend-persona">Bound persona (optional)</label>
     <select id="sb-vend-persona" class="sb-input" name="persona">
       <option value="">none — agent-level endpoint</option>
       {{range .VendPersonaOptions}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
@@ -430,20 +437,29 @@
   </div>
   {{end}}
   <div class="sb-field">
-    <label for="sb-vend-queues">Queues</label>
+    {{if .QueueOptions}}
+    <span class="sb-label" id="sb-vend-queues-label">Scoped queues</span>
+    <div class="sb-chipset" role="group" aria-labelledby="sb-vend-queues-label" data-sb-vend-queue-chips>
+      {{range .QueueOptions}}<label class="sb-chip sb-chip--queue sb-chip--toggle"><input type="checkbox" name="queues" value="{{.}}"> {{.}}</label>{{end}}
+    </div>
+    <p class="sb-help">the todo queues this endpoint may work · at least one required</p>
+    {{else}}
+    <label for="sb-vend-queues">Scoped queues</label>
     <input id="sb-vend-queues" class="sb-input" name="queues" placeholder="reviews, deploys" autocomplete="off" data-sb-vend-queues aria-describedby="sb-vend-queues-help">
-    <div class="sb-chipset" data-sb-vend-queue-chips aria-hidden="true"></div>
+    <div class="sb-chipset" data-sb-vend-queue-preview aria-hidden="true"></div>
     <p class="sb-help" id="sb-vend-queues-help">comma-separated · the todo queues this endpoint may work · at least one required</p>
+    {{end}}
   </div>
   <div class="sb-field">
-    <span class="sb-label" id="sb-vend-verbs-label">Verbs</span>
+    <span class="sb-label" id="sb-vend-verbs-label">Allowed verbs</span>
     <div class="sb-chipset" role="group" aria-labelledby="sb-vend-verbs-label" data-sb-vend-verbs>
-      {{range .VerbOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="verbs" value="{{.}}" checked> {{.}}</label>{{end}}
+      {{range .VerbOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="verbs" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
     </div>
     <p class="sb-help">allowed MCP tools · at least one required</p>
   </div>
   <div class="sb-vend__foot">
-    <button type="submit" class="sb-btn" data-sb-vend-submit>Vend endpoint</button>
+    <a class="sb-btn sb-btn--secondary" href="/endpoints" data-sb-close>Cancel</a>
+    <button type="submit" class="sb-btn" data-sb-vend-submit>Vend endpoint →</button>
   </div>
   <p class="sb-help">Scope is immutable — to change access, revoke and re-vend.</p>
 </form>{{end}}
@@ -453,7 +469,7 @@
      the trigger. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal". */}}
 {{define "vend_modal"}}<div class="sb-modal" role="dialog" aria-modal="true" aria-labelledby="sb-vend-title" data-sb-modal tabindex="-1">
   <div class="sb-modal__head">
-    <h2 class="sb-modal__title" id="sb-vend-title">Vend endpoint</h2>
+    <h2 class="sb-modal__title" id="sb-vend-title">Vend a scoped endpoint</h2>
     <button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button>
   </div>
   {{template "vend_form" .}}
@@ -467,9 +483,14 @@
     <h2 class="sb-modal__title" id="sb-reveal-title">Endpoint vended</h2>
     <button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button>
   </div>
-  <p class="sb-muted">Scoped line for <strong>{{.AgentName}}</strong>.</p>
-  <p class="sb-callout sb-callout--danger">Copy the credential now — it is shown only once and stored only as a hash.</p>
-  <span class="sb-label" id="sb-reveal-cred-label">Credential</span>
+  <p class="sb-muted">Endpoint vended to <strong>{{.AgentName}}</strong>.</p>
+  {{/* Warning copy per docs/design/05-voice.md ("Warnings say the consequence plainly"). */}}
+  <p class="sb-callout sb-callout--danger">Copy the credential now — it is shown once. The endpoint is the capability; revoking kills it.</p>
+  {{/* Standalone labeled fields per the design canvas minted state: the MCP endpoint URL and the
+       one-time credential each get their own label, ahead of the .mcp.json wiring below. */}}
+  <span class="sb-label" id="sb-reveal-url-label">MCP endpoint URL</span>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-url-label">{{.URL}}</pre>
+  <span class="sb-label" id="sb-reveal-cred-label">Credential · shown once</span>
   <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-cred-label">{{.Token}}</pre>
   <p class="sb-muted sb-mono">queues: {{range .Queues}}<code>{{.}}</code> {{end}}· verbs: {{range .Verbs}}<code>{{.}}</code> {{end}}</p>
   {{/* Governing: SPEC-0014 — the reveal shows Streamable-HTTP wiring (type: http + /mcp/{slug} URL +

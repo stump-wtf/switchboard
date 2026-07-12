@@ -12,15 +12,40 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/cred"
+	"github.com/joestump/switchboard/internal/mcp"
 	"github.com/joestump/switchboard/internal/store"
 )
 
-// drainVerbs is the vend-modal verb vocabulary: the SPEC-0006 todo-drain surface an endpoint can be
-// scoped to. Rendered as toggle chips (all on by default); the server re-validates the submission.
-var drainVerbs = []string{"list_todos", "claim", "complete", "fail"}
+// vendVerbOption is one verb toggle chip in the vend modal: the verb name plus whether the chip
+// starts checked. The vocabulary is enumerated from the agent-tools surface (internal/mcp verbs.go)
+// rather than hardcoded here, so the modal can never offer a verb the MCP layer does not serve.
+type vendVerbOption struct {
+	Name    string
+	Checked bool
+}
+
+// vendVerbOptions builds the vend-modal verb chips: the SPEC-0006 todo-drain surface starts checked
+// (the core scope an endpoint exists to carry), while the webhook self-management and event-history
+// verbs start unchecked so wider grants are always a deliberate toggle — mirroring the design
+// canvas, where only the core drain verbs are pre-selected. The server re-validates the submission.
+// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" (verbs are toggle chips).
+func vendVerbOptions() []vendVerbOption {
+	var opts []vendVerbOption
+	for _, v := range mcp.DrainVerbs() {
+		opts = append(opts, vendVerbOption{Name: v, Checked: true})
+	}
+	for _, v := range mcp.WebhookVerbs() {
+		opts = append(opts, vendVerbOption{Name: v})
+	}
+	for _, v := range mcp.EventVerbs() {
+		opts = append(opts, vendVerbOption{Name: v})
+	}
+	return opts
+}
 
 // endpointCard is the render model for one Endpoints-view card (fragments.html "endpoint_card"). It
 // carries only the non-secret credential display prefix — never a reusable credential — plus the
@@ -29,6 +54,7 @@ var drainVerbs = []string{"list_todos", "claim", "complete", "fail"}
 type endpointCard struct {
 	ID          string
 	AgentName   string
+	Initials    string // two-letter avatar tile derived from the agent name (design canvas)
 	PersonaName string
 	Slug        string
 	CredPrefix  string
@@ -39,6 +65,26 @@ type endpointCard struct {
 	LastSeenAt  *time.Time
 }
 
+// cardInitials derives the endpoint card's two-letter avatar tile from the agent name: the first
+// two letters/digits, upper-cased (the design canvas renders name.slice(0,2) upper-cased; skipping
+// punctuation keeps hyphenated names like "-bot" legible). Empty names fall back to the endpoint
+// glyph "EP" so the tile never renders blank.
+func cardInitials(name string) string {
+	var out []rune
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			out = append(out, unicode.ToUpper(r))
+			if len(out) == 2 {
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return "EP"
+	}
+	return string(out)
+}
+
 // revealView feeds the one-time credential reveal (fragments.html "vend_reveal"): the minted URL,
 // the plaintext credential shown exactly once, and the ready-to-paste HTTP .mcp.json wiring. It is
 // produced only as the response to a successful vend POST and is never persisted, so it cannot be
@@ -47,6 +93,7 @@ type endpointCard struct {
 type revealView struct {
 	AgentName string
 	Slug      string
+	URL       string // the minted /mcp/{slug} endpoint URL, shown as its own labeled field
 	Token     string // plaintext credential — shown once, never stored
 	MCPJSON   string
 	Queues    []string
@@ -61,6 +108,7 @@ func cardFromStore(c store.EndpointCard, personasEnabled bool) endpointCard {
 	card := endpointCard{
 		ID:         c.ID,
 		AgentName:  c.AgentName,
+		Initials:   cardInitials(c.AgentName),
 		Slug:       c.Slug,
 		CredPrefix: c.CredentialPrefix,
 		Queues:     c.ScopeQueues,
@@ -104,6 +152,19 @@ func (h *Handler) vendPersonaOptions(r *http.Request, humanID string) []vendPers
 	return opts
 }
 
+// vendQueueOptions lists the queue names already known to the store as the vend modal's scoped-
+// queue toggle chips (design canvas: queues are toggled, not typed). A read failure degrades to no
+// chips — the form then renders its free-text queue field so vending is never blocked — rather
+// than failing the modal. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal".
+func (h *Handler) vendQueueOptions(r *http.Request) []string {
+	queues, err := h.store.KnownQueues(r.Context())
+	if err != nil {
+		h.log.Warn("vend queue options", "err", err)
+		return nil
+	}
+	return queues
+}
+
 // Endpoints renders the Endpoints view: the vended-endpoint cards plus the "+ Vend endpoint" action.
 // Requires human. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal".
 func (h *Handler) Endpoints(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +185,7 @@ func (h *Handler) Endpoints(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "endpoints", view{
 		Title: "Endpoints", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
 		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled,
-		VendPersonaOptions: h.vendPersonaOptions(r, human.ID), VerbOptions: drainVerbs,
+		VendPersonaOptions: h.vendPersonaOptions(r, human.ID), VerbOptions: vendVerbOptions(),
 	})
 }
 
@@ -136,7 +197,8 @@ func (h *Handler) VendModal(w http.ResponseWriter, r *http.Request) {
 	if isHTMX(r) {
 		frag, err := h.renderFragment("vend_modal", view{
 			CSRF: auth.CSRFFromContext(r.Context()), PersonasEnabled: h.personasEnabled,
-			VendPersonaOptions: h.vendPersonaOptions(r, human.ID), VerbOptions: drainVerbs,
+			VendPersonaOptions: h.vendPersonaOptions(r, human.ID), VerbOptions: vendVerbOptions(),
+			QueueOptions: h.vendQueueOptions(r),
 		})
 		if err != nil {
 			h.fail(w, err)
@@ -150,6 +212,7 @@ func (h *Handler) VendModal(w http.ResponseWriter, r *http.Request) {
 	// same fields are reachable without the overlay.
 	sh, _ := h.buildShell(r.Context(), "endpoints", &human)
 	var cards []endpointCard
+	var queueOpts []string
 	if sh.DBConnected {
 		if eps, err := h.store.ListEndpointCards(r.Context(), human.ID); err != nil {
 			h.log.Warn("endpoints list for vend form", "err", err)
@@ -159,11 +222,13 @@ func (h *Handler) VendModal(w http.ResponseWriter, r *http.Request) {
 				cards = append(cards, cardFromStore(e, h.personasEnabled))
 			}
 		}
+		queueOpts = h.vendQueueOptions(r)
 	}
 	h.render(w, "endpoints", view{
 		Title: "Vend endpoint", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
 		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled,
-		VendPersonaOptions: h.vendPersonaOptions(r, human.ID), VerbOptions: drainVerbs, VendOpen: true,
+		VendPersonaOptions: h.vendPersonaOptions(r, human.ID), VerbOptions: vendVerbOptions(),
+		QueueOptions: queueOpts, VendOpen: true,
 	})
 }
 
@@ -228,6 +293,7 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 
 	reveal := revealView{
 		AgentName: res.AgentName, Slug: ep.Slug, Token: token,
+		URL:     mcpEndpointURL(h.cfg.BaseURL, ep.Slug),
 		MCPJSON: buildMCPJSON(h.cfg.BaseURL, ep.Slug, token),
 		Queues:  ep.ScopeQueues, Verbs: ep.ScopeVerbs, CSRF: auth.CSRFFromContext(r.Context()),
 	}
@@ -257,7 +323,7 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 	}
 	h.render(w, "endpoints", view{
 		Title: "Endpoint vended", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
-		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled, VerbOptions: drainVerbs,
+		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled, VerbOptions: vendVerbOptions(),
 		Reveal: &reveal,
 	})
 }

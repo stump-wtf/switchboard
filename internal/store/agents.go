@@ -376,3 +376,31 @@ func (s *Store) TouchEndpoint(ctx context.Context, endpointID string) error {
 	s.fireEndpointSeenHook(endpointID, seenAt)
 	return nil
 }
+
+// KnownQueues returns every distinct queue name the store knows — queues todos have ridden plus
+// queues scoped onto vended endpoints — sorted for stable display. The vend modal offers these as
+// its scoped-queue toggle chips (SPEC-0013 REQ "Endpoints View and Vend Modal": queues are chosen
+// via toggle chips, per the Endpoints design canvas). Queues are a global namespace (SPEC-0003),
+// so the enumeration is not per-owner; it reveals only names already visible on the shared Board.
+func (s *Store) KnownQueues(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT q FROM (
+			SELECT queue AS q FROM todos
+			UNION ALL
+			SELECT unnest(scope_queues) FROM endpoints
+		) AS qs
+		ORDER BY q`)
+	if err != nil {
+		return nil, fmt.Errorf("store: known queues: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var q string
+		if err := rows.Scan(&q); err != nil {
+			return nil, fmt.Errorf("store: scan known queue: %w", err)
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}

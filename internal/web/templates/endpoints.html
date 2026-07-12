@@ -7,8 +7,9 @@
      visitor gets the form inline (VendOpen) and the reveal inline (Reveal) instead. */}}
 <div class="sb-page-head">
   <div>
-    <h1 class="sb-page-title">Endpoints</h1>
-    <p class="sb-tagline">vended lines · each a URL + credential · scope is immutable</p>
+    {{/* Header + tagline copy per the design canvas (docs/design/04-screens.md §3). */}}
+    <h1 class="sb-page-title">Vended MCP endpoints</h1>
+    <p class="sb-tagline">humans are the accountable principals · each endpoint is a scoped, revocable capability · revoke = kill the endpoint</p>
   </div>
   {{/* Progressive enhancement: with JS the button fetches the modal into the overlay; without JS the
        href navigates to the inline form. */}}
