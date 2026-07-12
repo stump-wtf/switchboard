@@ -45,17 +45,21 @@
     });
   }
 
-  // ---- lease countdowns: animate toward a server-stamped deadline (data-sb-deadline, unix ms) ----
-  // Purely cosmetic: the store owns the lease; this only re-labels the time remaining once a second
-  // and drains the progress bar. It re-syncs whenever an SSE swap re-stamps the deadline.
+  // ---- lease/retry countdowns: animate toward a server-stamped deadline (data-sb-deadline, unix ms) ----
+  // Purely cosmetic: the store owns the lease and the retry schedule; this only re-labels the time
+  // remaining once a second and drains the progress bar. It re-syncs whenever an SSE swap re-stamps
+  // the deadline. data-sb-prefix prepends label text (the retry countdown's "↻ retry ");
+  // data-sb-expired overrides the at-zero label (a due retry reads "re-queuing…" until the
+  // todo_resurfaced frame swaps the row, while a lease keeps the default "expired").
   function tickCountdowns() {
     var now = Date.now();
     document.querySelectorAll("[data-sb-countdown][data-sb-deadline]").forEach(function (el) {
       var deadline = parseInt(el.getAttribute("data-sb-deadline"), 10);
       if (!deadline) return;
       var secs = Math.max(0, Math.round((deadline - now) / 1000));
+      var prefix = el.getAttribute("data-sb-prefix") || "";
       var suffix = el.getAttribute("data-sb-suffix") || "";
-      el.textContent = secs > 0 ? secs + "s" + suffix : "expired";
+      el.textContent = secs > 0 ? prefix + secs + "s" + suffix : (el.getAttribute("data-sb-expired") || "expired");
     });
     document.querySelectorAll("[data-sb-leasebar][data-sb-deadline]").forEach(function (el) {
       var deadline = parseInt(el.getAttribute("data-sb-deadline"), 10);

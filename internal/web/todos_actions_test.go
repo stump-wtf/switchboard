@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joestump/switchboard/internal/store"
 )
@@ -76,6 +77,14 @@ func TestToastTextByTransition(t *testing.T) {
 		if got := h.toastText(t.Context(), name, td); got != want {
 			t.Errorf("toastText(%q) = %q, want %q", name, got, want)
 		}
+	}
+	// A below-cap fail carries a scheduled retry window (SPEC-0003 scheduled backoff) and the toast
+	// tells the truthful story — it will retry, not "attempts exhausted".
+	next := time.Now().Add(30 * time.Second)
+	scheduled := td
+	scheduled.NextRetryAt = &next
+	if got, want := h.toastText(t.Context(), "todo_failed", scheduled), id+" · failed · will retry with backoff"; got != want {
+		t.Errorf("toastText(todo_failed, retry scheduled) = %q, want %q", got, want)
 	}
 	// todo_created (a new row appearing announces itself) and any unmapped name produce no toast.
 	if got := h.toastText(t.Context(), "todo_created", td); got != "" {

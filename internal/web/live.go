@@ -176,6 +176,11 @@ func (h *Handler) toastText(ctx context.Context, name string, t store.Todo) stri
 	case "todo_completed":
 		return id + " · completed · ack sent"
 	case "todo_failed":
+		// A scheduled-backoff fail and a dead-letter both commit as 'failed'; NextRetryAt tells the
+		// truthful story (SPEC-0003 scheduled backoff — design "will retry with backoff").
+		if t.NextRetryAt != nil {
+			return id + " · failed · will retry with backoff"
+		}
 		return id + " · failed · attempts exhausted"
 	case "todo_resurfaced":
 		return id + " · re-surfaced to queue"

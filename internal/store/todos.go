@@ -41,18 +41,47 @@ type Todo struct {
 	CreatedAt      time.Time
 	ClaimedAt      *time.Time
 	CompletedAt    *time.Time
+	NextRetryAt    *time.Time // scheduled backoff re-queue for a failed-below-cap todo; nil = dead-lettered/none
 }
 
 const todoCols = `id, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
 	COALESCE(idempotency_key,''), COALESCE(assignee,''), state, COALESCE(owner,''),
-	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at`
+	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at,
+	next_retry_at`
 
 func scanTodo(row pgx.Row) (Todo, error) {
 	var t Todo
 	err := row.Scan(&t.ID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
 		&t.IdempotencyKey, &t.Assignee, &t.State, &t.Owner, &t.LeaseExpiresAt, &t.Attempt,
-		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt)
+		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt, &t.NextRetryAt)
 	return t, err
+}
+
+// Retry backoff schedule (SPEC-0003 REQ "Bounded Retries via max_attempts", scheduled backoff): a
+// fail below the attempt cap parks the todo in `failed` with next_retry_at = now() + backoff, where
+// the backoff doubles per attempt from a 30s base and caps at 15m — attempt 1 → 30s, 2 → 1m,
+// 3 → 2m, 4 → 4m, 5 → 8m, 6+ → 15m (cap). The SQL in FailTodo mirrors retryBackoff exactly (same
+// base/cap constants, same power-of-two curve) so the Go function is the documented, testable spec
+// of the schedule.
+const (
+	retryBackoffBase = 30 * time.Second
+	retryBackoffCap  = 15 * time.Minute
+)
+
+// retryBackoff returns the scheduled delay before the given (1-based, just-failed) attempt is
+// re-queued. Out-of-range attempts clamp to the base; the doubling curve caps at retryBackoffCap.
+func retryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	d := retryBackoffBase
+	for i := 1; i < attempt; i++ {
+		d *= 2
+		if d >= retryBackoffCap {
+			return retryBackoffCap
+		}
+	}
+	return d
 }
 
 // CreateTodoParams are the inputs to CreateTodo.
@@ -67,8 +96,10 @@ type CreateTodoParams struct {
 	Assignee       string
 }
 
-// CreateTodo inserts a todo, deduping on (queue, idempotency_key) among non-terminal rows. The bool
-// reports whether a new row was created (false = an existing non-terminal todo already covers it). ADR-0007.
+// CreateTodo inserts a todo, deduping on (queue, idempotency_key) among LIVE rows — pending,
+// claimed, or a parked retry (failed with an open next_retry_at window); only `done` and true
+// dead-letters leave dedup. The bool reports whether a new row was created (false = an existing
+// live todo already covers it). ADR-0007; SPEC-0003 REQ "Idempotent Enqueue and Dedup".
 func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool, error) {
 	t, created, err := createTodo(ctx, s.pool, p)
 	if err == nil && created {
@@ -126,13 +157,20 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 
 // createTodo is the querier-based core of CreateTodo: it runs on either the pool or a transaction and
 // performs no LISTEN/NOTIFY (the caller nudges only after a durable commit).
+//
+// The ON CONFLICT clause mirrors the idx_todos_dedupe partial-index predicate (0008): a LIVE row is
+// anything not `done` and not a true dead-letter — a parked retry (`failed` with an open
+// next_retry_at window, SPEC-0003 scheduled backoff) still holds its dedup slot, so a redelivery
+// during the backoff collapses onto it instead of minting a duplicate active todo (which the
+// re-queue transition would then collide with, SQLSTATE 23505).
 func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool, error) {
 	id := "td_" + uuid.NewString()
 	row := q.QueryRow(ctx, `
 		INSERT INTO todos (id, queue, source, kind, title, payload, event_id, idempotency_key, assignee)
 		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), $5, $6, $7, NULLIF($8,''), NULLIF($9,''))
 		ON CONFLICT (queue, idempotency_key)
-			WHERE idempotency_key IS NOT NULL AND state <> 'done' AND state <> 'failed'
+			WHERE idempotency_key IS NOT NULL AND state <> 'done'
+				AND (state <> 'failed' OR next_retry_at IS NOT NULL)
 			DO NOTHING
 		RETURNING `+todoCols,
 		id, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee)
@@ -143,9 +181,10 @@ func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool,
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, false, err
 	}
-	// Conflict: return the existing non-terminal todo.
+	// Conflict: return the existing live todo (pending/claimed, or a parked retry).
 	row = q.QueryRow(ctx, `SELECT `+todoCols+` FROM todos
-		WHERE queue = $1 AND idempotency_key = $2 AND state <> 'done' AND state <> 'failed'
+		WHERE queue = $1 AND idempotency_key = $2 AND state <> 'done'
+			AND (state <> 'failed' OR next_retry_at IS NOT NULL)
 		ORDER BY created_at LIMIT 1`, p.Queue, p.IdempotencyKey)
 	t, err = scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -162,17 +201,22 @@ func (s *Store) notifyTodoReady(ctx context.Context, queue string) {
 	_, _ = s.pool.Exec(ctx, `SELECT pg_notify('todo_ready', $1)`, queue)
 }
 
-// ClaimTodo atomically claims a specific todo for owner, setting a lease. A todo is claimable when it
-// is pending OR when its lease has expired (crash recovery, so a stopped reaper can't strand it) and
-// it still has attempts remaining. ADR-0007 claim / SPEC-0003 lease recovery. Returns ErrConflict if
-// the todo exists but is not claimable (live claim / wrong assignee / exhausted), ErrNotFound if absent.
+// ClaimTodo atomically claims a specific todo for owner, setting a lease. A todo is claimable when
+// it is pending, OR when its lease has expired (crash recovery, so a stopped reaper can't strand
+// it) with attempts remaining, OR when its scheduled retry backoff has elapsed (so a hot worker
+// need not wait for the retry scheduler's next tick — a failed todo whose next_retry_at is still in
+// the future stays unclaimable). ADR-0007 claim / SPEC-0003 lease recovery + Bounded Retries.
+// Returns ErrConflict if the todo exists but is not claimable (live claim / wrong assignee /
+// exhausted / backoff pending), ErrNotFound if absent.
 func (s *Store) ClaimTodo(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='claimed', owner=$2, lease_expires_at=now()+$3::interval,
-			attempt=attempt+1, claimed_at=now(), updated_at=now()
+			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
 		WHERE id=$1 AND (assignee IS NULL OR assignee=$2)
 			AND (state='pending'
-				OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts))
+				OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
+				OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
+					AND attempt < max_attempts))
 		RETURNING `+todoCols, id, owner, ttl.String())
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -185,18 +229,22 @@ func (s *Store) ClaimTodo(ctx context.Context, id, owner string, ttl time.Durati
 }
 
 // ClaimNext claims the oldest claimable todo across the allowed queues using FOR UPDATE SKIP LOCKED
-// (ADR-0002), so concurrent workers never collide. A todo is claimable when it is pending OR when its
-// lease has expired with attempts remaining — the scan recovers expired leases directly, so a stopped
-// reaper can never strand work (SPEC-0003). Returns ErrNotFound when no work is available.
+// (ADR-0002), so concurrent workers never collide. A todo is claimable when it is pending, when its
+// lease has expired with attempts remaining, or when its scheduled retry backoff has elapsed — the
+// scan recovers expired leases and due retries directly, so a stopped reaper/scheduler can never
+// strand work (SPEC-0003). A failed todo whose backoff has not elapsed is skipped. Returns
+// ErrNotFound when no work is available.
 func (s *Store) ClaimNext(ctx context.Context, queues []string, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='claimed', owner=$1, lease_expires_at=now()+$2::interval,
-			attempt=attempt+1, claimed_at=now(), updated_at=now()
+			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
 		WHERE id = (
 			SELECT id FROM todos
 			WHERE queue = ANY($3) AND (assignee IS NULL OR assignee=$1)
 				AND (state='pending'
-					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts))
+					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
+					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
+						AND attempt < max_attempts))
 			ORDER BY created_at
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
@@ -244,36 +292,84 @@ func (s *Store) CompleteTodo(ctx context.Context, id, owner string, result []byt
 	return t, err
 }
 
-// FailTodo fails a claimed todo: retry (→pending) while attempt < max_attempts, else dead-letter
-// (→failed). ADR-0007 fail.
+// FailTodo fails a claimed todo. Below the attempt cap it schedules a retry with exponential
+// backoff — the todo parks in `failed` with next_retry_at = now() + retryBackoff(attempt) (30s
+// base, doubling, 15m cap) and re-enters `pending` only when the backoff elapses (retry scheduler,
+// or the claim scan once due). At the cap it dead-letters (`failed` with next_retry_at NULL). The
+// owner is kept on the failed row so the UI can show which agent it failed under; the re-queue
+// clears it. Governing: SPEC-0003 REQ "Bounded Retries via max_attempts" (scheduled backoff);
+// ADR-0007 fail.
 func (s *Store) FailTodo(ctx context.Context, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET
-			state = CASE WHEN attempt >= max_attempts THEN 'failed' ELSE 'pending' END,
-			owner = CASE WHEN attempt >= max_attempts THEN owner ELSE NULL END,
+			state = 'failed',
+			next_retry_at = CASE WHEN attempt >= max_attempts THEN NULL
+				ELSE now() + make_interval(secs =>
+					LEAST($4::float8 * power(2, GREATEST(attempt, 1) - 1), $5::float8)) END,
 			lease_expires_at = NULL, result = $3, updated_at = now()
 		WHERE id=$1 AND state='claimed' AND owner=$2
-		RETURNING `+todoCols, id, owner, result)
+		RETURNING `+todoCols, id, owner, result,
+		retryBackoffBase.Seconds(), retryBackoffCap.Seconds())
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, id)
 	}
 	if err == nil {
-		// verb mirrors the committed outcome: pending (will retry) or failed (dead-lettered).
+		// Both outcomes commit as 'failed'; the hook payload's NextRetryAt distinguishes a
+		// scheduled retry (countdown UI) from a dead-letter (retry is manual-only).
 		s.fireTodoHook(t.State, t)
 	}
 	return t, err
 }
 
-// RetryTodo re-enqueues a dead-lettered (failed) todo: the only sanctioned way a terminal todo
-// re-enters pending (SPEC-0003 lifecycle: failed → pending, operator/agent retry). It resets the
-// attempt budget and clears owner/lease/result so the todo gets a fresh set of tries. Returns
-// ErrConflict if the todo exists but is not failed (terminal states are otherwise final), ErrNotFound
-// if absent.
+// RequeueDueRetries re-queues failed todos whose scheduled retry backoff has elapsed — the
+// background retry scheduler that runs alongside the lease reaper (server.go). Each re-queued row
+// returns to `pending` with owner/lease/next_retry_at cleared, fires the transition hook (the UI's
+// re-surface flash), and nudges idle workers via the todo_ready wakeup (SPEC-0004; best-effort,
+// correctness never depends on delivery). Returns the number of todos re-queued.
+// Governing: SPEC-0003 REQ "Bounded Retries via max_attempts" (scheduled backoff).
+func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
+	rows, err := s.pool.Query(ctx, `
+		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, next_retry_at=NULL,
+			updated_at=now()
+		WHERE state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
+		RETURNING `+todoCols)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var requeued []Todo
+	for rows.Next() {
+		t, err := scanTodo(rows)
+		if err != nil {
+			return 0, err
+		}
+		requeued = append(requeued, t)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	queues := map[string]bool{}
+	for _, t := range requeued {
+		s.fireTodoHook(t.State, t)
+		if !queues[t.Queue] {
+			queues[t.Queue] = true
+			s.notifyTodoReady(ctx, t.Queue)
+		}
+	}
+	return int64(len(requeued)), nil
+}
+
+// RetryTodo re-enqueues a failed todo immediately: the explicit operator/agent "Retry now" that
+// re-queues a dead-letter (SPEC-0003 lifecycle: failed → pending) and doubles as the manual
+// override of a scheduled backoff (the retry window is discarded, next_retry_at cleared). It
+// resets the attempt budget and clears owner/lease/result so the todo gets a fresh set of tries.
+// Returns ErrConflict if the todo exists but is not failed (terminal states are otherwise final),
+// ErrNotFound if absent.
 func (s *Store) RetryTodo(ctx context.Context, id string) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, attempt=0,
-			result=NULL, claimed_at=NULL, completed_at=NULL, updated_at=now()
+			result=NULL, claimed_at=NULL, completed_at=NULL, next_retry_at=NULL, updated_at=now()
 		WHERE id=$1 AND state='failed'
 		RETURNING `+todoCols, id)
 	t, err := scanTodo(row)

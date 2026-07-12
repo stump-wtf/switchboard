@@ -30,6 +30,12 @@ func TestSchemaHotPathIndexes(t *testing.T) {
 	if !strings.Contains(strings.ToUpper(dedupe), "UNIQUE") || !strings.Contains(dedupe, "idempotency_key") {
 		t.Fatalf("idx_todos_dedupe must be a unique partial index on idempotency_key: %s", dedupe)
 	}
+	// The 0008 predicate must keep a parked retry (failed with an open next_retry_at window) LIVE
+	// in dedup — the 0001 predicate dropped it, letting a redelivery mint a duplicate that the
+	// re-queue transition then collided with (23505). SPEC-0003 REQ "Idempotent Enqueue and Dedup".
+	if !strings.Contains(dedupe, "next_retry_at") {
+		t.Fatalf("idx_todos_dedupe must keep parked retries (open next_retry_at) in the dedup predicate: %s", dedupe)
+	}
 
 	evDedupe := indexDef(t, s, ctx, "idx_events_dedupe")
 	if !strings.Contains(strings.ToUpper(evDedupe), "UNIQUE") || !strings.Contains(evDedupe, "external_id") {

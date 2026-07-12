@@ -25,7 +25,10 @@ func TestLifecycleTransitions(t *testing.T) {
 		t.Fatalf("fail pending should conflict, got %v", err)
 	}
 
-	// Drive it to the terminal 'failed' state by exhausting attempts (max_attempts default 5).
+	// Drive it to the terminal 'failed' state by exhausting attempts (max_attempts default 5). A
+	// fail below the cap parks in 'failed' with a scheduled retry window (SPEC-0003 Bounded
+	// Retries, scheduled backoff) — unclaimable until due, so each loop iteration rewinds the
+	// window before re-claiming.
 	for i := 0; i < 5; i++ {
 		if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
 			t.Fatalf("claim %d: %v", i, err)
@@ -34,15 +37,28 @@ func TestLifecycleTransitions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fail %d: %v", i, err)
 		}
-		if i < 4 && last.State != "pending" {
-			t.Fatalf("fail %d below cap: state=%s want pending", i, last.State)
+		if last.State != "failed" {
+			t.Fatalf("fail %d: state=%s want failed", i, last.State)
 		}
-		if i == 4 && last.State != "failed" {
-			t.Fatalf("fail at cap: state=%s want failed", last.State)
+		if i < 4 {
+			if last.NextRetryAt == nil {
+				t.Fatalf("fail %d below cap: NextRetryAt is nil, want a scheduled retry window", i)
+			}
+			// The open retry window blocks a re-claim…
+			if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
+				t.Fatalf("claim %d during open retry window should conflict, got %v", i, err)
+			}
+			// …until it elapses (rewound here rather than slept through).
+			if _, err := s.pool.Exec(ctx, `UPDATE todos SET next_retry_at = now() - interval '1 second' WHERE id=$1`, td.ID); err != nil {
+				t.Fatalf("rewind retry window %d: %v", i, err)
+			}
+		}
+		if i == 4 && last.NextRetryAt != nil {
+			t.Fatalf("fail at cap: NextRetryAt=%v, want nil (dead-letter)", last.NextRetryAt)
 		}
 	}
 
-	// Terminal 'failed' todo is not claimable by a normal claim.
+	// Dead-lettered 'failed' todo (no retry window) is not claimable by a normal claim.
 	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
 		t.Fatalf("claim failed todo should conflict, got %v", err)
 	}

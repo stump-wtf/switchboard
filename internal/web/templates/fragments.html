@@ -102,7 +102,7 @@
   <td><button type="button" class="sb-linklike sb-mono" hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>
   <td><span class="sb-trow__source">{{if .Source}}{{.Source}}{{else}}—{{end}}</span> <span class="sb-trow__kind">{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
   <td><span class="sb-badge sb-badge--{{.TrustMode}}">{{.TrustMode}}</span></td>
-  <td><span class="sb-status sb-status--{{.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.State}}</span>{{if and (eq .State "claimed") .HasLease}}<span class="sb-trow__sub" data-sb-countdown data-sb-deadline="{{.LeaseDeadlineMS}}" data-sb-suffix=" left">lease {{.LeaseSecs}}s left</span>{{else if eq .State "failed"}}<span class="sb-trow__sub">{{.Attempt}}/{{.MaxAttempts}} attempts</span>{{end}}</td>
+  <td><span class="sb-status sb-status--{{.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.State}}</span>{{if and (eq .State "claimed") .HasLease}}<span class="sb-trow__sub" data-sb-countdown data-sb-deadline="{{.LeaseDeadlineMS}}" data-sb-suffix=" left">lease {{.LeaseSecs}}s left</span>{{else if and (eq .State "failed") .RetryScheduled}}<span class="sb-trow__sub sb-trow__sub--retry" data-sb-countdown data-sb-deadline="{{.RetryDeadlineMS}}" data-sb-prefix="↻ retry " data-sb-expired="↻ re-queuing…">↻ retry {{.RetrySecs}}s</span>{{else if eq .State "failed"}}<span class="sb-trow__sub">{{.Attempt}}/{{.MaxAttempts}} attempts</span>{{end}}</td>
   <td class="sb-mono">{{if .OwnerLabel}}{{.OwnerLabel}}{{else}}—{{end}}</td>
   <td class="sb-trow__age">{{reltime .CreatedAt}}</td>
   <td class="sb-trow__act">{{if eq .State "pending"}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.ID}}/claim" hx-target="closest tr" hx-swap="outerHTML">Claim</button>{{else if eq .State "claimed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/complete" hx-target="closest tr" hx-swap="outerHTML">Complete</button>{{else if eq .State "failed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/retry" hx-target="closest tr" hx-swap="outerHTML">Retry</button>{{else}}<span class="sb-muted">—</span>{{end}}</td>
@@ -224,7 +224,15 @@
     </div>
   </div>
   {{end}}
-  {{if eq .Row.State "failed"}}
+  {{if and (eq .Row.State "failed") .Row.RetryScheduled}}
+  {{/* Scheduled-backoff retry card (SPEC-0003 scheduled backoff; design failed-card): the ↻
+       countdown ticks toward the server-stamped next_retry_at via the same sb.js mechanism as the
+       lease countdown. "Retry now" in the footer remains the manual override. */}}
+  <div class="sb-retry">
+    <span class="sb-retry__label">retry with backoff · attempt {{.Row.Attempt}}</span>
+    <span class="sb-retry__count" data-sb-countdown data-sb-deadline="{{.Row.RetryDeadlineMS}}" data-sb-prefix="↻ " data-sb-expired="↻ re-queuing…" role="timer" aria-live="off">↻ {{.Row.RetrySecs}}s</span>
+  </div>
+  {{else if eq .Row.State "failed"}}
   <div class="sb-callout sb-callout--danger">Dead-lettered after {{.Row.Attempt}}/{{.Row.MaxAttempts}} attempts. Retry re-queues it with a fresh attempt budget.</div>
   {{end}}
   <dl class="sb-meta">
