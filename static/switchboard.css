@@ -1253,6 +1253,8 @@ pre code {
   color: var(--sb-faint);
   margin: 2px 0 0;
 }
+/* the human-authored system prompt reads as a quotation (design canvas: italic, quoted, brass
+   left rule) */
 .sb-persona__prompt {
   margin: 0;
   padding: 8px 12px;
@@ -1260,9 +1262,22 @@ pre code {
   background: var(--sb-code-bg);
   border-radius: var(--sb-radius-btn);
   font-size: 13px;
+  font-style: italic;
   color: var(--sb-body);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.sb-persona__prompt::before {
+  content: "\201C"; /* “ */
+}
+.sb-persona__prompt::after {
+  content: "\201D"; /* ” */
+}
+/* "Advertised skills · derived from vended verbs" section: microlabel over the skill + verb chips */
+.sb-persona__skills {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .sb-persona__url {
   display: flex;
@@ -1289,6 +1304,11 @@ pre code {
   border: 1px dashed var(--sb-input-border-soft);
   border-radius: var(--sb-radius-btn);
   color: var(--sb-body);
+}
+/* the agent-card URL shown under the modal's name field (oxblood-accented per the design canvas) */
+.sb-persona__urlpreview {
+  color: var(--sb-oxblood);
+  overflow-wrap: anywhere;
 }
 
 /* chips: derived skills, advertised verbs, and selectable verb/queue checkboxes */
@@ -1385,6 +1405,94 @@ pre code {
 .sb-toggle input {
   width: auto;
   margin: 0;
+}
+
+/* ---- stateful Published/Draft publish toggle (persona modal) ----
+   Design canvas: a track + knob switch with a dynamic title (Published/Draft) and hint. Both state
+   labels are in the DOM; the visually-hidden-but-focusable checkbox's :checked flips the track,
+   slides the knob, and swaps which label shows — pure CSS, so it works inside cloned <template>
+   content and without JS. */
+.sb-pubtoggle {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 14px;
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: 10px;
+  cursor: pointer;
+  position: relative;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.sb-pubtoggle__input {
+  /* visually hidden but still focusable/checkable (never display:none — that drops it from the
+     form and the keyboard) */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.sb-pubtoggle__track {
+  flex: none;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--sb-input-border);
+  transition: background 0.2s ease;
+}
+.sb-pubtoggle__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--sb-input-bg);
+  box-shadow: 0 1px 3px rgba(20, 15, 8, 0.35);
+  transition: left 0.2s ease;
+}
+.sb-pubtoggle__input:checked ~ .sb-pubtoggle__track {
+  background: var(--sb-live);
+}
+.sb-pubtoggle__input:checked ~ .sb-pubtoggle__track .sb-pubtoggle__knob {
+  left: 18px;
+}
+.sb-pubtoggle__input:focus-visible ~ .sb-pubtoggle__track {
+  outline: 2px solid var(--sb-brass);
+  outline-offset: 2px;
+}
+.sb-pubtoggle__text {
+  min-width: 0;
+}
+.sb-pubtoggle__state {
+  display: none;
+  flex-direction: column;
+  gap: 1px;
+}
+.sb-pubtoggle__input:not(:checked) ~ .sb-pubtoggle__text .sb-pubtoggle__state--off,
+.sb-pubtoggle__input:checked ~ .sb-pubtoggle__text .sb-pubtoggle__state--on {
+  display: flex;
+}
+.sb-pubtoggle__title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--sb-ink);
+}
+.sb-pubtoggle__hint {
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-pubtoggle__track,
+  .sb-pubtoggle__knob {
+    transition: none;
+  }
 }
 .sb-field textarea {
   max-width: 100%;

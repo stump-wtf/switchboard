@@ -7,24 +7,20 @@
      hx-headers carries the token). */}}
 <div class="sb-page-head">
   <div>
-    <h1 class="sb-page-title">Personas</h1>
-    <p class="sb-tagline">named, scoped faces of your agents · each a discoverable card</p>
+    <h1 class="sb-page-title">Personas · A2A Agent Cards</h1>
+    <p class="sb-tagline">one agent, many least-privilege faces · a human-authored prompt plus a verb subset · advertised as an A2A Agent Card</p>
   </div>
-  {{if .Personas.Agents}}
-  <button type="button" class="sb-btn" data-sb-open-modal="sb-persona-modal-new" aria-haspopup="dialog">New persona</button>
-  {{end}}
+  {{/* Always visible (design canvas shows it unconditionally): when no agent has a vended grant the
+       modal explains the empty backing-agent list instead of the page hiding the entry point. */}}
+  <button type="button" class="sb-btn" data-sb-open-modal="sb-persona-modal-new" aria-haspopup="dialog">+ New persona</button>
 </div>
-
-{{if not .Personas.Agents}}
-<div class="sb-callout sb-callout--warn">Vend an MCP endpoint for an agent first — a persona is a scoped face of a vended grant, so it needs an agent with at least one active endpoint before it can be created.</div>
-{{end}}
 
 {{if .Personas.Cards}}
 <div class="sb-cards" role="list">
   {{range .Personas.Cards}}{{template "persona_card" .}}{{end}}
 </div>
 {{else}}
-<p class="sb-empty">no personas yet{{if .Personas.Agents}} · create one to publish a discoverable agent card{{end}}</p>
+<p class="sb-empty">no personas yet · create one to publish a discoverable agent card</p>
 {{end}}
 
 {{/* Hidden modal templates opened into #sb-overlay by sb.js (data-sb-open-modal). Rendering them

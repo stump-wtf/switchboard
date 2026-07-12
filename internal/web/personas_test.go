@@ -51,8 +51,10 @@ func TestPersonaCardPublishedState(t *testing.T) {
 		">published<",                      // published pill
 		"sb-badge--active",                 // published pill styling
 		"You are a careful code reviewer.", // quoted system prompt
-		"Process work",                     // a derived skill chip (list_todos+claim+complete)
-		">claim<",                          // an advertised verb chip
+		"sb-persona__prompt",               // quoted/italic prompt styling hook
+		"Advertised skills · derived from vended verbs", // skills section label (design canvas)
+		"Process work", // a derived skill chip (list_todos+claim+complete)
+		">claim<",      // an advertised verb chip
 		"/a/0a1b2c3d-0000-0000-0000-000000000001/.well-known/agent-card.json",               // resolvable card URL
 		"data-sb-open-modal=\"sb-persona-modal-edit-0a1b2c3d-0000-0000-0000-000000000001\"", // Edit
 		"Unpublish",                  // a published persona offers Unpublish
@@ -89,11 +91,13 @@ func TestPersonaCardDraftState(t *testing.T) {
 	}
 }
 
-// TestPersonaModalCreateURLPreviewAndConstraint covers the create modal: the live agent-card URL
-// preview scaffolding (slug base + preview target + slug-source name field), the backing-agent select
-// carrying each agent's vended verbs, and the verb-chip CONSTRAINT — the selected agent's verbs are
-// offered as selectable checkboxes and a verb the agent does not vend is not. Governing: SPEC-0013 REQ
-// "Personas View" (scenario "Verb subset is constrained").
+// TestPersonaModalCreateURLPreviewAndConstraint covers the create modal: the agent-card URL preview
+// is the id-based shape the well-known endpoint actually resolves (with the "{id}" placeholder — the
+// id is assigned on create — and never a slug-based URL, which would never resolve), the backing-agent
+// select carrying each agent's vended verbs, the stateful Published/Draft toggle, and the verb-chip
+// CONSTRAINT — the selected agent's verbs are offered as selectable checkboxes and a verb the agent
+// does not vend is not. Governing: SPEC-0013 REQ "Personas View" (scenario "Verb subset is
+// constrained"), SPEC-0009 REQ "Well-Known Card Endpoint".
 func TestPersonaModalCreateURLPreviewAndConstraint(t *testing.T) {
 	h := newTestHandler(t)
 	agents := []personaAgentOption{
@@ -106,19 +110,27 @@ func TestPersonaModalCreateURLPreviewAndConstraint(t *testing.T) {
 		t.Fatalf("render persona_modal: %v", err)
 	}
 	for _, want := range []string{
-		`action="/personas"`,          // create posts to /personas
-		"data-sb-slug-base=",          // live preview base (create mode only)
-		"data-sb-slug-source",         // name field drives the preview
-		"data-sb-url-preview",         // the preview target
+		`action="/personas"`, // create posts to /personas
+		"https://sb.example.com/a/{id}/.well-known/agent-card.json", // id-based URL shape the endpoint resolves
+		"assigned on create",          // the placeholder is explained
 		"data-sb-agent-select",        // agent select is JS-wired
 		`data-verbs="claim,complete"`, // agent-1 vended verbs carried on its option
 		`data-verbs="create_for"`,     // agent-2 vended verbs carried on its option
-		`name="discoverable"`,         // the published toggle
+		`name="discoverable"`,         // the publish state posts as discoverable
+		"sb-pubtoggle",                // stateful Published/Draft toggle, not a bare checkbox
+		">Published<",                 // dynamic toggle label: on state
+		">Draft<",                     // dynamic toggle label: off state
 		"csrf-tok",                    // CSRF token embedded
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("create modal missing %q:\n%s", want, out)
 		}
+	}
+	// The preview must never be the slug-based URL the audit flagged: the well-known endpoint
+	// resolves only /a/{persona_id}/…, so a name/slug-derived preview would never resolve. (The old
+	// create modal previewed the empty-name slug fallback "persona".)
+	if strings.Contains(out, "/a/persona/") || strings.Contains(out, "data-sb-slug-base") {
+		t.Errorf("create modal must not preview a slug-based agent-card URL:\n%s", out)
 	}
 	// The selected (first) agent constrains the rendered verb chips: claim/complete are selectable,
 	// and create_for — which agent-1 does NOT vend — is not offered as a checkbox.
@@ -131,6 +143,28 @@ func TestPersonaModalCreateURLPreviewAndConstraint(t *testing.T) {
 	// A create modal has no Delete action (delete is edit-only).
 	if strings.Contains(out, "/personas/") && strings.Contains(out, "/delete") {
 		t.Errorf("create modal must not carry a delete action:\n%s", out)
+	}
+}
+
+// TestPersonaModalCreateNoAgents covers the create modal when no agent has a vended grant: the "+ New
+// persona" entry point stays visible on the page (see TestPersonasPageAlwaysShowsNewPersona), so the
+// modal itself must explain the empty backing-agent list and refuse submission. Governing: SPEC-0013
+// REQ "Personas View".
+func TestPersonaModalCreateNoAgents(t *testing.T) {
+	h := newTestHandler(t)
+	m := h.buildPersonaModal("csrf-tok", nil, nil)
+	out, err := h.renderFragment("persona_modal", m)
+	if err != nil {
+		t.Fatalf("render persona_modal: %v", err)
+	}
+	if !strings.Contains(out, "no agent has a vended grant yet") {
+		t.Errorf("agentless create modal should explain the empty backing-agent list:\n%s", out)
+	}
+	if strings.Contains(out, "data-sb-agent-select") {
+		t.Errorf("agentless create modal must not render an empty agent select:\n%s", out)
+	}
+	if !strings.Contains(out, "disabled>Create persona<") {
+		t.Errorf("agentless create modal must disable submission:\n%s", out)
 	}
 }
 
@@ -155,7 +189,8 @@ func TestPersonaModalEditPinsAgentAndPrefills(t *testing.T) {
 		"You are a careful code reviewer.",                      // prompt prefilled
 		"the backing agent is immutable",                        // pinned agent note
 		"/personas/0a1b2c3d-0000-0000-0000-000000000001/delete", // delete action
-		"agent-card.json",                                       // real id-based preview URL
+		"https://sb.example.com/a/0a1b2c3d-0000-0000-0000-000000000001/.well-known/agent-card.json", // the real resolvable card URL
+		"sb-pubtoggle", // stateful Published/Draft toggle
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("edit modal missing %q:\n%s", want, out)
@@ -169,9 +204,13 @@ func TestPersonaModalEditPinsAgentAndPrefills(t *testing.T) {
 	if !strings.Contains(out, `value="claim" checked`) {
 		t.Errorf("edit modal should pre-check the persona's current verb 'claim':\n%s", out)
 	}
-	// Edit mode shows the real id-based URL, not the slug-preview base.
-	if strings.Contains(out, "data-sb-slug-base") {
-		t.Errorf("edit modal must not carry the create-mode slug base:\n%s", out)
+	// A discoverable persona's publish toggle renders checked (the dynamic label shows Published).
+	if !strings.Contains(out, `name="discoverable" value="1" checked`) {
+		t.Errorf("edit modal for a published persona should pre-check the publish toggle:\n%s", out)
+	}
+	// Edit mode shows the real id-based URL, never the create-mode "{id}" placeholder.
+	if strings.Contains(out, "{id}") {
+		t.Errorf("edit modal must show the real card URL, not the create placeholder:\n%s", out)
 	}
 }
 
@@ -236,7 +275,6 @@ func TestPersonasPageRendersCardsAndModals(t *testing.T) {
 		Cards:     []personaCardView{card},
 		Agents:    agents,
 		CSRF:      "tok",
-		BaseURL:   "https://sb.example.com",
 		NewModal:  h.buildPersonaModal("tok", agents, nil),
 		EditModal: map[string]personaModalView{card.ID: h.buildPersonaModal("tok", agents, &card)},
 	}
@@ -245,6 +283,9 @@ func TestPersonasPageRendersCardsAndModals(t *testing.T) {
 		Shell: shell{Active: "personas", DBConnected: true, Initials: "JS", PersonasEnabled: true}, Personas: pv,
 	})
 	for _, want := range []string{
+		"Personas · A2A Agent Cards", // header per the design canvas
+		"one agent, many least-privilege faces · a human-authored prompt plus a verb subset · advertised as an A2A Agent Card", // tagline per the design canvas
+		"+ New persona", // trigger label per the design canvas
 		`data-sb-open-modal="sb-persona-modal-new"`,                                  // New persona trigger
 		`<template id="sb-persona-modal-new">`,                                       // create modal template
 		`<template id="sb-persona-modal-edit-0a1b2c3d-0000-0000-0000-000000000001">`, // edit modal template
@@ -254,6 +295,34 @@ func TestPersonasPageRendersCardsAndModals(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("personas page missing %q", want)
+		}
+	}
+}
+
+// TestPersonasPageAlwaysShowsNewPersona proves the "+ New persona" entry point renders even when no
+// agent has a vended grant (the design canvas always shows it): the trigger and the create-modal
+// template are present, and the modal — not the page — explains the empty backing-agent list.
+// Governing: SPEC-0013 REQ "Personas View".
+func TestPersonasPageAlwaysShowsNewPersona(t *testing.T) {
+	h := newTestHandler(t)
+	pv := &personasView{
+		CSRF:      "tok",
+		NewModal:  h.buildPersonaModal("tok", nil, nil),
+		EditModal: map[string]personaModalView{},
+	}
+	body := renderPage(t, h, "personas", view{
+		Title: "Personas", Human: testHuman(), CSRF: "tok",
+		Shell: shell{Active: "personas", DBConnected: true, Initials: "JS", PersonasEnabled: true}, Personas: pv,
+	})
+	for _, want := range []string{
+		"+ New persona", // the trigger is unconditional
+		`data-sb-open-modal="sb-persona-modal-new"`,
+		`<template id="sb-persona-modal-new">`,
+		"no agent has a vended grant yet", // the modal explains the empty agent list
+		"no personas yet",                 // empty state
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("agentless personas page missing %q", want)
 		}
 	}
 }
