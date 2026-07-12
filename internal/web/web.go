@@ -217,7 +217,13 @@ func (h *Handler) buildShell(ctx context.Context, active string, human *store.Hu
 		if edges, err := h.store.ListFriendEdges(ctx, human.ID, "pending"); err != nil {
 			h.log.Warn("shell friend requests", "err", err)
 		} else {
-			sh.FriendsIncoming = len(edges)
+			// Count INCOMING pendings only (requests awaiting THIS human's decision); a locally sent
+			// direction=outgoing pending awaits the remote operator and must not nag here (#174).
+			for _, e := range edges {
+				if e.Direction != friendDirectionOutgoing {
+					sh.FriendsIncoming++
+				}
+			}
 		}
 	}
 	stats, err := h.store.BoardStats(ctx)

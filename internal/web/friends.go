@@ -42,8 +42,10 @@ type friendCard struct {
 	Group        string   // incoming | outgoing | active | blocked
 	Status       string   // raw edge state: pending | approved | denied | revoked
 	StatusLabel  string   // human-facing status label
-	LocalPersona string   // the local persona being friended (edge.to_persona)
-	RemoteHandle string   // the remote agent handle (edge.from_persona)
+	Direction    string   // raw edge direction ("outgoing" = locally sent; anything else = inbound)
+	Arrow        string   // direction glyph: → outgoing pending, ← incoming pending, ↔ established
+	LocalPersona string   // the local face of the edge (to_persona inbound, from_persona outgoing)
+	RemoteHandle string   // the remote agent handle (from_persona inbound, to_persona outgoing)
 	RemoteHost   string   // the remote board host, parsed best-effort from the handle
 	Intents      []string // negotiated (granted) verbs when active, else the requested verbs
 	Negotiated   bool     // true when Intents are the negotiated grant (active), false when requested
@@ -121,13 +123,23 @@ func normalizeFriendFilter(s string) string {
 	}
 }
 
-// friendGroupForState maps a friend-edge state onto its ledger group and a human status label. All
-// edges the store lists are inbound to this human (to_human = owner), so a pending edge is an
-// Incoming request; approved is Active; denied/revoked are Blocked. The Outgoing group has no local
-// backing in the merged backend (an outbound request lives on the remote board) and stays empty.
-func friendGroupForState(state string) (group, label string) {
+// friendDirectionOutgoing marks a friend edge the LOCAL human sent (AddFriend). Inbound A2A-intake
+// edges carry the store default ("outbound", the requester→target grant direction); only locally
+// originated requests are stamped "outgoing", so the two never collide on the live unique index and
+// the web layer can group by direction. Governing: SPEC-0010 REQ "Per-Direction, Revocable,
+// Non-Transitive Edges"; story #174 (persist outgoing requests; direction semantics).
+const friendDirectionOutgoing = "outgoing"
+
+// friendGroupForEdge maps a friend-edge (state, direction) onto its ledger group and a human status
+// label. A pending edge is an Incoming request when it arrived over A2A intake, and an Outgoing
+// request when this human sent it (direction=outgoing, awaiting the remote operator); approved is
+// Active; denied/revoked are Blocked regardless of who initiated.
+func friendGroupForEdge(state, direction string) (group, label string) {
 	switch state {
 	case "pending":
+		if direction == friendDirectionOutgoing {
+			return "outgoing", "requested"
+		}
 		return "incoming", "pending"
 	case "approved":
 		return "active", "active"
@@ -137,6 +149,20 @@ func friendGroupForState(state string) (group, label string) {
 		return "blocked", "revoked"
 	default:
 		return "blocked", state
+	}
+}
+
+// friendArrowForGroup is the card identity-row direction glyph: → an outgoing pending request, ← an
+// incoming pending request, ↔ an established (or terminal) link. Matches the design canvas Friends
+// section (direction arrows per status). Governing: SPEC-0013 REQ "Friends View"; DESIGN (Friends).
+func friendArrowForGroup(group string) string {
+	switch group {
+	case "outgoing":
+		return "→"
+	case "incoming":
+		return "←"
+	default:
+		return "↔"
 	}
 }
 
@@ -165,12 +191,19 @@ func remoteHostFromHandle(handle string) string {
 }
 
 // friendCardFromEdge builds one friend card from a store edge. Active (approved) edges show the
-// negotiated (granted) scope; every other state shows the requested scope.
+// negotiated (granted) scope; every other state shows the requested scope. The local/remote split is
+// direction-aware: an inbound edge's local face is to_persona (the remote requester is from_persona);
+// a locally sent (direction=outgoing) edge inverts that — from_persona is the local agent and
+// to_persona is the remote handle being asked.
 func friendCardFromEdge(e store.FriendEdge) friendCard {
-	group, label := friendGroupForState(e.State)
+	group, label := friendGroupForEdge(e.State, e.Direction)
 	intents, queues, negotiated := e.RequestedVerbs, e.RequestedQueues, false
 	if e.State == "approved" {
 		intents, queues, negotiated = e.GrantedVerbs, e.GrantedQueues, true
+	}
+	local, remote := e.ToPersona, e.FromPersona
+	if e.Direction == friendDirectionOutgoing {
+		local, remote = e.FromPersona, e.ToPersona
 	}
 	return friendCard{
 		ID:           e.ID,
@@ -178,9 +211,11 @@ func friendCardFromEdge(e store.FriendEdge) friendCard {
 		Group:        group,
 		Status:       e.State,
 		StatusLabel:  label,
-		LocalPersona: e.ToPersona,
-		RemoteHandle: e.FromPersona,
-		RemoteHost:   remoteHostFromHandle(e.FromPersona),
+		Direction:    e.Direction,
+		Arrow:        friendArrowForGroup(group),
+		LocalPersona: local,
+		RemoteHandle: remote,
+		RemoteHost:   remoteHostFromHandle(remote),
 		Intents:      intents,
 		Negotiated:   negotiated,
 		Queues:       queues,
@@ -361,11 +396,15 @@ func (h *Handler) ResolveFriendHandle(w http.ResponseWriter, r *http.Request) {
 
 // AddFriend handles the add-friend modal submit (POST /friends): a friendship request to a remote
 // board's persona. It validates the local agent (owned), a non-empty remote handle, and at least one
-// requested intent. The outbound A2A send that would durably record the pending request on the REMOTE
-// board is not yet wired (only inbound intake #62 is merged), so this validates the ask and
-// acknowledges it as pending-until-remote-approves rather than persisting a local edge. Requires
-// human + CSRF. Governing: SPEC-0013 REQ "Friends View" (Add friend modal; mutual, non-transitive,
-// pending-until-remote-approves).
+// requested intent, then durably records the request as a LOCAL pending edge with direction=outgoing
+// — from_persona is the local agent, to_persona the remote handle, and the edge is owned by (and
+// only visible to) the sending human, so the Outgoing group populates immediately and Withdraw is
+// reachable. The pending edge grants nothing (SPEC-0010); the outbound A2A send that records it on
+// the REMOTE board is a separate wire concern (epic #173) and its absence never loses the local
+// record. A duplicate live request for the same (local agent, handle) pair is refused (409) by the
+// store's anti-flood unique index. Requires human + CSRF. Governing: SPEC-0013 REQ "Friends View"
+// (Add friend modal; Withdraw for outgoing), SPEC-0010 REQ "Friend-Request Lifecycle" (pending edge
+// grants nothing), REQ "Per-Direction, Revocable, Non-Transitive Edges"; story #174.
 func (h *Handler) AddFriend(w http.ResponseWriter, r *http.Request) {
 	if !h.friendingEnabled(w) {
 		return
@@ -379,7 +418,8 @@ func (h *Handler) AddFriend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Owned-agent guard: the local agent must belong to the requesting human (never a foreign id).
-	if _, err := h.store.GetAgentOwned(r.Context(), agentID, human.ID); err != nil {
+	ag, err := h.store.GetAgentOwned(r.Context(), agentID, human.ID)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "unknown local agent", http.StatusBadRequest)
 			return
@@ -387,7 +427,23 @@ func (h *Handler) AddFriend(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	h.respondFriendAction(w, r, human, "friend request queued · "+handle+" · pending remote approval")
+	if _, err := h.store.CreateFriendRequest(r.Context(), store.CreateFriendRequestParams{
+		FromPersona:    ag.Name,
+		ToPersona:      handle,
+		Direction:      friendDirectionOutgoing,
+		FromHuman:      human.ID,
+		ToHuman:        human.ID, // ownership key: the sender owns (lists, withdraws) their outgoing edge
+		RequestedVerbs: intents,
+		Reason:         strings.TrimSpace(r.FormValue("reason")),
+	}); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			http.Error(w, "a live friend request for this pair already exists", http.StatusConflict)
+			return
+		}
+		h.fail(w, err)
+		return
+	}
+	h.respondFriendAction(w, r, human, "friend request sent · "+handle+" · pending remote approval")
 }
 
 // ApproveFriend approves an incoming request (POST /friends/{id}/approve). Approval IS the vend: it

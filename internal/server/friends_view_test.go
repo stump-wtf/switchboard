@@ -171,6 +171,68 @@ func TestFriendApproveOnlyAcceptsOwnedAgent(t *testing.T) {
 	}
 }
 
+// TestAddFriendPersistsOutgoingAndWithdraw walks the #174 outgoing lifecycle end-to-end: POST
+// /friends persists a pending direction=outgoing edge immediately (from_persona = the local agent,
+// to_persona = the remote handle, owned by the sender), the Friends view surfaces it in the Outgoing
+// group with a Withdraw action and the → direction arrow, a duplicate live ask is refused (409), and
+// POST /friends/{id}/withdraw removes the edge. Governing: SPEC-0013 REQ "Friends View" (Withdraw
+// for outgoing), SPEC-0010 REQ "Friend-Request Lifecycle" (pending edge grants nothing).
+func TestAddFriendPersistsOutgoingAndWithdraw(t *testing.T) {
+	r, st, ctx := newFriendsRouter(t)
+	alice, tokenA := mintSession(t, st, ctx, "test|alice-out", "Alice", "alice@example.com")
+	agent, err := st.CreateAgent(ctx, alice.ID, "alice-agent", "")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	csrf := scrapeCSRF(t, getAs(t, r, tokenA, "/friends").Body.String())
+
+	form := url.Values{
+		"agent_id": {agent.ID},
+		"handle":   {"zed@far.example"},
+		"intents":  {"create_for"},
+		"reason":   {"hand you deploy checks"},
+	}
+	if rec := postFormAs(t, r, tokenA, csrf, "/friends", form); rec.Code != http.StatusOK {
+		t.Fatalf("POST /friends: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// The edge is durably recorded: pending, direction=outgoing, local agent → remote handle.
+	edges, err := st.ListFriendEdges(ctx, alice.ID, "pending")
+	if err != nil || len(edges) != 1 {
+		t.Fatalf("sender must own one pending edge after send: %+v, %v", edges, err)
+	}
+	e := edges[0]
+	if e.Direction != "outgoing" || e.FromPersona != "alice-agent" || e.ToPersona != "zed@far.example" ||
+		e.EndpointID != "" || e.Reason != "hand you deploy checks" {
+		t.Fatalf("outgoing edge misrecorded: %+v", e)
+	}
+
+	// The view renders it in the Outgoing group with Withdraw + the → arrow.
+	body := getAs(t, r, tokenA, "/friends").Body.String()
+	for _, want := range []string{
+		"zed@far.example",
+		"/friends/" + e.ID + "/withdraw",
+		"sb-fcard__arrow--outgoing",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("friends view after send: missing %q", want)
+		}
+	}
+
+	// A duplicate live ask for the same pair is refused with no second edge (anti-flood index).
+	if rec := postFormAs(t, r, tokenA, csrf, "/friends", form); rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate POST /friends: got %d, want 409", rec.Code)
+	}
+
+	// Withdraw removes the pending edge outright.
+	if rec := postFormAs(t, r, tokenA, csrf, "/friends/"+e.ID+"/withdraw", nil); rec.Code != http.StatusOK {
+		t.Fatalf("withdraw: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if edges, _ := st.ListFriendEdges(ctx, alice.ID); len(edges) != 0 {
+		t.Fatalf("withdrawn edge must be gone, got %+v", edges)
+	}
+}
+
 // TestFriendActionsRequireCSRF proves each friend mutation POST rejects a missing/forged CSRF token
 // (RequireCSRF runs before the handler). Governing: SPEC-0013 Security Requirements → CSRF Protection.
 func TestFriendActionsRequireCSRF(t *testing.T) {

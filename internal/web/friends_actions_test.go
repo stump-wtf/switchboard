@@ -98,12 +98,53 @@ func TestFailFriendActionMapsStoreErrors(t *testing.T) {
 	}
 }
 
-func TestFriendGroupForState(t *testing.T) {
-	cases := map[string]string{"pending": "incoming", "approved": "active", "denied": "blocked", "revoked": "blocked"}
-	for state, wantGroup := range cases {
-		if g, _ := friendGroupForState(state); g != wantGroup {
-			t.Errorf("friendGroupForState(%q) group = %q, want %q", state, g, wantGroup)
+func TestFriendGroupForEdge(t *testing.T) {
+	cases := []struct {
+		state, direction, wantGroup string
+	}{
+		{"pending", "", "incoming"},         // inbound intake (store default direction)
+		{"pending", "outbound", "incoming"}, // inbound intake, explicit default
+		{"pending", "outgoing", "outgoing"}, // locally sent → Outgoing group (#174)
+		{"approved", "", "active"},
+		{"approved", "outgoing", "active"}, // an accepted outgoing request is just active
+		{"denied", "", "blocked"},
+		{"denied", "outgoing", "blocked"},
+		{"revoked", "", "blocked"},
+	}
+	for _, c := range cases {
+		if g, _ := friendGroupForEdge(c.state, c.direction); g != c.wantGroup {
+			t.Errorf("friendGroupForEdge(%q, %q) group = %q, want %q", c.state, c.direction, g, c.wantGroup)
 		}
+	}
+}
+
+// TestFriendArrowForGroup pins the direction glyphs (#174 / DESIGN Friends): → outgoing pending,
+// ← incoming pending, ↔ established (and terminal/blocked).
+func TestFriendArrowForGroup(t *testing.T) {
+	cases := map[string]string{"outgoing": "→", "incoming": "←", "active": "↔", "blocked": "↔"}
+	for group, want := range cases {
+		if got := friendArrowForGroup(group); got != want {
+			t.Errorf("friendArrowForGroup(%q) = %q, want %q", group, got, want)
+		}
+	}
+}
+
+// TestFriendCardDirectionAwareIdentity proves the local/remote split follows the edge direction: an
+// inbound edge's local face is to_persona, while a locally sent (outgoing) edge's local face is
+// from_persona and the remote handle (+ parsed host) comes from to_persona (#174).
+func TestFriendCardDirectionAwareIdentity(t *testing.T) {
+	in := friendCardFromEdge(store.FriendEdge{
+		ID: "e-in", State: "pending", ToPersona: "b-persona", FromPersona: "alice@remote.example"})
+	if in.Group != "incoming" || in.Arrow != "←" || in.LocalPersona != "b-persona" ||
+		in.RemoteHandle != "alice@remote.example" || in.RemoteHost != "remote.example" {
+		t.Errorf("inbound card = %+v", in)
+	}
+	out := friendCardFromEdge(store.FriendEdge{
+		ID: "e-out", State: "pending", Direction: "outgoing",
+		FromPersona: "b-agent", ToPersona: "zed@far.example"})
+	if out.Group != "outgoing" || out.Arrow != "→" || out.LocalPersona != "b-agent" ||
+		out.RemoteHandle != "zed@far.example" || out.RemoteHost != "far.example" {
+		t.Errorf("outgoing card = %+v", out)
 	}
 }
 
@@ -124,8 +165,8 @@ func TestRemoteHostFromHandle(t *testing.T) {
 func TestFriendCountsAndFilter(t *testing.T) {
 	cards := friendCardsFromEdges(sampleEdges())
 	c := friendCountsFrom(cards)
-	if c.All != 5 || c.Incoming != 1 || c.Active != 2 || c.Blocked != 2 || c.Outgoing != 0 {
-		t.Fatalf("counts = %+v, want All5 Incoming1 Active2 Blocked2 Outgoing0", c)
+	if c.All != 6 || c.Incoming != 1 || c.Active != 2 || c.Blocked != 2 || c.Outgoing != 1 {
+		t.Fatalf("counts = %+v, want All6 Incoming1 Active2 Blocked2 Outgoing1", c)
 	}
 	if got := filterFriendCards(cards, "blocked"); len(got) != 2 {
 		t.Errorf("blocked filter returned %d cards, want 2", len(got))

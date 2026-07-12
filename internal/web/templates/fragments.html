@@ -292,14 +292,16 @@
   {{if .Cards}}<div class="sb-fcards">{{range .Cards}}{{template "friend_card" dict "Card" . "Agents" $.Agents "CSRF" $.CSRF "Layout" $.Layout "Filter" $.Filter}}{{end}}</div>{{else}}<p class="sb-empty sb-empty--inline">no {{.Label | printf "%s"}} friendships</p>{{end}}
 </section>{{end}}</div>{{end}}
 
-{{/* friend_card — one friendship (cards + ledger share it). Shows local persona, remote agent (handle
-     + board host), status badge, intents, and status-appropriate actions. Args via dict: Card
-     web.friendCard, Agents []store.Agent, CSRF string, Layout/Filter string. */}}
+{{/* friend_card — one friendship (cards + ledger share it). Shows local persona, a direction-aware
+     arrow (→ outgoing pending, ← incoming pending, ↔ established — DESIGN Friends), the remote agent
+     (handle + board host, styled distinct from the local face), status badge, intents, and
+     status-appropriate actions. Args via dict: Card web.friendCard, Agents []store.Agent, CSRF
+     string, Layout/Filter string. */}}
 {{define "friend_card"}}<article id="{{.Card.RowID}}" class="sb-fcard sb-fcard--{{.Card.Group}}"{{if .Card.OOB}} hx-swap-oob="true"{{end}}>
   <div class="sb-fcard__top">
     <span class="sb-fcard__local sb-mono">{{.Card.LocalPersona}}</span>
-    <span class="sb-fcard__arrow" aria-hidden="true">↔</span>
-    <span class="sb-fcard__remote"><span class="sb-mono">{{.Card.RemoteHandle}}</span>{{if .Card.RemoteHost}} <span class="sb-fcard__host">{{.Card.RemoteHost}}</span>{{end}}</span>
+    <span class="sb-fcard__arrow sb-fcard__arrow--{{.Card.Group}}" aria-hidden="true">{{.Card.Arrow}}</span>
+    <span class="sb-fcard__remote"><span class="sb-fcard__remote-handle sb-mono">{{.Card.RemoteHandle}}</span>{{if .Card.RemoteHost}} <span class="sb-fcard__host">{{.Card.RemoteHost}}</span>{{end}}</span>
     <span class="sb-badge sb-badge--{{.Card.Status}}">{{.Card.StatusLabel}}</span>
   </div>
   <div class="sb-fcard__intents">

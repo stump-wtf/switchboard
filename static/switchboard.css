@@ -1472,14 +1472,33 @@ pre code {
 .sb-fcard--incoming {
   border-color: var(--sb-brass);
 }
+/* Outgoing pending: locally sent, awaiting the remote operator — provisional, so dashed (#174). */
+.sb-fcard--outgoing {
+  border-color: var(--sb-brass);
+  border-style: dashed;
+}
 .sb-fcard__top {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
+/* Direction arrows (DESIGN Friends): → outgoing pending, ← incoming pending, ↔ established. */
 .sb-fcard__arrow {
   color: var(--sb-faint);
+}
+.sb-fcard__arrow--incoming,
+.sb-fcard__arrow--outgoing {
+  color: var(--sb-brass);
+  font-weight: 600;
+}
+.sb-fcard__arrow--blocked {
+  color: var(--sb-status-failed);
+}
+/* The remote agent reads distinct from the local face: brass mono handle + faint board host. */
+.sb-fcard__remote-handle {
+  color: var(--sb-brass);
+  font-weight: 600;
 }
 .sb-fcard__host {
   font-family: var(--sb-font-mono);

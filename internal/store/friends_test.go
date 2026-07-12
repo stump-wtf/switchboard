@@ -561,3 +561,84 @@ func TestCreateForFriendIdempotencyKeyIsNamespacedPerFriend(t *testing.T) {
 		t.Fatalf("expected exactly 2 isolated todos on the shared queue, got %d", n)
 	}
 }
+
+// A locally SENT friend request persists immediately as a pending direction=outgoing edge owned by
+// the sending human (to_human = sender is the ownership key, so it lists locally and Withdraw is
+// reachable), granting nothing until the remote operator approves. It never collides with an inbound
+// edge for the reverse pair, and a duplicate live outgoing ask for the same pair is refused.
+// Governing: SPEC-0010 REQ "Friend-Request Lifecycle", REQ "Per-Direction, Revocable, Non-Transitive
+// Edges"; story #174 (persist outgoing friend requests).
+func TestFriendRequestOutgoingDirectionPersists(t *testing.T) {
+	s, ctx := testStore(t)
+	sender := mustHuman(t, s, ctx, "pocket|out-snd", "Sender")
+
+	e := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "local-agent", ToPersona: "zed@far.example", Direction: "outgoing",
+		FromHuman: sender.ID, ToHuman: sender.ID,
+		RequestedVerbs: []string{"create_for"}, Reason: "hand you deploy checks",
+	})
+	if e.State != "pending" || e.Direction != "outgoing" {
+		t.Fatalf("outgoing edge state=%s direction=%s, want pending/outgoing", e.State, e.Direction)
+	}
+	if e.EndpointID != "" {
+		t.Fatalf("pending outgoing edge must mint no endpoint, got %q", e.EndpointID)
+	}
+
+	// The sender's own listing surfaces the outgoing edge (ownership key = sender).
+	edges, err := s.ListFriendEdges(ctx, sender.ID, "pending")
+	if err != nil || len(edges) != 1 || edges[0].ID != e.ID || edges[0].Direction != "outgoing" {
+		t.Fatalf("sender must list their outgoing pending edge: %+v, %v", edges, err)
+	}
+
+	// A duplicate LIVE outgoing request for the same pair collides (anti-flood unique index).
+	if _, err := s.CreateFriendRequest(ctx, CreateFriendRequestParams{
+		FromPersona: "local-agent", ToPersona: "zed@far.example", Direction: "outgoing",
+		ToHuman: sender.ID,
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate live outgoing request must be ErrConflict, got %v", err)
+	}
+}
+
+// Withdraw removes a pending edge outright (RemoveFriendEdge with fromStates=pending): ownership
+// isolation holds (cross-owner id is ErrNotFound, leaking nothing), a non-pending edge is
+// ErrInvalidTransition and left untouched, and a withdrawn pair can be re-requested (the live unique
+// index frees up). Governing: SPEC-0013 Endpoints table POST /friends/{id}/withdraw, SPEC-0010 REQ
+// "Per-Direction, Revocable, Non-Transitive Edges"; story #174 (Withdraw + direction semantics).
+func TestRemoveFriendEdgeWithdraw(t *testing.T) {
+	s, ctx := testStore(t)
+	sender := mustHuman(t, s, ctx, "pocket|wd-snd", "Sender")
+	other := mustHuman(t, s, ctx, "pocket|wd-oth", "Other")
+
+	e := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "local-agent", ToPersona: "zed@far.example", Direction: "outgoing",
+		FromHuman: sender.ID, ToHuman: sender.ID, RequestedVerbs: []string{"create_for"},
+	})
+
+	// Cross-owner withdraw is ErrNotFound (indistinguishable from a missing id) and removes nothing.
+	if _, err := s.RemoveFriendEdge(ctx, e.ID, other.ID, "pending"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-owner withdraw must be ErrNotFound, got %v", err)
+	}
+
+	// Withdraw by the owner deletes the pending edge and returns it as it was.
+	gone, err := s.RemoveFriendEdge(ctx, e.ID, sender.ID, "pending")
+	if err != nil || gone.ID != e.ID {
+		t.Fatalf("withdraw: %+v, %v", gone, err)
+	}
+	if edges, err := s.ListFriendEdges(ctx, sender.ID); err != nil || len(edges) != 0 {
+		t.Fatalf("withdrawn edge must be gone: %+v, %v", edges, err)
+	}
+
+	// The pair is free to re-request after withdrawal (the live unique index no longer blocks it).
+	e2 := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "local-agent", ToPersona: "zed@far.example", Direction: "outgoing",
+		FromHuman: sender.ID, ToHuman: sender.ID,
+	})
+
+	// A withdrawn-state mismatch: the fresh pending edge cannot be removed via the unblock states.
+	if _, err := s.RemoveFriendEdge(ctx, e2.ID, sender.ID, "denied", "revoked"); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("removing a pending edge under unblock states must be ErrInvalidTransition, got %v", err)
+	}
+	if edges, _ := s.ListFriendEdges(ctx, sender.ID, "pending"); len(edges) != 1 {
+		t.Fatalf("refused removal must leave the edge, got %d", len(edges))
+	}
+}
