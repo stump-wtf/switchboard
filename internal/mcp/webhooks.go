@@ -50,9 +50,7 @@ const trustModeSigned = "signed"
 // webhookVerbs is the SPEC-0006 webhook self-management surface. Like agentVerbs/eventVerbs, a
 // tools/call naming one of these outside the endpoint's allowlist is a scope violation (stable
 // "forbidden" code via scopeGuard), distinguishable from an unknown tool.
-var webhookVerbs = map[string]bool{
-	"create_webhook": true, "list_webhooks": true, "rotate_webhook": true, "delete_webhook": true,
-}
+var webhookVerbs = verbSet(WebhookVerbs())
 
 // webhookTrustModes maps a source type to the trust mode switchboard verifies it under. The mapping
 // is switchboard's alone: the agent never supplies a trust mode, so a self-created `signed` webhook

@@ -153,16 +153,18 @@
     });
   }
 
-  // A close control anywhere: inside the overlay it closes the overlay; on the standalone drawer
-  // page (no overlay content) it returns to the Todos list.
+  // A close control anywhere: inside the overlay it closes the overlay; outside it, an anchor
+  // close control (e.g. the inline vend form's Cancel → /endpoints) navigates to its own href,
+  // and anything else (the standalone drawer page's close) returns to the Todos list.
   function initCloseControls() {
     document.body.addEventListener("click", function (e) {
       var close = e.target.closest ? e.target.closest("[data-sb-close]") : null;
       if (!close) return;
-      e.preventDefault();
       if (overlay && overlay.contains(close)) {
+        e.preventDefault();
         closeOverlay();
-      } else {
+      } else if (!close.getAttribute("href")) {
+        e.preventDefault();
         window.location.assign("/todos");
       }
     });
@@ -248,30 +250,33 @@
   // ---- vend modal: live scope validation + queue chip preview ----
   // Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" ("MUST refuse submission until name, at
   // least one queue, and at least one verb are chosen"). Presentation-only: it disables the submit
-  // button and mirrors typed queues as chips; the server re-validates every submission and mints
-  // nothing on an invalid one, so no-JS clients still get the same guarantee.
+  // button, counts the checked queue/verb toggle chips (and, on the free-text queue fallback shown
+  // when the store knows no queues yet, mirrors typed queues as preview chips); the server
+  // re-validates every submission and mints nothing on an invalid one, so no-JS clients still get
+  // the same guarantee.
   function updateVend(form) {
     if (!form) return;
     var nameEl = form.querySelector("[data-sb-vend-name]");
     var queuesEl = form.querySelector("[data-sb-vend-queues]");
     var submit = form.querySelector("[data-sb-vend-submit]");
     var name = nameEl ? nameEl.value.trim() : "";
-    var queues = queuesEl
+    var typed = queuesEl
       ? queuesEl.value.split(",").map(function (q) { return q.trim(); }).filter(Boolean)
       : [];
+    var queues = typed.length + form.querySelectorAll("[data-sb-vend-queue-chips] input:checked").length;
     var verbs = form.querySelectorAll("[data-sb-vend-verbs] input:checked").length;
 
-    var chips = form.querySelector("[data-sb-vend-queue-chips]");
-    if (chips) {
-      chips.textContent = "";
-      queues.forEach(function (q) {
+    var preview = form.querySelector("[data-sb-vend-queue-preview]");
+    if (preview) {
+      preview.textContent = "";
+      typed.forEach(function (q) {
         var span = document.createElement("span");
         span.className = "sb-chip sb-chip--queue";
         span.textContent = q;
-        chips.appendChild(span);
+        preview.appendChild(span);
       });
     }
-    if (submit) submit.disabled = !(name && queues.length && verbs);
+    if (submit) submit.disabled = !(name && queues && verbs);
   }
 
   function initVend() {

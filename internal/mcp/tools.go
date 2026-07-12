@@ -34,12 +34,10 @@ const (
 	codeInternal  = "internal"
 )
 
-// agentVerbs is the full SPEC-0006 drain-verb surface. A tools/call naming one of these outside the
-// endpoint's allowlist is a scope violation (distinguishable from an unknown tool); anything else
-// is left to the SDK's unknown-tool protocol error.
-var agentVerbs = map[string]bool{
-	"list_todos": true, "claim": true, "complete": true, "fail": true, "heartbeat": true,
-}
+// agentVerbs is the full SPEC-0006 drain-verb surface (verbs.go DrainVerbs). A tools/call naming
+// one of these outside the endpoint's allowlist is a scope violation (distinguishable from an
+// unknown tool); anything else is left to the SDK's unknown-tool protocol error.
+var agentVerbs = verbSet(DrainVerbs())
 
 // toolError is the client-visible tool failure: a stable machine `code` plus a human message that
 // never carries secret material or internal error text. Error() renders "code: message" — exactly

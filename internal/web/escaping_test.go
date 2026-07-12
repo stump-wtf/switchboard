@@ -23,7 +23,7 @@ func TestDocumentDeclaresLangAndViewport(t *testing.T) {
 	pages := map[string]view{
 		"login":     {Title: "Log in"},
 		"board":     {Title: "The Board", Human: testHuman(), Shell: shell{Active: "board"}},
-		"endpoints": {Title: "Endpoints", Human: testHuman(), Shell: shell{Active: "endpoints"}, VerbOptions: drainVerbs},
+		"endpoints": {Title: "Endpoints", Human: testHuman(), Shell: shell{Active: "endpoints"}, VerbOptions: vendVerbOptions()},
 	}
 	for page, v := range pages {
 		body := renderPage(t, h, page, v)
@@ -46,8 +46,8 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 	const payload = `"><script>alert(1)</script>`
 	h := newTestHandler(t)
 	human := &store.Human{ID: "h1", DisplayName: payload, Email: "x@example.com"}
-	card := endpointCard{ID: "e1", AgentName: payload, PersonaName: payload, CredPrefix: payload,
-		Queues: []string{payload}, Verbs: []string{payload}, State: "active"}
+	card := endpointCard{ID: "e1", AgentName: payload, Initials: cardInitials(payload), PersonaName: payload,
+		CredPrefix: payload, Queues: []string{payload}, Verbs: []string{payload}, State: "active"}
 	sh := shell{Active: "endpoints", DBConnected: true, Initials: `"><i>`}
 
 	bodies := map[string]string{
@@ -58,9 +58,13 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 				ID: 1, Source: payload, EventType: payload, TrustMode: "signed", ReceivedAt: time.Now(),
 			}, false)},
 		}),
+		// VendOpen renders the inline vend form so the queue/verb toggle-chip values (attacker-shaped
+		// queue names could arrive via webhook-created todos) flow through escaping too.
 		"endpoints": renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: human, CSRF: "tok", Shell: sh,
-			EndpointCards: []endpointCard{card}, PersonasEnabled: true, VerbOptions: []string{payload}}),
+			EndpointCards: []endpointCard{card}, PersonasEnabled: true, VendOpen: true,
+			VerbOptions: []vendVerbOption{{Name: payload}}, QueueOptions: []string{payload}}),
 		"reveal": renderFrag(t, h, "vend_reveal", revealView{AgentName: payload, Slug: payload,
+			URL:   payload,
 			Token: `</pre><script>steal()</script>`, MCPJSON: `{"x":"</pre><script>steal()</script>"}`,
 			Queues: []string{payload}, Verbs: []string{payload}, CSRF: "tok"}),
 	}

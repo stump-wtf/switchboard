@@ -30,7 +30,7 @@ func allPages(t *testing.T, h *Handler) map[string]string {
 				ID: 1, Source: "github", EventType: "push", TrustMode: "signed", ReceivedAt: time.Now(),
 				TodoID: "td_1", TodoState: "pending"}, false)}},
 		"endpoints": {Title: "Endpoints", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"},
-			EndpointCards: []endpointCard{card}, VerbOptions: drainVerbs},
+			EndpointCards: []endpointCard{card}, VerbOptions: vendVerbOptions()},
 	}
 	out := make(map[string]string, len(views))
 	for page, v := range views {

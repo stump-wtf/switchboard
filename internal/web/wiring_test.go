@@ -87,7 +87,8 @@ func TestVendRevealShowsHTTPWiringOnly(t *testing.T) {
 
 	for _, want := range []string{
 		"sbk_secret",               // the one-time plaintext reveal
-		"shown only once",          // one-time-reveal warning
+		"it is shown once",         // one-time-reveal warning (docs/design/05-voice.md copy)
+		"Credential · shown once",  // the credential field's standalone label (design canvas)
 		`"type": "http"`,           // HTTP wiring in the pasted block
 		"/mcp/reviewer-bot-ab12cd", // the minted endpoint URL/path
 		"Bearer sbk_secret",        // bearer credential

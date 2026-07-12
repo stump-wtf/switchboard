@@ -397,3 +397,48 @@ func TestVendAgentEndpointRejectsForeignPersona(t *testing.T) {
 		t.Fatalf("intruder endpoint count = %d, want 0", len(cards))
 	}
 }
+
+// KnownQueues enumerates every distinct queue name the store knows — todo queues and endpoint
+// scope queues, deduplicated and sorted — feeding the vend modal's scoped-queue toggle chips.
+// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" (queues chosen via toggle chips).
+func TestKnownQueuesEnumeratesTodoAndScopeQueues(t *testing.T) {
+	s, ctx := testStore(t)
+	h := mustHuman(t, s, ctx, "pocket|queues", "Queues Owner")
+	ag := mustAgent(t, s, ctx, h.ID, "queues-bot")
+
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "t1", IdempotencyKey: "kq1"}); err != nil {
+		t.Fatalf("create todo: %v", err)
+	}
+	// A second todo on the same queue must not duplicate the name.
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "t2", IdempotencyKey: "kq2"}); err != nil {
+		t.Fatalf("create todo: %v", err)
+	}
+	slug, err := MintSlug("queues-bot")
+	if err != nil {
+		t.Fatalf("mint slug: %v", err)
+	}
+	if _, err := s.CreateEndpoint(ctx, ag.ID, "hash-queues", "sbk_queue1", slug,
+		[]string{"deploys", "reviews"}, []string{"list_todos"}); err != nil {
+		t.Fatalf("vend endpoint: %v", err)
+	}
+
+	queues, err := s.KnownQueues(ctx)
+	if err != nil {
+		t.Fatalf("known queues: %v", err)
+	}
+	seen := make(map[string]int, len(queues))
+	for _, q := range queues {
+		seen[q]++
+	}
+	for _, want := range []string{"reviews", "deploys"} {
+		if seen[want] != 1 {
+			t.Errorf("KnownQueues: queue %q appears %d times, want exactly once (got %v)", want, seen[want], queues)
+		}
+	}
+	for i := 1; i < len(queues); i++ {
+		if queues[i-1] >= queues[i] {
+			t.Errorf("KnownQueues not sorted/deduped: %v", queues)
+			break
+		}
+	}
+}

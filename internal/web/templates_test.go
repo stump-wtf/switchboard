@@ -161,16 +161,20 @@ func TestEndpointsViewRendersCards(t *testing.T) {
 	sh := shell{Active: "endpoints", DBConnected: true, Initials: "JS"}
 	seen := time.Now().Add(-2 * time.Minute)
 	killed := time.Now().Add(-1 * time.Hour)
-	active := endpointCard{ID: "e1", AgentName: "reviewer-bot", Slug: "reviewer-bot-ab12cd",
+	active := endpointCard{ID: "e1", AgentName: "reviewer-bot", Initials: "RE", Slug: "reviewer-bot-ab12cd",
 		CredPrefix: "sbk_ab12cd", Queues: []string{"reviews"}, Verbs: []string{"claim"}, State: "active", LastSeenAt: &seen}
-	revoked := endpointCard{ID: "e2", AgentName: "old-bot", Slug: "old-bot-99",
+	revoked := endpointCard{ID: "e2", AgentName: "old-bot", Initials: "OL", Slug: "old-bot-99",
 		CredPrefix: "sbk_dead00", Queues: []string{"deploys"}, Verbs: []string{"complete"}, State: "revoked", RevokedAt: &killed}
 
 	body := renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: testHuman(), CSRF: "tok",
-		Shell: sh, EndpointCards: []endpointCard{active, revoked}, VerbOptions: drainVerbs})
+		Shell: sh, EndpointCards: []endpointCard{active, revoked}, VerbOptions: vendVerbOptions()})
 
 	for _, want := range []string{
+		"Vended MCP endpoints", // header copy per the design canvas
+		"humans are the accountable principals · each endpoint is a scoped, revocable capability · revoke = kill the endpoint", // tagline
 		"reviewer-bot", "old-bot",
+		`class="sb-epcard__avatar" aria-hidden="true">RE<`, // two-letter initials avatar tiles
+		`class="sb-epcard__avatar" aria-hidden="true">OL<`,
 		"sbk_ab12cd", "sbk_dead00", // credential display prefixes
 		"sb-chip--queue", "sb-chip--verb", // scope chips
 		"sb-badge--active", "sb-badge--revoked",
@@ -192,24 +196,60 @@ func TestEndpointsViewRendersCards(t *testing.T) {
 	}
 }
 
-// TestVendModalRendersFields: the vend modal collects a name, queue field, and verb toggle chips,
-// carries the CSRF token, posts to /endpoints/vend, and wires the overlay focus/close machinery.
-// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal".
+// TestVendModalRendersFields: the vend modal collects a name, scoped-queue toggle chips (the
+// queues known to the store), and allowed-verb toggle chips (the agent-tools surface, drain verbs
+// pre-checked), carries the CSRF token, posts to /endpoints/vend, offers a Cancel affordance, and
+// wires the overlay focus/close machinery. Governing: SPEC-0013 REQ "Endpoints View and Vend
+// Modal" (queues and verbs "via toggle chips"), the Endpoints design canvas.
 func TestVendModalRendersFields(t *testing.T) {
 	h := newTestHandler(t)
-	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: drainVerbs})
+	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: vendVerbOptions(),
+		QueueOptions: []string{"deploys", "reviews"}})
 	for _, want := range []string{
 		`role="dialog"`, `aria-modal="true"`, `data-sb-modal`, // modal a11y + overlay hook
-		`data-sb-close`,                                         // close control (Escape/scrim/return handled by sb.js)
+		`data-sb-close`,                  // close control (Escape/scrim/return handled by sb.js)
+		"Vend a scoped endpoint",         // modal title per the design canvas
+		"Scoped queues", "Allowed verbs", // field labels per the design canvas
 		`action="/endpoints/vend"`, `hx-post="/endpoints/vend"`, // no-JS + HTMX submit
 		`name="csrf_token" value="tok"`,    // CSRF over the POST
 		`name="name"`, `data-sb-vend-name`, // agent name field
-		`name="queues"`, `data-sb-vend-queues`, // queue field
-		`name="verbs" value="list_todos"`, `name="verbs" value="claim"`, // verb toggle chips
-		`data-sb-vend-submit`, // the submit sb.js gates on scope
+		`name="queues" value="deploys"`, `name="queues" value="reviews"`, // queue toggle chips
+		`data-sb-vend-queue-chips`,                // sb.js counts checked queue chips
+		`name="verbs" value="list_todos" checked`, // drain verbs pre-checked
+		`name="verbs" value="claim" checked`, `name="verbs" value="heartbeat" checked`,
+		`name="verbs" value="create_webhook"`, `name="verbs" value="list_webhook_events"`, // wider surface offered…
+		`href="/endpoints" data-sb-close>Cancel</a>`, // Cancel: closes the overlay, or navigates back inline (no-JS)
+		"Vend endpoint →",                            // submit label per the design canvas
+		`data-sb-vend-submit`,                        // the submit sb.js gates on scope
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("vend modal: missing %q", want)
+		}
+	}
+	// …but the webhook/event verbs start unchecked: wider grants are a deliberate toggle.
+	for _, verb := range []string{"create_webhook", "list_webhook_events", "replay_webhook_event"} {
+		if strings.Contains(body, `value="`+verb+`" checked`) {
+			t.Errorf("vend modal: %s must not be pre-checked", verb)
+		}
+	}
+	// With queue chips on offer, the free-text queue fallback must not also render.
+	if strings.Contains(body, "data-sb-vend-queues") {
+		t.Error("vend modal: free-text queue field must not render alongside queue chips")
+	}
+}
+
+// TestVendModalQueueFreeTextFallback: when the store knows no queues yet there are no chips to
+// toggle, so the form falls back to the free-text comma-separated queue field — a first vend is
+// never blocked. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal".
+func TestVendModalQueueFreeTextFallback(t *testing.T) {
+	h := newTestHandler(t)
+	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: vendVerbOptions()})
+	for _, want := range []string{
+		`name="queues"`, `data-sb-vend-queues`, // the CSV queue input
+		`data-sb-vend-queue-preview`, // sb.js mirrors typed queues as preview chips
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("vend modal (no known queues): missing %q", want)
 		}
 	}
 }
@@ -220,7 +260,7 @@ func TestVendModalRendersFields(t *testing.T) {
 // persona), ADR-0009.
 func TestVendModalRendersPersonaSelectWhenEnabled(t *testing.T) {
 	h := newTestHandler(t)
-	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", PersonasEnabled: true, VerbOptions: drainVerbs,
+	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", PersonasEnabled: true, VerbOptions: vendVerbOptions(),
 		VendPersonaOptions: []vendPersonaOption{{ID: "pr_123", Name: "Reviewer"}}})
 	for _, want := range []string{
 		`<select id="sb-vend-persona"`, `name="persona"`, // the persona select posts as name="persona"
@@ -232,7 +272,7 @@ func TestVendModalRendersPersonaSelectWhenEnabled(t *testing.T) {
 		}
 	}
 	// With personas OFF the persona slot must not render at all.
-	off := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: drainVerbs})
+	off := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: vendVerbOptions()})
 	if strings.Contains(off, `name="persona"`) {
 		t.Error("vend modal must not render a persona field while personas are disabled")
 	}
@@ -246,9 +286,14 @@ func TestVendRevealShowsCredentialOnceAndHTTPWiring(t *testing.T) {
 	mcpjson := buildMCPJSON("https://sb.example.com", "reviewer-bot-ab12cd", "sbk_secret")
 	body := html.UnescapeString(renderFrag(t, h, "vend_reveal", revealView{AgentName: "reviewer-bot",
 		Slug: "reviewer-bot-ab12cd", Token: "sbk_secret", MCPJSON: mcpjson,
+		URL:    mcpEndpointURL("https://sb.example.com", "reviewer-bot-ab12cd"),
 		Queues: []string{"reviews"}, Verbs: []string{"claim"}, CSRF: "tok"}))
 	for _, want := range []string{
-		"sbk_secret", "shown only once",
+		"sbk_secret",
+		"Copy the credential now — it is shown once. The endpoint is the capability; revoking kills it.",
+		// Standalone labeled fields per the design canvas minted state.
+		"MCP endpoint URL", ">https://sb.example.com/mcp/reviewer-bot-ab12cd</pre>",
+		"Credential · shown once",
 		`"type": "http"`, "/mcp/reviewer-bot-ab12cd", "Bearer sbk_secret",
 		"data-sb-close", // closing clears the overlay → the plaintext is unrecoverable
 	} {
@@ -302,5 +347,43 @@ func TestHelpers(t *testing.T) {
 	}
 	if got := relTime(time.Now().Add(-49 * time.Hour)); got != "2d ago" {
 		t.Errorf("relTime(49h) = %q", got)
+	}
+	// cardInitials: the endpoint card's two-letter avatar tile (design canvas: first two characters
+	// upper-cased; letters/digits only so hyphenated names stay legible).
+	for name, want := range map[string]string{
+		"reviewer-bot": "RE", "old-bot": "OL", "x": "X", "-bot": "BO", "1st-agent": "1S", "": "EP",
+	} {
+		if got := cardInitials(name); got != want {
+			t.Errorf("cardInitials(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestVendVerbOptionsEnumerateAgentToolsSurface: the vend modal's verb chips are enumerated from
+// the agent-tools surface (internal/mcp) — drain verbs pre-checked, the webhook self-management
+// and event-history verbs offered unchecked — so the modal can never offer a verb the MCP layer
+// does not serve, and never silently defaults an endpoint into the wider surface.
+// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal", SPEC-0006, SPEC-0005.
+func TestVendVerbOptionsEnumerateAgentToolsSurface(t *testing.T) {
+	opts := vendVerbOptions()
+	byName := make(map[string]bool, len(opts))
+	for _, o := range opts {
+		byName[o.Name] = o.Checked
+	}
+	for _, v := range []string{"list_todos", "claim", "complete", "fail", "heartbeat"} {
+		checked, ok := byName[v]
+		if !ok || !checked {
+			t.Errorf("drain verb %q must be offered and pre-checked (offered=%v checked=%v)", v, ok, checked)
+		}
+	}
+	for _, v := range []string{"create_webhook", "list_webhooks", "rotate_webhook", "delete_webhook",
+		"list_webhook_events", "get_webhook_event", "replay_webhook_event", "list_providers"} {
+		checked, ok := byName[v]
+		if !ok {
+			t.Errorf("verb %q from the agent-tools surface must be offered", v)
+		}
+		if checked {
+			t.Errorf("verb %q must not be pre-checked", v)
+		}
 	}
 }

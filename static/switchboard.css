@@ -1953,6 +1953,22 @@ pre code {
   gap: 8px;
   min-width: 0;
 }
+/* Two-letter initials avatar tile on each endpoint card (design canvas: a rounded square in the
+   queue-chip palette, distinct from the topbar's round human avatar). */
+.sb-epcard__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--sb-chip-queue-bg);
+  color: var(--sb-chip-queue);
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
 .sb-epcard__agent {
   font-weight: 600;
   color: var(--sb-ink);
@@ -2055,6 +2071,9 @@ pre code {
   margin: 0;
   accent-color: var(--sb-chip-verb);
 }
+.sb-chip--queue.sb-chip--toggle input {
+  accent-color: var(--sb-chip-queue);
+}
 
 /* Modal: a centered dialog over the shared overlay scrim (the same #sb-overlay the drawer uses). */
 .sb-modal {
@@ -2146,8 +2165,12 @@ pre code {
   display: none;
 }
 
+/* Vend form / reveal footer: Cancel + submit (or Done) right-aligned, per the design canvas. */
 .sb-vend__foot {
   margin-top: 6px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 @keyframes sb-modal-in {
