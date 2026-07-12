@@ -274,50 +274,76 @@
      equivalent dict from the page). */}}
 {{define "friends_panel"}}{{template "friend_toolbar" .}}{{if eq .Layout "ledger"}}{{template "friends_ledger" .}}{{else}}{{template "friends_cards" .}}{{end}}{{end}}
 
-{{/* friend_toolbar — the view toggle (cards | ledger) + the filter pills with live counts. */}}
+{{/* friend_toolbar — the view toggle (Cards 2a | Ledger 2b, with the design's variant badges) + the
+     filter pills with live counts. Per the design canvas the pills render only in the cards layout:
+     the ledger's group headings ARE its grouping, so it carries no pills. */}}
 {{define "friend_toolbar"}}<div class="sb-friends-toolbar">
-  <div class="sb-seg" role="tablist" aria-label="Friends layout">
-    <a class="sb-seg__opt{{if ne .Layout "ledger"}} sb-seg__opt--active{{end}}" href="/friends?layout=cards&filter={{.Filter}}" hx-get="/friends?layout=cards&filter={{.Filter}}" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if ne .Layout "ledger"}}true{{else}}false{{end}}">Cards</a>
-    <a class="sb-seg__opt{{if eq .Layout "ledger"}} sb-seg__opt--active{{end}}" href="/friends?layout=ledger&filter={{.Filter}}" hx-get="/friends?layout=ledger&filter={{.Filter}}" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Layout "ledger"}}true{{else}}false{{end}}">Ledger</a>
+  <div class="sb-friends-toolbar__view">
+    <span class="sb-microlabel">view</span>
+    <div class="sb-seg" role="tablist" aria-label="Friends layout">
+      <a class="sb-seg__opt{{if ne .Layout "ledger"}} sb-seg__opt--active{{end}}" href="/friends?layout=cards&filter={{.Filter}}" hx-get="/friends?layout=cards&filter={{.Filter}}" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if ne .Layout "ledger"}}true{{else}}false{{end}}">Cards <span class="sb-seg__badge">2a</span></a>
+      <a class="sb-seg__opt{{if eq .Layout "ledger"}} sb-seg__opt--active{{end}}" href="/friends?layout=ledger&filter={{.Filter}}" hx-get="/friends?layout=ledger&filter={{.Filter}}" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Layout "ledger"}}true{{else}}false{{end}}">Ledger <span class="sb-seg__badge">2b</span></a>
+    </div>
   </div>
-  <div class="sb-fpills" role="tablist" aria-label="Filter friendships">
+  {{if ne .Layout "ledger"}}<div class="sb-fpills" role="tablist" aria-label="Filter friendships">
     <a class="sb-fpill{{if eq .Filter "all"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=all" hx-get="/friends?layout={{.Layout}}&filter=all" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "all"}}true{{else}}false{{end}}">All <span id="sb-fc-all" class="sb-fpill__n">{{.Counts.All}}</span></a>
     <a class="sb-fpill{{if eq .Filter "incoming"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=incoming" hx-get="/friends?layout={{.Layout}}&filter=incoming" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "incoming"}}true{{else}}false{{end}}">Incoming <span id="sb-fc-incoming" class="sb-fpill__n">{{.Counts.Incoming}}</span></a>
     <a class="sb-fpill{{if eq .Filter "outgoing"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=outgoing" hx-get="/friends?layout={{.Layout}}&filter=outgoing" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "outgoing"}}true{{else}}false{{end}}">Outgoing <span id="sb-fc-outgoing" class="sb-fpill__n">{{.Counts.Outgoing}}</span></a>
     <a class="sb-fpill{{if eq .Filter "active"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=active" hx-get="/friends?layout={{.Layout}}&filter=active" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "active"}}true{{else}}false{{end}}">Active <span id="sb-fc-active" class="sb-fpill__n">{{.Counts.Active}}</span></a>
     <a class="sb-fpill{{if eq .Filter "blocked"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=blocked" hx-get="/friends?layout={{.Layout}}&filter=blocked" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "blocked"}}true{{else}}false{{end}}">Blocked <span id="sb-fc-blocked" class="sb-fpill__n">{{.Counts.Blocked}}</span></a>
-  </div>
+  </div>{{end}}
 </div>{{end}}
 
 {{/* friends_cards — the flat cards layout. Data: web.friendPanelView. */}}
 {{define "friends_cards"}}<div class="sb-fcards" aria-live="polite">{{range .Cards}}{{template "friend_card" dict "Card" . "Agents" $.Agents "CSRF" $.CSRF "Layout" $.Layout "Filter" $.Filter}}{{end}}</div>{{if not .Cards}}<p class="sb-empty">{{if .Filtered}}no friendships match this filter{{else}}no friendships yet · add one to hand work across boards{{end}}</p>{{end}}{{end}}
 
-{{/* friends_ledger — the grouped ledger layout (Incoming / Outgoing / Active / Blocked). Each group
-     is a section with its own heading + count; empty groups render an empty note. Data:
-     web.friendPanelView. */}}
-{{define "friends_ledger"}}<div class="sb-fledger" aria-live="polite">{{range .Groups}}<section class="sb-fgroup" aria-label="{{.Label}} friendships">
-  <h2 class="sb-fgroup__head">{{.Label}} <span class="sb-fgroup__n">{{len .Cards}}</span></h2>
-  {{if .Cards}}<div class="sb-fcards">{{range .Cards}}{{template "friend_card" dict "Card" . "Agents" $.Agents "CSRF" $.CSRF "Layout" $.Layout "Filter" $.Filter}}{{end}}</div>{{else}}<p class="sb-empty sb-empty--inline">no {{.Label | printf "%s"}} friendships</p>{{end}}
-</section>{{end}}</div>{{end}}
+{{/* friends_ledger — the 2b grouped ledger (DESIGN Friends): one section per populated group
+     (Incoming requests / Outgoing · pending / Active friendships / Blocked), each headed by a status
+     dot + mono uppercase title + count + rule line over a compact row-based table — NOT the cards
+     grid regrouped. Empty groups are dropped per the design canvas. Data: web.friendPanelView. */}}
+{{define "friends_ledger"}}<div class="sb-fledger" aria-live="polite">{{range .Groups}}<section class="sb-fgroup" aria-label="{{.Title}}">
+  <h2 class="sb-fgroup__head"><span class="sb-fgroup__dot sb-fgroup__dot--{{.Key}}" aria-hidden="true"></span>{{.Title}} <span class="sb-fgroup__n">{{len .Cards}}</span><span class="sb-fgroup__rule" aria-hidden="true"></span></h2>
+  <div class="sb-frows">{{range .Cards}}{{template "friend_row" dict "Card" . "Agents" $.Agents "CSRF" $.CSRF "Layout" $.Layout "Filter" $.Filter}}{{end}}</div>
+</section>{{else}}<p class="sb-empty">no friendships yet · add one to hand work across boards</p>{{end}}</div>{{end}}
 
-{{/* friend_card — one friendship (cards + ledger share it). Shows local persona, a direction-aware
+{{/* friend_row — one compact ledger (2b) row: the direction-aware identity, the intent chips, the
+     meta line, and the status-appropriate actions right-aligned (DESIGN Friends ledger rows). Shares
+     the identity/intents/actions fragments with friend_card so the two layouts can never drift.
+     Args via dict: Card web.friendCard, Agents []store.Agent, CSRF string, Layout/Filter string. */}}
+{{define "friend_row"}}<div id="{{.Card.RowID}}" class="sb-frow sb-frow--{{.Card.Group}}"{{if .Card.OOB}} hx-swap-oob="true"{{end}}>
+  <div class="sb-frow__ident">
+    <span class="sb-fcard__local sb-mono">{{.Card.LocalPersona}}</span>
+    <span class="sb-fcard__arrow sb-fcard__arrow--{{.Card.Group}}" aria-hidden="true">{{.Card.Arrow}}</span>
+    <span class="sb-fcard__remote"><span class="sb-fcard__remote-handle sb-mono">{{.Card.RemoteHandle}}</span>{{if .Card.RemoteHost}} <span class="sb-fcard__host">{{.Card.RemoteHost}}</span>{{end}}</span>
+  </div>
+  <div class="sb-frow__intents">{{template "friend_intents" .Card.Intents}}</div>
+  <span class="sb-frow__meta">{{if .Card.Meta}}{{.Card.Meta}}{{else}}—{{end}}</span>
+  <div class="sb-frow__acts">{{template "friend_actions" .}}</div>
+</div>{{end}}
+
+{{/* friend_card — one friendship in the cards (2a) layout. Shows local persona, a direction-aware
      arrow (→ outgoing pending, ← incoming pending, ↔ established — DESIGN Friends), the remote agent
-     (handle + board host, styled distinct from the local face), status badge, intents, and
-     status-appropriate actions. Args via dict: Card web.friendCard, Agents []store.Agent, CSRF
-     string, Layout/Filter string. */}}
+     (handle + board host, styled distinct from the local face), the group status badge, the
+     requester's note as a quoted callout on incoming requests, intents, and a footer meta line
+     (relative activity/request times) with the status-appropriate actions. Blocked cards render
+     dimmed (sb-fcard--blocked, DESIGN Friends). Args via dict: Card web.friendCard, Agents
+     []store.Agent, CSRF string, Layout/Filter string. */}}
 {{define "friend_card"}}<article id="{{.Card.RowID}}" class="sb-fcard sb-fcard--{{.Card.Group}}"{{if .Card.OOB}} hx-swap-oob="true"{{end}}>
   <div class="sb-fcard__top">
     <span class="sb-fcard__local sb-mono">{{.Card.LocalPersona}}</span>
     <span class="sb-fcard__arrow sb-fcard__arrow--{{.Card.Group}}" aria-hidden="true">{{.Card.Arrow}}</span>
     <span class="sb-fcard__remote"><span class="sb-fcard__remote-handle sb-mono">{{.Card.RemoteHandle}}</span>{{if .Card.RemoteHost}} <span class="sb-fcard__host">{{.Card.RemoteHost}}</span>{{end}}</span>
-    <span class="sb-badge sb-badge--{{.Card.Status}}">{{.Card.StatusLabel}}</span>
+    <span class="sb-badge sb-badge--fr-{{.Card.Group}}">{{.Card.StatusLabel}}</span>
   </div>
+  {{if and .Card.Reason (eq .Card.Group "incoming")}}<blockquote class="sb-fcard__note">“{{.Card.Reason}}”</blockquote>{{end}}
   <div class="sb-fcard__intents">
     <span class="sb-microlabel">{{if .Card.Negotiated}}negotiated intents{{else}}requested intents{{end}}</span>
     {{template "friend_intents" .Card.Intents}}
   </div>
-  {{if .Card.Reason}}<p class="sb-fcard__reason">{{.Card.Reason}}</p>{{end}}
-  <div class="sb-fcard__acts">{{template "friend_actions" .}}</div>
+  <div class="sb-fcard__foot">
+    {{if .Card.Meta}}<span class="sb-fcard__meta">{{.Card.Meta}}</span>{{end}}
+    <div class="sb-fcard__acts">{{template "friend_actions" .}}</div>
+  </div>
 </article>{{end}}
 
 {{/* friend_intents — the intent chips, including the none-negotiated fallback. Data: []string. */}}
@@ -343,39 +369,52 @@
   <form method="post" action="/friends/{{$c.ID}}/unblock" hx-post="/friends/{{$c.ID}}/unblock" hx-target="#sb-friends-panel" hx-swap="innerHTML" class="sb-fform"><input type="hidden" name="csrf_token" value="{{$csrf}}"><input type="hidden" name="layout" value="{{$layout}}"><input type="hidden" name="filter" value="{{$filter}}"><button type="submit" class="sb-btn sb-btn--secondary">Unblock</button></form>
 {{end}}{{end}}
 
-{{/* add_friend_modal — the add-friend overlay (focus-trapped via data-sb-drawer, closes on Escape /
-     scrim / ✕). Collects local agent, remote handle (with a live resolution preview), requested
-     intents, and a message to the remote operator. Data: web.friendPanelView (Agents + CSRF). */}}
-{{define "add_friend_modal"}}<div class="sb-modal" role="dialog" aria-modal="true" aria-label="Add friend" data-sb-drawer tabindex="-1">
-  <div class="sb-modal__head"><h2 class="sb-modal__title">Add friend</h2><button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button></div>
-  <p class="sb-modal__note">Friendships are mutual and non-transitive — the link stays pending until the remote operator approves it, and grants nothing until they do.</p>
+{{/* add_friend_modal — the "Request an A2A friendship" overlay (focus-trapped via data-sb-drawer,
+     closes on Escape / scrim / ✕ / Cancel, and dismisses itself on a successful submit via the
+     overlay_clear OOB in the response — #175). Collects your agent, the remote agent handle (with a
+     live "resolves to" preview), the requested intents as toggle chips (create_for pre-checked so
+     the no-JS form still submits a valid scope), and a message to their operator. Data:
+     web.friendPanelView (Agents + CSRF + IntentOptions). */}}
+{{define "add_friend_modal"}}<div class="sb-modal" role="dialog" aria-modal="true" aria-label="Request an A2A friendship" data-sb-drawer tabindex="-1">
+  <div class="sb-modal__head"><h2 class="sb-modal__title">Request an A2A friendship</h2><button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button></div>
+  <p class="sb-modal__note">Friendships are mutual and non-transitive — the link stays pending until the remote operator approves it, and grants nothing until they do. Your other friends' agents get nothing.</p>
   <form method="post" action="/friends" hx-post="/friends" hx-target="#sb-friends-panel" hx-swap="innerHTML" class="sb-form">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <div class="sb-field">
-      <label for="sb-add-agent">Local agent</label>
+      <label for="sb-add-agent">Your agent</label>
       {{if .Agents}}<select id="sb-add-agent" name="agent_id" class="sb-input" required>{{range .Agents}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select>{{else}}<p class="sb-help">register an agent first</p>{{end}}
     </div>
     <div class="sb-field">
-      <label for="sb-add-handle">Remote handle</label>
+      <label for="sb-add-handle">Remote agent handle</label>
       <input id="sb-add-handle" name="handle" class="sb-input" placeholder="agent@board.example" autocomplete="off" required hx-get="/friends/resolve" hx-target="#sb-add-resolve" hx-swap="innerHTML" hx-trigger="input changed delay:300ms">
       <div id="sb-add-resolve" class="sb-resolve">{{template "friend_resolve" dict "Handle" "" "Host" "" "Valid" false}}</div>
     </div>
     <div class="sb-field">
-      <label for="sb-add-intents">Requested intents (comma-separated)</label>
-      <input id="sb-add-intents" name="intents" class="sb-input" placeholder="create_for" required>
-      <p class="sb-help">the verbs you ask to invoke on their board</p>
+      <span class="sb-label" id="sb-add-intents-label">Requested intents</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-add-intents-label">
+        {{range .IntentOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="intents" value="{{.}}"{{if eq . "create_for"}} checked{{end}}> {{.}}</label>{{end}}
+      </div>
+      <p class="sb-help">the verbs you ask to invoke on their board · at least one required</p>
     </div>
     <div class="sb-field">
-      <label for="sb-add-message">Message to the operator</label>
-      <textarea id="sb-add-message" name="reason" class="sb-input" rows="2" placeholder="why you want to connect"></textarea>
+      <label for="sb-add-message">Message to their operator</label>
+      <textarea id="sb-add-message" name="reason" class="sb-input" rows="2" placeholder="Why should they approve this link?"></textarea>
     </div>
-    <div class="sb-modal__foot"><button type="submit" class="sb-btn">Send request</button></div>
+    <div class="sb-modal__foot">
+      <button type="button" class="sb-btn sb-btn--secondary" data-sb-close>Cancel</button>
+      <button type="submit" class="sb-btn">Send request →</button>
+    </div>
   </form>
 </div>{{end}}
 
-{{/* friend_resolve — the add-friend modal's live handle preview (syntactic; never dials the host).
-     Data: web.friendResolveView (or the equivalent dict). */}}
-{{define "friend_resolve"}}{{if .Valid}}<span class="sb-resolve__ok">→ {{.Handle}}{{if .Host}} · <span class="sb-resolve__host">{{.Host}}</span>{{end}}</span>{{else}}<span class="sb-resolve__hint">enter a remote agent handle</span>{{end}}{{end}}
+{{/* friend_resolve — the add-friend modal's live "resolves to" handle preview (syntactic; never
+     dials the host). Data: web.friendResolveView (or the equivalent dict). */}}
+{{define "friend_resolve"}}{{if .Valid}}resolves to <span class="sb-resolve__ok">{{.Handle}}{{if .Host}} · <span class="sb-resolve__host">{{.Host}}</span>{{end}}</span>{{else}}resolves to <span class="sb-resolve__hint">nobody yet</span>{{end}}{{end}}
+
+{{/* overlay_clear — empties the shared overlay OOB in the same response (sb.js's overlay watcher
+     then hides it), so a successful add-friend submit dismisses its modal (#175). innerHTML swap on
+     purpose: replacing the #sb-overlay element itself would detach sb.js's MutationObserver. */}}
+{{define "overlay_clear"}}<div hx-swap-oob="innerHTML:#sb-overlay"></div>{{end}}
 {{/* ============================ Endpoints view (SPEC-0013) ============================ */}}
 
 {{/* endpoint_card — one vended-endpoint card. Args via dict: C web.endpointCard, CSRF string,

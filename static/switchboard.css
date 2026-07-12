@@ -1428,6 +1428,26 @@ pre code {
 .sb-friends-toolbar .sb-fpills {
   margin: 0;
 }
+/* "view" microlabel + segmented control cluster (DESIGN Friends view toggle). */
+.sb-friends-toolbar__view {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+/* 2a/2b variant badges on the toggle options (DESIGN Friends). */
+.sb-seg__badge {
+  font-family: var(--sb-font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--sb-radius-pill);
+  background: var(--sb-nav-active-bg);
+  color: var(--sb-muted);
+}
+.sb-seg__opt--active .sb-seg__badge {
+  background: var(--sb-panel);
+  color: var(--sb-ink);
+}
 
 /* segmented cards|ledger control */
 .sb-seg {
@@ -1453,16 +1473,22 @@ pre code {
   font-weight: 600;
 }
 
-/* friend status badges reuse the badge grammar with the shared status tokens */
-.sb-badge--pending {
-  color: var(--sb-status-pending);
-  background: var(--sb-status-pending-bg);
+/* friend status badges reuse the badge grammar keyed by ledger group, matching the design canvas
+   FR_STATUS palette (incoming amber · awaiting blue · active green · blocked red) via the shared
+   trust/status tokens (DESIGN Friends; ADR-0016 no per-template colors). */
+.sb-badge--fr-incoming {
+  color: var(--sb-status-claimed);
+  background: var(--sb-status-claimed-bg);
 }
-.sb-badge--approved {
+.sb-badge--fr-outgoing {
+  color: var(--sb-trust-queue);
+  background: var(--sb-trust-queue-bg);
+}
+.sb-badge--fr-active {
   color: var(--sb-status-done);
   background: var(--sb-status-done-bg);
 }
-.sb-badge--denied {
+.sb-badge--fr-blocked {
   color: var(--sb-status-failed);
   background: var(--sb-status-failed-bg);
 }
@@ -1536,10 +1562,38 @@ pre code {
   font-size: 11px;
   color: var(--sb-faint-2);
 }
-.sb-fcard__reason {
+/* Blocked cards are dimmed but legible — proof the link existed (DESIGN Friends). */
+.sb-fcard--blocked {
+  opacity: 0.62;
+}
+/* The requester's note reads as a quoted callout on incoming requests (DESIGN Friends). */
+.sb-fcard__note {
   font-size: 13px;
+  line-height: 1.5;
+  font-style: italic;
   color: var(--sb-muted);
-  margin: 0;
+  border-left: 2px solid var(--sb-input-border);
+  padding-left: 11px;
+  margin: 10px 0 0;
+}
+/* Card footer: the relative-time meta line left, actions right, over a hairline (DESIGN Friends). */
+.sb-fcard__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--sb-divider);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+.sb-fcard__meta {
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-muted);
+  min-width: 0;
+}
+.sb-fcard__foot .sb-fcard__acts {
+  margin-left: auto;
 }
 .sb-fcard__acts {
   display: flex;
@@ -1569,29 +1623,114 @@ pre code {
   font-style: italic;
 }
 
-/* grouped ledger */
+/* grouped ledger (2b): status dot + mono uppercase heading + count + rule line over a compact
+   row-based table per group (DESIGN Friends ledger). */
 .sb-fledger {
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 .sb-fgroup__head {
-  font-family: var(--sb-font-display);
-  font-size: 16px;
-  color: var(--sb-ink);
-  margin: 0 0 10px;
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sb-secondary);
+  margin: 0 0 9px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
+}
+.sb-fgroup__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.sb-fgroup__dot--incoming {
+  background: var(--sb-trust-token-dot);
+}
+.sb-fgroup__dot--outgoing {
+  background: var(--sb-trust-queue-dot);
+}
+.sb-fgroup__dot--active {
+  background: var(--sb-trust-signed-dot);
+}
+.sb-fgroup__dot--blocked {
+  background: var(--sb-trust-open-dot);
 }
 .sb-fgroup__n {
   font-family: var(--sb-font-mono);
-  font-size: 12px;
-  color: var(--sb-muted);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--sb-faint);
 }
-.sb-empty--inline {
-  margin: 0;
-  padding: 8px 0;
+.sb-fgroup__rule {
+  flex: 1;
+  height: 1px;
+  background: var(--sb-border);
+}
+.sb-frows {
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  overflow: hidden;
+}
+.sb-frow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--sb-divider);
+}
+.sb-frow:last-child {
+  border-bottom: none;
+}
+.sb-frow__ident {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.sb-frow__intents {
+  width: 200px;
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.sb-frow__meta {
+  width: 150px;
+  flex: none;
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sb-frow__acts {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+}
+/* Narrow viewports: the fixed columns wrap under the identity line instead of overflowing. */
+@media (max-width: 760px) {
+  .sb-frow {
+    flex-wrap: wrap;
+  }
+  .sb-frow__ident {
+    flex-basis: 100%;
+  }
+  .sb-frow__intents,
+  .sb-frow__meta {
+    width: auto;
+  }
 }
 
 /* inline action forms + small select */
@@ -1608,14 +1747,6 @@ pre code {
   font-size: 12px;
 }
 
-/* add-friend modal (reuses the overlay focus-trap) */
-.sb-modal {
-  background: var(--sb-panel);
-  border: 1px solid var(--sb-border);
-  border-radius: var(--sb-radius-modal);
-  padding: 20px 22px;
-  max-width: 480px;
-  margin: 40px auto;
 /* A killed endpoint is dimmed but still legible — proof it existed and was revoked. */
 .sb-epcard--revoked {
   opacity: 0.62;

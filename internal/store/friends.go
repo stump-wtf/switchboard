@@ -58,6 +58,12 @@ type FriendEdge struct {
 	UpdatedAt          time.Time
 	DecidedAt          *time.Time
 	RevokedAt          *time.Time
+	// EndpointLastSeenAt surfaces the vended endpoint's last_seen_at (stamped on every successful
+	// credential authentication, SPEC-0007) for the Friends-view activity meta line (DESIGN
+	// Friends: "last 2m ago"; story #175). Populated ONLY by ListFriendEdges; nil on write-path
+	// returns, while no endpoint exists (pending/denied), or before the credential first
+	// authenticates.
+	EndpointLastSeenAt *time.Time
 }
 
 // friendEdgeCols is the canonical projection; null uuids collapse to ” so callers never juggle
@@ -285,11 +291,15 @@ func (s *Store) decideTerminal(ctx context.Context, edgeID, ownerHumanID, fromSt
 // ListFriendEdges returns the target human's inbound edges (to_human = ownerHumanID), newest first,
 // optionally filtered to the given states. Non-transitive by construction: it enumerates only the
 // owner's own edges and never traverses to a friend's friends/personas/queues. Passing no states
-// returns every edge the owner owns. Governing: SPEC-0010 REQ "Per-Direction, Revocable,
-// Non-Transitive Edges", REQ "Approval Delivered as a Todo" (list_pending_approvals).
+// returns every edge the owner owns. Each edge additionally carries EndpointLastSeenAt (a scalar
+// subquery on the vended endpoint) so the Friends view can render real last-activity without a
+// second round trip (#175). Governing: SPEC-0010 REQ "Per-Direction, Revocable, Non-Transitive
+// Edges", REQ "Approval Delivered as a Todo" (list_pending_approvals).
 func (s *Store) ListFriendEdges(ctx context.Context, ownerHumanID string, states ...string) ([]FriendEdge, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT `+friendEdgeCols+` FROM friend_edges
+		SELECT `+friendEdgeCols+`,
+		       (SELECT e.last_seen_at FROM endpoints e WHERE e.id = friend_edges.endpoint_id)
+		FROM friend_edges
 		WHERE to_human = $1 AND (cardinality($2::text[]) = 0 OR state = ANY($2))
 		ORDER BY created_at DESC`,
 		ownerHumanID, nonNilStrings(states))
@@ -299,8 +309,12 @@ func (s *Store) ListFriendEdges(ctx context.Context, ownerHumanID string, states
 	defer rows.Close()
 	var out []FriendEdge
 	for rows.Next() {
-		e, err := scanFriendEdge(rows)
-		if err != nil {
+		var e FriendEdge
+		if err := rows.Scan(&e.ID, &e.FromPersona, &e.ToPersona, &e.Direction,
+			&e.FromHuman, &e.ToHuman, &e.FromAgentID, &e.State,
+			&e.RequestedQueues, &e.RequestedVerbs, &e.GrantedQueues, &e.GrantedVerbs,
+			&e.Reason, &e.ProvenanceVerified, &e.EndpointID,
+			&e.CreatedAt, &e.UpdatedAt, &e.DecidedAt, &e.RevokedAt, &e.EndpointLastSeenAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

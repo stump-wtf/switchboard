@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // mustFriendRequest seeds a pending friend edge targeting toHuman.
@@ -640,5 +641,50 @@ func TestRemoveFriendEdgeWithdraw(t *testing.T) {
 	}
 	if edges, _ := s.ListFriendEdges(ctx, sender.ID, "pending"); len(edges) != 1 {
 		t.Fatalf("refused removal must leave the edge, got %d", len(edges))
+	}
+}
+
+// ListFriendEdges surfaces the vended endpoint's last-seen stamp on each edge (a scalar subquery,
+// #175): nil while pending / before the credential ever authenticates, and populated after a
+// TouchEndpoint — the Friends view's "last A2A call" meta line. Governing: SPEC-0007 (last-seen
+// stamped on successful authentication); DESIGN (Friends card meta).
+func TestListFriendEdgesCarriesEndpointLastSeen(t *testing.T) {
+	s, ctx := testStore(t)
+	requester := mustHuman(t, s, ctx, "pocket|seen-req", "Requester")
+	target := mustHuman(t, s, ctx, "pocket|seen-tgt", "Target")
+	vendAgent := mustAgent(t, s, ctx, target.ID, "b-persona")
+
+	e := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "a@a", ToPersona: "b@b", FromHuman: requester.ID, ToHuman: target.ID,
+		RequestedQueues: []string{"reviews"}, RequestedVerbs: []string{"create_for"},
+	})
+	// Pending: no endpoint exists, so no last-seen.
+	if edges, err := s.ListFriendEdges(ctx, target.ID); err != nil || len(edges) != 1 || edges[0].EndpointLastSeenAt != nil {
+		t.Fatalf("pending edge must carry no last-seen: %+v, %v", edges, err)
+	}
+
+	slug, _ := MintSlug(vendAgent.Name)
+	_, ep, err := s.ApproveFriendRequest(ctx, ApproveFriendRequestParams{
+		EdgeID: e.ID, OwnerHumanID: target.ID, AgentID: vendAgent.ID,
+		CredentialHash: "seen-hash", CredentialPrefix: "sbk_seen", Slug: slug,
+	})
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	// Approved but never authenticated: still no last-seen.
+	if edges, _ := s.ListFriendEdges(ctx, target.ID); len(edges) != 1 || edges[0].EndpointLastSeenAt != nil {
+		t.Fatalf("never-seen endpoint must carry no last-seen: %+v", edges)
+	}
+
+	// An authenticated call touches the endpoint; the listing now carries the stamp.
+	if err := s.TouchEndpoint(ctx, ep.ID); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	edges, err := s.ListFriendEdges(ctx, target.ID)
+	if err != nil || len(edges) != 1 {
+		t.Fatalf("list after touch: %+v, %v", edges, err)
+	}
+	if edges[0].EndpointLastSeenAt == nil || time.Since(*edges[0].EndpointLastSeenAt) > time.Minute {
+		t.Fatalf("touched endpoint's last-seen must surface on the edge: %+v", edges[0].EndpointLastSeenAt)
 	}
 }
