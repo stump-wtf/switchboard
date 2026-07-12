@@ -10,7 +10,9 @@
 {{define "feed_row"}}<li id="{{.RowID}}" class="sb-feed__row"{{if .OOB}} hx-swap-oob="true"{{end}}><span class="sb-tag" aria-hidden="true">{{tag .Source}}</span><span><span class="sb-feed__source">{{.Source}}</span><span class="sb-feed__type">{{.EventType}}</span></span><span class="sb-badge sb-badge--{{.TrustMode}}">{{.TrustMode}}</span><span class="sb-feed__stage sb-feed__stage--{{if and (eq .State "") .Deduped}}deduped{{else}}{{.State | stagemod}}{{end}}">{{if eq .State ""}}{{if .Deduped}}deduped{{else}}<span class="sb-feed__pulse" aria-hidden="true"></span>verifying…{{end}}{{else if eq .State "pending"}}patched → todo{{else if eq .State "claimed"}}claimed · {{.OwnerLabel}}{{else if eq .State "done"}}done ✓{{else}}failed{{end}}</span>{{if and (eq .State "pending") .TodoID}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.TodoID}}/claim" hx-target="closest li" hx-swap="outerHTML">Claim</button>{{end}}<span class="sb-feed__age">{{reltime .ReceivedAt}}</span></li>{{end}}
 
 {{/* tiles — the Board stat band (throughput + in flight + awaiting claim + verified %).
-     Data: web.tilesView. Replaced wholesale by counts events (id sb-tiles). */}}
+     Data: web.tilesView. Replaced wholesale by counts events (id sb-tiles). The three count tiles
+     carry the design record's sublabels ('in flight · being worked', 'awaiting claim', 'verified
+     sources') under the bare value, per the DESIGN board panel (#179). */}}
 {{define "tiles"}}<section id="sb-tiles" class="sb-tiles" aria-label="Queue summary"{{if .OOB}} hx-swap-oob="true"{{end}}>
   <div class="sb-tile sb-tile--throughput">
     <span class="sb-microlabel">Throughput</span>
@@ -20,33 +22,44 @@
     <div class="sb-bars__axis" aria-hidden="true"><span>−{{len .Bars}}m</span><span>now</span></div>{{end}}
   </div>
   <div class="sb-tile">
-    <span class="sb-microlabel">In flight</span>
     <div class="sb-tile__value">{{.Stats.InFlight}}</div>
-    <div class="sb-tile__unit">claimed under lease</div>
+    <div class="sb-tile__unit">in flight · being worked</div>
   </div>
   <div class="sb-tile{{if gt .Stats.AwaitingClaim 0}} sb-tile--alert{{end}}">
-    <span class="sb-microlabel">Awaiting claim</span>
     <div class="sb-tile__value">{{.Stats.AwaitingClaim}}</div>
-    <div class="sb-tile__unit">pending in queue</div>
+    <div class="sb-tile__unit">awaiting claim</div>
   </div>
   <div class="sb-tile">
-    <span class="sb-microlabel">Verified</span>
     <div class="sb-tile__value">{{.Stats.VerifiedPct}}%</div>
-    <div class="sb-tile__unit">of today's events signed</div>
+    <div class="sb-tile__unit">verified sources</div>
   </div>
 </section>{{end}}
 
 {{/* live_pill — the top-bar throughput pill. Always rendered (SPEC-0013: the top bar shows the
      live rate); at zero it renders in its idle state rather than disappearing, so the SSE swap
-     target always exists. Args via dict: Rate int, OOB bool. */}}
-{{define "live_pill"}}<span id="sb-live" class="sb-live{{if not .Rate}} sb-live--idle{{end}}"{{if .OOB}} hx-swap-oob="true"{{end}} role="status"><span class="sb-live__dot" aria-hidden="true"></span>LIVE · {{.Rate}}/min</span>{{end}}
+     target always exists. Counts frames are only published on committed events/transitions, so a
+     quiet board would otherwise pin the last nonzero rate forever: data-sb-live-decay stamps the
+     silence window (ms) after which sb.js decays the pill to the idle zero-state client-side.
+     75s > the rate's trailing 1-minute window (store.BoardStats.EventsPerMin), so by the time the
+     decay fires the true rate IS zero — the client fakes nothing, it just catches the display up
+     (#179; the next counts frame replaces the element wholesale and re-arms the window).
+     Args via dict: Rate int, OOB bool. */}}
+{{define "live_pill"}}<span id="sb-live" class="sb-live{{if not .Rate}} sb-live--idle{{end}}"{{if .OOB}} hx-swap-oob="true"{{end}} role="status" data-sb-live-decay="75000"><span class="sb-live__dot" aria-hidden="true"></span>LIVE · {{.Rate}}/min</span>{{end}}
+
+{{/* reaper_pill — the amber 'lease reaper active' pill in the Durable-queue headers (Todos view +
+     the Board panel). Static copy per the design record: the reaper (SPEC-0003 lease expiry →
+     re-surface) is always armed while the server runs; the pulsing dot is the design's ringPulse,
+     ported as sb-ring-pulse in switchboard.css. Governing: SPEC-0013 REQ "Todos View — Durable
+     Queue" ("the view MUST surface that the reaper is active"). */}}
+{{define "reaper_pill"}}<span class="sb-reaper"><span class="sb-reaper__dot" aria-hidden="true"></span>lease reaper active · re-surfaces abandoned work</span>{{end}}
 
 {{/* todo_count — the rail's live Todos count. Args via dict: Count int, OOB bool. */}}
 {{define "todo_count"}}<span id="sb-todo-count" class="sb-rail__count"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Count}}</span>{{end}}
 
 {{/* counts — the OOB bundle published after every committed transition: tiles + rail count +
-     LIVE pill. Data: web.countsView. */}}
-{{define "counts"}}{{template "tiles" .Tiles}}{{template "todo_count" dict "Count" .Tiles.Stats.AwaitingClaim "OOB" true}}{{template "live_pill" dict "Rate" .Tiles.Stats.EventsPerMin "OOB" true}}{{template "todo_pill_counts" dict "C" .Todos "OOB" true}}{{end}}
+     LIVE pill. The rail count binds the TOTAL todo count (design record: the rail badge is the
+     size of the durable queue, every state), matching shell.TodoCount. Data: web.countsView. */}}
+{{define "counts"}}{{template "tiles" .Tiles}}{{template "todo_count" dict "Count" .Todos.All "OOB" true}}{{template "live_pill" dict "Rate" .Tiles.Stats.EventsPerMin "OOB" true}}{{template "todo_pill_counts" dict "C" .Todos "OOB" true}}{{end}}
 
 {{/* todo_pill_counts — the five Todos-view filter-pill count numbers, each an independent OOB swap
      target (ignored on pages that don't render the pills). Args via dict: C store.TodoCounts, OOB bool. */}}
@@ -94,13 +107,17 @@
   <tbody id="sb-todos-body" aria-live="polite">{{range .}}{{template "todo_row" .}}{{end}}</tbody>
 </table></div>{{if not .}}<p class="sb-empty" data-sb-todos-empty>no todos match · the queue is clear</p>{{end}}{{end}}
 
-{{/* todo_row — one durable-queue row (SPEC-0013 columns). The id cell opens the detail drawer; the
-     action cell dispatches a lifecycle POST scoped to the row (closest tr → the responder returns a
-     refreshed row). Live SSE transitions replace this row OOB by its sb-tr-<id> id; a reaper
-     re-surface arrives with the flash modifier. Data: web.todoRow. */}}
-{{define "todo_row"}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}"{{if .OOB}} hx-swap-oob="true"{{end}}>
-  <td><button type="button" class="sb-linklike sb-mono" hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>
-  <td><span class="sb-trow__source">{{if .Source}}{{.Source}}{{else}}—{{end}}</span> <span class="sb-trow__kind">{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
+{{/* todo_row — one durable-queue row (SPEC-0013 columns). The WHOLE row opens the detail drawer
+     (design record: row onClick): data-sb-row-open + tabindex let sb.js forward a click on the row
+     body (or Enter/Space while the row is focused) to the id cell's button (data-sb-row-trigger),
+     which stays the accessible, HTMX-wired trigger — the <tr> keeps its native row role so the
+     table remains a table for AT, and clicks on real controls inside the row are never hijacked.
+     The action cell dispatches a lifecycle POST scoped to the row (closest tr → the responder
+     returns a refreshed row). Live SSE transitions replace this row OOB by its sb-tr-<id> id; a
+     reaper re-surface arrives with the flash modifier. Data: web.todoRow. */}}
+{{define "todo_row"}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}" data-sb-row-open tabindex="0"{{if .OOB}} hx-swap-oob="true"{{end}}>
+  <td><button type="button" class="sb-linklike sb-mono" data-sb-row-trigger hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>
+  <td>{{if .Source}}<span class="sb-tag" aria-hidden="true">{{tag .Source}}</span> {{end}}<span class="sb-trow__source">{{if .Source}}{{.Source}}{{else}}—{{end}}</span> <span class="sb-trow__kind">{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
   <td><span class="sb-badge sb-badge--{{.TrustMode}}">{{.TrustMode}}</span></td>
   <td><span class="sb-status sb-status--{{.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.State}}</span>{{if and (eq .State "claimed") .HasLease}}<span class="sb-trow__sub" data-sb-countdown data-sb-deadline="{{.LeaseDeadlineMS}}" data-sb-suffix=" left">lease {{.LeaseSecs}}s left</span>{{else if and (eq .State "failed") .RetryScheduled}}<span class="sb-trow__sub sb-trow__sub--retry" data-sb-countdown data-sb-deadline="{{.RetryDeadlineMS}}" data-sb-prefix="↻ retry " data-sb-expired="↻ re-queuing…">↻ retry {{.RetrySecs}}s</span>{{else if eq .State "failed"}}<span class="sb-trow__sub">{{.Attempt}}/{{.MaxAttempts}} attempts</span>{{end}}</td>
   <td class="sb-mono">{{if .OwnerLabel}}{{.OwnerLabel}}{{else}}—{{end}}</td>

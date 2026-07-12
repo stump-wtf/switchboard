@@ -18,6 +18,7 @@ import (
 // BoardStats are the server-computed summary numbers for the Board tiles and the layout shell
 // (rail todo count, top-bar LIVE rate).
 type BoardStats struct {
+	TotalTodos    int // every todo in the durable queue, any state — the rail Todos badge (design record)
 	TodosToday    int // todos created since local midnight
 	InFlight      int // todos currently claimed under lease
 	AwaitingClaim int // todos pending, waiting for a claim
@@ -30,13 +31,14 @@ func (s *Store) BoardStats(ctx context.Context) (BoardStats, error) {
 	var b BoardStats
 	err := s.pool.QueryRow(ctx, `
 		SELECT
+			(SELECT count(*) FROM todos),
 			(SELECT count(*) FROM todos WHERE created_at >= date_trunc('day', now())),
 			(SELECT count(*) FROM todos WHERE state = 'claimed'),
 			(SELECT count(*) FROM todos WHERE state = 'pending'),
 			(SELECT COALESCE(round(100.0 * count(*) FILTER (WHERE trust_mode = 'signed') / NULLIF(count(*), 0)), 0)::int
 			   FROM events WHERE received_at >= date_trunc('day', now())),
 			(SELECT count(*) FROM events WHERE received_at > now() - interval '1 minute')`,
-	).Scan(&b.TodosToday, &b.InFlight, &b.AwaitingClaim, &b.VerifiedPct, &b.EventsPerMin)
+	).Scan(&b.TotalTodos, &b.TodosToday, &b.InFlight, &b.AwaitingClaim, &b.VerifiedPct, &b.EventsPerMin)
 	if err != nil {
 		return BoardStats{}, fmt.Errorf("board stats: %w", err)
 	}

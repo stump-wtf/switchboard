@@ -68,11 +68,49 @@ func TestTrustBadgesCarryText(t *testing.T) {
 			t.Errorf("trust mode %q: badge must carry both the class and the text, got %q", mode, row)
 		}
 	}
-	// The Board's trust legend also spells out every mode.
+	// The Board's trust legend also spells out every mode, prefixed with the design record's ●
+	// dot — aria-hidden so AT still reads just the mode word (color/glyph never carry alone).
 	body := boardBody(t)
 	for _, mode := range []string{"signed", "token", "open", "queue"} {
-		if !strings.Contains(body, `sb-badge--`+mode+`">`+mode+`<`) {
-			t.Errorf("trust legend missing readable text for %q", mode)
+		if !strings.Contains(body, `sb-badge--`+mode+`"><span aria-hidden="true">● </span>`+mode+`<`) {
+			t.Errorf("trust legend missing ● dot prefix + readable text for %q", mode)
+		}
+	}
+}
+
+// TestBoardHeaderCarriesReaperPillAndFeedHint pins the #179 board-panel polish: the amber reaper
+// pill renders in the Board header chrome (the Board summarizes the same durable queue the reaper
+// re-surfaces into), and the Incoming-lines section head carries the design record's right-aligned
+// 'newest first · live' hint. Governing: SPEC-0013 REQ "Todos View — Durable Queue" ("the view
+// MUST surface that the reaper is active"), REQ "Board View — Live Incoming Lines".
+func TestBoardHeaderCarriesReaperPillAndFeedHint(t *testing.T) {
+	body := boardBody(t)
+	for _, want := range []string{
+		`class="sb-reaper"`,
+		`class="sb-reaper__dot" aria-hidden="true"`, // pulsing dot is decorative — AT reads the copy
+		"lease reaper active · re-surfaces abandoned work",
+		`class="sb-section-hint">newest first · live<`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("board header/feed hint: missing %q", want)
+		}
+	}
+}
+
+// TestTilesCarryDesignSublabels pins the #179 stat-tile sublabels: the three count tiles read
+// 'in flight · being worked', 'awaiting claim', and 'verified sources' under the bare value, per
+// the design record's board panel (the throughput tile keeps its events/min unit).
+func TestTilesCarryDesignSublabels(t *testing.T) {
+	h := newTestHandler(t)
+	out := renderFrag(t, h, "tiles", tilesView{Stats: store.BoardStats{InFlight: 2, AwaitingClaim: 1, VerifiedPct: 50}})
+	for _, want := range []string{
+		"in flight · being worked",
+		"awaiting claim",
+		"verified sources",
+		"events/min",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("tiles: missing design sublabel %q in %q", want, out)
 		}
 	}
 }

@@ -313,6 +313,61 @@ a:hover {
   margin: 28px 0 10px;
 }
 
+/* ---- view header: page title + tagline left, header chrome (legend, reaper pill) right ----
+   Design record board/todos headers (#179). Wraps on narrow viewports. */
+.sb-view-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.sb-view-head__aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* Section head: the mono section title with a right-aligned hint (Board 'Incoming lines' ·
+   'newest first · live', design record #179). */
+.sb-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sb-section-hint {
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-faint-2);
+  white-space: nowrap;
+}
+
+/* Reaper pill: the amber 'lease reaper active' chip in the Durable-queue headers. Ported from the
+   design record's ringPulse pill onto the existing token trio (amber trust-token palette) and the
+   sb-ring-pulse keyframes — same 1.4s scale/opacity pulse. */
+.sb-reaper {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: var(--sb-radius-pill);
+  background: var(--sb-trust-token-bg);
+  color: var(--sb-trust-token);
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.sb-reaper__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sb-trust-token-dot);
+  animation: sb-ring-pulse var(--sb-dur-pulse) var(--sb-ease) infinite;
+}
+
 .sb-backlink {
   font-family: var(--sb-font-mono);
   font-size: 12px;
@@ -948,6 +1003,14 @@ pre code {
   background: var(--sb-dedup-bg);
 }
 
+/* Whole-row drawer affordance (design record #179): the row itself opens the drawer — sb.js
+   forwards row clicks/Enter to the id cell's trigger. The pointer signals it; keyboard focus on
+   the tabindexed <tr> gets the global :focus-visible brass outline; the row hover tint above
+   already marks the hot row. */
+.sb-trow[data-sb-row-open] {
+  cursor: pointer;
+}
+
 /* Reaper re-surface flash: a claimed lease expired back to pending — highlight the row briefly as
    its OOB swap lands (SPEC-0013 "Reaper re-surface is visible"). */
 .sb-trow--flash {
@@ -1394,6 +1457,7 @@ pre code {
 @media (prefers-reduced-motion: reduce) {
   .sb-live__dot,
   .sb-feed__pulse,
+  .sb-reaper__dot,
   .sb-ring,
   .sb-drawer,
   .sb-modal,
