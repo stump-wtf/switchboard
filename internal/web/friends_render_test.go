@@ -23,11 +23,14 @@ func enabledFriendsHandler(t *testing.T) *Handler {
 	return h
 }
 
-// sampleEdges seeds one edge per lifecycle state so a render exercises every group + status.
+// sampleEdges seeds one edge per lifecycle state — including a locally sent direction=outgoing
+// pending (#174) — so a render exercises every group + status.
 func sampleEdges() []store.FriendEdge {
 	return []store.FriendEdge{
 		{ID: "e-pending", State: "pending", ToPersona: "b-persona", FromPersona: "alice@remote.example",
 			RequestedVerbs: []string{"create_for", "list_todos"}, RequestedQueues: []string{"reviews"}, Reason: "hand you PR reviews"},
+		{ID: "e-outgoing", State: "pending", Direction: "outgoing", FromPersona: "b-agent", ToPersona: "zed@far.example",
+			RequestedVerbs: []string{"create_for"}, Reason: "want to hand you deploy checks"},
 		{ID: "e-active", State: "approved", ToPersona: "b-persona", FromPersona: "carol@peer.example",
 			RequestedVerbs: []string{"create_for"}, GrantedVerbs: []string{"create_for"}, GrantedQueues: []string{"reviews"}},
 		{ID: "e-bare", State: "approved", ToPersona: "b-persona", FromPersona: "dave@peer.example",
@@ -60,19 +63,33 @@ func TestFriendsCardsLayoutRendersStatusesAndActions(t *testing.T) {
 		"alice@remote.example", "remote.example", // remote handle + parsed board host
 		"sb-badge--pending", "sb-badge--approved", "sb-badge--denied", "sb-badge--revoked", // status badges w/ text
 		"sb-chip", "create_for", "list_todos", // intent chips
-		"none negotiated",                        // approved edge with no granted scope
-		"hx-post=\"/friends/e-pending/approve\"", // incoming → approve
-		"hx-post=\"/friends/e-pending/decline\"", // incoming → decline
-		"hx-post=\"/friends/e-active/revoke\"",   // active → revoke
-		"hx-post=\"/friends/e-denied/unblock\"",  // blocked → unblock
-		"hx-post=\"/friends/e-revoked/unblock\"", // blocked → unblock
-		"name=\"agent_id\"", ">b-agent<",         // approve vends onto a selectable owned agent
+		"none negotiated",                          // approved edge with no granted scope
+		"hx-post=\"/friends/e-pending/approve\"",   // incoming → approve
+		"hx-post=\"/friends/e-pending/decline\"",   // incoming → decline
+		"hx-post=\"/friends/e-outgoing/withdraw\"", // outgoing pending → withdraw (#174)
+		"hx-post=\"/friends/e-active/revoke\"",     // active → revoke
+		"hx-post=\"/friends/e-denied/unblock\"",    // blocked → unblock
+		"hx-post=\"/friends/e-revoked/unblock\"",   // blocked → unblock
+		"name=\"agent_id\"", ">b-agent<",           // approve vends onto a selectable owned agent
 		"id=\"sb-fr-e-pending\"",            // stable OOB row id
 		"name=\"csrf_token\" value=\"tok\"", // CSRF field for the no-JS fallback
+		// Direction-aware identity row (#174 / DESIGN Friends): arrows per status + distinct remote
+		// styling; the outgoing card's local face is the sending agent, remote is the asked handle.
+		"sb-fcard__arrow--incoming\" aria-hidden=\"true\">←<",
+		"sb-fcard__arrow--outgoing\" aria-hidden=\"true\">→<",
+		"sb-fcard__arrow--active\" aria-hidden=\"true\">↔<",
+		"sb-fcard__remote-handle",
+		"sb-fcard--outgoing",
+		"zed@far.example", "far.example", // outgoing remote handle + parsed board host
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("friends cards: missing %q", want)
 		}
+	}
+	// The outgoing pending card must never offer Approve/Decline (those are the target's actions).
+	if strings.Contains(body, "hx-post=\"/friends/e-outgoing/approve\"") ||
+		strings.Contains(body, "hx-post=\"/friends/e-outgoing/decline\"") {
+		t.Error("an outgoing pending edge must offer only Withdraw")
 	}
 	// The approve action must NEVER target a decline/revoke on the wrong edge, and the denied edge
 	// must not surface a revoke (it is not active).
@@ -97,8 +114,21 @@ func TestFriendsLedgerLayoutGroups(t *testing.T) {
 			t.Errorf("friends ledger: missing %q", want)
 		}
 	}
-	// Outgoing has no local backing in the merged backend — its group renders empty, not broken.
-	if !strings.Contains(body, "no Outgoing friendships") {
+	// The Outgoing group populates from locally persisted direction=outgoing edges (#174), with the
+	// same direction-aware identity row and Withdraw as the cards layout (friend_card is shared).
+	for _, want := range []string{
+		"id=\"sb-fr-e-outgoing\"",
+		"hx-post=\"/friends/e-outgoing/withdraw\"",
+		"sb-fcard__arrow--outgoing\" aria-hidden=\"true\">→<",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("friends ledger: missing %q", want)
+		}
+	}
+	// A group with no edges still renders its empty note, not a broken section.
+	incomingOnly := sampleEdges()[:1]
+	empty := renderPage(t, h, "friends", friendsView(h, "ledger", "all", incomingOnly, nil))
+	if !strings.Contains(empty, "no Outgoing friendships") {
 		t.Error("empty Outgoing group must render its empty note")
 	}
 }
