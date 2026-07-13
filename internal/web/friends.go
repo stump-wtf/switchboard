@@ -10,7 +10,8 @@ package web
 // its sentinel errors (this layer implements no friend-edge rules of its own).
 //
 // Capability gating: the view and all its routes 404 until the friending capability is enabled
-// (h.cfg.FriendingEnabled), and the rail entry is hidden — hidden-not-broken (SPEC-0013 IA & Nav).
+// (h.friendsEnabled — the single capability seam), and the rail entry is hidden —
+// hidden-not-broken (SPEC-0013 IA & Nav).
 
 import (
 	"errors"
@@ -338,10 +339,19 @@ func groupFriendCards(cards []friendCard, filter string) []friendGroup {
 	return groups
 }
 
+// friendsEnabled is THE single capability check for the friending surface — the shell's rail
+// entry (buildShell) and every /friends handler (via friendingEnabled below) consult this one
+// seam instead of reading config/env in scattered places, mirroring how personasEnabled gates the
+// Personas surface. Today the capability derives from the one-time config load (the
+// SWITCHBOARD_FRIENDING opt-in stays a deliberate operator switch); flipping it to store-backed
+// feature detection later touches only this method. Governing: SPEC-0013 REQ "Friends View"
+// (capability-gated, hidden-not-broken).
+func (h *Handler) friendsEnabled() bool { return h.cfg.FriendingEnabled }
+
 // friendingEnabled reports whether the friending capability is on; when off it writes a 404 and the
 // caller returns immediately (SPEC-0013: the view and its routes 404 until the capability is enabled).
 func (h *Handler) friendingEnabled(w http.ResponseWriter) bool {
-	if !h.cfg.FriendingEnabled {
+	if !h.friendsEnabled() {
 		http.Error(w, "not found", http.StatusNotFound)
 		return false
 	}

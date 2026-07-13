@@ -93,8 +93,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Same committed-transition publish source as the web SSE hub, one consumer per surface:
 	// the store's doorbell hook fans verified todo creations out to in-scope MCP sessions as
 	// notifications/claude/channel doorbells. Governing: SPEC-0014 REQ "Channels Push over the
-	// HTTP Stream", SPEC-0011 (push semantics; queue stays the ledger).
-	st.SetTodoDoorbellHook(mcph.PublishTodoReady)
+	// HTTP Stream", SPEC-0011 (push semantics; queue stays the ledger). The doorbellGate is
+	// shared with the todo_ready LISTEN loop below so the two wakeup paths (in-process hook,
+	// in-database notification) never double-ring the same todo.
+	doorbells := newDoorbellGate(doorbellGateTTL)
+	st.SetTodoDoorbellHook(func(t store.Todo) {
+		if doorbells.first(t.ID) {
+			mcph.PublishTodoReady(t)
+		}
+	})
 	// Revoking an endpoint in the web UI also closes its live notification streams promptly
 	// (SPEC-0014 scenario "Revocation closes live streams").
 	webh.SetEndpointRevokedHook(mcph.CloseEndpointSessions)
@@ -138,6 +145,16 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Retention pruner: the periodic task SPEC-0004 mandates so events and terminal todos cannot
 	// grow unbounded. Same lifecycle pattern as the reaper — context-managed, exits on shutdown.
 	go pruner(ctx, st, log, pruneInterval)
+	// todo_ready LISTEN loop (SPEC-0004 "In-Database Wakeups via LISTEN/NOTIFY"): the consumer
+	// for the pg_notify the store already emits on every committed enqueue. Each notification
+	// nudges the web SSE hub (count regions re-render from the database) and re-rings the MCP
+	// channel doorbell for push-eligible pending todos on that queue — so wakeups no longer
+	// depend on this process's HTTP-path store hooks alone. Context-managed like the reaper;
+	// reconnects with backoff inside (listen.go).
+	go listenTodoReady(ctx, cfg.DatabaseURL, log, func(nctx context.Context, queue string) {
+		webh.PublishQueueNudge(queue)
+		nudgeDoorbells(nctx, st, doorbells, mcph.PublishTodoReady, queue, log)
+	})
 
 	// Pull-adapter poll loops (ADR-0014; SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety"):
 	// each queue-family registry row (adapters table) attaches one context-managed worker — enabled-
@@ -297,9 +314,16 @@ func newRouter(d routerDeps) chi.Router {
 	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB;
 	// RequireCSRF guards every state-changing form with a per-session synchronizer token (SPEC-0008).
 	// Logout is a session-gated POST — never a GET — so it cannot be triggered cross-site.
+	// One shared token bucket meters every state-changing POST on this surface (vend, revoke,
+	// persona, friend, and todo actions alike), keyed per authenticated human; GETs and the SSE
+	// stream are exempt (postMiddleware). 3 req/s sustained with burst 30 clears any real
+	// operator clicking through the Board while blunting scripted abuse of the mutation surface.
+	// Governing: SPEC-0013 "Rate Limiting" (shared human-surface limiter on state-changing POSTs).
+	humanRL := newRateLimiter(3, 30)
 	r.Group(func(pr chi.Router) {
 		pr.Use(maxBytes(1 << 20))
 		pr.Use(d.authr.RequireHuman)
+		pr.Use(humanRL.postMiddleware) // after RequireHuman: keyed by the authenticated human
 		pr.Use(d.authr.RequireCSRF)
 		// Governing: SPEC-0013 REQ "Information Architecture and Navigation" — GET / renders the
 		// Board; the agents screen moves to /agents (surfaced as "Endpoints" in the rail).
@@ -367,10 +391,15 @@ func staticHandler() http.Handler {
 // The CSP is tuned to the actual web UI: an external stylesheet under /static plus an inline <style>
 // block and inline style="" attributes (hence style-src 'unsafe-inline'); the only scripts are the
 // vendored htmx assets embedded and served from /static (ADR-0001: no CDN), so script-src stays
-// locked to 'self'. frame-ancestors 'none' backs up X-Frame-Options: DENY.
+// locked to 'self'. connect-src 'self' is explicit — it permits exactly the same-origin SSE stream
+// (/events) and HTMX fetches, so injected markup cannot exfiltrate to another origin even under
+// default-src drift. base-uri 'none' forbids <base> entirely (no page needs one, and an injected
+// <base> would rebase every relative form action and asset URL). frame-ancestors 'none' backs up
+// X-Frame-Options: DENY. Governing: SPEC-0012 REQ "Security Headers" (base-uri 'none', explicit
+// connect-src), SPEC-0013 "Security Headers" (same-origin connect-src for SSE).
 func secureHeaders(next http.Handler) http.Handler {
 	const csp = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
-		"script-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		"script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", csp)

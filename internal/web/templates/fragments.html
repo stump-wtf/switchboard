@@ -12,8 +12,10 @@
 {{/* tiles — the Board stat band (throughput + in flight + awaiting claim + verified %).
      Data: web.tilesView. Replaced wholesale by counts events (id sb-tiles). The three count tiles
      carry the design record's sublabels ('in flight · being worked', 'awaiting claim', 'verified
-     sources') under the bare value, per the DESIGN board panel (#179). */}}
-{{define "tiles"}}<section id="sb-tiles" class="sb-tiles" aria-label="Queue summary"{{if .OOB}} hx-swap-oob="true"{{end}}>
+     sources') under the bare value, per the DESIGN board panel (#179). aria-live: the band's
+     numbers update via SSE counts frames, so it is a polite live region present in the DOM before
+     the first update (SPEC-0013 "Dynamic Content Regions"). */}}
+{{define "tiles"}}<section id="sb-tiles" class="sb-tiles" aria-label="Queue summary" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>
   <div class="sb-tile sb-tile--throughput">
     <span class="sb-microlabel">Throughput</span>
     <div class="sb-tile__value">{{.Stats.EventsPerMin}}</div>
@@ -53,8 +55,10 @@
      Queue" ("the view MUST surface that the reaper is active"). */}}
 {{define "reaper_pill"}}<span class="sb-reaper"><span class="sb-reaper__dot" aria-hidden="true"></span>lease reaper active · re-surfaces abandoned work</span>{{end}}
 
-{{/* todo_count — the rail's live Todos count. Args via dict: Count int, OOB bool. */}}
-{{define "todo_count"}}<span id="sb-todo-count" class="sb-rail__count"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Count}}</span>{{end}}
+{{/* todo_count — the rail's live Todos count. aria-live: the badge updates via SSE counts frames,
+     so it is a polite live region (SPEC-0013 "Dynamic Content Regions" — count pills). Args via
+     dict: Count int, OOB bool. */}}
+{{define "todo_count"}}<span id="sb-todo-count" class="sb-rail__count" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Count}}</span>{{end}}
 
 {{/* counts — the OOB bundle published after every committed transition: tiles + rail count +
      LIVE pill. The rail count binds the TOTAL todo count (design record: the rail badge is the
@@ -62,8 +66,10 @@
 {{define "counts"}}{{template "tiles" .Tiles}}{{template "todo_count" dict "Count" .Todos.All "OOB" true}}{{template "live_pill" dict "Rate" .Tiles.Stats.EventsPerMin "OOB" true}}{{template "todo_pill_counts" dict "C" .Todos "OOB" true}}{{end}}
 
 {{/* todo_pill_counts — the five Todos-view filter-pill count numbers, each an independent OOB swap
-     target (ignored on pages that don't render the pills). Args via dict: C store.TodoCounts, OOB bool. */}}
-{{define "todo_pill_counts"}}<span id="sb-tc-all" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.All}}</span><span id="sb-tc-pending" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Pending}}</span><span id="sb-tc-claimed" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Claimed}}</span><span id="sb-tc-done" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Done}}</span><span id="sb-tc-failed" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Failed}}</span>{{end}}
+     target (ignored on pages that don't render the pills). Each span is a polite live region — the
+     numbers update via SSE counts frames (SPEC-0013 "Dynamic Content Regions" — count pills).
+     Args via dict: C store.TodoCounts, OOB bool. */}}
+{{define "todo_pill_counts"}}<span id="sb-tc-all" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.All}}</span><span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Pending}}</span><span id="sb-tc-claimed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Claimed}}</span><span id="sb-tc-done" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Done}}</span><span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Failed}}</span>{{end}}
 
 {{/* toast — a transient announcement prepended into the aria-live toast region. Data: string. */}}
 {{define "toast"}}<div class="sb-toast" role="status" hx-swap-oob="afterbegin:#sb-toasts">{{.}}</div>{{end}}
@@ -94,11 +100,11 @@
      count span carries the sb-tc-<key> id so the counts SSE frame refreshes the numbers OOB without
      disturbing the active-pill state. hx-include pulls the current search text along on a pill click. */}}
 {{define "todo_pills"}}<div class="sb-fpills" role="tablist" aria-label="Filter todos">
-  <a class="sb-fpill{{if eq .Filter "all"}} sb-fpill--active{{end}}" href="/todos?filter=all" hx-get="/todos?filter=all" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "all"}}true{{else}}false{{end}}">All <span id="sb-tc-all" class="sb-fpill__n">{{.Counts.All}}</span></a>
-  <a class="sb-fpill{{if eq .Filter "pending"}} sb-fpill--active{{end}}" href="/todos?filter=pending" hx-get="/todos?filter=pending" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "pending"}}true{{else}}false{{end}}">Pending <span id="sb-tc-pending" class="sb-fpill__n">{{.Counts.Pending}}</span></a>
-  <a class="sb-fpill{{if eq .Filter "claimed"}} sb-fpill--active{{end}}" href="/todos?filter=claimed" hx-get="/todos?filter=claimed" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "claimed"}}true{{else}}false{{end}}">Claimed <span id="sb-tc-claimed" class="sb-fpill__n">{{.Counts.Claimed}}</span></a>
-  <a class="sb-fpill{{if eq .Filter "done"}} sb-fpill--active{{end}}" href="/todos?filter=done" hx-get="/todos?filter=done" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "done"}}true{{else}}false{{end}}">Done <span id="sb-tc-done" class="sb-fpill__n">{{.Counts.Done}}</span></a>
-  <a class="sb-fpill{{if eq .Filter "failed"}} sb-fpill--active{{end}}" href="/todos?filter=failed" hx-get="/todos?filter=failed" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "failed"}}true{{else}}false{{end}}">Failed <span id="sb-tc-failed" class="sb-fpill__n">{{.Counts.Failed}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "all"}} sb-fpill--active{{end}}" href="/todos?filter=all" hx-get="/todos?filter=all" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "all"}}true{{else}}false{{end}}">All <span id="sb-tc-all" class="sb-fpill__n" aria-live="polite">{{.Counts.All}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "pending"}} sb-fpill--active{{end}}" href="/todos?filter=pending" hx-get="/todos?filter=pending" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "pending"}}true{{else}}false{{end}}">Pending <span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite">{{.Counts.Pending}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "claimed"}} sb-fpill--active{{end}}" href="/todos?filter=claimed" hx-get="/todos?filter=claimed" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "claimed"}}true{{else}}false{{end}}">Claimed <span id="sb-tc-claimed" class="sb-fpill__n" aria-live="polite">{{.Counts.Claimed}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "done"}} sb-fpill--active{{end}}" href="/todos?filter=done" hx-get="/todos?filter=done" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "done"}}true{{else}}false{{end}}">Done <span id="sb-tc-done" class="sb-fpill__n" aria-live="polite">{{.Counts.Done}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "failed"}} sb-fpill--active{{end}}" href="/todos?filter=failed" hx-get="/todos?filter=failed" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "failed"}}true{{else}}false{{end}}">Failed <span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite">{{.Counts.Failed}}</span></a>
 </div>{{end}}
 
 {{/* todos_table — the durable-queue table. Data: []web.todoRow. */}}
@@ -323,12 +329,12 @@
 {{/* ============================ Friends view (SPEC-0013) ============================ */}}
 
 {{/* friend_badge — the rail's pending-incoming badge (shown only when nonzero). Args: Count int. */}}
-{{define "friend_badge"}}{{if gt .Count 0}}<span id="sb-friends-badge" class="sb-rail__count">{{.Count}}</span>{{else}}<span id="sb-friends-badge" class="sb-rail__count" hidden></span>{{end}}{{end}}
+{{define "friend_badge"}}{{if gt .Count 0}}<span id="sb-friends-badge" class="sb-rail__count" aria-live="polite">{{.Count}}</span>{{else}}<span id="sb-friends-badge" class="sb-rail__count" aria-live="polite" hidden></span>{{end}}{{end}}
 
 {{/* friend_counts — OOB refresh of the rail badge + the five filter-pill count numbers after a
      friend action (same HTTP response, NOT the shared SSE hub — friend counts are per-human).
      Data: web.friendCountsView. */}}
-{{define "friend_counts"}}<span id="sb-friends-badge" class="sb-rail__count"{{if not .Counts.Incoming}} hidden{{end}}{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Incoming}}</span><span id="sb-fc-all" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.All}}</span><span id="sb-fc-incoming" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Incoming}}</span><span id="sb-fc-outgoing" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Outgoing}}</span><span id="sb-fc-active" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Active}}</span><span id="sb-fc-blocked" class="sb-fpill__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Blocked}}</span>{{end}}
+{{define "friend_counts"}}<span id="sb-friends-badge" class="sb-rail__count" aria-live="polite"{{if not .Counts.Incoming}} hidden{{end}}{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Incoming}}</span><span id="sb-fc-all" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.All}}</span><span id="sb-fc-incoming" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Incoming}}</span><span id="sb-fc-outgoing" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Outgoing}}</span><span id="sb-fc-active" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Active}}</span><span id="sb-fc-blocked" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Blocked}}</span>{{end}}
 
 {{/* friends_panel — the swappable region: the layout toggle, the filter pills, and the active layout
      (cards grid or grouped ledger). Returned wholesale on HTMX toggle/filter GETs and on friend
@@ -348,11 +354,11 @@
     </div>
   </div>
   {{if ne .Layout "ledger"}}<div class="sb-fpills" role="tablist" aria-label="Filter friendships">
-    <a class="sb-fpill{{if eq .Filter "all"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=all" hx-get="/friends?layout={{.Layout}}&filter=all" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "all"}}true{{else}}false{{end}}">All <span id="sb-fc-all" class="sb-fpill__n">{{.Counts.All}}</span></a>
-    <a class="sb-fpill{{if eq .Filter "incoming"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=incoming" hx-get="/friends?layout={{.Layout}}&filter=incoming" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "incoming"}}true{{else}}false{{end}}">Incoming <span id="sb-fc-incoming" class="sb-fpill__n">{{.Counts.Incoming}}</span></a>
-    <a class="sb-fpill{{if eq .Filter "outgoing"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=outgoing" hx-get="/friends?layout={{.Layout}}&filter=outgoing" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "outgoing"}}true{{else}}false{{end}}">Outgoing <span id="sb-fc-outgoing" class="sb-fpill__n">{{.Counts.Outgoing}}</span></a>
-    <a class="sb-fpill{{if eq .Filter "active"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=active" hx-get="/friends?layout={{.Layout}}&filter=active" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "active"}}true{{else}}false{{end}}">Active <span id="sb-fc-active" class="sb-fpill__n">{{.Counts.Active}}</span></a>
-    <a class="sb-fpill{{if eq .Filter "blocked"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=blocked" hx-get="/friends?layout={{.Layout}}&filter=blocked" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "blocked"}}true{{else}}false{{end}}">Blocked <span id="sb-fc-blocked" class="sb-fpill__n">{{.Counts.Blocked}}</span></a>
+    <a class="sb-fpill{{if eq .Filter "all"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=all" hx-get="/friends?layout={{.Layout}}&filter=all" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "all"}}true{{else}}false{{end}}">All <span id="sb-fc-all" class="sb-fpill__n" aria-live="polite">{{.Counts.All}}</span></a>
+    <a class="sb-fpill{{if eq .Filter "incoming"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=incoming" hx-get="/friends?layout={{.Layout}}&filter=incoming" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "incoming"}}true{{else}}false{{end}}">Incoming <span id="sb-fc-incoming" class="sb-fpill__n" aria-live="polite">{{.Counts.Incoming}}</span></a>
+    <a class="sb-fpill{{if eq .Filter "outgoing"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=outgoing" hx-get="/friends?layout={{.Layout}}&filter=outgoing" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "outgoing"}}true{{else}}false{{end}}">Outgoing <span id="sb-fc-outgoing" class="sb-fpill__n" aria-live="polite">{{.Counts.Outgoing}}</span></a>
+    <a class="sb-fpill{{if eq .Filter "active"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=active" hx-get="/friends?layout={{.Layout}}&filter=active" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "active"}}true{{else}}false{{end}}">Active <span id="sb-fc-active" class="sb-fpill__n" aria-live="polite">{{.Counts.Active}}</span></a>
+    <a class="sb-fpill{{if eq .Filter "blocked"}} sb-fpill--active{{end}}" href="/friends?layout={{.Layout}}&filter=blocked" hx-get="/friends?layout={{.Layout}}&filter=blocked" hx-target="#sb-friends-panel" hx-swap="innerHTML" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "blocked"}}true{{else}}false{{end}}">Blocked <span id="sb-fc-blocked" class="sb-fpill__n" aria-live="polite">{{.Counts.Blocked}}</span></a>
   </div>{{end}}
 </div>{{end}}
 

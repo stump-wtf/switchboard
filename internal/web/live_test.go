@@ -95,7 +95,7 @@ func TestCountsFragmentCarriesOOBBundle(t *testing.T) {
 		`id="sb-tc-all"`, `id="sb-tc-pending"`, `id="sb-tc-failed"`, // Todos view pill-count targets
 		"sb-tile--alert", // awaiting-claim emphasis travels with the fragment
 		"LIVE · 3/min",   // pill rate
-		`id="sb-todo-count" class="sb-rail__count" hx-swap-oob="true">9<`, // rail badge = TOTAL todos (design record, #179)
+		`id="sb-todo-count" class="sb-rail__count" aria-live="polite" hx-swap-oob="true">9<`, // rail badge = TOTAL todos (design record, #179)
 		"sb-bars__bar--now",
 	} {
 		if !strings.Contains(out, want) {
@@ -123,7 +123,7 @@ func TestToastFragmentTargetsToastRegion(t *testing.T) {
 // row that does not exist yet.
 func TestLivePublishPreservesLifecycleOrder(t *testing.T) {
 	h := newTestHandler(t)
-	ch, cancel, err := h.events.subscribe("s")
+	ch, cancel, err := h.events.subscribe("h1", "s")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestLivePublishPreservesLifecycleOrder(t *testing.T) {
 
 func TestTodoResurfacedCarriesToast(t *testing.T) {
 	h := newTestHandler(t)
-	ch, cancel, err := h.events.subscribe("s")
+	ch, cancel, err := h.events.subscribe("h1", "s")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestTodoResurfacedCarriesToast(t *testing.T) {
 // named frame carrying the OOB last-seen refresh for that endpoint's swap target.
 func TestPublishEndpointSeenCarriesOOBStamp(t *testing.T) {
 	h := newTestHandler(t)
-	ch, cancel, err := h.events.subscribe("s")
+	ch, cancel, err := h.events.subscribe("h1", "s")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestEndpointSeenFragmentInlineVariant(t *testing.T) {
 
 func TestUnknownVerbIsDropped(t *testing.T) {
 	h := newTestHandler(t)
-	ch, cancel, err := h.events.subscribe("s")
+	ch, cancel, err := h.events.subscribe("h1", "s")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

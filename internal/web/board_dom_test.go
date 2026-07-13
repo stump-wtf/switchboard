@@ -46,10 +46,19 @@ func TestBoardLiveRegionsPresentInInitialDOM(t *testing.T) {
 	if !regexp.MustCompile(`<div id="sb-toasts"[^>]*aria-live="polite"`).MatchString(body) {
 		t.Error("toast region (#sb-toasts) must carry aria-live=\"polite\" in the initial DOM")
 	}
-	// Exactly the two aria-live regions the design calls for (feed + toasts) — no more, no fewer,
-	// so a stray live region cannot start double-announcing.
-	if n := strings.Count(body, `aria-live="polite"`); n != 2 {
-		t.Errorf("board has %d aria-live regions, want exactly 2 (feed + toasts)", n)
+	// Count-pill live regions (SPEC-0013 "Dynamic Content Regions": count pills too, #186): the
+	// stat band and the rail's Todos badge update via SSE counts frames, so they must be polite
+	// live regions in the initial DOM as well.
+	if !regexp.MustCompile(`<section id="sb-tiles"[^>]*aria-live="polite"`).MatchString(body) {
+		t.Error("stat band (#sb-tiles) must carry aria-live=\"polite\" in the initial DOM")
+	}
+	if !regexp.MustCompile(`<span id="sb-todo-count"[^>]*aria-live="polite"`).MatchString(body) {
+		t.Error("rail badge (#sb-todo-count) must carry aria-live=\"polite\" in the initial DOM")
+	}
+	// Exactly the four aria-live regions the design calls for (feed + toasts + the two count
+	// regions above) — no more, no fewer, so a stray live region cannot start double-announcing.
+	if n := strings.Count(body, `aria-live="polite"`); n != 4 {
+		t.Errorf("board has %d aria-live regions, want exactly 4 (feed + toasts + tiles + rail count)", n)
 	}
 }
 

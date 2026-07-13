@@ -357,6 +357,22 @@ func (s *Store) EndpointByCredHash(ctx context.Context, credHash string) (AuthEn
 	return a, err
 }
 
+// EndpointOwner resolves the human who owns an endpoint (endpoint → agent → owner_human_id).
+// The SSE publisher uses it to scope the endpoint_seen live frame to the owning human's streams
+// (SPEC-0013: the event stream is "scoped to the human's own data"). Returns ErrNotFound for
+// unknown ids so callers can fail closed rather than broadcasting.
+func (s *Store) EndpointOwner(ctx context.Context, endpointID string) (string, error) {
+	var owner string
+	err := s.pool.QueryRow(ctx, `
+		SELECT ag.owner_human_id::text
+		FROM endpoints e JOIN agents ag ON ag.id = e.agent_id
+		WHERE e.id = $1`, endpointID).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return owner, err
+}
+
 // TouchEndpoint stamps an endpoint's last_seen_at, recording that its credential just authenticated
 // successfully, and fires the endpoint-seen hook after the stamp commits (the SPEC-0013
 // endpoint_seen typed SSE event). Governing: SPEC-0014 REQ "Bearer Authentication Bound to the

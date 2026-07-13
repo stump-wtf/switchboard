@@ -7,6 +7,17 @@
 // pills, and the toast region atomically. This layers the SPEC-0013 taxonomy on the SPEC-0012 hub in sse.go: same
 // lossy fan-out, same reload-renders-DB-truth guarantee — a dropped frame stales a region, never
 // state.
+//
+// Ownership routing (SPEC-0012/0013 — the stream is scoped to the human's own data): the hub
+// routes an Event with a nonempty Owner only to that human's streams (sse.go). endpoint_seen has
+// a real ownership edge (endpoint → agent → owner_human_id) and publishes scoped. Events, todos,
+// and counts do NOT: in today's schema (0001_init.sql) a queue is a plain name with no owning
+// human, todos hang off queues/events, and every authenticated human is an operator of the same
+// single-tenant board — so those frames publish with Owner "" (all authenticated subscribers).
+// Event.Owner is the scoping seam: when queues gain an owner edge, stamp Owner on the todo/event
+// frames here and the hub routes per-human with no transport change. Counts frames are global
+// aggregates (store.BoardStats / store.TodoCounts carry no per-human filter), so one identical
+// frame fans out to all subscribers — recomputing per-human would render the same numbers.
 package web
 
 import (
@@ -146,14 +157,39 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 // (docs/openspec/specs/operator-board/design.md); the hub is lossy either way.
 // Governing: SPEC-0013 REQ "Live Updates and Toasts" (endpoint last-seen updates).
 func (h *Handler) PublishEndpointSeen(endpointID string, seenAt time.Time) {
-	h.enqueueLive(func(context.Context) {
+	h.enqueueLive(func(ctx context.Context) {
+		// Scope the frame to the endpoint's owning human (endpoint → agent → owner_human_id):
+		// endpoint cards are a per-owner surface, so another human's streams must not learn when
+		// this credential authenticates. Fail CLOSED on a lookup miss — an unscoped broadcast
+		// would leak activity across humans, while a dropped frame only stales a last-seen stamp
+		// until reload. Governing: SPEC-0012 REQ "Live Updates via SSE" (stream scoped to the
+		// human's own data), SPEC-0013 REQ "Live Updates and Toasts".
+		owner := ""
+		if h.store != nil {
+			o, err := h.store.EndpointOwner(ctx, endpointID)
+			if err != nil {
+				h.log.Warn("endpoint_seen owner lookup", "endpoint", endpointID, "err", err)
+				return
+			}
+			owner = o
+		}
 		frag, err := h.renderFragment("endpoint_seen", endpointSeenView{ID: endpointID, SeenAt: seenAt, OOB: true})
 		if err != nil {
 			h.log.Error("render endpoint_seen fragment", "endpoint", endpointID, "err", err)
 			return
 		}
-		h.events.Publish(Event{Name: "endpoint_seen", Data: frag})
+		h.events.Publish(Event{Name: "endpoint_seen", Data: frag, Owner: owner})
 	})
+}
+
+// PublishQueueNudge refreshes the live count regions in response to an out-of-band todo_ready
+// wakeup (the LISTEN loop in internal/server/listen.go). A todo enqueued by another process never
+// crosses this process's store hooks, so the wakeup re-renders the count bundle from the database
+// — the queue name is the whole notification payload, so no feed row can be rendered here; the
+// row appears on reload (DB truth) or via this process's own hooks. Governing: SPEC-0004 REQ
+// "In-Database Wakeups via LISTEN/NOTIFY" ("the web UI can be nudged when new work arrives").
+func (h *Handler) PublishQueueNudge(string) {
+	h.enqueueLive(func(ctx context.Context) { h.publishCounts(ctx) })
 }
 
 // sseEventNames maps store transition verbs onto the SPEC-0013 typed event taxonomy.
