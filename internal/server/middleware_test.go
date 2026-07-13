@@ -26,9 +26,24 @@ func TestSecureHeaders(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got, v)
 		}
 	}
-	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") ||
-		!strings.Contains(csp, "frame-ancestors 'none'") {
-		t.Errorf("CSP missing expected directives: %q", csp)
+	// Governing: SPEC-0012 REQ "Security Headers" (#186): base-uri 'none' (no page uses <base>;
+	// an injected one would rebase every relative URL) and an EXPLICIT same-origin connect-src
+	// (permits exactly the /events SSE stream and HTMX fetches, resists default-src drift).
+	csp := rec.Header().Get("Content-Security-Policy")
+	for _, directive := range []string{
+		"default-src 'self'",
+		"frame-ancestors 'none'",
+		"base-uri 'none'",
+		"connect-src 'self'",
+		"form-action 'self'",
+		"script-src 'self'",
+	} {
+		if !strings.Contains(csp, directive) {
+			t.Errorf("CSP missing %q: %q", directive, csp)
+		}
+	}
+	if strings.Contains(csp, "base-uri 'self'") {
+		t.Errorf("CSP must pin base-uri 'none', not 'self': %q", csp)
 	}
 }
 
@@ -80,6 +95,53 @@ func TestRateLimiterTokenBucket(t *testing.T) {
 	}
 	if rl.allowAt("1.2.3.4", base.Add(time.Second)) {
 		t.Fatal("only one token should have refilled")
+	}
+}
+
+// Governing: SPEC-0013 "Rate Limiting" (#186) — the shared human-surface limiter meters ONLY
+// state-changing POSTs; reads (including the long-lived SSE GET, which carries its own per-session
+// stream cap) must pass untouched even when the mutation bucket is empty.
+func TestPostMiddlewareThrottlesPostsOnly(t *testing.T) {
+	rl := newRateLimiter(1, 2) // burst 2
+	h := rl.postMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
+
+	post := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/todos/td_1/claim", nil)
+		req.RemoteAddr = "9.9.9.9:1234"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	for i := 0; i < 2; i++ {
+		if rec := post(); rec.Code != http.StatusOK {
+			t.Fatalf("POST %d within burst: got %d, want 200", i+1, rec.Code)
+		}
+	}
+	rec := post()
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("POST over burst: got %d, want 429", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("429 should carry a Retry-After header")
+	}
+	// The bucket is empty, but GETs (page loads, HTMX panel swaps, the SSE stream) stay exempt.
+	for _, path := range []string{"/", "/events", "/todos"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "9.9.9.9:1234"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s with an empty bucket: got %d, want 200 (reads are exempt)", path, rec.Code)
+		}
+	}
+	// A different principal (distinct fallback key here; distinct human id in production) still
+	// has its own tokens — one operator's burst cannot starve another.
+	req := httptest.NewRequest(http.MethodPost, "/todos/td_2/claim", nil)
+	req.RemoteAddr = "8.8.8.8:4321"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("distinct principal should not share a bucket: got %d", rec.Code)
 	}
 }
 

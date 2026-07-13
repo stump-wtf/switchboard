@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/joestump/switchboard/internal/auth"
 )
 
 // Governing: SPEC-0006 REQ webhook self-management rate ceiling, SPEC-0009 persona card. A small
@@ -75,12 +77,45 @@ func (rl *rateLimiter) prune(now time.Time) {
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !rl.allow(rateKey(r)) {
-			w.Header().Set("Retry-After", strconv.Itoa(int(1/rl.rate)+1))
-			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			rl.reject(w)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// postMiddleware is the shared human-surface mutation throttle: it meters ONLY state-changing
+// POSTs (vend/revoke/persona/friend/todo actions and every other authenticated form), keyed by
+// the authenticated human so one operator's burst can neither starve nor be hidden behind
+// another's. GETs — including the long-lived SSE stream at /events, which carries its own
+// per-session cap — pass untouched. Mounted after auth.RequireHuman, so the principal is always
+// in context in production; the client-IP fallback only covers mis-mounting. An empty bucket
+// answers 429 with a Retry-After, matching the limiter's other surfaces.
+// Governing: SPEC-0013 "Rate Limiting" ("State-changing POST routes SHOULD share the
+// human-surface rate limiter; the SSE endpoint MUST cap concurrent streams per session").
+func (rl *rateLimiter) postMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			next.ServeHTTP(w, r) // read path (incl. SSE): exempt by design
+			return
+		}
+		key := rateKey(r)
+		if h, ok := auth.FromContext(r.Context()); ok {
+			key = h.ID
+		}
+		if !rl.allow(key) {
+			rl.reject(w)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// reject answers an empty bucket: 429 plus a Retry-After derived from the refill rate, so
+// well-behaved clients (and HTMX retries) know when a token will exist again.
+func (rl *rateLimiter) reject(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(1/rl.rate)+1))
+	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 }
 
 // rateKey is the throttle key: the client IP (host portion of RemoteAddr).

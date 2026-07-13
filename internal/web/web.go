@@ -212,8 +212,10 @@ func (h *Handler) buildShell(ctx context.Context, active string, human *store.Hu
 	}
 	sh.DBConnected = true
 	// Friends rail entry + pending-incoming badge, only when the capability is enabled (SPEC-0013:
-	// hidden-not-broken). A count-read failure degrades to a hidden badge, never a failed page.
-	if h.cfg.FriendingEnabled {
+	// hidden-not-broken). The shell derives from the single friendsEnabled seam (friends.go) — the
+	// same check the /friends routes gate on — so the rail and the routes can never disagree.
+	// A count-read failure degrades to a hidden badge, never a failed page.
+	if h.friendsEnabled() {
 		sh.FriendsEnabled = true
 		if edges, err := h.store.ListFriendEdges(ctx, human.ID, "pending"); err != nil {
 			h.log.Warn("shell friend requests", "err", err)

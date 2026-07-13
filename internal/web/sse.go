@@ -40,10 +40,17 @@ var ErrStreamLimit = errors.New("web: too many concurrent event streams for sess
 type Event struct {
 	Name string
 	Data string
+	// Owner scopes delivery to one human's streams (a human id): the hub routes an owned frame
+	// only to subscribers authenticated as that human, so one human's data never rides another's
+	// stream (SPEC-0012/0013 — the event stream is scoped to the human's own data). Empty routes
+	// to every authenticated subscriber; live.go documents which frames legitimately broadcast
+	// (data with no per-human ownership edge in today's schema).
+	Owner string
 }
 
 // EventHub fans UI events out to connected humans' SSE streams. Lossy by design (bounded buffers,
-// drop-on-full): the hub is a doorbell for the presentation layer, not a ledger.
+// drop-on-full): the hub is a doorbell for the presentation layer, not a ledger. Subscribers are
+// keyed by the owning human (frame routing) and their browser session (the stream cap).
 type EventHub struct {
 	mu   sync.Mutex
 	subs map[int]*sseSub
@@ -51,15 +58,16 @@ type EventHub struct {
 }
 
 type sseSub struct {
-	session string
+	human   string // owning human id — routes Owner-scoped frames
+	session string // browser session key — enforces maxStreamsPerSession
 	ch      chan Event
 }
 
 func newEventHub() *EventHub { return &EventHub{subs: map[int]*sseSub{}} }
 
-// subscribe registers a stream keyed by the caller's session, enforcing maxStreamsPerSession.
-// The returned cancel func is idempotent and closes the channel.
-func (h *EventHub) subscribe(session string) (<-chan Event, func(), error) {
+// subscribe registers a stream owned by human, keyed by the caller's session for the
+// maxStreamsPerSession cap. The returned cancel func is idempotent and closes the channel.
+func (h *EventHub) subscribe(human, session string) (<-chan Event, func(), error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	n := 0
@@ -71,7 +79,7 @@ func (h *EventHub) subscribe(session string) (<-chan Event, func(), error) {
 	if n >= maxStreamsPerSession {
 		return nil, nil, ErrStreamLimit
 	}
-	sub := &sseSub{session: session, ch: make(chan Event, sseBufferSize)}
+	sub := &sseSub{human: human, session: session, ch: make(chan Event, sseBufferSize)}
 	id := h.next
 	h.next++
 	h.subs[id] = sub
@@ -86,12 +94,16 @@ func (h *EventHub) subscribe(session string) (<-chan Event, func(), error) {
 	return sub.ch, cancel, nil
 }
 
-// Publish fans an event out to every subscriber. Never blocks: a full buffer drops the event
+// Publish fans an event out to its audience: every subscriber for an unowned frame, only the
+// owning human's streams for an Owner-scoped one. Never blocks: a full buffer drops the event
 // (SPEC-0012 — a missed event costs a swap, never state; reload renders DB truth).
 func (h *EventHub) Publish(e Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, s := range h.subs {
+		if e.Owner != "" && s.human != e.Owner {
+			continue // scoped frame: another human's stream never carries it
+		}
 		select {
 		case s.ch <- e:
 		default: // slow consumer: drop — best-effort presentation
@@ -108,9 +120,12 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, errors.New("sse: response writer does not support streaming"))
 		return
 	}
-	// The per-session CSRF token is a stable, non-guessable session key — ideal for capping
-	// concurrent streams per session without touching the raw session cookie.
-	ch, cancel, err := h.events.subscribe(auth.CSRFFromContext(r.Context()))
+	// The stream is registered under the authenticated human (RequireHuman guarantees one), so
+	// the hub can route owner-scoped frames to exactly this human's streams. The per-session CSRF
+	// token is a stable, non-guessable session key — ideal for capping concurrent streams per
+	// session without touching the raw session cookie.
+	human, _ := auth.FromContext(r.Context())
+	ch, cancel, err := h.events.subscribe(human.ID, auth.CSRFFromContext(r.Context()))
 	if err != nil {
 		h.log.Warn("sse subscribe", "err", err)
 		http.Error(w, "too many streams", http.StatusTooManyRequests)

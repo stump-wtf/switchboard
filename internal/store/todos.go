@@ -425,6 +425,37 @@ func (s *Store) ListTodos(ctx context.Context, queues []string, state string, li
 	return out, rows.Err()
 }
 
+// PendingDoorbellTodos returns pending todos on queue that are eligible for a channel push under
+// the SPEC-0011 sender gate: only todos whose delivery event exists AND passed per-source
+// verification, oldest first (the claim-scan order), capped at limit. The todo_ready LISTEN loop
+// (internal/server/listen.go) uses it to re-ring the MCP doorbell for work enqueued outside this
+// process's store hooks — the gate lives in SQL so the wakeup path can never push an unverified or
+// event-less todo the HTTP path would have withheld.
+// Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY", SPEC-0011 REQ "Sender Gate and
+// Injection Safety".
+func (s *Store) PendingDoorbellTodos(ctx context.Context, queue string, limit int) ([]Todo, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
+		WHERE queue = $1 AND state = 'pending' AND event_id IS NOT NULL
+		  AND EXISTS (SELECT 1 FROM events e WHERE e.id = todos.event_id AND e.verified)
+		ORDER BY created_at LIMIT $2`, queue, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Todo
+	for rows.Next() {
+		t, err := scanTodo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // GetTodo returns one todo by id.
 func (s *Store) GetTodo(ctx context.Context, id string) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos WHERE id = $1`, id)
