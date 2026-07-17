@@ -149,6 +149,59 @@ func TestCrossHumanRevokeRejectedWithoutStateChange(t *testing.T) {
 	}
 }
 
+// DeleteEndpoint is a revoked-only, ownership-guarded hard delete: an active endpoint cannot be
+// removed (it must be revoked first, so live-session teardown is never skipped), another human's
+// endpoint cannot be removed, and only after a real revoke does the row physically disappear.
+// Governing: SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints", REQ "Database Operation
+// Standards".
+func TestDeleteEndpointRevokedOnlyAndOwnershipGuarded(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := mustHuman(t, s, ctx, "del|owner", "Owner")
+	other := mustHuman(t, s, ctx, "del|mallory", "Mallory")
+	ag := mustAgent(t, s, ctx, owner.ID, "owner-bot")
+	ep := mustEndpoint(t, s, ctx, ag.ID, "delhash-1")
+
+	rowExists := func() bool {
+		t.Helper()
+		var n int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM endpoints WHERE id = $1`, ep.ID).Scan(&n); err != nil {
+			t.Fatalf("count endpoint: %v", err)
+		}
+		return n == 1
+	}
+
+	// An ACTIVE endpoint cannot be deleted — even by its owner. Revoke is the gate.
+	if err := s.DeleteEndpoint(ctx, ep.ID, owner.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete of an active endpoint must be ErrNotFound, got %v", err)
+	}
+	if !rowExists() {
+		t.Fatal("active endpoint must survive a rejected delete")
+	}
+
+	// Revoke it, then a NON-owner still cannot delete it.
+	if err := s.RevokeEndpoint(ctx, ep.ID, owner.ID); err != nil {
+		t.Fatalf("owner revoke: %v", err)
+	}
+	if err := s.DeleteEndpoint(ctx, ep.ID, other.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-tenant delete must be ErrNotFound, got %v", err)
+	}
+	if !rowExists() {
+		t.Fatal("revoked endpoint must survive a cross-owner delete")
+	}
+
+	// The owner deletes the revoked endpoint: the row is physically gone.
+	if err := s.DeleteEndpoint(ctx, ep.ID, owner.ID); err != nil {
+		t.Fatalf("owner delete of revoked endpoint: %v", err)
+	}
+	if rowExists() {
+		t.Fatal("revoked endpoint row must be gone after delete")
+	}
+	// A second delete of the now-absent row is not-found (idempotent at the handler layer).
+	if err := s.DeleteEndpoint(ctx, ep.ID, owner.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete of an already-gone endpoint must be ErrNotFound, got %v", err)
+	}
+}
+
 // Ownership is a database invariant, not just an application convention: every agent references
 // exactly one human (NOT NULL FK) and every endpoint references exactly one agent (NOT NULL FK),
 // so an orphaned or unowned record cannot exist.

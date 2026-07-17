@@ -339,6 +339,29 @@ func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID str
 	return nil
 }
 
+// DeleteEndpoint permanently removes a REVOKED endpoint the given human owns (via its agent),
+// clearing a dead card from the Endpoints view. The delete is doubly constrained in the write:
+// state='revoked' so an active grant can never be removed without first being revoked (which is what
+// tears down live MCP sessions), and ownership via the agent's owner_human_id so one human can never
+// delete another's endpoint. The endpoint's child endpoint_webhooks rows cascade with it. A zero-row
+// result — not found, not owned, or still active — reports ErrNotFound.
+// Governing: SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints", REQ "Database Operation
+// Standards"; SPEC-0013 REQ "Endpoints View and Vend Modal".
+func (s *Store) DeleteEndpoint(ctx context.Context, endpointID, ownerHumanID string) error {
+	ct, err := s.pool.Exec(ctx, `
+		DELETE FROM endpoints
+		WHERE id = $1 AND state = 'revoked'
+		  AND agent_id IN (SELECT id FROM agents WHERE owner_human_id = $2)`,
+		endpointID, ownerHumanID)
+	if err != nil {
+		return fmt.Errorf("store: delete endpoint: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // EndpointByCredHash resolves an active endpoint from a presented credential hash, for agent auth.
 // Returns ErrNotFound for unknown or revoked credentials.
 func (s *Store) EndpointByCredHash(ctx context.Context, credHash string) (AuthEndpoint, error) {

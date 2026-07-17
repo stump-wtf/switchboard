@@ -76,6 +76,7 @@ var sessionRoutes = map[string]bool{
 	"POST /todos/{id}/extend":     true, // operator extend lease / heartbeat (SPEC-0013)
 	"POST /todos/{id}/release":    true, // operator release lease back to pending (SPEC-0013)
 	"POST /endpoints/{id}/revoke": true,
+	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)
 	// Friends view + approval flow (SPEC-0013). All session-gated; the handlers 404 when the friending
 	// capability is disabled, but auth (RequireHuman) still runs first, so anonymous → /login here too.
 	"GET /friends":                true,

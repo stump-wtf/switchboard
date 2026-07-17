@@ -198,6 +198,7 @@ func TestEndpointsViewRendersCards(t *testing.T) {
 		"endpoint killed",                   // + stamped with when
 		`id="sb-ep-seen-e1"`, "seen 2m ago", // active card last-seen swap target + stamp
 		`action="/endpoints/e1/revoke"`,         // Revoke on the active card
+		`action="/endpoints/e2/delete"`,         // Delete on the revoked card (housekeeping)
 		"+ Vend endpoint",                       // the vend trigger
 		`sse-swap="endpoint_seen"`,              // page-local sink subscribes the endpoint screen
 		`href="/endpoints" aria-current="page"`, // rail marks Endpoints active
@@ -209,6 +210,12 @@ func TestEndpointsViewRendersCards(t *testing.T) {
 	// The revoked card must NOT offer a Revoke action, and no full credential ever appears.
 	if strings.Contains(body, `action="/endpoints/e2/revoke"`) {
 		t.Error("revoked card must not render a Revoke action")
+	}
+	// Delete is revoked-only: an active endpoint must be revoked before it can be removed, so the
+	// active card must never render a Delete action (SPEC-0007 "Permanent Deletion of Revoked
+	// Endpoints").
+	if strings.Contains(body, `action="/endpoints/e1/delete"`) {
+		t.Error("active card must not render a Delete action (revoke first)")
 	}
 }
 

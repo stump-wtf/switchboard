@@ -2084,7 +2084,8 @@ pre code {
   display: flex;
   gap: 8px;
 }
-.sb-epcard__revoke {
+.sb-epcard__revoke,
+.sb-epcard__delete {
   margin: 0;
 }
 

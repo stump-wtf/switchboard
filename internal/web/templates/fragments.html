@@ -510,6 +510,10 @@
     {{if eq $c.State "revoked"}}
       {{/* Killed endpoint: dimmed, and states when it was revoked. Governing: SPEC-0007 revoke = kill. */}}
       <span class="sb-epcard__killed">endpoint killed{{if $c.RevokedAt}} · {{reltime $c.RevokedAt.UTC}}{{end}}</span>
+      {{/* Housekeeping: a revoked endpoint may be permanently deleted to clear its dead card. The
+           credential is already dead (revoke did that); this only removes the row. Governing:
+           SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints". */}}
+      <form method="post" action="/endpoints/{{$c.ID}}/delete" class="sb-epcard__delete"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="sb-btn sb-btn--danger sb-btn--mono">Delete</button></form>
     {{else}}
       {{/* Server render and the endpoint_seen SSE frame share this fragment, so the OOB swap target
            (sb-ep-seen-<id>) exists before the first live frame. */}}
