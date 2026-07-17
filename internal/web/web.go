@@ -321,6 +321,25 @@ func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, h.safeRedirectTarget(r, "/endpoints"), http.StatusSeeOther)
 }
 
+// DeleteEndpoint permanently removes a revoked endpoint the human owns, clearing its dead card from
+// the Endpoints view. The store constrains the delete to state='revoked' + ownership, so an active
+// endpoint (which must be revoked first, to tear down its live sessions) or another human's endpoint
+// resolves to not-found and is left untouched. ErrNotFound is swallowed so the action is idempotent —
+// a double submit or an already-gone card lands back on the same authoritative view. No live-session
+// teardown hook fires here: revocation already did that, and a revoked endpoint has no live sessions.
+// Requires human. Governing: SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints", SPEC-0013 REQ
+// "Endpoints View and Vend Modal".
+func (h *Handler) DeleteEndpoint(w http.ResponseWriter, r *http.Request) {
+	human, _ := auth.FromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	if err := h.store.DeleteEndpoint(r.Context(), id, human.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+		h.fail(w, err)
+		return
+	}
+	// Governing: SPEC-0007/0012 REQ open-redirect defense. Same-origin in-app PATH only.
+	http.Redirect(w, r, h.safeRedirectTarget(r, "/endpoints"), http.StatusSeeOther)
+}
+
 // safeRedirectTarget returns a same-origin, path-only redirect target derived from the request's
 // Referer, or fallback when the Referer is absent, cross-origin, or not an in-app path. It strips
 // any scheme/host so the response can never bounce a user to another origin (open redirect).

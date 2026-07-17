@@ -351,6 +351,10 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/todos/{id}/extend", d.webh.ExtendTodo)
 		pr.Post("/todos/{id}/release", d.webh.ReleaseTodo)
 		pr.Post("/endpoints/{id}/revoke", d.webh.Revoke)
+		// Permanently delete a revoked endpoint's card (SPEC-0007 REQ "Permanent Deletion of Revoked
+		// Endpoints"). Store constrains to state='revoked' + ownership; active endpoints must be revoked
+		// first. CSRF arrives via the layout hx-headers / hidden field; the group's RequireCSRF validates.
+		pr.Post("/endpoints/{id}/delete", d.webh.DeleteEndpoint)
 		// Friends view + approval flow (SPEC-0013 endpoints table; SPEC-0010 approval-is-vend). The
 		// handlers 404 until the friending capability is enabled (capability gating lives in the
 		// handler, so the routes stay classified session-gated for the route-table baseline). Approve

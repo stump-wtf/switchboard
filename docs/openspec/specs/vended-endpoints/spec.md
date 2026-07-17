@@ -140,12 +140,42 @@ lingering identity in the IdP (agents were never there) and no path that still a
 - **WHEN** a human attempts to revoke an endpoint that is already revoked, or one they do not own
 - **THEN** switchboard MUST treat it as not found and MUST NOT change state
 
+### Requirement: Permanent Deletion of Revoked Endpoints
+
+A human MAY permanently delete a vended endpoint, but ONLY after it has been revoked. Deletion MUST be
+restricted to endpoints in state `revoked`: an `active` endpoint MUST NOT be deletable, so the
+session-teardown guarantees of revocation ([Requirement: Instant, Total Revocation]) are never
+bypassed by removing a live grant directly. Deletion MUST be authorized against ownership (only via
+the endpoint's owning human) and MUST be enforced in the same statement that performs the delete.
+Deleting an endpoint MUST remove its row and any records that belong to it (e.g. its self-managed
+webhooks) and MUST leave the endpoint's credential permanently unresolvable. Deletion is a
+housekeeping action for clearing the Endpoints view of dead cards; it does not itself invalidate a
+credential (revocation already did that) and MUST NOT be a substitute for revocation.
+
+#### Scenario: A revoked endpoint can be deleted
+
+- **WHEN** a human deletes an endpoint they own that is already `revoked`
+- **THEN** switchboard MUST remove the endpoint row (and its owned child records), the card MUST no
+  longer appear in the human's Endpoints view, and the credential MUST remain unresolvable
+
+#### Scenario: An active endpoint cannot be deleted
+
+- **WHEN** a human attempts to delete an endpoint that is still `active`
+- **THEN** switchboard MUST treat it as not found and MUST NOT remove the row; the human MUST revoke
+  it first
+
+#### Scenario: Delete is ownership-guarded
+
+- **WHEN** a human attempts to delete a revoked endpoint they do not own
+- **THEN** switchboard MUST treat it as not found and MUST NOT remove any row
+
 ### Requirement: Database Operation Standards
 
 All endpoint and agent persistence MUST use parameterized queries only (no string interpolation into
-SQL). Ownership-scoped mutations (vend, revoke) MUST enforce the ownership predicate in the same
-statement that performs the write, so a mutation cannot succeed against a row the human does not own.
-Connection use MUST propagate the request context for cancellation and timeout.
+SQL). Ownership-scoped mutations (vend, revoke, delete) MUST enforce the ownership predicate in the
+same statement that performs the write, so a mutation cannot succeed against a row the human does not
+own. The delete statement MUST additionally constrain to `state = 'revoked'` so an active endpoint can
+never be removed. Connection use MUST propagate the request context for cancellation and timeout.
 
 #### Scenario: Revocation binds ownership in the write
 
@@ -177,6 +207,7 @@ authorized against ownership.
 | `GET /agent/stream` | Required (bearer credential; SSE scoped to endpoint queues) | — |
 | `POST /agents/{id}/vend` (human UI) | Required (session + ownership) | — |
 | `POST /endpoints/{id}/revoke` (human UI) | Required (session + ownership) | — |
+| `POST /endpoints/{id}/delete` (human UI) | Required (session + ownership; revoked-only) | — |
 
 There are no public endpoints in this capability. A missing or malformed `Authorization: Bearer`
 header MUST yield `401 unauthenticated`; a credential that does not resolve to an `active` endpoint
