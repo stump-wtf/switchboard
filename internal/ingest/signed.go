@@ -29,13 +29,12 @@ func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if i.stripeSecret == "" {
-		// Governing: SPEC-0001 scenario "Signature secret not configured" — reject without
-		// comparing any signature.
-		writeErr(w, http.StatusServiceUnavailable, "stripe adapter not configured")
+	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
+	secret, ok := i.signedSecret(w, r, "stripe", i.stripeSecret)
+	if !ok {
 		return
 	}
-	if !verifyStripe(i.stripeSecret, body, r.Header.Get("Stripe-Signature"), i.now(), i.tolerance) {
+	if !verifyStripe(secret, body, r.Header.Get("Stripe-Signature"), i.now(), i.tolerance) {
 		// Reject without persisting; log a redacted line (never the signature value or secret).
 		i.log.Warn("stripe signature rejected", "remote", clientIP(r))
 		writeErr(w, http.StatusUnauthorized, "signature verification failed")
@@ -83,12 +82,12 @@ func (i *Ingest) Slack(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if i.slackSecret == "" {
-		// Governing: SPEC-0001 scenario "Signature secret not configured".
-		writeErr(w, http.StatusServiceUnavailable, "slack adapter not configured")
+	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
+	secret, ok := i.signedSecret(w, r, "slack", i.slackSecret)
+	if !ok {
 		return
 	}
-	if !verifySlack(i.slackSecret, body, r.Header.Get("X-Slack-Request-Timestamp"),
+	if !verifySlack(secret, body, r.Header.Get("X-Slack-Request-Timestamp"),
 		r.Header.Get("X-Slack-Signature"), i.now(), i.tolerance) {
 		i.log.Warn("slack signature rejected", "remote", clientIP(r))
 		writeErr(w, http.StatusUnauthorized, "signature verification failed")

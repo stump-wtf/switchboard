@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -363,6 +364,73 @@ func TestListProviders(t *testing.T) {
 	// The classification is the whole story: no key or value on the wire resembles a secret.
 	if s := string(raw); strings.Contains(s, "secret\":") && !strings.Contains(s, "secret_status") {
 		t.Fatalf("provider response carries a secret-like field: %s", s)
+	}
+}
+
+// TestListProvidersLiveSource: with a provider source installed (the registry-backed wiring),
+// list_providers resolves the enumeration PER CALL — a provider added between calls appears with
+// no restart and no re-wiring — and the source takes precedence over any snapshot. The output
+// shape is the same SPEC-0005 contract as the snapshot path.
+// Governing: ADR-0020, SPEC-0017 REQ "Runtime Provider Registry" (scenario "Wizard-created
+// provider is live immediately").
+func TestListProvidersLiveSource(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, eventVerbNames)
+	h := New(f, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(h.Close)
+	// A stale snapshot that the live source must shadow.
+	h.SetProviders([]ProviderStatus{{Name: "stale", Family: "webhook", TrustMode: "open"}})
+	var mu sync.Mutex
+	live := []ProviderStatus{
+		{Name: "github", Family: "webhook", TrustMode: "signed", Enabled: true,
+			SecretStatus: "configured", Path: "/webhooks/github"},
+	}
+	h.SetProviderSource(func(context.Context) []ProviderStatus {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]ProviderStatus(nil), live...)
+	})
+	ts := httptest.NewServer(routesFor(h))
+	t.Cleanup(ts.Close)
+	cs, err := connect(t, ctx, ts.URL+"/mcp/agent-a-11111111", token)
+	if err != nil {
+		t.Fatalf("initialize handshake: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	list := func() listProvidersOut {
+		t.Helper()
+		res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "list_providers", Arguments: map[string]any{}})
+		if err != nil {
+			t.Fatalf("tools/call list_providers: %v", err)
+		}
+		raw, err := json.Marshal(res.StructuredContent)
+		if err != nil {
+			t.Fatalf("marshal structured content: %v", err)
+		}
+		var out listProvidersOut
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("unmarshal structured content: %v", err)
+		}
+		return out
+	}
+
+	out := list()
+	if len(out.Providers) != 1 || out.Providers[0].Name != "github" {
+		t.Fatalf("live source must shadow the snapshot: %+v", out.Providers)
+	}
+
+	// A provider "created" after the session connected enumerates on the next call — no restart.
+	mu.Lock()
+	live = append(live, ProviderStatus{Name: "wizard", Family: "webhook", TrustMode: "token",
+		Enabled: true, SecretStatus: "configured", Path: "/webhooks/generic/wizard"})
+	mu.Unlock()
+	out = list()
+	if len(out.Providers) != 2 || out.Providers[1].Name != "wizard" {
+		t.Fatalf("runtime-created provider must enumerate without restart: %+v", out.Providers)
 	}
 }
 
