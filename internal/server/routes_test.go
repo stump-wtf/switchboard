@@ -95,15 +95,18 @@ var sessionRoutes = map[string]bool{
 	"GET /endpoints/{id}/revoke":  true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
 	"POST /endpoints/{id}/revoke": true,
 	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)
-	// Friends view + approval flow (SPEC-0013). All session-gated; the handlers 404 when the friending
+	// Friends view + approval flow (SPEC-0015). All session-gated; the handlers 404 when the friending
 	// capability is disabled, but auth (RequireHuman) still runs first, so anonymous → /login here too.
+	// Approve/revoke GETs are the full confirm pages (irreversible steps confirm; approving is the vend).
 	"GET /friends":                  true,
 	"GET /friends/new":              true,
 	"GET /friends/resolve":          true,
 	"POST /friends":                 true,
+	"GET /friends/{id}/approve":     true,
 	"POST /friends/{id}/approve":    true,
 	"POST /friends/{id}/decline":    true,
 	"POST /friends/{id}/withdraw":   true,
+	"GET /friends/{id}/revoke":      true,
 	"POST /friends/{id}/revoke":     true,
 	"POST /friends/{id}/unblock":    true,
 	"GET /personas":                 true, // Personas view (SPEC-0015; capability-gated in the handler)

@@ -1897,7 +1897,7 @@ pre code {
   }
 }
 
-/* ============================ Friends view (SPEC-0013) ============================ */
+/* ============================ Friends view (SPEC-0015) ============================ */
 /* ============================ Endpoints view + vend modal (SPEC-0013) ============================ */
 
 .sb-page-head {
@@ -1908,66 +1908,9 @@ pre code {
   flex-wrap: wrap;
 }
 
-/* view toggle + filter pills row */
-.sb-friends-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin: 16px 0 14px;
-}
-.sb-friends-toolbar .sb-fpills {
-  margin: 0;
-}
-/* "view" microlabel + segmented control cluster (DESIGN Friends view toggle). */
-.sb-friends-toolbar__view {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-/* 2a/2b variant badges on the toggle options (DESIGN Friends). */
-.sb-seg__badge {
-  font-family: var(--sb-font-mono);
-  font-size: 9.5px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: var(--sb-radius-pill);
-  background: var(--sb-nav-active-bg);
-  color: var(--sb-muted);
-}
-.sb-seg__opt--active .sb-seg__badge {
-  background: var(--sb-panel);
-  color: var(--sb-ink);
-}
-
-/* segmented cards|ledger control */
-.sb-seg {
-  display: inline-flex;
-  border: 1px solid var(--sb-border);
-  border-radius: var(--sb-radius-pill);
-  overflow: hidden;
-}
-.sb-seg__opt {
-  padding: 5px 15px;
-  font-family: var(--sb-font-mono);
-  font-size: 12px;
-  color: var(--sb-muted);
-  text-decoration: none;
-  background: var(--sb-panel);
-}
-.sb-seg__opt:hover {
-  color: var(--sb-ink);
-}
-.sb-seg__opt--active {
-  background: var(--sb-nav-active-bg);
-  color: var(--sb-ink);
-  font-weight: 600;
-}
-
-/* friend status badges reuse the badge grammar keyed by ledger group, matching the design canvas
-   FR_STATUS palette (incoming amber · awaiting blue · active green · blocked red) via the shared
-   trust/status tokens (DESIGN Friends; ADR-0016 no per-template colors). */
+/* friend status badges reuse the badge grammar keyed by section group, matching the design canvas
+   FR_STATUS palette (incoming amber · awaiting blue · established green · blocked red) via the
+   shared trust/status tokens (ADR-0018 no per-template colors). */
 .sb-badge--fr-incoming {
   color: var(--sb-status-claimed);
   background: var(--sb-status-claimed-bg);
@@ -2115,8 +2058,8 @@ pre code {
   font-style: italic;
 }
 
-/* grouped ledger (2b): status dot + mono uppercase heading + count + rule line over a compact
-   row-based table per group (DESIGN Friends ledger). */
+/* SPEC-0015 sections: status dot + mono uppercase heading + count + rule line over the cards grid
+   per group (pending · in your queue / awaiting their operator / established / blocked). */
 .sb-fledger {
   display: flex;
   flex-direction: column;
@@ -2163,80 +2106,12 @@ pre code {
   height: 1px;
   background: var(--sb-border);
 }
-.sb-frows {
-  background: var(--sb-panel);
-  border: 1px solid var(--sb-border);
-  border-radius: var(--sb-radius-card);
-  overflow: hidden;
-}
-.sb-frow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--sb-divider);
-}
-.sb-frow:last-child {
-  border-bottom: none;
-}
-.sb-frow__ident {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-.sb-frow__intents {
-  width: 200px;
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.sb-frow__meta {
-  width: 150px;
-  flex: none;
-  font-family: var(--sb-font-mono);
-  font-size: 10.5px;
-  color: var(--sb-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.sb-frow__acts {
-  flex: none;
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 7px;
-  margin-left: auto;
-}
-/* Narrow viewports: the fixed columns wrap under the identity line instead of overflowing. */
-@media (max-width: 760px) {
-  .sb-frow {
-    flex-wrap: wrap;
-  }
-  .sb-frow__ident {
-    flex-basis: 100%;
-  }
-  .sb-frow__intents,
-  .sb-frow__meta {
-    width: auto;
-  }
-}
-
-/* inline action forms + small select */
+/* inline action forms */
 .sb-fform {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   margin: 0;
-}
-.sb-input--sm {
-  width: auto;
-  max-width: 180px;
-  padding: 5px 9px;
-  font-size: 12px;
 }
 
 /* A killed endpoint is dimmed but still legible — proof it existed and was revoked. */

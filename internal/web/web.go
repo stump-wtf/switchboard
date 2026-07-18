@@ -35,7 +35,7 @@ var tmplFS embed.FS
 // Startup parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
 // "Application Shell And Navigation" (providers joins the IA).
-var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "vend", "revoke", "personas", "personawiz", "friends", "providers", "authorize"}
+var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "vend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "providers", "authorize"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -207,13 +207,16 @@ type view struct {
 	// "authorize access" surface (templates/authorize.html) or its dead-end error state.
 	Authorize *authorizeView
 
-	// Friends view (SPEC-0013 REQ "Friends View").
-	FriendGroups []friendGroup // grouped-ledger sections (Incoming/Outgoing/Active/Blocked)
-	FriendCards  []friendCard  // flat card list (the cards layout renders this)
-	FriendCounts friendCounts  // filter-pill counts
-	FriendLayout string        // active layout: cards | ledger
-	FriendFilter string        // active filter pill: all | incoming | outgoing | active | blocked
-	Agents       []store.Agent // the add-friend modal's local-agent picker (the human's own agents)
+	// Friends view + approval flow (SPEC-0015 REQ "Friends View And Approval Flow").
+	FriendGroups []friendGroup // ordered sections: pending-in-your-queue / awaiting-them / established / blocked
+	FriendCounts friendCounts  // per-group counts (the rail badge reads Incoming)
+	// FriendVended renders the post-approval vended result inline on the Friends page — the minted
+	// endpoint's identity and scope, surfaced explicitly (never only a toast).
+	FriendVended *friendVendedView
+	// FriendApprove feeds the approve confirm page (approving IS the vend; templates/friend_approve.html).
+	FriendApprove *friendApproveView
+	// FriendRevoke feeds the friend revoke confirm page (templates/friend_revoke.html).
+	FriendRevoke *friendRevokeView
 }
 
 // buildShell computes the layout-shell state. Store errors are logged and rendered as the

@@ -1,0 +1,32 @@
+{{define "content"}}
+{{/* Friend revoke confirm page (SPEC-0015 REQ "Wizard Interaction Pattern": destructive and
+     irreversible steps confirm before executing). Revoking an established friendship kills its
+     vended endpoint — the remote agent's credential dies instantly and its live sessions close —
+     and is ONE-SIDED: edges are per-direction and non-transitive (SPEC-0010), so any endpoint they
+     vended to you is a separate edge and is untouched. Plain form, no JS required. Governing:
+     ADR-0018. */}}
+{{$c := .FriendRevoke.Card}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">Revoke friendship</h1>
+    <p class="sb-tagline">revoke = kill the vended endpoint · their agent's credential dies instantly · one direction only · this cannot be undone</p>
+  </div>
+</div>
+
+<section class="sb-wiz sb-wiz--confirm" data-sb-friend-revoke-confirm aria-label="Confirm friendship revocation">
+  <dl class="sb-wiz__summary">
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Peer</dt><dd><span class="sb-fcard__remote-handle sb-mono">{{$c.RemoteHandle}}</span>{{if $c.RemoteHost}} <span class="sb-fcard__host">{{$c.RemoteHost}}</span>{{end}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Vended onto</dt><dd class="sb-mono">{{$c.LocalPersona}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Negotiated scope</dt><dd>{{template "friend_scope" $c}}</dd></div>
+    {{if $c.Meta}}<div class="sb-epcard__row"><dt class="sb-microlabel">Activity</dt><dd>{{$c.Meta}}</dd></div>{{end}}
+  </dl>
+  <p class="sb-callout sb-callout--danger">Revoking is instant and total for this direction: the endpoint vended to their agent dies the moment you confirm, and its live sessions close. Anything they vended to you is a separate edge and is untouched.</p>
+  <form method="post" action="/friends/{{$c.ID}}/revoke" class="sb-fform">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="sb-vend__foot">
+      <a class="sb-btn sb-btn--secondary" href="/friends">Cancel</a>
+      <button type="submit" class="sb-btn sb-btn--danger sb-btn--mono" data-sb-friend-revoke-submit>Revoke — kill this endpoint</button>
+    </div>
+  </form>
+</section>
+{{end}}
