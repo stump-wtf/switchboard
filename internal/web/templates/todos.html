@@ -1,15 +1,16 @@
 {{define "content"}}
-{{/* Governing: SPEC-0013 REQ "Todos View — Durable Queue" — filter pills with live counts, a search
-     over id/source/event, and the durable-queue table, all server-rendered from the database and
-     kept live by the typed SSE events (todo_* frames replace rows OOB; the counts frame refreshes the
-     pill numbers). The header is the design record's Durable-queue heading: the queue-semantics
-     tagline plus the animated reaper pill ("the view MUST surface that the reaper is active", #179).
-     The pills+table live inside #sb-todos-panel, which HTMX filter/search GETs swap wholesale; the
-     drawer opens into the shared #sb-overlay slot. Reload always renders truth. */}}
+{{/* Governing: SPEC-0015 REQ "Todos View And Drawer" (ADR-0018 charm-web) — the durable queue as
+     a filterable table (line · provider · trust · state · age) behind the ❯ search prompt and the
+     flat filter chips, all server-rendered from the database and kept live by the typed SSE
+     events (todo_* frames replace rows OOB; the counts frame refreshes the chip numbers). The
+     view head is the lowercase view title plus the queue-semantics tagline and the animated
+     reaper pill ("the view MUST surface that the reaper is active", #179). The chips+table live
+     inside #sb-todos-panel, which HTMX filter/search GETs swap wholesale; the drawer opens into
+     the shared #sb-overlay slot. Reload always renders truth. */}}
 <div class="sb-view-head">
   <div>
-    <h1 class="sb-page-title">Durable queue</h1>
-    <p class="sb-tagline">claim under a lease · complete with an ack · dedup by idempotency key · at-least-once</p>
+    <h1 class="sb-page-title">todos</h1>
+    <p class="sb-tagline">the durable queue · claim under a lease · complete with an ack · dedup by idempotency key · at-least-once</p>
   </div>
   {{template "reaper_pill"}}
 </div>

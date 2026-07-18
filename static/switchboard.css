@@ -480,7 +480,7 @@ a:hover {
   align-items: center;
   gap: 7px;
   padding: 5px 11px;
-  border-radius: var(--sb-radius-pill);
+  border-radius: var(--sb-radius-chip);
   background: var(--sb-trust-token-bg);
   color: var(--sb-trust-token);
   font-family: var(--sb-font-mono);
@@ -568,10 +568,12 @@ a:hover {
 
 /* ---- badges, pills, tags, status ---- */
 
+/* Flat, square, cell-honest chips (ADR-0018: no pill radii on trust/state — only the LIVE
+   throughput pill keeps --sb-radius-pill). */
 .sb-badge {
   display: inline-block;
   padding: 2px 9px;
-  border-radius: var(--sb-radius-pill);
+  border-radius: var(--sb-radius-chip);
   font-family: var(--sb-font-mono);
   font-size: 9.5px;
   font-weight: 600;
@@ -636,12 +638,19 @@ a:hover {
   background: var(--sb-trust-queue-bg);
 }
 
+/* Todo state chips: ● dot + lowercase mono word on the AA-gated status tint pair — flat and
+   square like the trust badges (ADR-0018 "flat chips for trust/state"; SPEC-0015 REQ "Design
+   Token System" holds the pairs to AA in both themes). */
 .sb-status {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--sb-radius-chip);
   font-family: var(--sb-font-mono);
   font-size: 11px;
+  background: var(--sb-divider);
+  color: var(--sb-status-neutral);
 }
 .sb-status__dot {
   width: 7px;
@@ -651,24 +660,28 @@ a:hover {
 }
 .sb-status--pending {
   color: var(--sb-status-pending);
+  background: var(--sb-status-pending-bg);
 }
 .sb-status--pending .sb-status__dot {
   background: var(--sb-trust-queue-dot);
 }
 .sb-status--claimed {
   color: var(--sb-status-claimed);
+  background: var(--sb-status-claimed-bg);
 }
 .sb-status--claimed .sb-status__dot {
   background: var(--sb-trust-token-dot);
 }
 .sb-status--done {
   color: var(--sb-status-done);
+  background: var(--sb-status-done-bg);
 }
 .sb-status--done .sb-status__dot {
   background: var(--sb-trust-signed-dot);
 }
 .sb-status--failed {
   color: var(--sb-status-failed);
+  background: var(--sb-status-failed-bg);
 }
 .sb-status--failed .sb-status__dot {
   background: var(--sb-trust-open-dot);
@@ -1129,15 +1142,29 @@ pre code {
   pointer-events: auto;
 }
 
-/* ---- Todos view: search, filter pills, queue table (SPEC-0013) ---- */
+/* ---- Todos view: ❯ search prompt, flat filter chips, queue table (SPEC-0015 REQ "Todos View
+   And Drawer"; ADR-0018) ---- */
 
+/* Search behind the terminal prompt glyph (design language: prompts are ❯, typed in the mono
+   face). The global `/` key (sb-keys.js) focuses the input. */
 .sb-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   margin: 4px 0 14px;
+}
+.sb-search__prompt {
+  font-family: var(--sb-font-mono);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--sb-cyan);
 }
 .sb-search__input {
   max-width: 340px;
 }
 
+/* Filter chips: flat and square (ADR-0018 — no pill radii on state controls), lowercase mono,
+   active chip carried on the hot-pink accent like the nav's active underline. */
 .sb-fpills {
   display: flex;
   flex-wrap: wrap;
@@ -1149,13 +1176,13 @@ pre code {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 5px 13px;
-  border-radius: var(--sb-radius-pill);
+  padding: 4px 12px;
+  border-radius: var(--sb-radius-chip);
   border: 1px solid var(--sb-input-border-soft);
   background: var(--sb-panel);
   color: var(--sb-secondary);
   font-family: var(--sb-font-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   text-decoration: none;
 }
 .sb-fpill:hover {
@@ -1166,14 +1193,14 @@ pre code {
   background: var(--sb-nav-active-bg);
   border-color: var(--sb-accent);
   color: var(--sb-ink);
-  font-weight: 600;
+  font-weight: 700;
 }
 .sb-fpill__n {
   font-size: 11px;
   color: var(--sb-muted);
 }
 .sb-fpill--active .sb-fpill__n {
-  color: var(--sb-primary);
+  color: var(--sb-accent);
 }
 
 .sb-table-wrap {
@@ -1231,12 +1258,12 @@ pre code {
 }
 
 /* Reaper re-surface flash: a claimed lease expired back to pending — highlight the row briefly as
-   its OOB swap lands (SPEC-0013 "Reaper re-surface is visible"). */
+   its OOB swap lands (SPEC-0015 REQ "Todos View And Drawer": SSE row updates preserved). */
 .sb-trow--flash {
   animation: sb-row-flash var(--sb-dur-row) var(--sb-ease);
 }
 
-/* ---- todo detail drawer (SPEC-0013) ---- */
+/* ---- todo detail drawer (SPEC-0015 REQ "Todos View And Drawer"; ADR-0018) ---- */
 
 .sb-drawer {
   position: fixed;
@@ -1274,9 +1301,11 @@ pre code {
   align-items: center;
   gap: 10px;
 }
+/* The line id leads in the display voice (Space Mono, like view titles). */
 .sb-drawer__id {
+  font-family: var(--sb-font-display);
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--sb-ink);
 }
 .sb-drawer__close {
@@ -1443,6 +1472,8 @@ pre code {
   word-break: break-word;
 }
 
+/* Glyph lifecycle timeline (ADR-0018 iconography: type the glyph in the mono face — ✓ for
+   resolved steps, ○ for the steps ahead — over a faint box-drawing rail). */
 .sb-timeline {
   list-style: none;
   margin: 6px 0 16px;
@@ -1450,28 +1481,35 @@ pre code {
 }
 .sb-timeline li {
   position: relative;
-  padding: 4px 0 4px 20px;
+  padding: 4px 0 4px 22px;
   font-family: var(--sb-font-mono);
   font-size: 11.5px;
   color: var(--sb-faint-2);
 }
 .sb-timeline li::before {
+  content: "○";
+  position: absolute;
+  left: 2px;
+  top: 4px;
+  font-family: var(--sb-font-mono);
+  font-size: 11.5px;
+  line-height: inherit;
+  color: var(--sb-faint-3);
+}
+.sb-timeline li + li::after {
   content: "";
   position: absolute;
-  left: 4px;
-  top: 9px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1px solid var(--sb-faint-3);
-  background: var(--sb-panel);
+  left: 7px;
+  top: -6px;
+  height: 10px;
+  border-left: 1px solid var(--sb-divider);
 }
 .sb-timeline__done {
   color: var(--sb-body);
 }
 .sb-timeline__done::before {
-  background: var(--sb-accent);
-  border-color: var(--sb-accent);
+  content: "✓";
+  color: var(--sb-mint);
 }
 
 .sb-drawer__foot {

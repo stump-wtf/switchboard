@@ -1,13 +1,14 @@
 package web
 
-// Handler-level coverage for the SPEC-0013 Todos drawer actions that runs in the `go test ./...`
-// gate WITHOUT a database: the store-error → generic-response mapping (respondTodoAction) and the
+// Handler-level coverage for the Todos drawer actions that runs in the `go test ./...` gate
+// WITHOUT a database: the store-error → generic-response mapping (respondTodoAction) and the
 // background-transition toast copy (toastText). The end-to-end store transitions live in the
 // DB-backed internal/server suite (skipped without SWITCHBOARD_TEST_DATABASE_URL); these bind the
 // pure response/copy contract that the CI gate can actually exercise.
 //
-// Governing: SPEC-0013 REQ "Error Handling Standards" (generic to the user, specific in the log),
-// REQ "Live Updates and Toasts" (toast on background transition).
+// Governing: SPEC-0015 REQ "Todos View And Drawer" (no behavior regressions vs SPEC-0003
+// actions); SPEC-0012 REQ "Error Handling and Server-Side Logging" (generic to the user,
+// specific in the log), REQ "Live Updates via SSE" (toast on background transition).
 
 import (
 	"errors"
@@ -20,7 +21,7 @@ import (
 	"github.com/joestump/switchboard/internal/store"
 )
 
-// TestRespondTodoActionMapsStoreErrors proves the SPEC-0013 error-handling standard: a drawer action
+// TestRespondTodoActionMapsStoreErrors proves the SPEC-0012 error-handling standard: a drawer action
 // that fails against the store returns a GENERIC response with no internal detail. The sentinel
 // errors map to distinguishable status codes (409 conflict / 404 not-found); any other error is a
 // generic 500. The error branches return before any store read, so a nil-store handler exercises
@@ -58,8 +59,8 @@ func TestRespondTodoActionMapsStoreErrors(t *testing.T) {
 	}
 }
 
-// TestToastTextByTransition pins the background-transition toast copy (SPEC-0013 "Toast on
-// background transition"): each announced verb carries the short todo id and a human-readable
+// TestToastTextByTransition pins the background-transition toast copy (SPEC-0012 "Live Updates
+// via SSE" — toast on background transition): each announced verb carries the short todo id and a human-readable
 // outcome; verbs that only move the feed (creation) produce no toast. Resolvable owners degrade to
 // the pure label with a nil store, so this runs in the CI gate.
 func TestToastTextByTransition(t *testing.T) {
