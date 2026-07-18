@@ -35,7 +35,7 @@ var tmplFS embed.FS
 // Startup parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
 // "Application Shell And Navigation" (providers joins the IA).
-var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "personas", "friends", "providers"}
+var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "vend", "revoke", "personas", "friends", "providers"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -49,11 +49,12 @@ type Handler struct {
 	pages map[string]*template.Template
 	frags *template.Template // per-view live fragments (templates/fragments/*.html), standalone-renderable
 
-	// personasEnabled gates the SPEC-0013 Personas view AND the persona chip on endpoint cards +
-	// the persona field in the vend modal. The server sets it by feature detection (personas store +
-	// well-known Agent Card route both wired); while false the Personas rail entry is hidden, every
-	// /personas route 404s, and the Endpoints surface renders no persona slot. Governing: SPEC-0013
-	// REQ "Personas View" (capability-gated), REQ "Endpoints View and Vend Modal".
+	// personasEnabled gates the Personas view AND the persona chip on endpoint cards + the persona
+	// select on the vend wizard's persona step. The server sets it by feature detection (personas
+	// store + well-known Agent Card route both wired); while false the Personas rail entry is
+	// hidden, every /personas route 404s, and the Endpoints surface renders no persona slot.
+	// Governing: SPEC-0013 REQ "Personas View" (capability-gated), SPEC-0015 REQ "Endpoints View
+	// And Vend Wizard".
 	personasEnabled bool
 
 	// SSE plumbing (SPEC-0012 "Live Updates via SSE"). sseRetryMS and keepAlive are fields so
@@ -66,6 +67,11 @@ type Handler struct {
 	// publish so template-only construction never spins a worker.
 	liveOnce sync.Once
 	liveCh   chan func(context.Context)
+
+	// wizards holds the server-side step state for every full-page wizard (SPEC-0015 REQ "Wizard
+	// Interaction Pattern"; wizard.go). One table serves all wizards — entries are keyed by opaque
+	// per-flow cookie tokens.
+	wizards *wizardStates
 
 	// endpointRevoked, when set, observes successful endpoint revocations (endpoint id). The
 	// server wires it to the MCP mount so revoking an endpoint also closes its live notification
@@ -91,14 +97,15 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 		return nil, err
 	}
 	h := &Handler{store: st, cfg: cfg, log: log, pages: pages, frags: frags,
-		events: newEventHub(), keepAlive: defaultKeepAlive}
+		events: newEventHub(), keepAlive: defaultKeepAlive,
+		wizards: newWizardStates(wizardTTL)}
 	h.sseRetryMS = h.sseRetrySetting
 	return h, nil
 }
 
 // templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod, "join": joinScope}
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod, "join": joinScope, "countdown": countdown}
 }
 
 // parsePages composes layout.html and the per-view fragment files (templates/fragments/*.html)
@@ -183,14 +190,12 @@ type view struct {
 	Query          string           // Todos search text
 	Drawer         *drawerView      // standalone todo detail page (drawer fallback)
 
-	// Endpoints view (SPEC-0013 REQ "Endpoints View and Vend Modal").
-	EndpointCards      []endpointCard      // the vended-endpoint cards
-	PersonasEnabled    bool                // gates the persona chip on cards + the persona field in the modal
-	VendPersonaOptions []vendPersonaOption // the vend-modal persona select choices (the human's personas)
-	VerbOptions        []vendVerbOption    // the vend-modal verb toggle chips (the agent-tools surface)
-	QueueOptions       []string            // the vend-modal queue toggle chips (queues known to the store)
-	VendOpen           bool                // no-JS fallback: render the vend form inline in the page
-	Reveal             *revealView         // set on a no-JS vend to render the one-time credential reveal inline
+	// Endpoints view + vend wizard (SPEC-0015 REQ "Endpoints View And Vend Wizard").
+	EndpointCards   []endpointCard     // the vended-endpoint cards
+	PersonasEnabled bool               // gates the persona chip on cards + the wizard's persona step select
+	Reveal          *revealView        // set on a successful vend to render the one-time credential reveal inline
+	Vend            *vendStepView      // the active vend-wizard step page (templates/vend.html)
+	RevokeConfirm   *revokeConfirmView // the revoke confirm page (templates/revoke.html)
 
 	// Personas view (SPEC-0013 REQ "Personas View"): cards + create/edit modals.
 	Personas *personasView
@@ -318,8 +323,10 @@ func (h *Handler) AgentsRedirect(w http.ResponseWriter, r *http.Request) {
 }
 
 // Revoke revokes (kills) an endpoint the human owns. Revoke is instant and total (ADR-0008); the
-// scope is immutable, so changing access means revoke + re-vend. Requires human.
-// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal", SPEC-0007 REQ "Revocation Is Total".
+// scope is immutable, so changing access means revoke + re-vend. The kill POST is reached only
+// from the full-page confirm (RevokeConfirm, endpoints.go) per the SPEC-0015 wizard pattern.
+// Requires human. Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard", SPEC-0007 REQ
+// "Instant, Total Revocation".
 func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	id := chi.URLParam(r, "id")
@@ -386,6 +393,13 @@ func (h *Handler) safeRedirectTarget(r *http.Request, fallback string) string {
 }
 
 func (h *Handler) render(w http.ResponseWriter, page string, v view) {
+	h.renderStatus(w, http.StatusOK, page, v)
+}
+
+// renderStatus renders a page with an explicit response status — wizard steps re-render themselves
+// with 400 on a validation failure (SPEC-0015: a failed step is re-shown with the entered values,
+// never a dead-end error page).
+func (h *Handler) renderStatus(w http.ResponseWriter, status int, page string, v view) {
 	var buf bytes.Buffer
 	if err := h.pages[page].ExecuteTemplate(&buf, "layout", v); err != nil {
 		h.log.Error("render", "page", page, "err", err)
@@ -393,6 +407,7 @@ func (h *Handler) render(w http.ResponseWriter, page string, v view) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	_, _ = buf.WriteTo(w)
 }
 
@@ -451,6 +466,27 @@ func upperFirst(s string) string {
 	return ""
 }
 
+// countdown renders the compact time-remaining chip for an endpoint card's expiry ("5d", "3h",
+// "12m", "<1m", "expired"). The server-rendered value is authoritative at page render; the card
+// also stamps data-sb-expires-at so client hydration can tick it live without a reload.
+// Governing: SPEC-0016 REQ "Credential Lifetime" (the endpoints view shows the countdown).
+func countdown(t time.Time) string {
+	d := time.Until(t)
+	switch {
+	case d <= 0:
+		return "expired"
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		// Round half-up per displayed unit so "vended for 30m" reads 30m, not 29m.
+		return fmt.Sprintf("%dm", int(d.Round(time.Minute)/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Round(time.Hour)/time.Hour))
+	default:
+		return fmt.Sprintf("%dd", int((d+12*time.Hour)/(24*time.Hour)))
+	}
+}
+
 // relTime renders a compact relative age for feed rows ("just now", "5m ago", "3h ago", "2d ago").
 func relTime(t time.Time) string {
 	d := time.Since(t)
@@ -506,6 +542,20 @@ func buildMCPJSON(baseURL, slug, token string) string {
 		"type":    "http",
 		"url":     mcpURL,
 		"headers": map[string]string{"Authorization": "Bearer " + token},
+	}}}
+	b, _ := json.MarshalIndent(m, "", "  ")
+	return string(b)
+}
+
+// buildMCPJSONURLOnly renders the URL-only .mcp.json variant the reveal offers for OAuth-capable
+// clients: same Streamable-HTTP endpoint, no embedded credential — the client discovers the
+// authorization server from the endpoint's RFC 9728 metadata and signs the human in through the
+// OAuth flow instead of carrying a static bearer. Governing: SPEC-0015 REQ "Endpoints View And
+// Vend Wizard" (URL-only variant), SPEC-0016 (protected-resource discovery), ADR-0019.
+func buildMCPJSONURLOnly(baseURL, slug string) string {
+	m := map[string]any{"mcpServers": map[string]any{"switchboard": map[string]any{
+		"type": "http",
+		"url":  mcpEndpointURL(baseURL, slug),
 	}}}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	return string(b)

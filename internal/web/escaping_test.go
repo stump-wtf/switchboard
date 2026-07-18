@@ -23,7 +23,8 @@ func TestDocumentDeclaresLangAndViewport(t *testing.T) {
 	pages := map[string]view{
 		"login":     {Title: "Log in"},
 		"board":     {Title: "The Board", Human: testHuman(), Shell: shell{Active: "board"}},
-		"endpoints": {Title: "Endpoints", Human: testHuman(), Shell: shell{Active: "endpoints"}, VerbOptions: vendVerbOptions()},
+		"endpoints": {Title: "Endpoints", Human: testHuman(), Shell: shell{Active: "endpoints"}},
+		"vend":      {Title: "Vend endpoint", Human: testHuman(), Shell: shell{Active: "endpoints"}, Vend: testVendStepView("persona")},
 	}
 	for page, v := range pages {
 		body := renderPage(t, h, page, v)
@@ -46,7 +47,8 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 	const payload = `"><script>alert(1)</script>`
 	h := newTestHandler(t)
 	human := &store.Human{ID: "h1", DisplayName: payload, Email: "x@example.com"}
-	card := endpointCard{ID: "e1", AgentName: payload, Initials: cardInitials(payload), PersonaName: payload,
+	card := endpointCard{ID: "e1", AgentName: payload, Initials: cardInitials(payload), Principal: payload,
+		PersonaName: payload, URL: payload,
 		CredPrefix: payload, Queues: []string{payload}, Verbs: []string{payload}, State: "active"}
 	sh := shell{Active: "endpoints", DBConnected: true, Initials: `"><i>`}
 
@@ -58,15 +60,32 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 				ID: 1, Source: payload, EventType: payload, TrustMode: "signed", ReceivedAt: time.Now(),
 			}, false)},
 		}),
-		// VendOpen renders the inline vend form so the queue/verb toggle-chip values (attacker-shaped
-		// queue names could arrive via webhook-created todos) flow through escaping too.
 		"endpoints": renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: human, CSRF: "tok", Shell: sh,
-			EndpointCards: []endpointCard{card}, PersonasEnabled: true, VendOpen: true,
-			VerbOptions: []vendVerbOption{{Name: payload}}, QueueOptions: []string{payload}}),
+			EndpointCards: []endpointCard{card}, PersonasEnabled: true}),
+		// Wizard step pages render attacker-shaped values in every slot: queue names arrive from the
+		// store (webhook-created todos name their queues), personas and the draft name from the
+		// operator's own state — all must flow through contextual escaping.
+		"vend-queues": func() string {
+			v := testVendStepView("queues")
+			v.QueueOptions = []vendChipOption{{Name: payload, Checked: true}}
+			v.ExtraQueues = payload
+			return renderPage(t, h, "vend", view{Title: "Vend endpoint", Human: human, CSRF: "tok", Shell: sh, Vend: v})
+		}(),
+		"vend-confirm": func() string {
+			v := testVendStepView("confirm")
+			v.Name, v.PersonaName, v.ReVendOf = payload, payload, payload
+			v.Queues, v.Verbs = []string{payload}, []string{payload}
+			v.LifetimeLabel = payload
+			return renderPage(t, h, "vend", view{Title: "Vend endpoint", Human: human, CSRF: "tok",
+				Shell: sh, PersonasEnabled: true, Vend: v})
+		}(),
+		"revoke": renderPage(t, h, "revoke", view{Title: "Revoke endpoint", Human: human, CSRF: "tok",
+			Shell: sh, PersonasEnabled: true, RevokeConfirm: &revokeConfirmView{Card: card}}),
 		"reveal": renderFrag(t, h, "vend_reveal", revealView{AgentName: payload, Slug: payload,
 			URL:   payload,
 			Token: `</pre><script>steal()</script>`, MCPJSON: `{"x":"</pre><script>steal()</script>"}`,
-			Queues: []string{payload}, Verbs: []string{payload}, CSRF: "tok"}),
+			MCPJSONURLOnly: `{"x":"</pre><script>steal()</script>"}`,
+			Queues:         []string{payload}, Verbs: []string{payload}, CSRF: "tok"}),
 	}
 	for page, body := range bodies {
 		if strings.Contains(body, "<script>alert(1)</script>") || strings.Contains(body, "<script>steal()</script>") {

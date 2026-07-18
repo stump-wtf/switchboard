@@ -368,10 +368,16 @@ func newRouter(d routerDeps) chi.Router {
 		// drawer fragment (HTMX) or a standalone page (deep link / no-JS fallback).
 		pr.Get("/todos", d.webh.Todos)
 		pr.Get("/todos/{id}", d.webh.TodoDrawer)
-		// Endpoints view + vend modal (SPEC-0013). The retired SPEC-0012 /agents screens 303-redirect
-		// here; GET /endpoints/vend serves the modal fragment, POST /endpoints/vend mints + reveals once.
+		// Endpoints view + the vend wizard (SPEC-0015 REQ "Endpoints View And Vend Wizard", REQ
+		// "Wizard Interaction Pattern"). The retired SPEC-0012 /agents screens 303-redirect here.
+		// GET /endpoints/vend starts the wizard (mints server-side step state, 303 → the first step);
+		// GET/POST /endpoints/vend/{step} are the routed step pages (persona → queues → verbs →
+		// lifetime → confirm) — the confirm POST is the mint. POST /endpoints/vend remains the direct
+		// single-form mint path (same executeVend, same validation gates).
 		pr.Get("/endpoints", d.webh.Endpoints)
-		pr.Get("/endpoints/vend", d.webh.VendModal)
+		pr.Get("/endpoints/vend", d.webh.VendStart)
+		pr.Get("/endpoints/vend/{step}", d.webh.VendStep)
+		pr.Post("/endpoints/vend/{step}", d.webh.VendStepSubmit)
 		pr.Post("/endpoints/vend", d.webh.Vend)
 		pr.Get("/agents", d.webh.AgentsRedirect)
 		pr.Get("/agents/{id}", d.webh.AgentsRedirect)
@@ -390,6 +396,9 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/todos/{id}/retry", d.webh.RetryTodo)
 		pr.Post("/todos/{id}/extend", d.webh.ExtendTodo)
 		pr.Post("/todos/{id}/release", d.webh.ReleaseTodo)
+		// Revocation is irreversible, so it confirms on a full page first (SPEC-0015 REQ "Wizard
+		// Interaction Pattern"): GET renders the confirm, the POST from that page executes the kill.
+		pr.Get("/endpoints/{id}/revoke", d.webh.RevokeConfirm)
 		pr.Post("/endpoints/{id}/revoke", d.webh.Revoke)
 		// Permanently delete a revoked endpoint's card (SPEC-0007 REQ "Permanent Deletion of Revoked
 		// Endpoints"). Store constrains to state='revoked' + ownership; active endpoints must be revoked

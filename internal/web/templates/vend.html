@@ -1,0 +1,107 @@
+{{define "content"}}
+{{/* The vend wizard's step pages (SPEC-0015 REQ "Endpoints View And Vend Wizard", REQ "Wizard
+     Interaction Pattern"): persona → queues → verbs → lifetime → confirm, each a FULL routed page
+     rendered from server-side step state (internal/web/wizard.go). Every form is a plain method=post
+     with a 303 between steps, so the flow completes identically with JS disabled; Back is a plain
+     link to the previous step, which re-renders the saved values. The confirm step is the
+     irreversible one — it states so, then mints. Governing: ADR-0018. */}}
+{{$v := .Vend}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">Vend endpoint</h1>
+    <p class="sb-tagline">{{if $v.ReVendOf}}re-vend of {{$v.ReVendOf}} · scope is immutable — this mints a NEW endpoint; revoke the old one after switching{{else}}a scoped, revocable MCP line for one agent · credential shown once at the end{{end}}</p>
+  </div>
+</div>
+
+<section class="sb-wiz" data-sb-wizard="vend" aria-label="Vend endpoint wizard">
+  {{/* Step tracker: the routed pages ARE the steps; the tracker only reports position (links would
+       tempt skipping validation — navigation is Back/Continue). */}}
+  <ol class="sb-wiz__steps" data-sb-wiz-steps>
+    {{range $v.Steps}}<li class="sb-wiz__step{{if .Current}} sb-wiz__step--current{{end}}{{if .Done}} sb-wiz__step--done{{end}}"{{if .Current}} aria-current="step"{{end}} data-sb-wiz-step="{{.Slug}}"><span class="sb-wiz__stepnum">{{printf "%02d" .Num}}</span> {{.Slug}}</li>{{end}}
+  </ol>
+  <p class="sb-wiz__progress sb-muted">step {{$v.StepNum}} of {{$v.StepTotal}}</p>
+
+  {{if $v.Error}}<p class="sb-callout sb-callout--danger" role="alert" data-sb-wiz-error>{{$v.Error}}</p>{{end}}
+
+  <form id="sb-wiz-form" class="sb-vend sb-wiz__form" method="post" action="{{$v.ActionURL}}" data-sb-vend>
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+
+    {{if eq $v.Step "persona"}}
+    <div class="sb-field">
+      <label for="sb-vend-name">Agent name</label>
+      <input id="sb-vend-name" class="sb-input" name="name" value="{{$v.Name}}" placeholder="e.g. release-bot" required autocomplete="off" data-sb-vend-name>
+      <p class="sb-help">the agent this scoped line belongs to</p>
+    </div>
+    {{if $.PersonasEnabled}}
+    <div class="sb-field">
+      <label for="sb-vend-persona">Bound persona (optional)</label>
+      <select id="sb-vend-persona" class="sb-input" name="persona">
+        <option value="">none — agent-level endpoint</option>
+        {{range $v.PersonaOptions}}<option value="{{.ID}}"{{if eq .ID $v.PersonaID}} selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+      <p class="sb-help">bind this endpoint to one of your personas (it vends on that persona's agent)</p>
+    </div>
+    {{end}}
+
+    {{else if eq $v.Step "queues"}}
+    <div class="sb-field">
+      {{if $v.QueueOptions}}
+      <span class="sb-label" id="sb-vend-queues-label">Scoped queues</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-vend-queues-label" data-sb-vend-queue-chips>
+        {{range $v.QueueOptions}}<label class="sb-chip sb-chip--queue sb-chip--toggle"><input type="checkbox" name="queues" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+      </div>
+      <p class="sb-help">the todo queues this endpoint may work · at least one required</p>
+      {{end}}
+      <label for="sb-vend-queues-extra">{{if $v.QueueOptions}}Add queues{{else}}Scoped queues{{end}}</label>
+      <input id="sb-vend-queues-extra" class="sb-input" name="queues_extra" value="{{$v.ExtraQueues}}" placeholder="reviews, deploys" autocomplete="off" data-sb-vend-queues aria-describedby="sb-vend-queues-help">
+      <div class="sb-chipset" data-sb-vend-queue-preview aria-hidden="true"></div>
+      <p class="sb-help" id="sb-vend-queues-help">comma-separated{{if $v.QueueOptions}} · queues the store does not know yet{{else}} · the todo queues this endpoint may work · at least one required{{end}}</p>
+    </div>
+
+    {{else if eq $v.Step "verbs"}}
+    <div class="sb-field">
+      <span class="sb-label" id="sb-vend-verbs-label">Allowed verbs</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-vend-verbs-label" data-sb-vend-verbs>
+        {{range $v.VerbOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="verbs" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+      </div>
+      <p class="sb-help">allowed MCP tools · at least one required · the drain verbs start checked; wider grants are a deliberate toggle</p>
+    </div>
+
+    {{else if eq $v.Step "lifetime"}}
+    <div class="sb-field">
+      <span class="sb-label" id="sb-vend-lifetime-label">Credential lifetime</span>
+      <div class="sb-wiz__choices" role="radiogroup" aria-labelledby="sb-vend-lifetime-label" data-sb-vend-lifetime>
+        <label class="sb-wiz__choice"><input type="radio" name="lifetime" value=""{{if eq $v.LifetimePreset ""}} checked{{end}}> until revoked</label>
+        {{range $v.LifetimePresets}}<label class="sb-wiz__choice"><input type="radio" name="lifetime" value="{{.Value}}"{{if eq $.Vend.LifetimePreset .Value}} checked{{end}}> {{.Label}}</label>{{end}}
+        <label class="sb-wiz__choice"><input type="radio" name="lifetime" value="custom"{{if eq $v.LifetimePreset "custom"}} checked{{end}}> custom</label>
+      </div>
+      <input id="sb-vend-lifetime-custom" class="sb-input" name="lifetime_custom" value="{{$v.LifetimeCustom}}" placeholder="e.g. 90m, 12h, 14d, 4w" autocomplete="off" aria-label="Custom lifetime" data-sb-vend-lifetime-custom>
+      <p class="sb-help">how long the credential lives · expiry revokes the endpoint (the reaper enforces it) · empty = until revoked</p>
+    </div>
+
+    {{else if eq $v.Step "confirm"}}
+    {{/* Confirm — the irreversible step (SPEC-0015: destructive and irreversible steps confirm
+         before executing). Summary renders from the SERVER-SIDE draft; the form submits only the
+         CSRF token. */}}
+    <dl class="sb-wiz__summary" data-sb-wiz-summary>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Agent</dt><dd>{{$v.Name}}</dd></div>
+      {{if $.PersonasEnabled}}<div class="sb-epcard__row"><dt class="sb-microlabel">Persona</dt><dd>{{if $v.PersonaName}}{{$v.PersonaName}}{{else}}<span class="sb-muted">none — agent-level</span>{{end}}</dd></div>{{end}}
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Queues</dt><dd>{{range $v.Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span> {{end}}</dd></div>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Verbs</dt><dd>{{range $v.Verbs}}<span class="sb-chip sb-chip--verb">{{.}}</span> {{end}}</dd></div>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Lifetime</dt><dd data-sb-wiz-lifetime>{{$v.LifetimeLabel}}</dd></div>
+    </dl>
+    <p class="sb-callout sb-callout--danger">Vending is irreversible: it mints a live credential shown exactly once, and the scope above is immutable for the endpoint's lifetime. To change scope later, revoke and re-vend.</p>
+    {{end}}
+
+    <div class="sb-vend__foot">
+      <a class="sb-btn sb-btn--secondary" href="/endpoints" data-sb-wiz-cancel>Cancel</a>
+      {{if $v.BackURL}}<a class="sb-btn sb-btn--secondary" href="{{$v.BackURL}}" data-sb-wiz-back>← Back</a>{{end}}
+      {{if eq $v.Step "confirm"}}
+      <button type="submit" class="sb-btn sb-btn--danger sb-btn--mono" data-sb-vend-submit>Vend endpoint →</button>
+      {{else}}
+      <button type="submit" class="sb-btn" data-sb-vend-submit>Continue →</button>
+      {{end}}
+    </div>
+  </form>
+</section>
+{{end}}

@@ -288,6 +288,7 @@ type EndpointCard struct {
 	ID               string
 	AgentID          string
 	AgentName        string
+	PersonaID        string // "" when no persona is bound — seeds the re-vend wizard (SPEC-0015)
 	PersonaName      string // "" when no persona is bound (or personas are disabled)
 	Slug             string
 	CredentialPrefix string
@@ -309,7 +310,7 @@ type EndpointCard struct {
 // Principal".
 func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]EndpointCard, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT e.id::text, e.agent_id::text, ag.name, COALESCE(p.name, ''),
+		SELECT e.id::text, e.agent_id::text, ag.name, COALESCE(p.id::text, ''), COALESCE(p.name, ''),
 		       e.slug, e.credential_prefix, e.scope_queues, e.scope_verbs,
 		       e.state, e.created_at, e.revoked_at, e.last_seen_at, e.expires_at
 		FROM endpoints e
@@ -324,7 +325,7 @@ func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]E
 	var out []EndpointCard
 	for rows.Next() {
 		var c EndpointCard
-		if err := rows.Scan(&c.ID, &c.AgentID, &c.AgentName, &c.PersonaName, &c.Slug,
+		if err := rows.Scan(&c.ID, &c.AgentID, &c.AgentName, &c.PersonaID, &c.PersonaName, &c.Slug,
 			&c.CredentialPrefix, &c.ScopeQueues, &c.ScopeVerbs, &c.State, &c.CreatedAt,
 			&c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("store: scan endpoint card: %w", err)

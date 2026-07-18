@@ -50,9 +50,10 @@
     {{/* Live throughput pill (SPEC-0013 IA & Navigation): always present — the idle zero-state
          keeps the SSE swap target in the DOM before the first counts frame arrives. */}}
     {{template "live_pill" dict "Rate" .Shell.LiveRate}}
-    {{/* "+ new" launcher: the create/vend flows live on the Endpoints view until the SPEC-0015
-         full-page wizards land in a later story. */}}
-    <a class="sb-new" href="/endpoints" data-sb-new>+ new</a>
+    {{/* "+ new" launcher: starts the vend wizard — the first SPEC-0015 full-page wizard (REQ
+         "Wizard Interaction Pattern"). Later wizards (personas, providers) may grow this into a
+         chooser. */}}
+    <a class="sb-new" href="/endpoints/vend" data-sb-new>+ new</a>
   {{end}}
   {{/* Theme control: visible on every page including login (SPEC-0015 REQ "Theme Toggle");
        sb-theme.js cycles day/night and persists to localStorage, `t` via the keymap. */}}

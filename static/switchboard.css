@@ -2376,3 +2376,90 @@ pre code {
     transform: translate(-50%, -50%);
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Wizard pages (SPEC-0015 REQ "Wizard Interaction Pattern"; ADR-0018): full-page
+   routed steps — the vend wizard first (templates/vend.html), the revoke confirm
+   page (templates/revoke.html), and every later create/connect flow. */
+.sb-wiz {
+  max-width: 620px;
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  padding: 18px 20px 16px;
+  margin: 16px 0;
+}
+/* Step tracker: terminal-style numbered rail; the current step reads accent, done steps muted. */
+.sb-wiz__steps {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 0 4px;
+  padding: 0;
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  color: var(--sb-faint);
+}
+.sb-wiz__step--current {
+  color: var(--sb-accent);
+  font-weight: 600;
+}
+.sb-wiz__step--done {
+  color: var(--sb-muted);
+}
+.sb-wiz__step--done::after {
+  content: " ✓";
+}
+.sb-wiz__stepnum {
+  opacity: 0.7;
+}
+.sb-wiz__progress {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  margin: 0 0 12px;
+}
+/* Lifetime radios render as a vertical choice list (radio stays native for no-JS + a11y). */
+.sb-wiz__choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+.sb-wiz__choice {
+  font-family: var(--sb-font-mono);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+/* Confirm summaries (vend confirm, revoke confirm) reuse the endpoint-card scope rows. */
+.sb-wiz__summary {
+  margin: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Endpoint-card head flags: countdown chip + state badge, right-aligned together. */
+.sb-epcard__flags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Expiry countdown chip (SPEC-0016 "the endpoints view SHALL show the countdown"): claimed-amber
+   family — time-bounded, not failed. sb-live.js may hydrate it live from data-sb-expires-at. */
+.sb-chip--expiry {
+  color: var(--sb-status-claimed);
+  background: var(--sb-status-claimed-bg);
+  border-color: transparent;
+}
+
+/* One-time reveal, now an inline page section (the wizard completes as a full page render —
+   no overlay). */
+.sb-reveal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

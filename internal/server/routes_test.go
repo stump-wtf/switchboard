@@ -65,10 +65,12 @@ var sessionRoutes = map[string]bool{
 	"GET /":                       true, // Board landing (SPEC-0013) — gated, per PR #120 wiring
 	"GET /todos":                  true, // Todos view (SPEC-0013 durable-queue table)
 	"GET /todos/{id}":             true, // Todo detail drawer (fragment / standalone)
-	"GET /endpoints":              true, // Endpoints view (SPEC-0013 vended-endpoint cards)
-	"GET /endpoints/vend":         true, // vend modal fragment
+	"GET /endpoints":              true, // Endpoints view (SPEC-0015 vended-endpoint cards)
+	"GET /endpoints/vend":         true, // vend wizard start (mints server-side step state)
+	"GET /endpoints/vend/{step}":  true, // vend wizard step pages (SPEC-0015 wizard pattern)
+	"POST /endpoints/vend/{step}": true, // step submit / confirm-step mint
 	"GET /providers":              true, // Providers view shell placement (SPEC-0015 six-view IA)
-	"POST /endpoints/vend":        true, // mint + one-time reveal
+	"POST /endpoints/vend":        true, // direct single-form mint + one-time reveal
 	"GET /agents":                 true, // retired SPEC-0012 screen — 303-redirects to /endpoints
 	"GET /agents/{id}":            true, // retired SPEC-0012 screen — 303-redirects to /endpoints
 	"GET /events":                 true,
@@ -78,6 +80,7 @@ var sessionRoutes = map[string]bool{
 	"POST /todos/{id}/retry":      true, // operator retry a dead-lettered todo (SPEC-0013)
 	"POST /todos/{id}/extend":     true, // operator extend lease / heartbeat (SPEC-0013)
 	"POST /todos/{id}/release":    true, // operator release lease back to pending (SPEC-0013)
+	"GET /endpoints/{id}/revoke":  true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
 	"POST /endpoints/{id}/revoke": true,
 	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)
 	// Friends view + approval flow (SPEC-0013). All session-gated; the handlers 404 when the friending
@@ -139,7 +142,7 @@ func routePath(route string) string {
 	return strings.NewReplacer(
 		"{id}", "00000000-0000-0000-0000-000000000000",
 		"{persona_id}", "00000000-0000-0000-0000-000000000000",
-		"{name}", "x", "{endpoint}", "x", "*", "x",
+		"{name}", "x", "{endpoint}", "x", "{step}", "persona", "*", "x",
 	).Replace(route)
 }
 
