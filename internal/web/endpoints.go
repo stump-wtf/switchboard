@@ -10,6 +10,7 @@ package web
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -63,6 +64,11 @@ type endpointCard struct {
 	State       string // active | revoked
 	RevokedAt   *time.Time
 	LastSeenAt  *time.Time
+	// ExpiresAt is the vend-time credential lifetime the card exposes as countdown data
+	// (data-sb-expires-at); nil = valid until revoked. Card styling for the countdown lands with
+	// the SPEC-0015 charm-web stories — this is data only. Governing: SPEC-0016 REQ "Credential
+	// Lifetime".
+	ExpiresAt *time.Time
 }
 
 // cardInitials derives the endpoint card's two-letter avatar tile from the agent name: the first
@@ -116,6 +122,7 @@ func cardFromStore(c store.EndpointCard, personasEnabled bool) endpointCard {
 		State:      c.State,
 		RevokedAt:  c.RevokedAt,
 		LastSeenAt: c.LastSeenAt,
+		ExpiresAt:  c.ExpiresAt,
 	}
 	if personasEnabled {
 		card.PersonaName = c.PersonaName
@@ -258,6 +265,20 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name, at least one queue, and at least one verb are required", http.StatusBadRequest)
 		return
 	}
+	// Optional credential lifetime (SPEC-0015's wizard lifetime step submits it; the plain form
+	// accepts the same value). Empty = no expiry, valid until revoked. A malformed or non-positive
+	// lifetime is rejected BEFORE minting anything, like the scope gate above. Governing: SPEC-0016
+	// REQ "Credential Lifetime", ADR-0019.
+	var expiresAt *time.Time
+	if lifetime := strings.TrimSpace(r.FormValue("lifetime")); lifetime != "" {
+		d, err := parseLifetime(lifetime)
+		if err != nil {
+			http.Error(w, "invalid lifetime", http.StatusBadRequest)
+			return
+		}
+		exp := time.Now().Add(d).UTC()
+		expiresAt = &exp
+	}
 
 	token, hash, prefix, err := cred.Mint()
 	if err != nil {
@@ -280,6 +301,7 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 	res, err := h.store.VendAgentEndpoint(r.Context(), store.VendParams{
 		OwnerHumanID: human.ID, Name: name, PersonaID: personaID,
 		CredHash: hash, CredPrefix: prefix, Slug: slug, Queues: queues, Verbs: verbs,
+		ExpiresAt: expiresAt,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -326,6 +348,39 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled, VerbOptions: vendVerbOptions(),
 		Reveal: &reveal,
 	})
+}
+
+// parseLifetime parses the vend form's optional credential lifetime into a duration: a Go duration
+// string ("90m", "1h", "24h") or a whole-day/week shorthand ("7d", "4w") for the wizard's preset
+// vocabulary, which time.ParseDuration alone does not speak. Zero and negative lifetimes are
+// rejected — an endpoint can never be vended already expired. Governing: SPEC-0016 REQ "Credential
+// Lifetime" (lifetime chosen at vend time).
+func parseLifetime(s string) (time.Duration, error) {
+	var d time.Duration
+	var err error
+	if n, ok := strings.CutSuffix(s, "d"); ok {
+		d, err = daysToDuration(n, 24*time.Hour)
+	} else if n, ok := strings.CutSuffix(s, "w"); ok {
+		d, err = daysToDuration(n, 7*24*time.Hour)
+	} else {
+		d, err = time.ParseDuration(s)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, errors.New("lifetime must be positive")
+	}
+	return d, nil
+}
+
+// daysToDuration converts a whole-number count of a coarse unit (day, week) into a duration.
+func daysToDuration(n string, unit time.Duration) (time.Duration, error) {
+	count, err := strconv.Atoi(strings.TrimSpace(n))
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(count) * unit, nil
 }
 
 // multiValues collects a repeated form field (checkbox chips submit one value each) OR a single
