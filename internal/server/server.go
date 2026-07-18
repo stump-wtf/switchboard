@@ -408,6 +408,14 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/todos/{id}/retry", d.webh.RetryTodo)
 		pr.Post("/todos/{id}/extend", d.webh.ExtendTodo)
 		pr.Post("/todos/{id}/release", d.webh.ReleaseTodo)
+		// OAuth consent (SPEC-0016 REQ "Authorization Code Flow With Consent"): GET renders the
+		// "authorize access" screen, its POST records the decision (approve mints the single-use
+		// PKCE-bound code; deny returns the standard error). DELIBERATELY inside the RequireHuman
+		// group — consent is the flow's human gate, so an anonymous authorize request is bounced
+		// through login first (scenario "Human absent") — with CSRF on the decision POST and the
+		// shared human-surface limiter, like every other session mutation. Governing: ADR-0019.
+		pr.Get(oauthsrv.AuthorizePath, d.webh.OAuthAuthorize)
+		pr.Post(oauthsrv.AuthorizePath, d.webh.OAuthDecision)
 		// Revocation is irreversible, so it confirms on a full page first (SPEC-0015 REQ "Wizard
 		// Interaction Pattern"): GET renders the confirm, the POST from that page executes the kill.
 		pr.Get("/endpoints/{id}/revoke", d.webh.RevokeConfirm)
