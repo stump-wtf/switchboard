@@ -271,6 +271,88 @@ func (s *Store) SetAdapterEnabled(ctx context.Context, name string, enabled bool
 	return nil
 }
 
+// RotateProviderSecret replaces the held secret on a provider's registry row, sealing the new
+// plaintext through the configured SecretCipher exactly like SeedProvider — the database only ever
+// sees the envelope. Returns ErrNotFound for an unregistered provider. The old secret stops working
+// on the very next request: the write invalidates the dispatch cache, so no restart (and no grace
+// window) is involved.
+//
+// Governing: ADR-0020, SPEC-0017 REQ "Provider Lifecycle" (rotate the secret for token/signed
+// webhook kinds); the caller enforces WHICH kinds are rotatable — this is the storage primitive.
+func (s *Store) RotateProviderSecret(ctx context.Context, name, secret string) error {
+	stored, err := s.sealSecret(secret)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE adapters SET secret = NULLIF($2, ''), updated_at = now() WHERE name = $1`,
+		name, stored)
+	if err != nil {
+		return fmt.Errorf("store: rotate provider secret %s: %w", name, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	s.invalidateProviderCache()
+	return nil
+}
+
+// RemoveProvider deletes a provider's registry row, returning ErrNotFound for an unknown name. The
+// delete touches ONLY the adapters table: events and todos reference providers by source NAME with
+// no foreign key into the registry, so everything the provider ever ingested remains queryable —
+// removal kills the line, never the history. The write invalidates the dispatch cache, so the
+// provider's ingestion URL is dead (404) on the next request.
+//
+// Governing: SPEC-0017 REQ "Provider Lifecycle" (removal SHALL NOT delete previously ingested
+// events or todos; scenario "Disable stops the line" — history stays queryable).
+func (s *Store) RemoveProvider(ctx context.Context, name string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM adapters WHERE name = $1`, name)
+	if err != nil {
+		return fmt.Errorf("store: remove provider %s: %w", name, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	s.invalidateProviderCache()
+	return nil
+}
+
+// ProviderHealth is one provider's ingest-side health for the Providers view: the trailing
+// one-minute in-rate and the newest accepted delivery's timestamp. Derived entirely from the
+// events table (accepted deliveries only — rejected payloads never persist, SPEC-0001), keyed by
+// event source, which is the provider's registry name on every ingest path.
+type ProviderHealth struct {
+	EventsPerMin int        // accepted deliveries in the trailing minute — the per-line in-rate
+	LastSeenAt   *time.Time // newest accepted delivery; nil = never seen
+}
+
+// ProviderHealthBySource aggregates per-provider health across the events table in one query:
+// source → {in-rate, last-seen}. Providers that never ingested simply have no entry — the view
+// renders those as idle/never-seen rather than erroring.
+//
+// Governing: SPEC-0017 REQ "Providers View" (per-provider in-rate and last-seen).
+func (s *Store) ProviderHealthBySource(ctx context.Context) (map[string]ProviderHealth, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT source,
+		       count(*) FILTER (WHERE received_at > now() - interval '1 minute'),
+		       max(received_at)
+		FROM events GROUP BY source`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]ProviderHealth{}
+	for rows.Next() {
+		var source string
+		var h ProviderHealth
+		if err := rows.Scan(&source, &h.EventsPerMin, &h.LastSeenAt); err != nil {
+			return nil, err
+		}
+		out[source] = h
+	}
+	return out, rows.Err()
+}
+
 // RecordAdapterPoll stamps the outcome of one poll-loop consume attempt on the adapter's registry
 // row: last_poll_at is set to now, and last_error carries the attempt's (credential-free) error
 // text — or clears to NULL on a healthy attempt. Returns ErrNotFound for an unregistered adapter.
