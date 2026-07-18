@@ -1,9 +1,10 @@
 package web
 
-// Template render coverage for the SPEC-0013 Todos view and detail drawer: filter pills with live
-// count targets, the durable-queue table columns (dedup badge, lease/retry sub-lines, contextual
-// actions), and the drawer (lease card, escaped payload, timeline, state-appropriate footer).
-// These render fragments and pages without a database, exercising the pure render models.
+// Template render coverage for the SPEC-0015 Todos view and detail drawer (charm-web): filter
+// chips with live count targets, the durable-queue table columns (dedup badge, lease/retry
+// sub-lines, contextual actions), and the drawer (lease card, escaped payload, timeline,
+// state-appropriate footer). These render fragments and pages without a database, exercising the
+// pure render models. DOM assertions key on data-sb-* attributes and stable ids (ADR-0018).
 
 import (
 	"strings"
@@ -45,10 +46,10 @@ func TestTodosPageRendersPillsAndTable(t *testing.T) {
 		TodoItems: rows,
 	})
 	for _, want := range []string{
-		`href="/todos" aria-current="page"`,       // rail marks Todos active
-		`id="sb-todos-panel"`,                     // HTMX filter/search swap target
-		`id="sb-todos-search"`,                    // search box (focus-restored across swaps)
-		`class="sb-fpill sb-fpill--active"`,       // All pill active by default
+		`href="/todos" aria-current="page"`, // rail marks Todos active
+		`id="sb-todos-panel"`,               // HTMX filter/search swap target
+		`id="sb-todos-search"`,              // search box (focus-restored across swaps)
+		`data-sb-filter="all" href="/todos?filter=all" hx-get="/todos?filter=all" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="true"`, // all chip active by default
 		`id="sb-tc-pending"`, `id="sb-tc-failed"`, // pill-count SSE targets exist before first frame
 		">5</span>",                                // pending count
 		"dedup ×3",                                 // dedup badge on the claimed row
@@ -86,9 +87,11 @@ func TestTodosPanelFragmentPreservesFilterAndQuery(t *testing.T) {
 			t.Errorf("todos_panel: missing %q in %q", want, out)
 		}
 	}
-	// The Failed pill must be the active one.
-	if !strings.Contains(out, `sb-fpill--active`) || !strings.Contains(out, `Failed <span id="sb-tc-failed"`) {
-		t.Errorf("todos_panel: Failed pill not marked active: %q", out)
+	// The failed chip must be the active one (aria-selected on its own anchor).
+	chip := out[strings.Index(out, `data-sb-filter="failed"`):]
+	chip = chip[:strings.Index(chip, "</a>")]
+	if !strings.Contains(chip, `aria-selected="true"`) || !strings.Contains(chip, `failed <span id="sb-tc-failed"`) {
+		t.Errorf("todos_panel: failed chip not marked active: %q", chip)
 	}
 }
 
@@ -104,11 +107,11 @@ func TestTodoRowLiveVariants(t *testing.T) {
 	}
 	// A reaper re-surface flags the row to flash; a server-rendered row does not.
 	flash, _ := h.renderFragment("todo_row", todoRow{ID: "td_y", ShortID: "td_y", State: "pending", Flash: true})
-	if !strings.Contains(flash, "sb-trow--flash") {
-		t.Errorf("flash row missing highlight class: %q", flash)
+	if !strings.Contains(flash, "data-sb-flash") {
+		t.Errorf("flash row missing data-sb-flash stamp: %q", flash)
 	}
 	plain, _ := h.renderFragment("todo_row", todoRow{ID: "td_z", ShortID: "td_z", State: "pending"})
-	if strings.Contains(plain, "sb-trow--flash") || strings.Contains(plain, "hx-swap-oob") {
+	if strings.Contains(plain, "data-sb-flash") || strings.Contains(plain, "hx-swap-oob") {
 		t.Errorf("plain row must not flash or be OOB: %q", plain)
 	}
 }
