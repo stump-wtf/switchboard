@@ -19,7 +19,8 @@ import (
 func allPages(t *testing.T, h *Handler) map[string]string {
 	t.Helper()
 	seen := time.Now().Add(-2 * time.Minute)
-	card := endpointCard{ID: "e1", AgentName: "reviewer-bot", Slug: "reviewer-bot-ab12cd",
+	card := endpointCard{ID: "e1", AgentName: "reviewer-bot", Principal: "Joe Stump", Slug: "reviewer-bot-ab12cd",
+		URL:        "https://sb.example.com/mcp/reviewer-bot-ab12cd",
 		CredPrefix: "sbk_ab12cd", Queues: []string{"reviews"}, Verbs: []string{"claim"}, State: "active", LastSeenAt: &seen}
 	sh := shell{Active: "board", TodoCount: 1, LiveRate: 2, DBConnected: true, Initials: "JS"}
 	views := map[string]view{
@@ -30,7 +31,13 @@ func allPages(t *testing.T, h *Handler) map[string]string {
 				ID: 1, Source: "github", EventType: "push", TrustMode: "signed", ReceivedAt: time.Now(),
 				TodoID: "td_1", TodoState: "pending"}, false)}},
 		"endpoints": {Title: "Endpoints", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"},
-			EndpointCards: []endpointCard{card}, VerbOptions: vendVerbOptions()},
+			EndpointCards: []endpointCard{card}},
+		// The vend wizard's step pages and the revoke confirm are full pages in the same shell
+		// (SPEC-0015 REQ "Wizard Interaction Pattern"), so the landmark/origin sweeps cover them.
+		"vend": {Title: "Vend endpoint", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"},
+			Vend: testVendStepView("persona")},
+		"revoke": {Title: "Revoke endpoint", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"},
+			RevokeConfirm: &revokeConfirmView{Card: card}},
 	}
 	out := make(map[string]string, len(views))
 	for page, v := range views {

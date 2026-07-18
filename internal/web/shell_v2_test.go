@@ -23,9 +23,9 @@ func TestShellRendersCharmTopBar(t *testing.T) {
 		`class="sb-wordmark">switchboard</span>`, // display wordmark
 		`data-sb-breadcrumb>~/operator</span>`,   // breadcrumb
 		`data-sb-mcp`, "mcp connected",           // MCP indicator, connected state
-		`class="sb-new" href="/endpoints" data-sb-new`, // "+ new" launcher
-		`data-sb-theme-toggle`,                         // visible theme control
-		`id="sb-keys" data-sb-keys`,                    // key-hint footer slot
+		`class="sb-new" href="/endpoints/vend" data-sb-new`, // "+ new" launcher → the vend wizard (SPEC-0015)
+		`data-sb-theme-toggle`,                              // visible theme control
+		`id="sb-keys" data-sb-keys`,                         // key-hint footer slot
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("shell: missing %q", want)

@@ -1,25 +1,21 @@
 {{define "content"}}
-{{/* Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" — vended-endpoint cards (agent name,
-     bound persona when enabled, status, scope chips, credential DISPLAY PREFIX only, last-seen,
-     Edit/Revoke on active; revoked cards dimmed with a killed-at stamp) plus the "+ Vend endpoint"
-     modal. The modal is an HTMX fragment swapped into the shared #sb-overlay slot (the same overlay
-     machinery the todo drawer uses: focus trap, Escape, scrim-click, focus return — sb.js). A no-JS
-     visitor gets the form inline (VendOpen) and the reveal inline (Reveal) instead. */}}
+{{/* Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard" — vended-endpoint cards (principal,
+     persona, queues, verbs, MCP URL, credential display prefix with hashed/last-used, expiry
+     countdown, rotate/revoke) plus the "+ Vend endpoint" launcher, which opens the FULL-PAGE vend
+     wizard (persona → queues → verbs → lifetime → confirm; templates/vend.html). The modal-era
+     vend form is retired. A successful vend renders the one-time reveal inline (Reveal). */}}
 <div class="sb-page-head">
   <div>
-    {{/* Header + tagline copy per the design canvas (docs/design/04-screens.md §3). */}}
+    {{/* Header + tagline copy per the design canvas. */}}
     <h1 class="sb-page-title">Vended MCP endpoints</h1>
     <p class="sb-tagline">humans are the accountable principals · each endpoint is a scoped, revocable capability · revoke = kill the endpoint</p>
   </div>
-  {{/* Progressive enhancement: with JS the button fetches the modal into the overlay; without JS the
-       href navigates to the inline form. */}}
-  <a class="sb-btn sb-vend-open" href="/endpoints/vend"
-     hx-get="/endpoints/vend" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">+ Vend endpoint</a>
+  {{/* Wizard launcher: a plain link — the wizard is routed pages with server-side state, so there
+       is nothing to progressively enhance here (SPEC-0015 REQ "Wizard Interaction Pattern"). */}}
+  <a class="sb-btn sb-vend-open" href="/endpoints/vend">+ Vend endpoint</a>
 </div>
 
 {{if .Reveal}}<div class="sb-card sb-reveal-inline">{{template "vend_reveal" .Reveal}}</div>{{end}}
-
-{{if .VendOpen}}<div class="sb-card sb-vend-inline">{{template "vend_form" .}}</div>{{end}}
 
 {{if .EndpointCards}}
 <section class="sb-cards" aria-label="Vended endpoints">

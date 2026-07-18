@@ -1,0 +1,33 @@
+{{define "content"}}
+{{/* Revoke confirm page (SPEC-0015 REQ "Wizard Interaction Pattern": destructive and irreversible
+     steps confirm before executing). Revocation kills the endpoint — credential dead, URL unrouted,
+     live sessions torn down (SPEC-0007 REQ "Instant, Total Revocation") — so the card's Revoke
+     action lands here first and the POST only fires from this page's explicit confirm. Plain form,
+     no JS required. Governing: ADR-0018. */}}
+{{$c := .RevokeConfirm.Card}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">Revoke endpoint</h1>
+    <p class="sb-tagline">revoke = kill the endpoint · the credential dies and its live sessions close · this cannot be undone</p>
+  </div>
+</div>
+
+<section class="sb-wiz sb-wiz--confirm" data-sb-revoke-confirm aria-label="Confirm revocation">
+  <dl class="sb-wiz__summary">
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Agent</dt><dd>{{$c.AgentName}}</dd></div>
+    {{if and $.PersonasEnabled $c.PersonaName}}<div class="sb-epcard__row"><dt class="sb-microlabel">Persona</dt><dd>{{$c.PersonaName}}</dd></div>{{end}}
+    <div class="sb-epcard__row"><dt class="sb-microlabel">URL</dt><dd><code class="sb-code">{{$c.URL}}</code></dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Credential</dt><dd><code class="sb-code">{{$c.CredPrefix}}…</code></dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Queues</dt><dd>{{range $c.Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span> {{end}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Verbs</dt><dd>{{range $c.Verbs}}<span class="sb-chip sb-chip--verb">{{.}}</span> {{end}}</dd></div>
+  </dl>
+  <p class="sb-callout sb-callout--danger">Revoking is instant and total: every call presenting this credential fails from the moment you confirm, and its live MCP sessions are closed. The agent keeps nothing.</p>
+  <form method="post" action="/endpoints/{{$c.ID}}/revoke" class="sb-epcard__revoke">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="sb-vend__foot">
+      <a class="sb-btn sb-btn--secondary" href="/endpoints">Cancel</a>
+      <button type="submit" class="sb-btn sb-btn--danger sb-btn--mono" data-sb-revoke-submit>Revoke — kill this endpoint</button>
+    </div>
+  </form>
+</section>
+{{end}}
