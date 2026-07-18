@@ -17,7 +17,7 @@ import (
 func validPageFS() fstest.MapFS {
 	fsys := fstest.MapFS{
 		"templates/layout.html":          {Data: []byte(`{{define "layout"}}<html>{{template "content" .}}</html>{{end}}`)},
-		"templates/fragments/board.html": {Data: []byte(`{{define "feed_row"}}{{end}}`)},
+		"templates/fragments/board.html": {Data: []byte(`{{define "lane_card"}}{{end}}`)},
 	}
 	for _, p := range pageNames {
 		fsys["templates/"+p+".html"] = &fstest.MapFile{Data: []byte(`{{define "content"}}` + p + `{{end}}`)}

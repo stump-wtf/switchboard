@@ -122,6 +122,11 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		DevLogin:     cfg.DevLogin,
 	}.Normalized()
 	ing := ingest.New(st, hub, log, icfg)
+	// Ephemeral received-lane instrumentation (SPEC-0015 REQ "Patch Panel Board"): the receivers
+	// report in-flight deliveries — arrival, redacted rejection, dedup collapse — so the board's
+	// received lane renders the moment of verification live. SSE-only; nothing new is persisted,
+	// and the SPEC-0001 rejection doctrine is unchanged.
+	ing.SetInstrument(webh)
 	// Env config becomes an idempotent boot seed into the provider registry (create-if-absent,
 	// never clobber operator edits); the registry is authoritative thereafter, and dispatch
 	// resolves it live. Governing: ADR-0020, SPEC-0017 REQ "Environment Config Import".

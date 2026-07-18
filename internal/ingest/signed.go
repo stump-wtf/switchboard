@@ -29,18 +29,8 @@ func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
-	secret, ok := i.signedSecret(w, r, "stripe", i.stripeSecret)
-	if !ok {
-		return
-	}
-	if !verifyStripe(secret, body, r.Header.Get("Stripe-Signature"), i.now(), i.tolerance) {
-		// Reject without persisting; log a redacted line (never the signature value or secret).
-		i.log.Warn("stripe signature rejected", "remote", clientIP(r))
-		writeErr(w, http.StatusUnauthorized, "signature verification failed")
-		return
-	}
-
+	// Event type + idempotency key parse before verification feeds ONLY the ephemeral received-lane
+	// card (SPEC-0015) — nothing is persisted until the signature verifies below.
 	var p struct {
 		ID   string `json:"id"`
 		Type string `json:"type"`
@@ -49,6 +39,20 @@ func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
 	// Idempotency key from the Stripe event id; body-hash fallback if absent (SPEC-0001 REQ
 	// "Idempotency Key Extraction and Dedup").
 	key := idempotencyKey(p.ID, body)
+	i.observeReceived("stripe", p.Type, "signed", key)
+	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
+	secret, ok := i.signedSecret(w, r, "stripe", i.stripeSecret)
+	if !ok {
+		i.observeRejected("stripe", p.Type, "signed", key, "provider unavailable")
+		return
+	}
+	if !verifyStripe(secret, body, r.Header.Get("Stripe-Signature"), i.now(), i.tolerance) {
+		// Reject without persisting; log a redacted line (never the signature value or secret).
+		i.log.Warn("stripe signature rejected", "remote", clientIP(r))
+		i.observeRejected("stripe", p.Type, "signed", key, "signature verification failed")
+		writeErr(w, http.StatusUnauthorized, "signature verification failed")
+		return
+	}
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
 		store.EventInput{
@@ -68,6 +72,9 @@ func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
 	}
 	if created {
 		i.hub.Publish(td)
+	} else {
+		// Idempotent redelivery: resolve the in-flight card without a lane advance (SPEC-0015).
+		i.observeDeduped("stripe", p.Type, "signed", key)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": td.ID, "queue": td.Queue, "verified": true})
 }
@@ -82,18 +89,8 @@ func (i *Ingest) Slack(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
-	secret, ok := i.signedSecret(w, r, "slack", i.slackSecret)
-	if !ok {
-		return
-	}
-	if !verifySlack(secret, body, r.Header.Get("X-Slack-Request-Timestamp"),
-		r.Header.Get("X-Slack-Signature"), i.now(), i.tolerance) {
-		i.log.Warn("slack signature rejected", "remote", clientIP(r))
-		writeErr(w, http.StatusUnauthorized, "signature verification failed")
-		return
-	}
-
+	// Event type + idempotency key parse before verification feeds ONLY the ephemeral received-lane
+	// card (SPEC-0015) — nothing is persisted until the signature verifies below.
 	var p struct {
 		Type    string `json:"type"`
 		EventID string `json:"event_id"`
@@ -109,6 +106,20 @@ func (i *Ingest) Slack(w http.ResponseWriter, r *http.Request) {
 	// Slack supplies an event_id on event callbacks; fall back to a body hash otherwise
 	// (SPEC-0001 REQ "Idempotency Key Extraction and Dedup" — body-hash fallback for Slack).
 	key := idempotencyKey(p.EventID, body)
+	i.observeReceived("slack", eventType, "signed", key)
+	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
+	secret, ok := i.signedSecret(w, r, "slack", i.slackSecret)
+	if !ok {
+		i.observeRejected("slack", eventType, "signed", key, "provider unavailable")
+		return
+	}
+	if !verifySlack(secret, body, r.Header.Get("X-Slack-Request-Timestamp"),
+		r.Header.Get("X-Slack-Signature"), i.now(), i.tolerance) {
+		i.log.Warn("slack signature rejected", "remote", clientIP(r))
+		i.observeRejected("slack", eventType, "signed", key, "signature verification failed")
+		writeErr(w, http.StatusUnauthorized, "signature verification failed")
+		return
+	}
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
 		store.EventInput{
@@ -128,6 +139,9 @@ func (i *Ingest) Slack(w http.ResponseWriter, r *http.Request) {
 	}
 	if created {
 		i.hub.Publish(td)
+	} else {
+		// Idempotent redelivery: resolve the in-flight card without a lane advance (SPEC-0015).
+		i.observeDeduped("slack", eventType, "signed", key)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": td.ID, "queue": td.Queue, "verified": true})
 }

@@ -56,9 +56,15 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 		"board": renderPage(t, h, "board", view{Title: "The Board", Human: human, CSRF: "tok",
 			Shell: shell{Active: "board", DBConnected: true, Initials: "JS"},
 			Tiles: tilesView{Stats: store.BoardStats{TodosToday: 1}, Bars: activityBars([]int{1, 2})},
-			Rows: []feedRow{feedRowFromEvent(store.EventSummary{
-				ID: 1, Source: payload, EventType: payload, TrustMode: "signed", ReceivedAt: time.Now(),
-			}, false)},
+			// Attacker-shaped provider/event/title values flow through the lane card (webhook-born
+			// todos carry provider-controlled titles) — and through the ephemeral in-flight card,
+			// whose source/kind arrive straight from unverified request headers.
+			Lanes: lanesView{
+				Received: []laneCard{inflightCard(payload, payload, "signed", "k1", time.Now())},
+				Verified: []laneCard{laneCardFromItem(store.TodoItem{Todo: store.Todo{
+					ID: "td_1", Source: payload, Kind: payload, Title: payload, State: "pending",
+					CreatedAt: time.Now()}, TrustMode: "signed"})},
+			},
 		}),
 		"endpoints": renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: human, CSRF: "tok", Shell: sh,
 			EndpointCards: []endpointCard{card}, PersonasEnabled: true}),

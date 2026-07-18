@@ -1,29 +1,44 @@
-// Typed SSE event taxonomy for the operator board.
+// Typed SSE event taxonomy for the patch-panel board.
 //
-// Governing: SPEC-0013 REQ "Live Updates and Toasts", REQ "Board View — Live Incoming Lines" —
-// committed store transitions become NAMED SSE events (event_received, todo_created, todo_claimed,
-// todo_completed, todo_failed, todo_resurfaced, endpoint_seen, counts) whose payloads are
-// pre-rendered HTML fragments; hx-swap-oob swaps let one event update its feed row, the count
-// pills, and the toast region atomically. This layers the SPEC-0013 taxonomy on the SPEC-0012 hub in sse.go: same
-// lossy fan-out, same reload-renders-DB-truth guarantee — a dropped frame stales a region, never
-// state.
+// Governing: SPEC-0015 REQ "Patch Panel Board", REQ "Live Fragment Architecture" — the board is
+// three lanes (received · verified · patched through) and every live transition is a NAMED SSE
+// event whose payload expresses lane movement as an out-of-band REMOVAL (hx-swap-oob="delete" of
+// the card's stable id) plus an out-of-band INSERTION (hx-swap-oob="afterbegin:#sb-lane-…-cards"
+// into the destination lane):
 //
-// Ownership routing (SPEC-0012/0013 — the stream is scoped to the human's own data): the hub
-// routes an Event with a nonempty Owner only to that human's streams (sse.go). endpoint_seen has
-// a real ownership edge (endpoint → agent → owner_human_id) and publishes scoped. Events, todos,
-// and counts do NOT: in today's schema (0001_init.sql) a queue is a plain name with no owning
-// human, todos hang off queues/events, and every authenticated human is an operator of the same
-// single-tenant board — so those frames publish with Owner "" (all authenticated subscribers).
-// Event.Owner is the scoping seam: when queues gain an owner edge, stamp Owner on the todo/event
-// frames here and the hub routes per-human with no transport change. Counts frames are global
-// aggregates (store.BoardStats / store.TodoCounts carry no per-human filter), so one identical
-// frame fans out to all subscribers — recomputing per-human would render the same numbers.
+//   - lane_received / lane_rejected / lane_deduped — the EPHEMERAL received lane, fed by ingest
+//     instrumentation (internal/ingest instrument.go), SSE-only, never persisted: a delivery
+//     entering verification, a redacted rejection surface, an idempotency collapse. A reload
+//     renders the received lane empty — that is truthful (design.md "Received lane is ephemeral
+//     by design"; SPEC-0001 rejection doctrine unchanged: rejected payloads are never stored).
+//   - todo_created / todo_claimed / todo_completed / todo_failed / todo_resurfaced — committed
+//     store transitions (store.TodoTransitionHook): created moves the in-flight card from
+//     received into *verified* (durable, unclaimed); claimed moves verified → *patched through*;
+//     completed/failed update in place within patched through; resurfaced returns the card to
+//     *verified*. Each frame also carries the Todos-view row OOB swap and (for background
+//     transitions) a toast.
+//   - counts — the OOB count bundle: stat tiles, rail badge, LIVE pill, Todos filter pills, and
+//     the verified/patched lane-header counts. The received lane's count is DOM-derived
+//     client-side (sb-live.js) because its cards are ephemeral.
+//   - endpoint_seen — the last-seen refresh for one vended endpoint's card.
+//
+// The remove+insert pair is idempotent under redelivery (the delete no-ops when the id is absent,
+// the insert always lands), so a directly-responded claim and its SSE frame can both apply. The
+// SPEC-0012 hub in sse.go is UNCHANGED: same lossy fan-out, same reload-renders-DB-truth guarantee
+// — a dropped frame stales a lane, never state.
+//
+// Ownership routing (SPEC-0012 — the stream is scoped to the human's own data): endpoint_seen has
+// a real ownership edge (endpoint → agent → owner_human_id) and publishes scoped. Lane, todo, and
+// counts frames do NOT: in today's schema a queue is a plain name with no owning human and every
+// authenticated human operates the same single-tenant board, so those frames publish with Owner ""
+// (all authenticated subscribers). Event.Owner remains the scoping seam.
 package web
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 
@@ -37,22 +52,65 @@ const (
 	livePublishTimeout = 3 * time.Second
 	// activityBuckets is the throughput tile's bar count (24-bucket chart per the design record).
 	activityBuckets = 24
-	// feedCap is how many feed rows the Board keeps visible (~8 per the design record).
-	feedCap = 8
+	// laneCap is how many cards each lane renders server-side and keeps visible live (sb-live.js
+	// trims to the data-sb-lane-cap stamp).
+	laneCap = 8
+
+	// Ephemeral received-lane cards expire client-side (data-sb-ephemeral, ms): an in-flight card
+	// whose resolution frame was lost self-cleans, and resolution surfaces (rejected/deduped) are
+	// transient by design — nothing behind them is persisted (SPEC-0015 received lane semantics).
+	inflightTTLMS = 60000
+	resolvedTTLMS = 8000
 )
 
-// feedRow is the render model for one Board incoming line (templates/fragments/board.html "feed_row").
-type feedRow struct {
-	RowID      string // stable DOM id: sb-ev-<event id>, or sb-td-<todo id> for event-less todos
+// Lane keys — the DOM insertion targets are #sb-lane-<key>-cards (templates/fragments/board.html).
+const (
+	laneReceived = "received"
+	laneVerified = "verified"
+	lanePatched  = "patched"
+)
+
+// laneCard is the render model for one patch-panel card (fragments/board.html "lane_card"):
+// provider glyph (tag), title, trust chip, state chip, detail line, and age (SPEC-0015 REQ
+// "Patch Panel Board" card anatomy).
+type laneCard struct {
+	DomID      string // stable card id: sb-td-<todo id> (durable) or sb-rx-<hash> (ephemeral)
+	Lane       string // received | verified | patched — the insertion target
 	Source     string
-	EventType  string
+	Kind       string // event type / kind headline
+	Title      string // one-line summary under the headline
 	TrustMode  string
-	ReceivedAt time.Time
-	State      string // "" (verifying) | pending | claimed | done | failed
-	OwnerLabel string // human-readable lease owner for the claimed stage
-	TodoID     string // enables the Claim action on pending rows
-	Deduped    bool   // event collapsed onto another delivery's todo — render a truthful "deduped" stage
-	OOB        bool   // render as an hx-swap-oob replacement of the existing row
+	State      string // verifying | rejected | deduped (ephemeral) · pending | claimed | done | failed (durable)
+	Detail     string // foot line: "checking signature", the redacted rejection reason, "idem ok", owner…
+	OwnerLabel string
+	TodoID     string // enables the Claim action on pending cards
+	At         time.Time
+	TTLMS      int  // client-side expiry for ephemeral cards (0 = durable)
+	OOB        bool // render as an hx-swap-oob afterbegin insertion into the lane
+}
+
+// laneMove is the OOB removal+insertion pair (fragments/board.html "lane_move"): delete the card's
+// previous DOM node by id, then insert the refreshed card into its (possibly new) lane.
+// Governing: SPEC-0015 REQ "Live Fragment Architecture" (typed events, OOB removal + insertion).
+type laneMove struct {
+	RemoveID string // "" = pure insertion (no prior card to remove)
+	Card     laneCard
+}
+
+// laneCounts are the verified/patched lane-header counts (the received count is DOM-derived
+// client-side — its cards are ephemeral and never counted in the database).
+type laneCounts struct {
+	Verified int // durable todos not yet claimed (pending)
+	Patched  int // claimed or beyond (claimed + done + failed)
+}
+
+// lanesView feeds the "board_lanes" fragment: the server-rendered three-lane panel. Received is
+// empty on every full render (ephemeral, SSE-only); verified/patched render from the durable queue.
+type lanesView struct {
+	Received []laneCard
+	Verified []laneCard
+	Patched  []laneCard
+	Counts   laneCounts
 }
 
 // bar is one throughput-tile activity bar.
@@ -69,11 +127,12 @@ type tilesView struct {
 }
 
 // countsView feeds the "counts" fragment: the OOB bundle of tiles + rail count + LIVE pill (Board)
-// plus the Todos view filter-pill counts. Each region is an independent OOB swap, so a page updates
-// only the regions it actually renders (the Todos pills are ignored on the Board and vice-versa).
+// plus the Todos view filter-pill counts and the board's lane-header counts. Each region is an
+// independent OOB swap, so a page updates only the regions it actually renders.
 type countsView struct {
 	Tiles tilesView
 	Todos store.TodoCounts
+	Lanes laneCounts
 }
 
 // endpointSeenView feeds the "endpoint_seen" fragment: the last-seen refresh for one vended
@@ -85,23 +144,112 @@ type endpointSeenView struct {
 	OOB    bool
 }
 
-// PublishEventReceived adapts a committed inbound event (store.EventHook) into the Board's
-// event_received SSE frame plus a counts refresh. Never blocks the ingesting request: work is
-// enqueued onto the ordered live queue and dropped on overflow.
-func (h *Handler) PublishEventReceived(e store.EventSummary) {
+// rxCardID derives the stable DOM id for a delivery's ephemeral received-lane card from its
+// provider + idempotency key — the two facts BOTH the ingest instrumentation (arrival/rejection)
+// and the committed todo hook (advance) know, so the arrival card and its resolution frame always
+// target the same node. Hashed so provider keys (GUIDs, sha256:… hashes, webhook-scoped ids) are
+// always CSS-selector-safe.
+func rxCardID(provider, key string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(provider))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(key))
+	return fmt.Sprintf("sb-rx-%016x", h.Sum64())
+}
+
+// inflightCard builds the ephemeral received-lane card for a delivery under verification. Only
+// redacted, presentation-safe facts arrive here (instrument.go contract) — never payloads,
+// headers, signatures, or tokens.
+func inflightCard(provider, eventType, trust, key string, at time.Time) laneCard {
+	detail := "checking source"
+	switch trust {
+	case "signed":
+		detail = "checking signature"
+	case "token":
+		detail = "checking token"
+	case "open":
+		detail = "open line · no verification"
+	}
+	return laneCard{
+		DomID:     rxCardID(provider, key),
+		Lane:      laneReceived,
+		Source:    provider,
+		Kind:      eventType,
+		TrustMode: trust,
+		State:     "verifying",
+		Detail:    detail,
+		At:        at,
+		TTLMS:     inflightTTLMS,
+	}
+}
+
+// DeliveryReceived implements ingest.Instrument (satisfied structurally — web imports no ingest): a delivery entered verification, so its
+// ephemeral card appears in the received lane. SSE-only — nothing is persisted for this frame, and
+// a quiet reload truthfully renders the lane empty. Never blocks the ingesting request.
+// Governing: SPEC-0015 REQ "Patch Panel Board" (received lane), design.md.
+func (h *Handler) DeliveryReceived(provider, eventType, trust, key string) {
+	at := time.Now()
 	h.enqueueLive(func(ctx context.Context) {
-		if frag, err := h.renderFragment("feed_row", h.feedRowFromEvent(ctx, e, false)); err == nil {
-			h.events.Publish(Event{Name: "event_received", Data: frag})
-		} else {
-			h.log.Error("render event_received fragment", "event", e.ID, "err", err)
+		card := inflightCard(provider, eventType, trust, key, at)
+		card.OOB = true
+		frag, err := h.renderFragment("lane_card", card)
+		if err != nil {
+			h.log.Error("render lane_received fragment", "provider", provider, "err", err)
+			return
 		}
-		h.publishCounts(ctx)
+		h.events.Publish(Event{Name: "lane_received", Data: frag})
 	})
 }
 
+// DeliveryRejected implements ingest.Instrument: verification failed and the payload was
+// NOT persisted (SPEC-0001 unchanged) — the in-flight card is replaced by a transient, redacted
+// rejection surface that expires client-side. reason is the client-safe rejection message; no
+// signature, token, or body detail ever reaches the frame.
+// Governing: SPEC-0015 REQ "Patch Panel Board" scenario "Rejected caller".
+func (h *Handler) DeliveryRejected(provider, eventType, trust, key, reason string) {
+	at := time.Now()
+	h.enqueueLive(func(ctx context.Context) {
+		card := inflightCard(provider, eventType, trust, key, at)
+		card.State, card.Detail, card.TTLMS, card.OOB = "rejected", reason, resolvedTTLMS, true
+		frag, err := h.renderFragment("lane_move", laneMove{RemoveID: card.DomID, Card: card})
+		if err != nil {
+			h.log.Error("render lane_rejected fragment", "provider", provider, "err", err)
+			return
+		}
+		h.events.Publish(Event{Name: "lane_rejected", Data: frag})
+	})
+}
+
+// DeliveryDeduped implements ingest.Instrument: an accepted redelivery collapsed onto an
+// existing live todo (idempotency dedup), so the in-flight card resolves transiently without a
+// lane advance — the durable card it collapsed onto already sits in its lane.
+// Governing: SPEC-0015 REQ "Patch Panel Board"; SPEC-0001 REQ "Idempotency Key Extraction and Dedup".
+func (h *Handler) DeliveryDeduped(provider, eventType, trust, key string) {
+	at := time.Now()
+	h.enqueueLive(func(ctx context.Context) {
+		card := inflightCard(provider, eventType, trust, key, at)
+		card.State, card.Detail, card.TTLMS, card.OOB = "deduped", "collapsed onto an existing todo", resolvedTTLMS, true
+		frag, err := h.renderFragment("lane_move", laneMove{RemoveID: card.DomID, Card: card})
+		if err != nil {
+			h.log.Error("render lane_deduped fragment", "provider", provider, "err", err)
+			return
+		}
+		h.events.Publish(Event{Name: "lane_deduped", Data: frag})
+	})
+}
+
+// PublishEventReceived adapts a committed inbound event (store.EventHook) into a counts refresh:
+// the event moved the throughput/verified numbers. The LANE movement for an accepted delivery
+// rides the todo_created frame (the todo hook fires right after, in order), so the committed event
+// itself publishes no card — the received lane never shows persisted state. Never blocks.
+func (h *Handler) PublishEventReceived(store.EventSummary) {
+	h.enqueueLive(func(ctx context.Context) { h.publishCounts(ctx) })
+}
+
 // PublishTodoTransition adapts a committed todo lifecycle transition (store.TodoTransitionHook)
-// into its typed SSE frame: an OOB feed-row stage update, a toast for transitions the operator
-// didn't initiate in this view, and a counts refresh. Never blocks the transitioning caller.
+// into its typed SSE frame: the lane movement (OOB removal + insertion), the Todos-view row OOB
+// swap, a toast for transitions the operator didn't initiate in this view, and a counts refresh.
+// Never blocks the transitioning caller.
 func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 	name, ok := sseEventNames[verb]
 	if !ok {
@@ -109,19 +257,18 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 		return
 	}
 	h.enqueueLive(func(ctx context.Context) {
-		row := h.feedRowFromTodo(ctx, t, true)
 		var payload strings.Builder
-		if frag, err := h.renderFragment("feed_row", row); err == nil {
+		if frag, err := h.renderFragment("lane_move", h.laneMoveForTodo(ctx, t, name)); err == nil {
 			payload.WriteString(frag)
 		} else {
-			h.log.Error("render todo fragment", "todo", t.ID, "err", err)
+			h.log.Error("render lane_move fragment", "todo", t.ID, "err", err)
 		}
-		// The Todos view table row (a different DOM element than the Board feed row) is updated by
-		// the SAME event via a second OOB swap, so an open Todos table advances its row live. The
+		// The Todos view table row (a different DOM element than the board card) is updated by the
+		// SAME event via a second OOB swap, so an open Todos table advances its row live. The
 		// reaper's re-surface (todo_resurfaced) flags the row to flash briefly. Rendering it needs
 		// the enriched read model (trust mode, dedup count) — a best-effort store read; on error the
-		// row swap is skipped and a reload renders truth. Governing: SPEC-0013 REQ "Todos View —
-		// Durable Queue" (reaper re-surface is visible).
+		// row swap is skipped and a reload renders truth. Governing: SPEC-0015 REQ "Todos View And
+		// Drawer" (SSE row updates preserved).
 		if h.store != nil {
 			if it, err := h.store.GetTodoItem(ctx, t.ID); err == nil {
 				trow := h.todoRowFromItem(ctx, it, true, name == "todo_resurfaced")
@@ -134,8 +281,7 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 				h.log.Warn("live todo_row lookup", "todo", t.ID, "err", err)
 			}
 		}
-		// Background transitions surface as transient toasts (SPEC-0013 "Toast on background
-		// transition") announced with the todo id.
+		// Background transitions surface as transient toasts announced with the todo id.
 		if msg := h.toastText(ctx, name, t); msg != "" {
 			if frag, err := h.renderFragment("toast", msg); err == nil {
 				payload.WriteString(frag)
@@ -150,12 +296,28 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 	})
 }
 
+// laneMoveForTodo expresses one committed todo transition as lane movement. Creation removes the
+// delivery's EPHEMERAL received card (correlated by source + idempotency key — the same facts the
+// ingest instrumentation stamped) and inserts the durable card into verified; every later verb
+// removes the durable card by its stable id and re-inserts it into the lane its new state belongs
+// to. The pair is idempotent: delete no-ops when the node is absent, insert always lands.
+func (h *Handler) laneMoveForTodo(ctx context.Context, t store.Todo, event string) laneMove {
+	card := h.laneCardFromTodo(ctx, t)
+	card.OOB = true
+	removeID := card.DomID
+	if event == "todo_created" {
+		removeID = ""
+		if t.IdempotencyKey != "" {
+			removeID = rxCardID(card.Source, t.IdempotencyKey)
+		}
+	}
+	return laneMove{RemoveID: removeID, Card: card}
+}
+
 // PublishEndpointSeen adapts a committed endpoint last-seen stamp (store.EndpointSeenHook) into
 // the endpoint_seen SSE frame: an OOB refresh of that endpoint's last-seen node. No counts refresh
 // — an authentication changes no queue numbers. Never blocks the authenticating request.
-// Whether this should coalesce to a slower tick is an open design question
-// (docs/openspec/specs/operator-board/design.md); the hub is lossy either way.
-// Governing: SPEC-0013 REQ "Live Updates and Toasts" (endpoint last-seen updates).
+// Governing: SPEC-0012 REQ "Live Updates via SSE", SPEC-0015 REQ "Live Fragment Architecture".
 func (h *Handler) PublishEndpointSeen(endpointID string, seenAt time.Time) {
 	h.enqueueLive(func(ctx context.Context) {
 		// Scope the frame to the endpoint's owning human (endpoint → agent → owner_human_id):
@@ -163,7 +325,7 @@ func (h *Handler) PublishEndpointSeen(endpointID string, seenAt time.Time) {
 		// this credential authenticates. Fail CLOSED on a lookup miss — an unscoped broadcast
 		// would leak activity across humans, while a dropped frame only stales a last-seen stamp
 		// until reload. Governing: SPEC-0012 REQ "Live Updates via SSE" (stream scoped to the
-		// human's own data), SPEC-0013 REQ "Live Updates and Toasts".
+		// human's own data).
 		owner := ""
 		if h.store != nil {
 			o, err := h.store.EndpointOwner(ctx, endpointID)
@@ -185,14 +347,14 @@ func (h *Handler) PublishEndpointSeen(endpointID string, seenAt time.Time) {
 // PublishQueueNudge refreshes the live count regions in response to an out-of-band todo_ready
 // wakeup (the LISTEN loop in internal/server/listen.go). A todo enqueued by another process never
 // crosses this process's store hooks, so the wakeup re-renders the count bundle from the database
-// — the queue name is the whole notification payload, so no feed row can be rendered here; the
-// row appears on reload (DB truth) or via this process's own hooks. Governing: SPEC-0004 REQ
+// — the queue name is the whole notification payload, so no card can be rendered here; the card
+// appears on reload (DB truth) or via this process's own hooks. Governing: SPEC-0004 REQ
 // "In-Database Wakeups via LISTEN/NOTIFY" ("the web UI can be nudged when new work arrives").
 func (h *Handler) PublishQueueNudge(string) {
 	h.enqueueLive(func(ctx context.Context) { h.publishCounts(ctx) })
 }
 
-// sseEventNames maps store transition verbs onto the SPEC-0013 typed event taxonomy.
+// sseEventNames maps store transition verbs onto the typed event taxonomy.
 var sseEventNames = map[string]string{
 	"created": "todo_created",
 	"claimed": "todo_claimed",
@@ -201,9 +363,27 @@ var sseEventNames = map[string]string{
 	"pending": "todo_resurfaced", // reaper re-surface or retry back to the queue
 }
 
+// laneForState maps a durable todo state onto its board lane: pending = verified (durable,
+// unclaimed); claimed and beyond = patched through. Governing: SPEC-0015 lane semantics.
+func laneForState(state string) string {
+	if state == "pending" {
+		return laneVerified
+	}
+	return lanePatched
+}
+
+// laneStateLabel renders a card's state chip text: the durable "pending" state reads "queued" on
+// the board (the design record's chip), every other state is its own label.
+func laneStateLabel(state string) string {
+	if state == "pending" {
+		return "queued"
+	}
+	return state
+}
+
 // toastText renders the toast copy for a transition, or "" for transitions that only move the
-// feed (creation is announced by its own row appearing). It resolves the lease owner's display name
-// via the store (claimed · <agent name>).
+// board (creation is announced by its own card appearing). It resolves the lease owner's display
+// name via the store (claimed · <agent name>).
 func (h *Handler) toastText(ctx context.Context, name string, t store.Todo) string {
 	id := shortID(t.ID)
 	switch name {
@@ -224,9 +404,9 @@ func (h *Handler) toastText(ctx context.Context, name string, t store.Todo) stri
 	return ""
 }
 
-// publishCounts re-renders the count bundle (tiles + rail count + LIVE pill) from the database
-// and publishes it as a counts event. Store errors are logged, never published: subscribers just
-// keep their last numbers and a reload renders truth.
+// publishCounts re-renders the count bundle (tiles + rail count + LIVE pill + lane counts) from
+// the database and publishes it as a counts event. Store errors are logged, never published:
+// subscribers just keep their last numbers and a reload renders truth.
 func (h *Handler) publishCounts(ctx context.Context) {
 	if h.store == nil {
 		return
@@ -240,7 +420,8 @@ func (h *Handler) publishCounts(ctx context.Context) {
 	if err != nil {
 		h.log.Error("live counts buckets", "err", err)
 	}
-	// The Todos view filter-pill counts ride the same counts frame (OOB spans ignored on the Board).
+	// The Todos view filter-pill counts and the board lane-header counts ride the same counts
+	// frame (OOB spans ignored on pages that don't render them).
 	todos, err := h.store.TodoCounts(ctx)
 	if err != nil {
 		h.log.Error("live counts todo counts", "err", err)
@@ -248,6 +429,7 @@ func (h *Handler) publishCounts(ctx context.Context) {
 	frag, err := h.renderFragment("counts", countsView{
 		Tiles: tilesView{Stats: stats, Bars: activityBars(buckets), OOB: true},
 		Todos: todos,
+		Lanes: laneCountsFrom(todos),
 	})
 	if err != nil {
 		h.log.Error("render counts fragment", "err", err)
@@ -256,9 +438,15 @@ func (h *Handler) publishCounts(ctx context.Context) {
 	h.events.Publish(Event{Name: "counts", Data: frag})
 }
 
+// laneCountsFrom derives the lane-header counts from the per-state todo counts: verified holds the
+// durable-unclaimed queue, patched through everything claimed or beyond.
+func laneCountsFrom(c store.TodoCounts) laneCounts {
+	return laneCounts{Verified: c.Pending, Patched: c.Claimed + c.Done + c.Failed}
+}
+
 // enqueueLive appends fn to the ordered live-publish queue, starting the single worker on first
-// use. Ordering matters (event_received must precede todo_created for the same delivery so the
-// row exists before its stage update); a full queue drops — lossy by design.
+// use. Ordering matters (lane_received must precede todo_created for the same delivery so the
+// in-flight card exists before the frame that removes it); a full queue drops — lossy by design.
 func (h *Handler) enqueueLive(fn func(context.Context)) {
 	h.liveOnce.Do(func() {
 		h.liveCh = make(chan func(context.Context), liveQueueSize)
@@ -276,8 +464,8 @@ func (h *Handler) enqueueLive(fn func(context.Context)) {
 	}
 }
 
-// renderFragment executes one named fragment from the per-view fragment files (templates/fragments/) into a string ready
-// for SSE framing (the transport strips newlines; HTML is whitespace-insensitive).
+// renderFragment executes one named fragment from the per-view fragment files (templates/fragments/)
+// into a string ready for SSE framing (the transport strips newlines; HTML is whitespace-insensitive).
 func (h *Handler) renderFragment(name string, data any) (string, error) {
 	var buf bytes.Buffer
 	if err := h.frags.ExecuteTemplate(&buf, name, data); err != nil {
@@ -286,56 +474,99 @@ func (h *Handler) renderFragment(name string, data any) (string, error) {
 	return buf.String(), nil
 }
 
-// feedRowFromEvent builds the feed render model for an event summary (server render and the
-// event_received frame share this path, so reload and live rows are pixel-identical).
-func feedRowFromEvent(e store.EventSummary, oob bool) feedRow {
-	return feedRow{
-		RowID:      fmt.Sprintf("sb-ev-%d", e.ID),
-		Source:     e.Source,
-		EventType:  e.EventType,
-		TrustMode:  e.TrustMode,
-		ReceivedAt: e.ReceivedAt,
-		State:      e.TodoState,
-		OwnerLabel: ownerLabel(e.TodoOwner),
-		TodoID:     e.TodoID,
-		Deduped:    e.Deduped,
-		OOB:        oob,
+// laneCardFromItem builds a durable lane card from the enriched Todos read model (server render:
+// the same card the SSE frames later move, so reload and live cards are pixel-identical).
+func laneCardFromItem(it store.TodoItem) laneCard {
+	source := it.Source
+	if source == "" {
+		source = it.Queue
 	}
+	card := laneCard{
+		DomID:      "sb-td-" + it.ID,
+		Lane:       laneForState(it.State),
+		Source:     source,
+		Kind:       it.Kind,
+		Title:      it.Title,
+		TrustMode:  it.TrustMode,
+		State:      it.State,
+		OwnerLabel: ownerLabel(it.Owner),
+		TodoID:     it.ID,
+		At:         it.CreatedAt,
+	}
+	card.Detail = laneCardDetail(it.Todo)
+	return card
 }
 
-// feedRowFromEvent (method) builds the feed row and resolves the lease-owner display name from the
-// store (claimed · <agent name>), which the pure function above cannot do. Production render paths
-// use this; tests exercise the pure function with a pre-set owner label.
-func (h *Handler) feedRowFromEvent(ctx context.Context, e store.EventSummary, oob bool) feedRow {
-	row := feedRowFromEvent(e, oob)
-	row.OwnerLabel = h.ownerLabel(ctx, e.TodoOwner)
-	return row
+// laneCardFromItem (method) additionally resolves the lease owner's display name via the store.
+func (h *Handler) laneCardFromItem(ctx context.Context, it store.TodoItem) laneCard {
+	card := laneCardFromItem(it)
+	card.OwnerLabel = h.ownerLabel(ctx, it.Owner)
+	card.Detail = h.laneCardDetail(ctx, it.Todo)
+	return card
 }
 
-// feedRowFromTodo builds the feed render model for a todo transition, resolving the originating
-// event for provenance (source, type, trust badge). Event-less todos (queue adapters, dev seeds)
-// fall back to the todo's own fields under the queue trust mode.
-func (h *Handler) feedRowFromTodo(ctx context.Context, t store.Todo, oob bool) feedRow {
-	row := feedRow{
-		RowID:      "sb-td-" + t.ID,
-		Source:     t.Source,
-		EventType:  t.Kind,
+// laneCardFromTodo builds the durable lane card for a todo transition, resolving the originating
+// event for provenance (source, event type, trust chip). Event-less todos (queue adapters, dev
+// seeds) fall back to the todo's own fields under the queue trust mode.
+func (h *Handler) laneCardFromTodo(ctx context.Context, t store.Todo) laneCard {
+	source := t.Source
+	if source == "" {
+		source = t.Queue
+	}
+	card := laneCard{
+		DomID:      "sb-td-" + t.ID,
+		Lane:       laneForState(t.State),
+		Source:     source,
+		Kind:       t.Kind,
+		Title:      t.Title,
 		TrustMode:  "queue",
-		ReceivedAt: t.CreatedAt,
 		State:      t.State,
 		OwnerLabel: h.ownerLabel(ctx, t.Owner),
 		TodoID:     t.ID,
-		OOB:        oob,
+		At:         t.CreatedAt,
 	}
 	if t.EventID != nil && h.store != nil {
 		if e, err := h.store.EventByID(ctx, *t.EventID); err == nil {
-			row.RowID = fmt.Sprintf("sb-ev-%d", e.ID)
-			row.Source, row.EventType, row.TrustMode, row.ReceivedAt = e.Source, e.EventType, e.TrustMode, e.ReceivedAt
+			card.TrustMode = e.TrustMode
+			if card.Kind == "" {
+				card.Kind = e.EventType
+			}
 		} else {
-			h.log.Warn("live feed event lookup", "todo", t.ID, "event", *t.EventID, "err", err)
+			h.log.Warn("live lane card event lookup", "todo", t.ID, "event", *t.EventID, "err", err)
 		}
 	}
-	return row
+	card.Detail = h.laneCardDetail(ctx, t)
+	return card
+}
+
+// laneCardDetail renders a durable card's foot line per state: dedup provenance for queued work,
+// the lease owner for claimed work, the outcome for terminal states.
+func laneCardDetail(t store.Todo) string {
+	switch t.State {
+	case "pending":
+		if t.IdempotencyKey != "" {
+			return "idem ok"
+		}
+		return "queued"
+	case "claimed":
+		return "claimed · " + ownerLabel(t.Owner)
+	case "done":
+		return "done ✓ · ack sent"
+	case "failed":
+		if t.NextRetryAt != nil {
+			return "failed · will retry"
+		}
+		return "failed · attempts exhausted"
+	}
+	return ""
+}
+
+// laneCardDetail (method) resolves the claimed owner's display name via the store.
+func (h *Handler) laneCardDetail(ctx context.Context, t store.Todo) string {
+	if t.State == "claimed" {
+		return "claimed · " + h.ownerLabel(ctx, t.Owner)
+	}
+	return laneCardDetail(t)
 }
 
 // activityBars scales per-minute bucket counts into bar heights (percent of the busiest bucket,
@@ -364,8 +595,7 @@ func activityBars(buckets []int) []bar {
 // ownerLabel (method) resolves an agent lease owner to its display name via the store, rendering
 // `agent · <agent name>` where the pure function can only show the id prefix. The operator owner and
 // the empty owner fall through to the pure function; any store miss (unknown id, lookup error, nil
-// store) degrades gracefully to the id-prefix label. Governing: SPEC-0013 REQ "Board View — Live
-// Incoming Lines" (claimed · <agent name>).
+// store) degrades gracefully to the id-prefix label.
 func (h *Handler) ownerLabel(ctx context.Context, owner string) string {
 	if h.store != nil && strings.HasPrefix(owner, "agent:") {
 		id := strings.TrimPrefix(owner, "agent:")
@@ -377,7 +607,7 @@ func (h *Handler) ownerLabel(ctx context.Context, owner string) string {
 }
 
 // ownerLabel renders a lease owner for humans: vended agents claim as "agent:<uuid>" (SPEC-0006/
-// 0014 owner convention), the operator claims as "op:<human id>" (SPEC-0013 operator Claim).
+// 0014 owner convention), the operator claims as "op:<human id>" (the operator Claim).
 func ownerLabel(owner string) string {
 	switch {
 	case owner == "":
