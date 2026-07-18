@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -90,6 +91,14 @@ func ParseGenericProviders(raw string) (map[string]GenericProvider, error) {
 }
 
 // Generic is the token/open generic webhook receiver: POST /webhooks/generic/{name}.
+//
+// Dispatch resolves the provider from the REGISTRY at request time (ADR-0020): a registry row is
+// authoritative — its trust mode, secret, enabled flag, and queue decide the request, so a
+// wizard-created provider is live (and an operator's disable bites) without a restart. The
+// boot-time env map is only the fallback for names the registry does not hold; after the boot seed
+// (SPEC-0017 REQ "Environment Config Import") every env provider has a row, so the fallback covers
+// only store-less test wiring and the pre-seed window. Governing: SPEC-0017 REQ "Runtime Provider
+// Registry" (scenario "Wizard-created provider is live immediately").
 func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 	body, ok := i.readBody(w, r)
 	if !ok {
@@ -97,6 +106,34 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 	}
 	name := chi.URLParam(r, "name")
 	p, exists := i.generic[name]
+	reg, secret, err := i.resolveRegistry(r.Context(), name)
+	switch {
+	case err == nil:
+		// Registry row wins over any env/boot map entry — the registry is authoritative after
+		// import (SPEC-0017 REQ "Environment Config Import": env changes never silently override).
+		if reg.Family != "webhook" || (reg.TrustMode != trustModeToken && reg.TrustMode != trustModeOpen) {
+			// The name belongs to some other kind of provider (signed webhook, queue adapter) — it
+			// is not a generic endpoint, and 404 must not leak what it is.
+			writeErr(w, http.StatusNotFound, "unknown provider")
+			return
+		}
+		if !reg.Enabled {
+			// Disabled stops the line while history stays queryable (SPEC-0017 REQ "Provider
+			// Lifecycle" — scenario "Disable stops the line"). Nothing is persisted.
+			i.log.Warn("generic webhook rejected: provider disabled", "provider", name, "remote", clientIP(r))
+			writeErr(w, http.StatusForbidden, "provider disabled")
+			return
+		}
+		p, exists = GenericProvider{Mode: reg.TrustMode, Token: secret, Queue: providerQueue(reg.Config, name)}, true
+	case errors.Is(err, store.ErrNotFound):
+		// No registry row: fall through to the boot map (or 404 below).
+	default:
+		// Registry unavailable: fail closed, never fall back to possibly-stale env trust decisions.
+		// Governing: SPEC-0001 REQ "Error Handling Standards" (generic to the client, structured log).
+		i.log.Error("generic provider registry lookup", "provider", name, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	if !exists {
 		// Governing: SPEC-0001 scenario "Open provider only exists when explicitly created" — an
 		// unconfigured provider name is 404, never an implicit open endpoint.
@@ -194,6 +231,20 @@ func tokenEqual(want, got string) bool {
 	w := sha256.Sum256([]byte(want))
 	g := sha256.Sum256([]byte(got))
 	return subtle.ConstantTimeCompare(w[:], g[:]) == 1
+}
+
+// providerQueue extracts the target todo queue from a registry row's non-secret config jsonb
+// ({"queue":…}), defaulting to the provider name — the same default ParseGenericProviders applies
+// to env config. Governing: ADR-0020 (registry config carries the routing).
+func providerQueue(config []byte, name string) string {
+	var c struct {
+		Queue string `json:"queue"`
+	}
+	_ = json.Unmarshal(config, &c)
+	if c.Queue == "" {
+		return name
+	}
+	return c.Queue
 }
 
 // summarizeGeneric builds a one-line, legible todo title for a generic provider delivery.

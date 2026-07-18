@@ -107,6 +107,12 @@ type Handler struct {
 	// installed at wiring time via SetProviders. Atomic so live sessions read it race-free.
 	providers atomic.Pointer[[]ProviderStatus]
 
+	// providerSource, when installed via SetProviderSource, resolves the provider enumeration LIVE
+	// on each list_providers call (registry-backed — internal/server wires it over the provider
+	// registry) and takes precedence over the providers snapshot. Atomic for the same reason.
+	// Governing: ADR-0020, SPEC-0017 REQ "Runtime Provider Registry".
+	providerSource atomic.Pointer[func(context.Context) []ProviderStatus]
+
 	// baseURL is the externally-reachable origin used to build the ingest_url returned by
 	// create_webhook/rotate_webhook (SPEC-0006). Installed at wiring time via SetBaseURL; read
 	// atomically so live sessions never race the install.

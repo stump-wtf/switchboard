@@ -96,8 +96,11 @@ func ingestTestPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 	// receiver tests seed humans → agents → endpoints → endpoint_webhooks (via seedWebhook), and the
 	// test database persists across runs; leaving those rows behind makes a second `go test` run fail
 	// on a duplicate endpoint credhash. Clearing the full set keeps repeated runs idempotent.
+	// adapters joined the set when it became the provider registry (ADR-0020): the registry-dispatch
+	// tests seed provider rows, and leftovers from a prior run must never hijack an env-configured
+	// receiver test (a stale "github" row would override the test's env secret).
 	if _, err := pool.Exec(ctx,
-		`TRUNCATE humans, agents, endpoints, endpoint_webhooks, todos, events RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE humans, agents, endpoints, endpoint_webhooks, todos, events, adapters RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return pool, ctx

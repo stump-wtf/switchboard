@@ -7,10 +7,8 @@ import (
 	"context"
 	"io/fs"
 	"log/slog"
-	"maps"
 	"net/http"
 	"os"
-	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -113,7 +111,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	ing := ingest.New(st, hub, log, ingest.Config{
+	icfg := ingest.Config{
 		GitHubSecret: os.Getenv("SWITCHBOARD_GITHUB_SECRET"),
 		GitHubQueue:  os.Getenv("SWITCHBOARD_GITHUB_QUEUE"),
 		StripeSecret: os.Getenv("SWITCHBOARD_STRIPE_SECRET"),
@@ -122,14 +120,26 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		SlackQueue:   os.Getenv("SWITCHBOARD_SLACK_QUEUE"),
 		Generic:      generic,
 		DevLogin:     cfg.DevLogin,
+	}.Normalized()
+	ing := ingest.New(st, hub, log, icfg)
+	// Env config becomes an idempotent boot seed into the provider registry (create-if-absent,
+	// never clobber operator edits); the registry is authoritative thereafter, and dispatch
+	// resolves it live. Governing: ADR-0020, SPEC-0017 REQ "Environment Config Import".
+	if err := seedEnvProviders(ctx, st, icfg, log); err != nil {
+		return err
+	}
+	// list_providers (SPEC-0005) reads the provider registry LIVE, so runtime-created providers
+	// enumerate without a restart; the output shape (presence/absence classification only, never
+	// secret material) is unchanged. Governing: SPEC-0005 REQ "Provider Enumeration Without
+	// Secrets"; ADR-0020, SPEC-0017 REQ "Runtime Provider Registry".
+	mcph.SetProviderSource(func(pctx context.Context) []mcpsrv.ProviderStatus {
+		rows, err := st.ListProviders(pctx)
+		if err != nil {
+			log.Error("list providers from registry", "err", err)
+			return nil
+		}
+		return providerStatuses(rows)
 	})
-	// list_providers (SPEC-0005) serves this snapshot: presence/absence classification only, never
-	// the secret material. Governing: SPEC-0005 REQ "Provider Enumeration Without Secrets".
-	mcph.SetProviders(providerStatuses(
-		os.Getenv("SWITCHBOARD_GITHUB_SECRET") != "",
-		os.Getenv("SWITCHBOARD_STRIPE_SECRET") != "",
-		os.Getenv("SWITCHBOARD_SLACK_SECRET") != "",
-		generic))
 
 	r := newRouter(routerDeps{
 		st:      st,
@@ -438,56 +448,6 @@ func secureHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
-}
-
-// providerStatuses projects the configured inbound providers into the SPEC-0005 list_providers
-// shape. It receives only presence booleans for the signed providers — never the secret values —
-// so no secret material can reach the enumeration surface. A built-in signed provider (github,
-// stripe, slack) is only enumerated when its secret is actually configured: with no secret the
-// route rejects every delivery, so advertising it would misrepresent an unreachable provider as
-// part of the inventory. Generic providers already appear only when the operator declares them.
-// Queue-family providers join once the Redis adapters register with the runner (SPEC-0002 chain);
-// until then the webhook family is the whole inventory.
-// Governing: SPEC-0005 REQ "Provider Enumeration Without Secrets" ("for each configured provider").
-func providerStatuses(github, stripe, slack bool, generic map[string]ingest.GenericProvider) []mcpsrv.ProviderStatus {
-	var out []mcpsrv.ProviderStatus
-	builtin := []struct {
-		name, path string
-		configured bool
-	}{
-		{"github", "/webhooks/github", github},
-		{"stripe", "/webhooks/stripe", stripe},
-		{"slack", "/webhooks/slack", slack},
-	}
-	for _, b := range builtin {
-		if !b.configured {
-			continue
-		}
-		out = append(out, mcpsrv.ProviderStatus{
-			Name: b.name, Family: "webhook", TrustMode: "signed", Enabled: true,
-			SecretStatus: "configured", Path: b.path,
-		})
-	}
-	for _, name := range slices.Sorted(maps.Keys(generic)) {
-		gp := generic[name]
-		ps := mcpsrv.ProviderStatus{Name: name, Family: "webhook", TrustMode: gp.Mode,
-			Path: "/webhooks/generic/" + name}
-		switch gp.Mode {
-		case "token":
-			// A token provider with no token configured is disabled (403s everything) by design, so
-			// it is an unreachable route — skip it, matching the built-in "only configured" rule.
-			if gp.Token == "" {
-				continue
-			}
-			ps.Enabled = true
-			ps.SecretStatus = "configured"
-		case "open":
-			ps.Enabled = true
-			ps.SecretStatus = "none-by-design"
-		}
-		out = append(out, ps)
-	}
-	return out
 }
 
 // maxBytes caps a request body at n bytes via http.MaxBytesReader, so a read past the limit errors

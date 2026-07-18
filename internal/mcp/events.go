@@ -205,6 +205,19 @@ func (h *Handler) SetProviders(ps []ProviderStatus) {
 	h.providers.Store(&ps)
 }
 
+// SetProviderSource installs a LIVE provider enumeration source consulted on each list_providers
+// call — the registry-backed wiring (internal/server) uses it so providers created at runtime
+// enumerate without a restart, with the SPEC-0005 output shape unchanged. Takes precedence over
+// any SetProviders snapshot; passing nil reverts to the snapshot. Safe to call concurrently with
+// live sessions (atomic swap). Governing: ADR-0020, SPEC-0017 REQ "Runtime Provider Registry".
+func (h *Handler) SetProviderSource(fn func(context.Context) []ProviderStatus) {
+	if fn == nil {
+		h.providerSource.Store(nil)
+		return
+	}
+	h.providerSource.Store(&fn)
+}
+
 // registerEventTools installs the endpoint's allowlisted SPEC-0005 event-history tools on the
 // per-session server, mirroring the SPEC-0006 verb registry: tools/list advertises exactly the
 // allowlist. Governing: SPEC-0005 REQ "Tool Surface and Naming", SPEC-0014 REQ "Agent Tool
@@ -363,8 +376,14 @@ func (h *Handler) replayWebhookEventTool(ep store.AuthEndpoint) sdk.ToolHandlerF
 }
 
 func (h *Handler) listProvidersTool(_ store.AuthEndpoint) sdk.ToolHandlerFor[listProvidersIn, listProvidersOut] {
-	return func(_ context.Context, _ *sdk.CallToolRequest, _ listProvidersIn) (*sdk.CallToolResult, listProvidersOut, error) {
+	return func(ctx context.Context, _ *sdk.CallToolRequest, _ listProvidersIn) (*sdk.CallToolResult, listProvidersOut, error) {
 		out := listProvidersOut{Providers: []ProviderStatus{}}
+		// Registry-backed source first (resolved per call, so runtime provider changes are visible
+		// without restart — ADR-0020); the wiring-time snapshot is the legacy/test fallback.
+		if src := h.providerSource.Load(); src != nil {
+			out.Providers = append(out.Providers, (*src)(ctx)...)
+			return nil, out, nil
+		}
 		if ps := h.providers.Load(); ps != nil {
 			out.Providers = append(out.Providers, *ps...)
 		}
