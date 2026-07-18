@@ -730,81 +730,154 @@ a:hover {
   background: var(--sb-row-hover);
 }
 
-/* ---- feed (Board recent events) ---- */
+/* ---- patch-panel lanes (SPEC-0015 REQ "Patch Panel Board") ---- */
 
-.sb-feed {
+.sb-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin: 18px 0;
+  align-items: start;
+}
+
+.sb-lane__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 2px 10px;
+  border-bottom: 1px solid var(--sb-border);
+}
+
+.sb-lane__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  align-self: center;
+  background: var(--sb-status-neutral);
+}
+.sb-lane--received .sb-lane__dot {
+  background: var(--sb-trust-token-dot);
+}
+.sb-lane--verified .sb-lane__dot {
+  background: var(--sb-cyan);
+}
+.sb-lane--patched .sb-lane__dot {
+  background: var(--sb-status-done);
+}
+
+.sb-lane__title {
+  margin: 0;
+  font-family: var(--sb-font-mono);
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--sb-ink);
+}
+
+.sb-lane__count {
+  margin-left: auto;
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-muted);
+  white-space: nowrap;
+}
+.sb-lane__n {
+  color: var(--sb-text);
+  font-weight: 600;
+}
+
+.sb-lane__cards {
   list-style: none;
-  margin: 10px 0;
+  margin: 12px 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
-.sb-feed__row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+/* One patch-panel card: glyph + headline, chips, detail · age foot (SPEC-0015 card anatomy). */
+.sb-lcard {
   background: var(--sb-panel);
   border: 1px solid var(--sb-border);
   border-radius: var(--sb-radius-card);
-  padding: 10px 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
 }
 
-.sb-feed__source {
+.sb-lcard__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.sb-lcard__text {
+  min-width: 0;
+}
+
+.sb-lcard__title {
+  display: block;
   font-weight: 600;
   font-size: 13.5px;
   color: var(--sb-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.sb-feed__type {
+.sb-lcard__sub {
   display: block;
   font-family: var(--sb-font-mono);
   font-size: 11px;
   color: var(--sb-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.sb-feed__age {
-  margin-left: auto;
+.sb-lcard__chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sb-lcard__foot {
   font-family: var(--sb-font-mono);
   font-size: 11px;
   color: var(--sb-faint-2);
-  white-space: nowrap;
+}
+.sb-lcard__detail {
+  color: var(--sb-muted);
 }
 
-/* Lifecycle stage (SPEC-0013): dot + mono label advancing verifying… → patched → todo →
-   claimed · <agent> → done ✓, updated live via out-of-band SSE swaps. */
-.sb-feed__stage {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--sb-font-mono);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.sb-feed__stage--verifying {
+/* Ephemeral received-lane states (SSE-only; sb-live.js expires them via data-sb-ephemeral). */
+.sb-status--verifying {
   color: var(--sb-trust-token-dot);
 }
-.sb-feed__stage--pending {
-  color: var(--sb-status-pending);
+.sb-lcard--rejected {
+  border-color: var(--sb-status-failed);
+  background: var(--sb-alert-tint);
 }
-.sb-feed__stage--claimed {
-  color: var(--sb-status-claimed);
-}
-.sb-feed__stage--done {
-  color: var(--sb-status-done);
-}
-.sb-feed__stage--failed {
+.sb-status--rejected {
   color: var(--sb-status-failed);
 }
-/* Deduped: this delivery collapsed onto an earlier one's todo — a truthful terminal stage rather
-   than a perpetual "verifying…" (SPEC-0013 carry-over). */
-.sb-feed__stage--deduped {
+.sb-status--rejected .sb-status__dot {
+  background: var(--sb-trust-open-dot);
+}
+/* Deduped: this delivery collapsed onto an existing todo — a truthful transient resolution rather
+   than a perpetual "verifying". */
+.sb-status--deduped {
   color: var(--sb-dedup);
+}
+.sb-status--deduped .sb-status__dot {
+  background: var(--sb-dedup);
 }
 
 /* Ringing pulse: a just-received line, still verifying. */
-.sb-feed__pulse {
+.sb-lcard__pulse {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -1773,7 +1846,7 @@ pre code {
 
 @media (prefers-reduced-motion: reduce) {
   .sb-live__dot,
-  .sb-feed__pulse,
+  .sb-lcard__pulse,
   .sb-reaper__dot,
   .sb-ring,
   .sb-drawer,

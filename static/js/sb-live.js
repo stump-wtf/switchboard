@@ -1,10 +1,12 @@
 /* Switchboard live-region helpers (embedded, CSP script-src 'self' — no CDN, ADR-0001).
  *
  * One of the sb.js feature modules (split per SPEC-0015 foundation; ADR-0018). Governing:
- * SPEC-0013 REQ "Live Updates and Toasts", design.md ("thin vanilla-JS layer"): this module NEVER
- * mutates domain state — it expires toasts, trims the Board feed, animates lease countdowns toward
- * server-stamped deadlines, and decays the top-bar LIVE pill to its idle state when counts frames
- * stop arriving. The server renders truth; a reload discards everything here.
+ * SPEC-0015 REQ "Patch Panel Board", design.md ("thin vanilla-JS layer"): this module NEVER
+ * mutates domain state — it expires toasts and ephemeral received-lane cards, trims and counts
+ * the board lanes, animates lease countdowns toward server-stamped deadlines, and decays the
+ * top-bar LIVE pill to its idle state when counts frames stop arriving. The server renders truth;
+ * a reload discards everything here (the received lane is ephemeral BY DESIGN — SSE-only, nothing
+ * persisted behind it).
  */
 (function () {
   "use strict";
@@ -32,14 +34,38 @@
     });
   }
 
-  // ---- Board feed: trim to the visible cap and toggle the empty-state label ----
-  function initFeed() {
-    var feed = document.querySelector("[data-sb-feed-cap]");
-    var empty = document.querySelector("[data-sb-feed-empty]");
-    watch(feed, function () {
-      var cap = parseInt(feed.getAttribute("data-sb-feed-cap"), 10) || 8;
-      while (feed.children.length > cap) feed.removeChild(feed.lastElementChild);
-      if (empty) empty.hidden = feed.children.length > 0;
+  // ---- patch-panel lanes: trim to the visible cap, toggle empty states, count received ----
+  // Each lane list ([data-sb-lane-cards]) is trimmed to its server-stamped cap, its empty-state
+  // label ([data-sb-lane-empty=<lane>]) toggled, and — for the ephemeral received lane, whose
+  // cards exist only in the DOM — the header count ([data-sb-lane-count=<lane>]) is derived from
+  // the DOM. Verified/patched counts come from server counts frames, never from here.
+  function initLanes() {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-sb-lane-cards]"), function (lane) {
+      var key = lane.getAttribute("data-sb-lane-cards");
+      var empty = document.querySelector('[data-sb-lane-empty="' + key + '"]');
+      var count = document.querySelector('[data-sb-lane-count="' + key + '"]');
+      watch(lane, function () {
+        var cap = parseInt(lane.getAttribute("data-sb-lane-cap"), 10) || 8;
+        while (lane.children.length > cap) lane.removeChild(lane.lastElementChild);
+        scheduleEphemerals(lane);
+        if (empty) empty.hidden = lane.children.length > 0;
+        if (count) count.textContent = String(lane.children.length);
+      });
+    });
+  }
+
+  // ---- ephemeral cards: expire after the server-stamped TTL (data-sb-ephemeral, ms) ----
+  // Received-lane cards are SSE-only: an in-flight card whose resolution frame was lost, and the
+  // transient rejected/deduped surfaces, self-clean here. Removal re-fires the lane watcher, so
+  // counts and empty states stay honest.
+  function scheduleEphemerals(root) {
+    Array.prototype.forEach.call(root.querySelectorAll("[data-sb-ephemeral]"), function (card) {
+      if (card.dataset.sbTtl) return; // already scheduled
+      card.dataset.sbTtl = "1";
+      var ttl = parseInt(card.getAttribute("data-sb-ephemeral"), 10) || 8000;
+      setTimeout(function () {
+        card.remove();
+      }, ttl);
     });
   }
 
@@ -104,7 +130,7 @@
 
   function init() {
     initToasts();
-    initFeed();
+    initLanes();
     tickCountdowns();
     tickLiveDecay();
     setInterval(function () {

@@ -1,15 +1,15 @@
 {{define "content"}}
-{{/* Governing: SPEC-0013 REQ "Board View — Live Incoming Lines" — trust legend, stat tiles, and
-     the newest-first incoming-lines feed, server-rendered from the database and kept live by the
-     typed SSE events (event_received prepends rows; todo_* frames advance stages out-of-band;
-     counts refreshes the tiles). Reload always renders authoritative state. The header carries the
-     design record's trust-legend dot prefixes and the reaper pill (the Board summarizes the same
-     durable queue the reaper re-surfaces into); the feed section head carries the right-aligned
-     'newest first · live' hint (#179). */}}
+{{/* Governing: SPEC-0015 REQ "Patch Panel Board" — the three-lane live view of every inbound
+     line: received (ephemeral in-flight, SSE-only — server render is truthfully empty), verified
+     (durable unclaimed todos), patched through (claimed or beyond). Lane movement arrives as typed
+     SSE events with OOB removal + insertion (live.go); the page-local sink below subscribes the
+     ephemeral received-lane events, the layout sink the todo_* and counts frames. Reload always
+     renders authoritative database state. The header keeps the trust legend and the reaper pill
+     (the board summarizes the same durable queue the reaper re-surfaces into). */}}
 <div class="sb-view-head">
   <div>
     <h1 class="sb-page-title">The Board</h1>
-    <p class="sb-tagline">many lines in · each verified · patched through</p>
+    <p class="sb-tagline">every inbound line, from arrival to hand-off — trust checked, work claimed, live</p>
   </div>
   <div class="sb-view-head__aside">
     <ul class="sb-legend" aria-label="Trust modes">
@@ -24,13 +24,11 @@
 
 {{template "tiles" .Tiles}}
 
-<div class="sb-section-head">
-  <h2 class="sb-section-title">Incoming lines</h2>
-  <span class="sb-section-hint">newest first · live</span>
-</div>
-{{/* The feed is a live region that exists before the first frame: new rows enter at the top via
-     sse-swap afterbegin; sb.js trims to the visible cap and hides the empty state. */}}
-<ul id="sb-feed" class="sb-feed" aria-live="polite" sse-swap="event_received" hx-swap="afterbegin" data-sb-feed-cap="8">{{range .Rows}}{{template "feed_row" .}}
-{{end}}</ul>
-<p class="sb-empty" data-sb-feed-empty{{if .Rows}} hidden{{end}}>no lines in yet · the board is quiet</p>
+{{template "board_lanes" .Lanes}}
+
+{{/* Page-local SSE sink for the ephemeral received-lane events (lane_received/lane_rejected/
+     lane_deduped): payloads are entirely out-of-band card insertions/removals, so nothing renders
+     inside this node. The todo_* and counts subscriptions live on the layout's shared sink.
+     Governing: SPEC-0015 REQ "Live Fragment Architecture". */}}
+<div class="sb-sse-sink" hidden aria-hidden="true" sse-swap="lane_received,lane_rejected,lane_deduped"></div>
 {{end}}

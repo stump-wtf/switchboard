@@ -1,16 +1,81 @@
-{{/* Board fragments (SPEC-0013 REQ "Board View — Live Incoming Lines"; split per view by
-     SPEC-0015 REQ "Live Fragment Architecture" — a todos fragment change touches no board file).
-     Governing: ADR-0018. */}}
+{{/* Board fragments — the three-lane patch panel (SPEC-0015 REQ "Patch Panel Board"; split per
+     view by SPEC-0015 REQ "Live Fragment Architecture" — a todos fragment change touches no board
+     file). Lane movement is typed events carrying an out-of-band REMOVAL (hx-swap-oob="delete")
+     plus an out-of-band INSERTION (hx-swap-oob="afterbegin:#sb-lane-…-cards"), rendered by
+     internal/web/live.go. Governing: ADR-0018. */}}
 
-{{/* feed_row — one Board incoming line. Data: web.feedRow. */}}
-{{define "feed_row"}}<li id="{{.RowID}}" class="sb-feed__row"{{if .OOB}} hx-swap-oob="true"{{end}}><span class="sb-tag" aria-hidden="true">{{tag .Source}}</span><span><span class="sb-feed__source">{{.Source}}</span><span class="sb-feed__type">{{.EventType}}</span></span><span class="sb-badge sb-badge--{{.TrustMode}}">{{.TrustMode}}</span><span class="sb-feed__stage sb-feed__stage--{{if and (eq .State "") .Deduped}}deduped{{else}}{{.State | stagemod}}{{end}}">{{if eq .State ""}}{{if .Deduped}}deduped{{else}}<span class="sb-feed__pulse" aria-hidden="true"></span>verifying…{{end}}{{else if eq .State "pending"}}patched → todo{{else if eq .State "claimed"}}claimed · {{.OwnerLabel}}{{else if eq .State "done"}}done ✓{{else}}failed{{end}}</span>{{if and (eq .State "pending") .TodoID}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.TodoID}}/claim" hx-target="closest li" hx-swap="outerHTML">Claim</button>{{end}}<span class="sb-feed__age">{{reltime .ReceivedAt}}</span></li>{{end}}
+{{/* lane_card — one patch-panel card: provider glyph, headline (event type/kind), title line,
+     trust chip, state chip, and the detail · age foot. Ephemeral received-lane cards stamp
+     data-sb-ephemeral (ms) so sb-live.js expires them — they are SSE-only and never persisted.
+     OOB renders the card as an insertion into its lane. Data: web.laneCard. */}}
+{{define "lane_card"}}<li id="{{.DomID}}" class="sb-lcard sb-lcard--{{.State}}" data-sb-lane-card="{{.Lane}}"{{if .TTLMS}} data-sb-ephemeral="{{.TTLMS}}"{{end}}{{if .OOB}} hx-swap-oob="afterbegin:#sb-lane-{{.Lane}}-cards"{{end}}>
+  <div class="sb-lcard__head">
+    <span class="sb-tag sb-tag--{{.TrustMode}}" aria-hidden="true">{{tag .Source}}</span>
+    <div class="sb-lcard__text">
+      <span class="sb-lcard__title">{{if .Kind}}{{.Kind}}{{else}}{{.Source}}{{end}}</span>
+      <span class="sb-lcard__sub">{{if .Title}}{{.Title}}{{else}}{{.Source}}{{end}}</span>
+    </div>
+  </div>
+  <div class="sb-lcard__chips">
+    <span class="sb-badge sb-badge--{{.TrustMode}}">{{if eq .TrustMode "signed"}}<span aria-hidden="true">✓ </span>{{end}}{{.TrustMode}}</span>
+    <span class="sb-status sb-status--{{.State}}">{{if eq .State "verifying"}}<span class="sb-lcard__pulse" aria-hidden="true"></span>{{else}}<span class="sb-status__dot" aria-hidden="true"></span>{{end}}{{lanestate .State}}</span>
+    {{if and (eq .State "pending") .TodoID}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.TodoID}}/claim" hx-swap="none">Claim</button>{{end}}
+  </div>
+  <div class="sb-lcard__foot">{{if .Detail}}<span class="sb-lcard__detail">{{.Detail}}</span><span aria-hidden="true"> · </span>{{end}}<span class="sb-lcard__age">{{reltime .At}}</span></div>
+</li>{{end}}
+
+{{/* lane_move — the OOB removal + insertion pair (SPEC-0015 REQ "Live Fragment Architecture"):
+     delete the card's previous node by id, then insert the refreshed card into its destination
+     lane. The pair is idempotent — delete no-ops when the node is absent, insert always lands.
+     Data: web.laneMove (Card renders with OOB true). */}}
+{{define "lane_move"}}{{if .RemoveID}}<li id="{{.RemoveID}}" hx-swap-oob="delete"></li>{{end}}{{template "lane_card" .Card}}{{end}}
+
+{{/* lane_counts — the verified/patched lane-header counts, refreshed OOB by every counts frame.
+     The received lane's count is DOM-derived client-side (data-sb-lane-count="received" in
+     board_lanes) because its cards are ephemeral. Args via dict: C web.laneCounts, OOB bool. */}}
+{{define "lane_counts"}}<span id="sb-lane-count-verified" class="sb-lane__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Verified}}</span><span id="sb-lane-count-patched" class="sb-lane__n"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Patched}}</span>{{end}}
+
+{{/* board_lanes — the three-lane patch panel (SPEC-0015 REQ "Patch Panel Board"): received holds
+     ephemeral in-flight cards (SSE-only — server render is truthfully empty on a quiet board),
+     verified the durable unclaimed todos, patched through everything claimed or beyond. Each lane
+     list is a polite live region present before the first frame, capped client-side
+     (data-sb-lane-cap), with an empty-state label sb-live.js toggles. Data: web.lanesView. */}}
+{{define "board_lanes"}}<section class="sb-lanes" aria-label="Patch panel">
+  <div class="sb-lane sb-lane--received" data-sb-lane="received">
+    <div class="sb-lane__head">
+      <span class="sb-lane__dot" aria-hidden="true"></span>
+      <h2 class="sb-lane__title">received</h2>
+      <span class="sb-lane__count"><span class="sb-lane__n" data-sb-lane-count="received">{{len .Received}}</span> · unverified</span>
+    </div>
+    <ul id="sb-lane-received-cards" class="sb-lane__cards" data-sb-lane-cards="received" data-sb-lane-cap="8" aria-live="polite">{{range .Received}}{{template "lane_card" .}}{{end}}</ul>
+    <p class="sb-empty" data-sb-lane-empty="received"{{if .Received}} hidden{{end}}>quiet · no lines in flight</p>
+  </div>
+  <div class="sb-lane sb-lane--verified" data-sb-lane="verified">
+    <div class="sb-lane__head">
+      <span class="sb-lane__dot" aria-hidden="true"></span>
+      <h2 class="sb-lane__title">verified</h2>
+      <span class="sb-lane__count"><span id="sb-lane-count-verified" class="sb-lane__n">{{.Counts.Verified}}</span> · durable todos</span>
+    </div>
+    <ul id="sb-lane-verified-cards" class="sb-lane__cards" data-sb-lane-cards="verified" data-sb-lane-cap="8" aria-live="polite">{{range .Verified}}{{template "lane_card" .}}{{end}}</ul>
+    <p class="sb-empty" data-sb-lane-empty="verified"{{if .Verified}} hidden{{end}}>none waiting · claims are keeping up</p>
+  </div>
+  <div class="sb-lane sb-lane--patched" data-sb-lane="patched">
+    <div class="sb-lane__head">
+      <span class="sb-lane__dot" aria-hidden="true"></span>
+      <h2 class="sb-lane__title">patched through</h2>
+      <span class="sb-lane__count"><span id="sb-lane-count-patched" class="sb-lane__n">{{.Counts.Patched}}</span> · claimed &amp; beyond</span>
+    </div>
+    <ul id="sb-lane-patched-cards" class="sb-lane__cards" data-sb-lane-cards="patched" data-sb-lane-cap="8" aria-live="polite">{{range .Patched}}{{template "lane_card" .}}{{end}}</ul>
+    <p class="sb-empty" data-sb-lane-empty="patched"{{if .Patched}} hidden{{end}}>nothing claimed yet</p>
+  </div>
+</section>{{end}}
 
 {{/* tiles — the Board stat band (throughput + in flight + awaiting claim + verified %).
      Data: web.tilesView. Replaced wholesale by counts events (id sb-tiles). The three count tiles
      carry the design record's sublabels ('in flight · being worked', 'awaiting claim', 'verified
      sources') under the bare value, per the DESIGN board panel (#179). aria-live: the band's
      numbers update via SSE counts frames, so it is a polite live region present in the DOM before
-     the first update (SPEC-0013 "Dynamic Content Regions"). */}}
+     the first update (SPEC-0012 dynamic content regions). */}}
 {{define "tiles"}}<section id="sb-tiles" class="sb-tiles" aria-label="Queue summary" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>
   <div class="sb-tile sb-tile--throughput">
     <span class="sb-microlabel">Throughput</span>

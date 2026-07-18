@@ -78,6 +78,9 @@ type Ingest struct {
 	tolerance    time.Duration              // replay window for timestamped signatures
 	now          func() time.Time           // injectable clock for replay-window tests
 	devLogin     bool
+	// instrument observes in-flight deliveries for the board's ephemeral received lane
+	// (instrument.go). Nil = no observation. Governing: SPEC-0015 REQ "Patch Panel Board".
+	instrument Instrument
 }
 
 // Config carries the per-provider ingestion settings (secrets + target queues).
@@ -220,9 +223,17 @@ func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	event := r.Header.Get("X-GitHub-Event")
+	// Idempotency key from the GitHub delivery GUID; body-hash fallback if the header is absent so a
+	// redelivery can never bypass dedup with a NULL key (SPEC-0001 REQ "Idempotency Key Extraction
+	// and Dedup").
+	key := idempotencyKey(r.Header.Get("X-GitHub-Delivery"), body)
+	// The line is in flight: surface it on the board's ephemeral received lane (SPEC-0015).
+	i.observeReceived("github", event, "signed", key)
 	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
 	secret, ok := i.signedSecret(w, r, "github", i.githubSecret)
 	if !ok {
+		i.observeRejected("github", event, "signed", key, "provider unavailable")
 		return
 	}
 	sig := r.Header.Get("X-Hub-Signature-256")
@@ -230,15 +241,10 @@ func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 		// Reject without persisting; log a redacted line (never the signature value).
 		i.log.Warn("github signature rejected", "delivery", r.Header.Get("X-GitHub-Delivery"),
 			"event", r.Header.Get("X-GitHub-Event"), "remote", clientIP(r))
+		i.observeRejected("github", event, "signed", key, "signature verification failed")
 		writeErr(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
-
-	event := r.Header.Get("X-GitHub-Event")
-	// Idempotency key from the GitHub delivery GUID; body-hash fallback if the header is absent so a
-	// redelivery can never bypass dedup with a NULL key (SPEC-0001 REQ "Idempotency Key Extraction
-	// and Dedup").
-	key := idempotencyKey(r.Header.Get("X-GitHub-Delivery"), body)
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — persist the event and enqueue its todo in a
 	// single transaction so a CreateTodo failure can never leave an orphaned event row behind.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
@@ -259,6 +265,9 @@ func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 	}
 	if created {
 		i.hub.Publish(td)
+	} else {
+		// Idempotent redelivery: resolve the in-flight card without a lane advance (SPEC-0015).
+		i.observeDeduped("github", event, "signed", key)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": td.ID, "queue": td.Queue, "verified": true})
 }

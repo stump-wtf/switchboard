@@ -33,7 +33,7 @@ func renderVendPage(t *testing.T, h *Handler, v *vendStepView, personasEnabled b
 	t.Helper()
 	return renderPage(t, h, "vend", view{
 		Title: "Vend endpoint", Human: testHuman(), CSRF: "tok",
-		Shell: shell{Active: "endpoints", DBConnected: true, Initials: "JS"},
+		Shell:           shell{Active: "endpoints", DBConnected: true, Initials: "JS"},
 		PersonasEnabled: personasEnabled, Vend: v,
 	})
 }
@@ -66,16 +66,16 @@ func TestVendStepPersonaRendersNameAndPersonaSelect(t *testing.T) {
 	v.PersonaOptions = []vendPersonaOption{{ID: "pr_123", Name: "Reviewer"}, {ID: "pr_456", Name: "Deployer"}}
 	body := renderVendPage(t, h, v, true)
 	for _, want := range []string{
-		`data-sb-wizard="vend"`,           // the wizard page hook
-		`aria-current="step"`,             // tracker marks the current step
-		`data-sb-wiz-step="persona"`,      // tracker entries carry their slugs
-		"step 1 of 5",                     // progress line
-		`method="post"`,                   // plain form — no-JS completion
+		`data-sb-wizard="vend"`,      // the wizard page hook
+		`aria-current="step"`,        // tracker marks the current step
+		`data-sb-wiz-step="persona"`, // tracker entries carry their slugs
+		"step 1 of 5",                // progress line
+		`method="post"`,              // plain form — no-JS completion
 		`action="/endpoints/vend/persona"`,
 		`name="csrf_token" value="tok"`,
 		`name="name"`, `value="release-bot"`, `data-sb-vend-name`, // prefilled name
 		`<select id="sb-vend-persona"`, `name="persona"`,
-		`<option value="">`,                                 // the agent-level (no persona) choice
+		`<option value="">`, // the agent-level (no persona) choice
 		`<option value="pr_123" selected>Reviewer</option>`, // draft choice re-selected
 		`href="/endpoints" data-sb-wiz-cancel`,              // cancel escapes to the view
 		`data-sb-vend-submit`,
@@ -110,7 +110,7 @@ func TestVendStepQueuesRendersChipsAndFreeText(t *testing.T) {
 		`name="queues" value="reviews" checked`, // draft-checked chip survives back nav
 		`name="queues" value="deploys"`,
 		`name="queues_extra"`, `value="hotfixes"`, `data-sb-vend-queues`, // free-text add field, prefilled
-		`data-sb-vend-queue-preview`,                 // sb-vend.js mirrors typed queues as chips
+		`data-sb-vend-queue-preview`,                      // sb-vend.js mirrors typed queues as chips
 		`href="/endpoints/vend/persona" data-sb-wiz-back`, // Back to the previous step page
 	} {
 		if !strings.Contains(body, want) {
@@ -270,7 +270,7 @@ func TestRevokeConfirmPageStatesTheKill(t *testing.T) {
 		Slug: "reviewer-bot-ab12cd", URL: "https://sb.example.com/mcp/reviewer-bot-ab12cd",
 		CredPrefix: "sbk_ab12cd", Queues: []string{"reviews"}, Verbs: []string{"claim"}, State: "active"}
 	body := renderPage(t, h, "revoke", view{Title: "Revoke endpoint", Human: testHuman(), CSRF: "tok",
-		Shell: shell{Active: "endpoints", DBConnected: true, Initials: "JS"},
+		Shell:         shell{Active: "endpoints", DBConnected: true, Initials: "JS"},
 		RevokeConfirm: &revokeConfirmView{Card: card}})
 	for _, want := range []string{
 		`data-sb-revoke-confirm`,

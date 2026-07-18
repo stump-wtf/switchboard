@@ -30,9 +30,11 @@
 {{define "todo_count"}}<span id="sb-todo-count" class="sb-rail__count" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Count}}</span>{{end}}
 
 {{/* counts — the OOB bundle published after every committed transition: tiles + rail count +
-     LIVE pill. The rail count binds the TOTAL todo count (design record: the rail badge is the
-     size of the durable queue, every state), matching shell.TodoCount. Data: web.countsView. */}}
-{{define "counts"}}{{template "tiles" .Tiles}}{{template "todo_count" dict "Count" .Todos.All "OOB" true}}{{template "live_pill" dict "Rate" .Tiles.Stats.EventsPerMin "OOB" true}}{{template "todo_pill_counts" dict "C" .Todos "OOB" true}}{{end}}
+     LIVE pill + the board's verified/patched lane-header counts (SPEC-0015 "lane headers SHALL
+     carry live counts"; the received count is DOM-derived client-side). The rail count binds the
+     TOTAL todo count (design record: the rail badge is the size of the durable queue, every
+     state), matching shell.TodoCount. Data: web.countsView. */}}
+{{define "counts"}}{{template "tiles" .Tiles}}{{template "todo_count" dict "Count" .Todos.All "OOB" true}}{{template "live_pill" dict "Rate" .Tiles.Stats.EventsPerMin "OOB" true}}{{template "todo_pill_counts" dict "C" .Todos "OOB" true}}{{template "lane_counts" dict "C" .Lanes "OOB" true}}{{end}}
 
 {{/* todo_pill_counts — the five Todos-view filter-pill count numbers, each an independent OOB swap
      target (ignored on pages that don't render the pills). Each span is a polite live region — the

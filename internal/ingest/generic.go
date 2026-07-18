@@ -141,6 +141,14 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generic providers supply no delivery id, so the idempotency key is the body hash — derived
+	// here (before verification) ONLY to correlate the ephemeral received-lane card (SPEC-0015);
+	// nothing is persisted until the trust check below passes.
+	key := bodyHash(body)
+	// The line is in flight for a CONFIGURED provider: surface it on the received lane. An
+	// unconfigured name (the 404 above) never rings the board — probe noise is not a line.
+	i.observeReceived(name, "webhook", p.Mode, key)
+
 	var trustMode, verifyDetail string
 	switch p.Mode {
 	case trustModeToken:
@@ -148,12 +156,14 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 			// Governing: SPEC-0001 scenario "Generic provider disabled until token set".
 			i.log.Warn("generic webhook rejected: provider disabled (no token configured)",
 				"provider", name, "remote", clientIP(r))
+			i.observeRejected(name, "webhook", p.Mode, key, "provider disabled")
 			writeErr(w, http.StatusForbidden, "provider disabled")
 			return
 		}
 		if !tokenEqual(p.Token, presentedToken(r)) {
 			// Reject without persisting; log a redacted line (never the token value).
 			i.log.Warn("generic webhook token rejected", "provider", name, "remote", clientIP(r))
+			i.observeRejected(name, "webhook", p.Mode, key, "invalid token")
 			writeErr(w, http.StatusForbidden, "invalid token")
 			return
 		}
@@ -166,13 +176,13 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 	default:
 		// Defense in depth: an Ingest constructed with an unvalidated map still fails closed.
 		i.log.Warn("generic webhook rejected: invalid trust mode", "provider", name, "mode", p.Mode)
+		i.observeRejected(name, "webhook", p.Mode, key, "provider disabled")
 		writeErr(w, http.StatusForbidden, "provider disabled")
 		return
 	}
 
-	// Generic providers supply no delivery id, so the idempotency key is the body hash
-	// (SPEC-0001 REQ "Idempotency Key Extraction and Dedup" — body-hash fallback).
-	key := bodyHash(body)
+	// key (the body hash derived above) is the idempotency key: generic providers supply no
+	// delivery id (SPEC-0001 REQ "Idempotency Key Extraction and Dedup" — body-hash fallback).
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
 		store.EventInput{
@@ -192,6 +202,9 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 	}
 	if created {
 		i.hub.Publish(td)
+	} else {
+		// Idempotent redelivery: resolve the in-flight card without a lane advance (SPEC-0015).
+		i.observeDeduped(name, "webhook", trustMode, key)
 	}
 	// verified is always false here — token authenticates the caller, not the body, and open
 	// verifies nothing. `token`/`open` MUST never be presented as `signed` (SPEC-0001).

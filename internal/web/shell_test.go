@@ -27,9 +27,9 @@ func allPages(t *testing.T, h *Handler) map[string]string {
 		"login": {Title: "Log in", OIDCConfigured: true},
 		"board": {Title: "The Board", Human: testHuman(), CSRF: "tok", Shell: sh,
 			Tiles: tilesView{Stats: store.BoardStats{TodosToday: 1, AwaitingClaim: 1, EventsPerMin: 2}, Bars: activityBars([]int{0, 1, 2, 1})},
-			Rows: []feedRow{feedRowFromEvent(store.EventSummary{
-				ID: 1, Source: "github", EventType: "push", TrustMode: "signed", ReceivedAt: time.Now(),
-				TodoID: "td_1", TodoState: "pending"}, false)}},
+			Lanes: lanesView{Verified: []laneCard{laneCardFromItem(store.TodoItem{Todo: store.Todo{
+				ID: "td_1", Source: "github", Kind: "push", Title: "github push", State: "pending",
+				CreatedAt: time.Now()}, TrustMode: "signed"})}, Counts: laneCounts{Verified: 1}}},
 		"endpoints": {Title: "Endpoints", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"},
 			EndpointCards: []endpointCard{card}},
 		// The vend wizard's step pages and the revoke confirm are full pages in the same shell

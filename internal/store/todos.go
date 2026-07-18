@@ -137,8 +137,8 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 		return 0, Todo{}, false, err
 	}
 	// Hooks fire only after the durable commit, event before todo, mirroring the Board's
-	// lifecycle order (event_received → todo_created). Governing: SPEC-0013 REQ "Board View —
-	// Live Incoming Lines".
+	// lifecycle order (the committed event precedes its todo_created lane movement).
+	// Governing: SPEC-0015 REQ "Patch Panel Board".
 	if inserted {
 		s.fireEventHook(ev)
 	}

@@ -232,8 +232,9 @@ func (h *Handler) ReleaseTodo(w http.ResponseWriter, r *http.Request) {
 // generic status codes (409 conflict / 404 not-found) with no internal detail, other errors log and
 // 500, and success re-renders the fragment appropriate to WHERE the action was invoked from —
 // determined by the HTMX target: the drawer (overlay) gets the refreshed drawer, a table row gets
-// its refreshed row, and anything else (the Board feed's Claim) gets the feed row for back-compat.
-// Governing: SPEC-0013 REQ "Error Handling Standards".
+// its refreshed row, and anything else (the Board lane card's Claim, hx-swap="none") gets the OOB
+// lane movement. Governing: SPEC-0013 REQ "Error Handling Standards", SPEC-0015 REQ "Patch Panel
+// Board".
 func (h *Handler) respondTodoAction(w http.ResponseWriter, r *http.Request, handler string, t store.Todo, err error) {
 	switch {
 	case errors.Is(err, store.ErrConflict):
@@ -275,7 +276,11 @@ func (h *Handler) respondTodoAction(w http.ResponseWriter, r *http.Request, hand
 			return
 		}
 	default:
-		frag, err = h.renderFragment("feed_row", h.feedRowFromTodo(ctx, t, false))
+		// The Board lane card's action (hx-swap="none"): respond with the OOB lane movement so the
+		// card crosses lanes immediately even if the SSE frame is dropped — the pair is idempotent
+		// when both apply (delete no-ops, insert lands once). Governing: SPEC-0015 REQ "Patch Panel
+		// Board" (live movement), REQ "Live Fragment Architecture" (OOB removal + insertion).
+		frag, err = h.renderFragment("lane_move", h.laneMoveForTodo(ctx, t, ""))
 		if err != nil {
 			h.fail(w, err)
 			return

@@ -44,16 +44,20 @@ func testHuman() *store.Human {
 func TestBoardRendersShellAndTiles(t *testing.T) {
 	h := newTestHandler(t)
 	stats := store.BoardStats{TodosToday: 12, InFlight: 2, AwaitingClaim: 3, VerifiedPct: 83, EventsPerMin: 7}
+	queued := laneCardFromItem(store.TodoItem{Todo: store.Todo{
+		ID: "td_1", Source: "github", Kind: "push", Title: "github push", State: "pending",
+		IdempotencyKey: "gh-d-1", CreatedAt: time.Now().Add(-2 * time.Minute),
+	}, TrustMode: "signed"})
+	claimed := laneCardFromItem(store.TodoItem{Todo: store.Todo{
+		ID: "td_2", Source: "stripe", Kind: "invoice.paid", Title: "stripe invoice.paid", State: "claimed",
+		Owner: "agent:0a1b2c3d-x", CreatedAt: time.Now().Add(-3 * time.Hour),
+	}, TrustMode: "token"})
 	body := renderPage(t, h, "board", view{
 		Title: "The Board", Human: testHuman(), CSRF: "tok",
 		Shell: shell{Active: "board", TodoCount: 3, LiveRate: 7, DBConnected: true, Initials: "JS"},
 		Tiles: tilesView{Stats: stats, Bars: activityBars([]int{0, 3, 7, 1})},
-		Rows: []feedRow{
-			feedRowFromEvent(store.EventSummary{ID: 1, Source: "github", EventType: "push", TrustMode: "signed",
-				ReceivedAt: time.Now().Add(-2 * time.Minute), TodoID: "td_1", TodoState: "pending"}, false),
-			feedRowFromEvent(store.EventSummary{ID: 2, Source: "stripe", EventType: "invoice.paid", TrustMode: "token",
-				ReceivedAt: time.Now().Add(-3 * time.Hour), TodoID: "td_2", TodoState: "claimed", TodoOwner: "agent:0a1b2c3d-x"}, false),
-		},
+		Lanes: lanesView{Verified: []laneCard{queued}, Patched: []laneCard{claimed},
+			Counts: laneCounts{Verified: 1, Patched: 1}},
 	})
 
 	for _, want := range []string{
@@ -63,35 +67,36 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 		"aria-current=\"page\"",                                                    // active rail entry
 		"LIVE · 7/min",                                                             // LIVE pill from DB rate
 		"postgres · connected",                                                     // connectivity footer
-		"The Board",                                                                // Zilla Slab page title
-		"many lines in · each verified · patched through",                          // mono tagline
+		"The Board",                                                                // display page title
+		"every inbound line, from arrival to hand-off",                             // tagline
 		"sb-badge--signed", "sb-badge--token", "sb-badge--open", "sb-badge--queue", // trust legend
 		"sb-tile--alert", // awaiting-claim tile tinted (count > 0)
 		"83%",            // verified pct tile
 		">GH<", ">ST<",   // provider tags
 		"2m ago", "3h ago", // relative ages
-		"id=\"sb-tiles\"",                  // tiles band is the counts swap target
-		"sb-bars__bar--now",                // throughput activity bars w/ current bucket
-		"events/min",                       // throughput tile unit
-		"patched → todo",                   // pending row lifecycle stage
-		"claimed · agent · 0a1b2c3",        // claimed row stage with owner label
-		"hx-post=\"/todos/td_1/claim\"",    // Claim action on the pending row
-		"id=\"sb-ev-1\"", "id=\"sb-ev-2\"", // stable row ids for OOB stage updates
-		"sse-connect=\"/events\"",     // one authenticated stream per page
-		"sse-swap=\"event_received\"", // feed subscribes to new lines
-		"hx-swap=\"afterbegin\"",      // rows enter at the top
+		"id=\"sb-tiles\"",   // tiles band is the counts swap target
+		"sb-bars__bar--now", // throughput activity bars w/ current bucket
+		"events/min",        // throughput tile unit
+		// Patch panel (SPEC-0015): three lanes with insertion targets, cards with stable ids.
+		"id=\"sb-lane-received-cards\"", "id=\"sb-lane-verified-cards\"", "id=\"sb-lane-patched-cards\"",
+		">queued<",                               // pending card state chip
+		"claimed · agent · 0a1b2c3",              // claimed card detail with owner label
+		"hx-post=\"/todos/td_1/claim\"",          // Claim action on the queued card
+		"id=\"sb-td-td_1\"", "id=\"sb-td-td_2\"", // stable card ids for OOB lane movement
+		"sse-connect=\"/events\"",                                                                  // one authenticated stream per page
+		"sse-swap=\"lane_received,lane_rejected,lane_deduped\"",                                    // page-local sink: ephemeral received lane
 		"sse-swap=\"todo_created,todo_claimed,todo_completed,todo_failed,todo_resurfaced,counts\"", // OOB sink
 		"hx-headers='{\"X-CSRF-Token\":\"tok\"}'",                                                  // CSRF injected into HTMX requests
-		"aria-live=\"polite\"",            // live regions present in DOM
-		"id=\"sb-overlay\"",               // overlay slot present-but-empty
-		"id=\"sb-toasts\"",                // toast region
-		"id=\"sb-todo-count\"",            // rail count pill is a swap target
-		"/static/js/theme-boot.js",        // pre-paint theme boot (SPEC-0015 Theme Toggle)
-		"/static/js/sb-live.js",           // toast TTL / feed cap helper (split sb.js module)
-		"/static/js/sb-keys.js",           // keymap registry + key-hint footer
-		">JS</span>",                      // avatar initials
-		"/static/switchboard.css",         // component layer linked
-		"aria-label=\"Switchboard mark\"", // accessible inline-SVG mark
+		"aria-live=\"polite\"",                                                                     // live regions present in DOM
+		"id=\"sb-overlay\"",                                                                        // overlay slot present-but-empty
+		"id=\"sb-toasts\"",                                                                         // toast region
+		"id=\"sb-todo-count\"",                                                                     // rail count pill is a swap target
+		"/static/js/theme-boot.js",                                                                 // pre-paint theme boot (SPEC-0015 Theme Toggle)
+		"/static/js/sb-live.js",                                                                    // toast TTL / lane cap helper (split sb.js module)
+		"/static/js/sb-keys.js",                                                                    // keymap registry + key-hint footer
+		">JS</span>",                                                                               // avatar initials
+		"/static/switchboard.css",                                                                  // component layer linked
+		"aria-label=\"Switchboard mark\"",                                                          // accessible inline-SVG mark
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board: missing %q", want)
@@ -118,11 +123,11 @@ func TestLivePillIdleAtZeroRate(t *testing.T) {
 	if !strings.Contains(body, "LIVE · 0/min") {
 		t.Error("LIVE pill zero-state should still show the rate")
 	}
-	if !strings.Contains(body, "no lines in yet") {
-		t.Error("empty feed state missing")
+	if !strings.Contains(body, "quiet · no lines in flight") {
+		t.Error("empty received-lane state missing")
 	}
-	if !strings.Contains(body, "id=\"sb-feed\"") {
-		t.Error("feed live region must exist in the DOM before the first SSE frame")
+	if !strings.Contains(body, "id=\"sb-lane-received-cards\"") {
+		t.Error("received lane must exist in the DOM before the first SSE frame")
 	}
 }
 

@@ -105,7 +105,7 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 
 // templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod, "join": joinScope, "countdown": countdown}
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown}
 }
 
 // parsePages composes layout.html and the per-view fragment files (templates/fragments/*.html)
@@ -153,14 +153,6 @@ func dict(pairs ...any) (map[string]any, error) {
 	return m, nil
 }
 
-// stageMod maps a todo state onto the feed row's stage class modifier ("" = still verifying).
-func stageMod(state string) string {
-	if state == "" {
-		return "verifying"
-	}
-	return state
-}
-
 // shell carries the layout-shell state every authenticated view renders: the active nav entry,
 // live counts, database connectivity, and the avatar initials.
 // Governing: SPEC-0015 REQ "Application Shell And Navigation" (six-view IA).
@@ -183,7 +175,7 @@ type view struct {
 	OIDCConfigured bool
 	DevLogin       bool
 	Tiles          tilesView        // Board stat band (stats + activity bars)
-	Rows           []feedRow        // Board incoming-lines feed
+	Lanes          lanesView        // Board three-lane patch panel (SPEC-0015)
 	Counts         store.TodoCounts // Todos view filter-pill counts
 	TodoItems      []todoRow        // Todos view table rows
 	Filter         string           // active Todos filter pill (all|pending|claimed|done|failed)
@@ -256,24 +248,42 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 // Board renders the landing view: trust legend, stat tiles (throughput + activity bars), and the
-// incoming-lines feed with lifecycle stages, all server-rendered from the database — the same
-// fragments the SSE stream then keeps live, so reload always renders authoritative state.
-// Requires human. Governing: SPEC-0013 REQ "Board View — Live Incoming Lines".
+// three-lane patch panel, all server-rendered from the database — the same fragments the SSE
+// stream then keeps live, so reload always renders authoritative state. The received lane renders
+// EMPTY here by design: its cards are ephemeral in-flight deliveries (SSE-only, never persisted),
+// so a quiet reload is truthful. Verified holds durable unclaimed todos; patched through holds
+// claimed and beyond. Requires human. Governing: SPEC-0015 REQ "Patch Panel Board".
 func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	sh, stats := h.buildShell(r.Context(), "board", &human)
-	var rows []feedRow
+	var lanes lanesView
 	var bars []bar
 	if sh.DBConnected {
-		events, err := h.store.RecentEvents(r.Context(), feedCap)
+		// One durable-queue read partitions into the two persisted lanes, newest first, capped per
+		// lane. Errors are suppressed to a log so the Board still renders its shell; the lanes show
+		// their empty states.
+		items, err := h.store.ListTodoItems(r.Context(), "", "", boardLaneQuery)
 		if err != nil {
-			// Suppressed to a log so the Board still renders its shell (with whatever tiles
-			// resolved); the feed shows its empty state.
-			h.log.Warn("board recent events", "err", err)
+			h.log.Warn("board lane todos", "err", err)
 		}
-		for _, e := range events {
-			rows = append(rows, h.feedRowFromEvent(r.Context(), e, false))
+		for _, it := range items {
+			card := h.laneCardFromItem(r.Context(), it)
+			switch card.Lane {
+			case laneVerified:
+				if len(lanes.Verified) < laneCap {
+					lanes.Verified = append(lanes.Verified, card)
+				}
+			case lanePatched:
+				if len(lanes.Patched) < laneCap {
+					lanes.Patched = append(lanes.Patched, card)
+				}
+			}
 		}
+		counts, err := h.store.TodoCounts(r.Context())
+		if err != nil {
+			h.log.Warn("board lane counts", "err", err)
+		}
+		lanes.Counts = laneCountsFrom(counts)
 		buckets, err := h.store.EventBuckets(r.Context(), activityBuckets)
 		if err != nil {
 			h.log.Warn("board event buckets", "err", err)
@@ -282,21 +292,26 @@ func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 	}
 	h.render(w, "board", view{
 		Title: "The Board", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
-		Shell: sh, Tiles: tilesView{Stats: stats, Bars: bars}, Rows: rows,
+		Shell: sh, Tiles: tilesView{Stats: stats, Bars: bars}, Lanes: lanes,
 	})
 }
 
-// ClaimTodo claims a pending todo under a lease as the operator (the feed row's Claim action).
-// Responds with the refreshed feed-row fragment for the HTMX outerHTML swap; the SSE
-// todo_claimed frame updates every other open view. Requires human (session + CSRF via the
-// layout's hx-headers). Governing: SPEC-0013 endpoints table POST /todos/{id}/claim, SPEC-0003
-// claim-under-lease semantics (the UI implements no lifecycle rules of its own).
+// boardLaneQuery is how many todos the Board reads to fill its two persisted lanes (each capped at
+// laneCap after partitioning by state).
+const boardLaneQuery = 60
+
+// ClaimTodo claims a pending todo under a lease as the operator (the lane card's Claim action).
+// The Board's Claim posts with hx-swap="none" and receives the OOB lane movement (verified →
+// patched through) directly, so the card crosses even if the SSE todo_claimed frame is dropped;
+// the SSE frame updates every other open view. Requires human (session + CSRF via the layout's
+// hx-headers). Governing: SPEC-0015 REQ "Patch Panel Board", SPEC-0003 claim-under-lease semantics
+// (the UI implements no lifecycle rules of its own).
 func (h *Handler) ClaimTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	t, err := h.store.ClaimTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
-	// respondTodoAction picks the fragment by HTMX target: the Board feed's Claim (default) still gets
-	// a feed_row, while the Todos table and drawer get their own refreshed fragments. On a lost race
-	// the SSE stage update tells the operator who won; no internal detail leaks (SPEC-0013).
+	// respondTodoAction picks the fragment by HTMX target: the Board card's Claim (default) gets
+	// the OOB lane movement, while the Todos table and drawer get their own refreshed fragments.
+	// On a lost race the SSE stage update tells the operator who won; no internal detail leaks.
 	h.respondTodoAction(w, r, "ClaimTodo", t, err)
 }
 
