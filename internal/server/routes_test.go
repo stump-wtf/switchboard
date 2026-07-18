@@ -72,6 +72,9 @@ var sessionRoutes = map[string]bool{
 	// Providers view + lifecycle (SPEC-0017): the view over the runtime registry, the shared
 	// confirmation modal, and the disable/enable/rotate/remove POSTs — all session-gated.
 	"GET /providers":                         true, // Providers view (SPEC-0015 six-view IA; SPEC-0017 registry-backed)
+	"GET /providers/connect":                 true, // connect wizard start (SPEC-0017 REQ "Connect Provider Wizard")
+	"GET /providers/connect/{step}":          true, // connect wizard step pages (SPEC-0015 wizard pattern)
+	"POST /providers/connect/{step}":         true, // step submit / confirm-step registration
 	"GET /providers/{name}/confirm/{action}": true, // lifecycle confirmation modal (SPEC-0017)
 	"POST /providers/{name}/disable":         true, // stop the line, keep history (SPEC-0017)
 	"POST /providers/{name}/enable":          true, // restore a disabled line (SPEC-0017)

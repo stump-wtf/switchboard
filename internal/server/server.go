@@ -392,6 +392,15 @@ func newRouter(d routerDeps) chi.Router {
 		// hidden field; the group's RequireCSRF validates every POST. Governing: ADR-0020,
 		// SPEC-0015 REQ "Application Shell And Navigation".
 		pr.Get("/providers", d.webh.Providers)
+		// Connect-provider wizard (SPEC-0017 REQ "Connect Provider Wizard"; SPEC-0015 wizard
+		// pattern): GET /providers/connect starts it (server-side step state, 303 → source);
+		// GET/POST /providers/connect/{step} are the routed step pages — the confirm POST
+		// registers the provider (enabled) and renders the completion reveal. The static
+		// "connect" segment wins over {name} in chi, which is why the wizard refuses to create
+		// a provider named "connect". Governing: ADR-0020, ADR-0003.
+		pr.Get("/providers/connect", d.webh.ConnectStart)
+		pr.Get("/providers/connect/{step}", d.webh.ConnectStep)
+		pr.Post("/providers/connect/{step}", d.webh.ConnectStepSubmit)
 		pr.Get("/providers/{name}/confirm/{action}", d.webh.ProviderConfirmModal)
 		pr.Post("/providers/{name}/disable", d.webh.DisableProvider)
 		pr.Post("/providers/{name}/enable", d.webh.EnableProvider)

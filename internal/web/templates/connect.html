@@ -1,0 +1,171 @@
+{{define "content"}}
+{{/* The connect-provider wizard's step pages + completion (SPEC-0017 REQ "Connect Provider
+     Wizard"; SPEC-0015 REQ "Wizard Interaction Pattern"): source → trust → secret → confirm for
+     webhook kinds (open skips secret), source → settings → confirm for the queue kind — each a
+     FULL routed page rendered from server-side step state (internal/web/wizard.go). Every form is
+     a plain method=post with a 303 between steps, so the flow completes identically with JS
+     disabled; Back is a plain link that re-renders saved values. The completion page is the ONE
+     place a generated token ever renders (standard one-time reveal). Governing: ADR-0020,
+     ADR-0003, ADR-0018. */}}
+{{if .ConnectDone}}{{template "connect_done" .ConnectDone}}{{else}}
+{{$v := .Connect}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">Connect provider</h1>
+    <p class="sb-tagline">a new line into the board · trust is declared per provider and enforced on every delivery</p>
+  </div>
+</div>
+
+<section class="sb-wiz" data-sb-wizard="connect" aria-label="Connect provider wizard">
+  {{/* Step tracker: the routed pages ARE the steps; the tracker only reports position on the
+       ACTIVE path (webhook vs queue paths differ). */}}
+  <ol class="sb-wiz__steps" data-sb-wiz-steps>
+    {{range $v.Steps}}<li class="sb-wiz__step{{if .Current}} sb-wiz__step--current{{end}}{{if .Done}} sb-wiz__step--done{{end}}"{{if .Current}} aria-current="step"{{end}} data-sb-wiz-step="{{.Slug}}"><span class="sb-wiz__stepnum">{{printf "%02d" .Num}}</span> {{.Slug}}</li>{{end}}
+  </ol>
+  <p class="sb-wiz__progress sb-muted">step {{$v.StepNum}} of {{$v.StepTotal}}</p>
+
+  {{if $v.Error}}<p class="sb-callout sb-callout--danger" role="alert" data-sb-wiz-error>{{$v.Error}}</p>{{end}}
+
+  <form id="sb-wiz-form" class="sb-vend sb-wiz__form" method="post" action="{{$v.ActionURL}}" data-sb-connect>
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+
+    {{if eq $v.Step "source"}}
+    <div class="sb-field">
+      <span class="sb-label" id="sb-connect-kind-label">Source</span>
+      {{/* Only implemented kinds appear — the wizard offers nothing the backend cannot serve
+           (SPEC-0017 REQ "Provider Catalog": available ≠ connectable). */}}
+      <div class="sb-wiz__choices" role="radiogroup" aria-labelledby="sb-connect-kind-label" data-sb-connect-kinds>
+        {{range $v.KindOptions}}<label class="sb-wiz__choice"><input type="radio" name="kind" value="{{.Kind}}"{{if .Checked}} checked{{end}}> {{.Title}} <span class="sb-muted">· {{.Family}} · {{.Desc}}</span></label>
+        {{end}}
+      </div>
+      <p class="sb-help">webhooks push to an ingestion URL · the queue adapter drains a broker</p>
+    </div>
+    <div class="sb-field">
+      <label for="sb-connect-name">Provider name</label>
+      <input id="sb-connect-name" class="sb-input" name="name" value="{{$v.Name}}" placeholder="e.g. homelab" autocomplete="off" data-sb-connect-name>
+      <p class="sb-help">the line's registry name and URL segment · lowercase letters, digits, - and _ · signed kinds (GitHub, Stripe, Slack) always use the kind itself</p>
+    </div>
+
+    {{else if eq $v.Step "trust"}}
+    <div class="sb-field">
+      <span class="sb-label" id="sb-connect-trust-label">Trust mode</span>
+      {{if $v.SignedKind}}
+      {{/* A real signing scheme exists — signed is the only honest choice, so there is none to
+           make (SPEC-0017: signed only where a real scheme exists). */}}
+      <p class="sb-callout" data-sb-connect-trust-fixed>
+        <span class="sb-badge sb-badge--signed" data-sb-trust="signed">signed</span>
+        {{$v.Kind}} signs every delivery — switchboard verifies each one against the signing secret you provide next. No weaker mode is offered.
+      </p>
+      {{else}}
+      <div class="sb-wiz__choices" role="radiogroup" aria-labelledby="sb-connect-trust-label" data-sb-connect-trust>
+        {{/* token is the pre-checked default — the pit of success for unsigned senders
+             (ADR-0003: a real tier between signed and open). */}}
+        <label class="sb-wiz__choice"><input type="radio" name="trust" value="token"{{if ne $v.TrustMode "open"}} checked{{end}}> token <span class="sb-muted">· a shared secret authenticates the caller — not the body · the default</span></label>
+        <label class="sb-wiz__choice"><input type="radio" name="trust" value="open"{{if eq $v.TrustMode "open"}} checked{{end}}> open <span class="sb-muted">· no verification at all</span></label>
+      </div>
+      {{/* Open requires intent (SPEC-0017 scenario "Open requires intent"): the acknowledgement
+           is a required checkbox, enforced server-side — visible with or without JS. */}}
+      <p class="sb-callout sb-callout--danger">open means anyone who can reach the URL can inject events — no token, no signature, nothing. Choosing it requires the acknowledgement below.</p>
+      <label class="sb-chip sb-chip--toggle" data-sb-connect-open-ack><input type="checkbox" name="open_ack" value="1"{{if $v.OpenAck}} checked{{end}}> I understand: open accepts unverified deliveries from anyone</label>
+      {{end}}
+    </div>
+
+    {{else if eq $v.Step "secret"}}
+    <div class="sb-field">
+      {{if eq $v.TrustMode "signed"}}
+      <label for="sb-connect-secret">Signing secret</label>
+      <input id="sb-connect-secret" class="sb-input" type="password" name="secret" value="" placeholder="paste the {{$v.Kind}} webhook signing secret" autocomplete="off" data-sb-connect-secret>
+      <p class="sb-help">from the {{$v.Kind}} webhook configuration · sealed through the envelope, never shown again{{if $v.SecretStaged}} · a secret is already staged — leave blank to keep it{{end}}</p>
+      {{else}}
+      <span class="sb-label" id="sb-connect-secret-label">Shared-secret token</span>
+      <div class="sb-wiz__choices" role="radiogroup" aria-labelledby="sb-connect-secret-label" data-sb-connect-secret-mode>
+        <label class="sb-wiz__choice"><input type="radio" name="secret_mode" value="generate"{{if ne $v.SecretMode "provide"}} checked{{end}}> generate one for me <span class="sb-muted">· 256-bit, shown exactly once at the end · the default</span></label>
+        <label class="sb-wiz__choice"><input type="radio" name="secret_mode" value="provide"{{if eq $v.SecretMode "provide"}} checked{{end}}> I'll provide it</label>
+      </div>
+      <input id="sb-connect-secret" class="sb-input" type="password" name="secret" value="" placeholder="only if providing your own" autocomplete="off" aria-label="Provided token" data-sb-connect-secret>
+      <p class="sb-help">the sender presents it as a bearer token, an X-Webhook-Token header, or ?token= · sealed through the envelope{{if $v.SecretStaged}} · a token is already staged — leave blank to keep it{{end}}</p>
+      {{end}}
+    </div>
+
+    {{else if eq $v.Step "settings"}}
+    <div class="sb-field">
+      <span class="sb-label" id="sb-connect-mode-label">Consume mode</span>
+      <div class="sb-wiz__choices" role="radiogroup" aria-labelledby="sb-connect-mode-label" data-sb-connect-mode>
+        <label class="sb-wiz__choice"><input type="radio" name="mode" value="stream"{{if eq $v.QueueMode "stream"}} checked{{end}}> stream <span class="sb-muted">· consumer group, ack after store · recommended</span></label>
+        <label class="sb-wiz__choice"><input type="radio" name="mode" value="list"{{if eq $v.QueueMode "list"}} checked{{end}}> list <span class="sb-muted">· BRPOPLPUSH with a processing list</span></label>
+        <label class="sb-wiz__choice"><input type="radio" name="mode" value="pubsub"{{if eq $v.QueueMode "pubsub"}} checked{{end}}> pub/sub <span class="sb-muted">· fire-and-forget — loss-tolerant work only</span></label>
+      </div>
+    </div>
+    <div class="sb-field">
+      <label for="sb-connect-target">Stream / list / channel</label>
+      <input id="sb-connect-target" class="sb-input" name="target" value="{{$v.Target}}" placeholder="e.g. builds" autocomplete="off" data-sb-connect-target>
+      <p class="sb-help">what this adapter consumes from the broker</p>
+    </div>
+    <div class="sb-field">
+      <label for="sb-connect-queue">Todo queue (optional)</label>
+      <input id="sb-connect-queue" class="sb-input" name="queue" value="{{$v.Queue}}" placeholder="defaults to the consume target" autocomplete="off" data-sb-connect-queue>
+      <p class="sb-help">where drained messages land as todos</p>
+    </div>
+    {{/* The broker DSN is a secret and lives in SWITCHBOARD_REDIS_URL — never collected here,
+         never stored in the registry (ADR-0014). */}}
+    <p class="sb-callout">The broker connection itself comes from <code>SWITCHBOARD_REDIS_URL</code> in the deployment environment — the registry holds only this non-secret consume topology.</p>
+
+    {{else if eq $v.Step "confirm"}}
+    {{/* Confirm — the execute step. Summary renders from the SERVER-SIDE draft; the form submits
+         only the CSRF token (SPEC-0015). */}}
+    <dl class="sb-wiz__summary" data-sb-wiz-summary>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Provider</dt><dd>{{$v.Name}} <span class="sb-muted sb-mono">· {{$v.Kind}} · {{$v.Family}}</span></dd></div>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Trust</dt><dd><span class="sb-badge sb-badge--{{$v.TrustMode}}" data-sb-trust="{{$v.TrustMode}}">{{$v.TrustMode}}</span> <span class="sb-muted">{{$v.TrustLabel}}</span></dd></div>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Secret</dt><dd data-sb-connect-secret-summary>{{$v.SecretSummary}}</dd></div>
+      {{if $v.IngestPath}}<div class="sb-epcard__row"><dt class="sb-microlabel">Ingest</dt><dd><code class="sb-code">{{$v.IngestPath}}</code></dd></div>{{end}}
+      {{if $v.Topology}}<div class="sb-epcard__row"><dt class="sb-microlabel">Consumes</dt><dd><code class="sb-code">{{$v.Topology}}</code></dd></div>{{end}}
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Queue</dt><dd><span class="sb-chip sb-chip--queue">{{$v.Queue}}</span></dd></div>
+    </dl>
+    <p class="sb-callout">Connecting registers the provider <strong>enabled</strong> — {{if eq $v.Family "webhook"}}its ingestion URL is live on the next request{{else}}its poll loop attaches on the next restart (the enabled flag itself is live){{end}}. You can disable, rotate, or remove it from the Providers view at any time.</p>
+    {{end}}
+
+    <div class="sb-vend__foot">
+      <a class="sb-btn sb-btn--secondary" href="/providers" data-sb-wiz-cancel>Cancel</a>
+      {{if $v.BackURL}}<a class="sb-btn sb-btn--secondary" href="{{$v.BackURL}}" data-sb-wiz-back>← Back</a>{{end}}
+      {{if eq $v.Step "confirm"}}
+      <button type="submit" class="sb-btn sb-btn--mono" data-sb-connect-submit>Connect provider →</button>
+      {{else}}
+      <button type="submit" class="sb-btn" data-sb-connect-submit>Continue →</button>
+      {{end}}
+    </div>
+  </form>
+</section>
+{{end}}
+{{end}}
+
+{{/* connect_done — the wizard's completion page: the provider is registered + enabled + visible on
+     the Providers view. For webhook lines it shows the copyable ingestion URL; a GENERATED token
+     renders here exactly once (standard one-time reveal — never persisted in plaintext, never
+     re-renderable); a provided secret is sealed and never echoed, not even here. Data:
+     web.connectDoneView. Governing: SPEC-0017 scenario "Homelab sender lands on token". */}}
+{{define "connect_done"}}<section class="sb-reveal" aria-labelledby="sb-connect-done-title" data-sb-connect-done>
+  <h2 class="sb-modal__title" id="sb-connect-done-title">Provider connected</h2>
+  <p class="sb-muted"><strong>{{.Name}}</strong> is registered and enabled — <span class="sb-badge sb-badge--{{.TrustMode}}" data-sb-trust="{{.TrustMode}}">{{.TrustMode}}</span> · {{.Kind}} · {{.Family}}.</p>
+  {{if .URL}}
+  <span class="sb-label" id="sb-connect-url-label">Ingestion URL</span>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-connect-url-label" data-sb-connect-url>{{.URL}}</pre>
+  {{end}}
+  {{if .Token}}
+  <p class="sb-callout sb-callout--danger">Copy the token now — it is shown once and never again. Configure the sender with it before its first delivery.</p>
+  <span class="sb-label" id="sb-connect-token-label">Shared-secret token · shown once</span>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-connect-token-label" data-sb-connect-token>{{.Token}}</pre>
+  <p class="sb-muted">The sender presents it as a bearer token, an <code>X-Webhook-Token</code> header, or <code>?token=</code> on the URL above.</p>
+  {{else if .SecretProvided}}
+  <p class="sb-muted" data-sb-secret-status="configured">Secret: configured · sealed through the envelope · never shown again. Rotate it from the Providers view if it is ever exposed.</p>
+  {{else if eq .TrustMode "open"}}
+  <p class="sb-callout sb-callout--danger">This line is <strong>open</strong>: every delivery to the URL above is accepted unverified. Disable or remove it the moment it stops being deliberate.</p>
+  {{end}}
+  {{if .Topology}}
+  <span class="sb-label" id="sb-connect-topology-label">Consumes</span>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-connect-topology-label" data-sb-connect-topology>{{.Topology}} → queue {{.Queue}}</pre>
+  <p class="sb-muted">The poll loop attaches on the next restart — the broker DSN comes from <code>SWITCHBOARD_REDIS_URL</code>. The line's enabled flag is live immediately.</p>
+  {{end}}
+  <div class="sb-vend__foot">
+    <a class="sb-btn" href="/providers" data-sb-connect-done-btn>Done — back to providers</a>
+  </div>
+</section>{{end}}
