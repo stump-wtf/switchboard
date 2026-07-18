@@ -98,10 +98,10 @@ func TestAuthorizeConsentDOM(t *testing.T) {
 		},
 	})
 	for _, want := range []string{
-		`data-sb-oauth-consent`,                            // the consent surface hook
-		"authorize access",                                 // the surface title
+		`data-sb-oauth-consent`, // the consent surface hook
+		"authorize access",      // the surface title
 		`<strong data-sb-oauth-client>Claude Desktop</strong>`, // client name, escaped render
-		"wants to connect to",                              // the ask copy
+		"wants to connect to",                                    // the ask copy
 		`data-sb-oauth-principal`, "Joe Stump · joe@example.com", // accountable principal
 		`data-sb-oauth-workspace`, "sb.example.com", // workspace
 		`data-sb-oauth-endpoint`, "ci-responder", "/mcp/ci-responder-ab12cd34", // endpoint binding

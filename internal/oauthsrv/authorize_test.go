@@ -24,7 +24,7 @@ func TestValidateCodeChallenge(t *testing.T) {
 	// PKCE failure modes: every one must be refused, none silently accepted or downgraded.
 	for name, tc := range map[string]struct{ challenge, method string }{
 		"plain method":       {valid, "plain"},
-		"missing method":     {valid, ""},         // OAuth 2.1: no PKCE is no flow
+		"missing method":     {valid, ""}, // OAuth 2.1: no PKCE is no flow
 		"unknown method":     {valid, "S512"},
 		"too short":          {strings.Repeat("a", 42), "S256"},
 		"too long":           {strings.Repeat("a", 129), "S256"},

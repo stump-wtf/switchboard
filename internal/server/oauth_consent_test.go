@@ -115,10 +115,10 @@ func TestConsentFlowApprove(t *testing.T) {
 	}
 	body := page.Body.String()
 	for _, want := range []string{
-		"Claude Desktop",                    // registered client name
-		"sb.example.com",                    // the workspace host
-		"Joe Stump · joe@example.com",       // the accountable principal
-		"read todos on github · ci",         // bullet from scope_queues + list_todos
+		"Claude Desktop",                     // registered client name
+		"sb.example.com",                     // the workspace host
+		"Joe Stump · joe@example.com",        // the accountable principal
+		"read todos on github · ci",          // bullet from scope_queues + list_todos
 		"claim &amp; complete under a lease", // bullet from the stored lease verbs
 		`data-sb-oauth-consent`,
 	} {
