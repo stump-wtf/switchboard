@@ -30,6 +30,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/joestump/switchboard/internal/cred"
+	"github.com/joestump/switchboard/internal/oauthsrv"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -227,7 +228,7 @@ func (h *Handler) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ep, ok := EndpointFromContext(r.Context())
 		if !ok { // cannot happen behind auth; defense in depth
-			unauthorized(w)
+			h.unauthorized(w, r)
 			return
 		}
 		if !h.rl.allow(ep.ID) {
@@ -275,14 +276,14 @@ func (h *Handler) auth(next http.Handler) http.Handler {
 		slug := chi.URLParam(r, "endpoint")
 		tok := bearer(r)
 		if tok == "" {
-			unauthorized(w)
+			h.unauthorized(w, r)
 			return
 		}
 		ep, err := h.store.EndpointByCredHash(r.Context(), cred.Hash(tok))
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				// Unknown or revoked — same answer either way, revealing nothing about the slug.
-				unauthorized(w)
+				h.unauthorized(w, r)
 				return
 			}
 			h.log.Error("mcp auth", "slug", slug, "err", err)
@@ -370,7 +371,20 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-func unauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Bearer realm="switchboard"`)
+// unauthorized answers a failed bearer authentication with the RFC 9728 challenge: alongside the
+// realm, WWW-Authenticate carries resource_metadata pointing at this mount's protected-resource
+// metadata document — how a spec-following MCP client discovers the authorization server and
+// begins the OAuth flow instead of dead-ending on a bare 401. The challenge stays bare when no
+// base URL is wired (partial wiring, tests) or the path slug is not even slug-shaped (client-
+// supplied path input is never reflected into a response header).
+// Governing: ADR-0019, SPEC-0016 REQ "Protected Resource Metadata".
+func (h *Handler) unauthorized(w http.ResponseWriter, r *http.Request) {
+	challenge := `Bearer realm="switchboard"`
+	if base := h.baseURL.Load(); base != nil && *base != "" {
+		if slug := chi.URLParam(r, "endpoint"); oauthsrv.SlugOK(slug) {
+			challenge += `, resource_metadata="` + oauthsrv.ResourceMetadataURL(*base, slug) + `"`
+		}
+	}
+	w.Header().Set("WWW-Authenticate", challenge)
 	http.Error(w, "invalid or revoked credential", http.StatusUnauthorized)
 }

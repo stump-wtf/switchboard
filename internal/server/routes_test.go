@@ -21,6 +21,7 @@ import (
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/ingest"
 	mcpsrv "github.com/joestump/switchboard/internal/mcp"
+	"github.com/joestump/switchboard/internal/oauthsrv"
 	"github.com/joestump/switchboard/internal/store"
 	"github.com/joestump/switchboard/internal/web"
 )
@@ -50,6 +51,7 @@ func newTestRouter(t *testing.T) chi.Router {
 		webh:  webh,
 		ing:   ingest.New(st, hub, log, ingest.Config{}),
 		mcp:   mcph,
+		oauth: oauthsrv.New(st, cfg.BaseURL, log),
 		ping:  func(context.Context) error { return nil },
 		log:   log,
 	})
@@ -116,6 +118,14 @@ var publicRoutes = map[string]bool{
 	// Self-managed webhook receiver: the unguessable path token both routes and authenticates
 	// (SPEC-0006); an unknown token 404s, so it is deliberately session-free.
 	"POST /webhooks/w/{token}": true,
+	// OAuth AS surface (ADR-0019; SPEC-0016): discovery documents are how an unauthenticated MCP
+	// client learns to authorize at all, and RFC 7591 dynamic registration is anonymous by design
+	// (public clients + PKCE) — the flow's human gate is the session-guarded consent screen, not
+	// registration. Every field of a registration is validated (exact redirect-URI rules) and the
+	// body is bounded; the metadata GETs read nothing from the store.
+	"GET /.well-known/oauth-authorization-server":              true,
+	"GET /.well-known/oauth-protected-resource/mcp/{endpoint}": true,
+	"POST /oauth/register":                                     true,
 	// A2A friend-request intake authenticates by the requesting human's OIDC-signed provenance
 	// carried IN-BAND (ADR-0010/0011; SPEC-0010), not via a session cookie or bearer header —
 	// missing/invalid provenance → 401 with no pending edge. Not "ungoverned public": it is

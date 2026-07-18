@@ -24,6 +24,7 @@ import (
 	"github.com/joestump/switchboard/internal/db"
 	"github.com/joestump/switchboard/internal/ingest"
 	mcpsrv "github.com/joestump/switchboard/internal/mcp"
+	"github.com/joestump/switchboard/internal/oauthsrv"
 	"github.com/joestump/switchboard/internal/store"
 	"github.com/joestump/switchboard/internal/web"
 )
@@ -136,6 +137,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		webh:    webh,
 		ing:     ing,
 		mcp:     mcph,
+		oauth:   oauthsrv.New(st, cfg.BaseURL, log),
 		friends: newFriendIntake(st, authr, log),
 		ping:    pool.Ping,
 		log:     log,
@@ -204,6 +206,7 @@ type routerDeps struct {
 	webh    *web.Handler
 	ing     *ingest.Ingest
 	mcp     *mcpsrv.Handler             // the Run-wired MCP handler (doorbell + revocation hooks attached)
+	oauth   *oauthsrv.Handler           // OAuth AS surface: discovery metadata + dynamic client registration (ADR-0019)
 	friends *friendIntake               // A2A friend-request intake (OIDC-provenance authenticated)
 	ping    func(context.Context) error // /healthz DB probe
 	log     *slog.Logger
@@ -268,6 +271,25 @@ func newRouter(d routerDeps) chi.Router {
 	// handler. Governing: SPEC-0009 REQ "Well-Known Card Endpoint", REQ "Discoverability Is
 	// Owner-Controlled", "Security Requirements → Authentication / Rate Limiting".
 	r.With(cardRL.middleware).Get("/a/{persona_id}/.well-known/agent-card.json", d.webh.AgentCard)
+
+	// OAuth authorization-server surface (ADR-0019; SPEC-0016): RFC 8414 AS metadata, RFC 9728
+	// protected-resource metadata per MCP mount, and RFC 7591 dynamic client registration. All three
+	// are DELIBERATELY public — discovery documents are how an unauthenticated MCP client learns to
+	// authorize at all, and DCR is anonymous by design (public clients + PKCE; the flow's human gate
+	// is the consent screen behind the session, not registration). The metadata GETs read nothing
+	// from the store; registration validates every field (exact redirect-URI rules) and its body is
+	// bounded at 64 KiB — a registration is a handful of URIs and a name, never a blob. One per-IP
+	// throttle covers the surface, same limiter shape as the other public groups.
+	// Governing: SPEC-0016 REQ "Protected Resource Metadata", REQ "Authorization Server Metadata",
+	// REQ "Dynamic Client Registration", "Security notes" (rate limiting on /oauth/* consistent with
+	// the existing limiter).
+	oauthRL := newRateLimiter(5, 20)
+	r.Group(func(or chi.Router) {
+		or.Use(oauthRL.middleware)
+		or.Get(oauthsrv.ASMetadataPath, d.oauth.ASMetadata)
+		or.Get(oauthsrv.ProtectedResourcePrefix+"/mcp/{endpoint}", d.oauth.ProtectedResourceMetadata)
+		or.With(maxBytes(64<<10)).Post(oauthsrv.RegisterPath, d.oauth.Register)
+	})
 
 	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, per-endpoint
 	// rate limit, and the 1 MiB body cap all live inside the package's own middleware stack.

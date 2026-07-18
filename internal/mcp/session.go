@@ -81,7 +81,7 @@ func (c *connCapturingTransport) Connect(ctx context.Context) (sdk.Connection, e
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	ep, ok := EndpointFromContext(r.Context())
 	if !ok { // cannot happen behind auth; defense in depth
-		unauthorized(w)
+		h.unauthorized(w, r)
 		return
 	}
 	if !h.validateTransportRequest(w, r) {
