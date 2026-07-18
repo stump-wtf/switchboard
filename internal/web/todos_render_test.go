@@ -375,7 +375,8 @@ func TestTodosHeaderCharmCopy(t *testing.T) {
 }
 
 // TestTodoRowWholeRowOpenContract pins the whole-row affordance contract the presentation JS
-// drives: the <tr> carries data-sb-row-open + tabindex="0" (focusable, Enter/Space forwarded)
+// drives: the <tr> carries data-sb-row-open + tabindex="0" (focusable; Space forwarded by
+// sb-overlay.js, Enter by the sb-keys.js keymap registry per SPEC-0015 "Global Keyboard Map")
 // and the line cell's drawer button carries data-sb-row-trigger, so a click anywhere on the row
 // body lands on the same accessible, HTMX-wired trigger. The <tr> keeps its native row role — no
 // role override — so the table stays a table for AT.

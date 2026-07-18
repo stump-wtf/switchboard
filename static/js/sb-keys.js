@@ -8,6 +8,7 @@
  *
  *   g <view>  go to view (the second key comes from the nav's data-sb-nav stamps)
  *   /         focus the view's filter/search input
+ *   enter     open the selection (forwards the focused data-sb-row-open row to its trigger)
  *   t         cycle the day/night theme (clicks the visible control — one code path)
  */
 (function () {
@@ -38,6 +39,26 @@
       handle: function (e) {
         e.preventDefault();
         filterInput().focus();
+      },
+    },
+    {
+      // Open the selection: forwards a focused list row ([data-sb-row-open], tabindex="0") to its
+      // accessible, HTMX-wired trigger ([data-sb-row-trigger]) — same forwarding path as the
+      // whole-row click in sb-overlay.js, so drawer wiring and focus return stay on one path.
+      key: "Enter",
+      hint: "enter open",
+      when: function () {
+        return document.querySelector("[data-sb-row-open]") !== null;
+      },
+      handle: function (e) {
+        var el = document.activeElement;
+        var row = el && el.closest ? el.closest("[data-sb-row-open]") : null;
+        if (!row || el !== row) return; // only when the ROW is focused — controls keep their keys
+        var trigger = row.querySelector("[data-sb-row-trigger]");
+        if (trigger) {
+          e.preventDefault();
+          trigger.click();
+        }
       },
     },
     {

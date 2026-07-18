@@ -88,6 +88,32 @@ func TestNavOffersAllSixViews(t *testing.T) {
 	}
 }
 
+// TestKeyHintFooterSlotIsEmptyServerSide: the #sb-keys footer slot renders EMPTY from the server —
+// hints are drawn at runtime from the sb-keys.js keymap registry, the single source of truth, so
+// no template may carry hint text that could drift from the bindings (SPEC-0015 REQ "Global
+// Keyboard Map", scenario "Hints match behavior"). Governing: ADR-0018.
+func TestKeyHintFooterSlotIsEmptyServerSide(t *testing.T) {
+	h := newTestHandler(t)
+	for _, page := range []string{"board", "login"} {
+		v := view{Title: "The Board", Human: testHuman(), CSRF: "tok",
+			Shell: shell{Active: "board", DBConnected: true, Initials: "JS"}}
+		if page == "login" {
+			v = view{Title: "Log in", OIDCConfigured: true}
+		}
+		body := renderPage(t, h, page, v)
+		if !strings.Contains(body, `id="sb-keys" data-sb-keys aria-label="Keyboard shortcuts"></span>`) {
+			t.Errorf("%s: #sb-keys slot missing or carries server-rendered content — hints must come only from the sb-keys.js registry", page)
+		}
+		// No hint text may be baked into any template output either ("t theme" is skipped: it
+		// collides with the toggle's own "night theme" label, which is not a key hint).
+		for _, hint := range []string{"g+view", "enter open", "/ filter"} {
+			if strings.Contains(body, hint) {
+				t.Errorf("%s: rendered page hardcodes key hint %q — a second source of truth beside the registry", page, hint)
+			}
+		}
+	}
+}
+
 // TestProvidersPageRendersShellPlacement: the providers stub page renders with the shared chrome,
 // marks its nav entry active, and explains where provider management lives until SPEC-0017.
 func TestProvidersPageRendersShellPlacement(t *testing.T) {
