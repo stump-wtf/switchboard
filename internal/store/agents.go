@@ -340,24 +340,63 @@ func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID str
 }
 
 // DeleteEndpoint permanently removes a REVOKED endpoint the given human owns (via its agent),
-// clearing a dead card from the Endpoints view. The delete is doubly constrained in the write:
+// clearing a dead card from the Endpoints view, and then garbage-collects the backing agent when the
+// delete leaves it fully orphaned. The endpoint delete is doubly constrained in the write:
 // state='revoked' so an active grant can never be removed without first being revoked (which is what
 // tears down live MCP sessions), and ownership via the agent's owner_human_id so one human can never
 // delete another's endpoint. The endpoint's child endpoint_webhooks rows cascade with it. A zero-row
 // result — not found, not owned, or still active — reports ErrNotFound.
+//
+// A vend mints an agent alongside its endpoint (VendAgentEndpoint), so deleting the last endpoint
+// would otherwise strand that agent forever. The agent is therefore GC'd in the same transaction —
+// but ONLY when nothing still accounts to it: no remaining endpoints, no persona is a face of it, no
+// friend edge is backed by it, and it owns/holds no todos (a claimed lease or a pinned assignment,
+// tracked by the "agent:<id>" owner convention — SPEC-0006/0014). If any of those still reference it,
+// the agent is left intact, so authored personas and todo history are never collaterally destroyed.
+// The persona and friend-edge guards also mean this can never trigger the agents→personas /
+// agents→friend_edges ON DELETE side effects. Both writes are ownership-scoped in the same statement.
 // Governing: SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints", REQ "Database Operation
 // Standards"; SPEC-0013 REQ "Endpoints View and Vend Modal".
 func (s *Store) DeleteEndpoint(ctx context.Context, endpointID, ownerHumanID string) error {
-	ct, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: delete endpoint begin: %w", err)
+	}
+	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+
+	var agentID string
+	err = tx.QueryRow(ctx, `
 		DELETE FROM endpoints
 		WHERE id = $1 AND state = 'revoked'
-		  AND agent_id IN (SELECT id FROM agents WHERE owner_human_id = $2)`,
-		endpointID, ownerHumanID)
+		  AND agent_id IN (SELECT id FROM agents WHERE owner_human_id = $2)
+		RETURNING agent_id::text`,
+		endpointID, ownerHumanID,
+	).Scan(&agentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("store: delete endpoint: %w", err)
 	}
-	if ct.RowsAffected() == 0 {
-		return ErrNotFound
+
+	// GC the now-possibly-orphaned backing agent. Every NOT EXISTS guard must hold, so an agent that
+	// still owns a claimed/assigned todo, backs a persona, backs a friend edge, or has another
+	// endpoint survives untouched — the delete only reaps agents with nothing left to account for.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM agents AS a
+		WHERE a.id = $1 AND a.owner_human_id = $2
+		  AND NOT EXISTS (SELECT 1 FROM endpoints    e WHERE e.agent_id = a.id)
+		  AND NOT EXISTS (SELECT 1 FROM personas     p WHERE p.agent_id = a.id)
+		  AND NOT EXISTS (SELECT 1 FROM friend_edges f WHERE f.from_agent_id = a.id)
+		  AND NOT EXISTS (SELECT 1 FROM todos        t WHERE t.owner    = 'agent:' || a.id::text
+		                                                OR   t.assignee = 'agent:' || a.id::text)`,
+		agentID, ownerHumanID,
+	); err != nil {
+		return fmt.Errorf("store: gc orphan agent: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: delete endpoint commit: %w", err)
 	}
 	return nil
 }
