@@ -71,7 +71,7 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		`TRUNCATE humans, agents, endpoints, todos, events, sessions, adapters RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE humans, agents, endpoints, todos, events, sessions, adapters, oauth_clients RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	st := store.New(pool)

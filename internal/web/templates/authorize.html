@@ -1,0 +1,68 @@
+{{define "content"}}
+{{/* The OAuth consent screen (SPEC-0016 REQ "Authorization Code Flow With Consent"; design
+     package "authorize access" surface): one full page in the SPEC-0015 pattern — plain
+     method=post form, no JS required for the decision — behind the human session. The client
+     name is registered (attacker-supplied) data and the state/challenge round-trip through
+     hidden fields; html/template escaping is the output-encoding boundary for all of it. Every
+     scope bullet is DERIVED from the bound endpoint's stored scope_queues/scope_verbs (web
+     scopeBullets), the same columns the MCP scope guard enforces. Governing: ADR-0018, ADR-0019. */}}
+{{$a := .Authorize}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">mcp · oauth</h1>
+    <p class="sb-tagline">the consent screen the agent is OAuth'd through</p>
+  </div>
+</div>
+
+{{if $a.Error}}
+<section class="sb-wiz sb-oauth" data-sb-oauth-error aria-label="Authorization request rejected">
+  <p class="sb-callout sb-callout--danger" role="alert">{{$a.Error}}</p>
+  <p class="sb-help">nothing was granted — close this window, or return to your endpoints</p>
+  <div class="sb-vend__foot">
+    <a class="sb-btn sb-btn--secondary" href="/endpoints">Back to endpoints</a>
+  </div>
+</section>
+{{else}}
+<section class="sb-wiz sb-oauth" data-sb-oauth-consent aria-label="Authorize access">
+  <div class="sb-oauth__bars" aria-hidden="true"><span></span><span></span><span></span></div>
+  <h2 class="sb-oauth__title">authorize access</h2>
+  <p class="sb-oauth__ask"><strong data-sb-oauth-client>{{$a.ClientName}}</strong> wants to connect to
+    your switchboard workspace over MCP</p>
+  <p class="sb-oauth__principal" data-sb-oauth-principal>
+    <span class="sb-avatar sb-oauth__avatar" aria-hidden="true">{{$a.Initials}}</span>
+    <span>{{$a.Principal}}</span>
+  </p>
+
+  <dl class="sb-wiz__summary sb-oauth__binding">
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Workspace</dt><dd data-sb-oauth-workspace>{{$a.Workspace}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Endpoint</dt><dd data-sb-oauth-endpoint>{{$a.AgentName}} · <code class="sb-code">/mcp/{{$a.Slug}}</code></dd></div>
+  </dl>
+
+  <div class="sb-oauth__scope" data-sb-oauth-scope>
+    <p class="sb-microlabel">this will allow the agent to</p>
+    <ul class="sb-oauth__bullets">
+      {{range $a.Bullets}}<li class="sb-oauth__bullet" data-sb-oauth-bullet><span class="sb-oauth__check" aria-hidden="true">✓</span> {{.}}</li>{{end}}
+    </ul>
+  </div>
+
+  {{/* The decision form round-trips the validated request; the POST re-validates every field
+       against the store before acting, so these hidden values are convenience, never trust. */}}
+  <form method="post" action="/oauth/authorize" class="sb-oauth__form" data-sb-oauth-form>
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <input type="hidden" name="response_type" value="code">
+    <input type="hidden" name="code_challenge_method" value="S256">
+    <input type="hidden" name="client_id" value="{{$a.ClientID}}">
+    <input type="hidden" name="redirect_uri" value="{{$a.RedirectURI}}">
+    <input type="hidden" name="state" value="{{$a.State}}">
+    <input type="hidden" name="code_challenge" value="{{$a.CodeChallenge}}">
+    <input type="hidden" name="endpoint" value="{{$a.Slug}}">
+    <div class="sb-vend__foot">
+      <button type="submit" name="decision" value="deny" class="sb-btn sb-btn--secondary" data-sb-oauth-deny>Deny</button>
+      <button type="submit" name="decision" value="approve" class="sb-btn sb-btn--mono" data-sb-oauth-approve>Authorize access →</button>
+    </div>
+  </form>
+
+  <p class="sb-oauth__foot sb-muted">connected over MCP · revoke anytime in <a href="/endpoints">endpoints</a></p>
+</section>
+{{end}}
+{{end}}

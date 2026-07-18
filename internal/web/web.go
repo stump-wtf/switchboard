@@ -35,7 +35,7 @@ var tmplFS embed.FS
 // Startup parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
 // "Application Shell And Navigation" (providers joins the IA).
-var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "vend", "revoke", "personas", "friends", "providers"}
+var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "vend", "revoke", "personas", "friends", "providers", "authorize"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -200,6 +200,10 @@ type view struct {
 	// ProviderConfirm renders the lifecycle confirmation inline on the page (no-JS fallback for
 	// the overlay confirmation modal).
 	ProviderConfirm *providerConfirmView
+
+	// OAuth consent screen (SPEC-0016 REQ "Authorization Code Flow With Consent"): the
+	// "authorize access" surface (templates/authorize.html) or its dead-end error state.
+	Authorize *authorizeView
 
 	// Friends view (SPEC-0013 REQ "Friends View").
 	FriendGroups []friendGroup // grouped-ledger sections (Incoming/Outgoing/Active/Blocked)

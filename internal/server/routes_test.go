@@ -87,9 +87,14 @@ var sessionRoutes = map[string]bool{
 	"POST /todos/{id}/retry":                 true, // operator retry a dead-lettered todo (SPEC-0013)
 	"POST /todos/{id}/extend":                true, // operator extend lease / heartbeat (SPEC-0013)
 	"POST /todos/{id}/release":               true, // operator release lease back to pending (SPEC-0013)
-	"GET /endpoints/{id}/revoke":             true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
-	"POST /endpoints/{id}/revoke":            true,
-	"POST /endpoints/{id}/delete":            true, // permanently delete a revoked endpoint (SPEC-0007)
+	// OAuth consent (SPEC-0016 "Authorization Code Flow With Consent"): the authorize endpoint IS
+	// the flow's human gate, so both the screen and the decision POST are session-gated — an
+	// anonymous authorize request must land on /login (scenario "Human absent").
+	"GET /oauth/authorize":        true,
+	"POST /oauth/authorize":       true,
+	"GET /endpoints/{id}/revoke":  true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
+	"POST /endpoints/{id}/revoke": true,
+	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)
 	// Friends view + approval flow (SPEC-0013). All session-gated; the handlers 404 when the friending
 	// capability is disabled, but auth (RequireHuman) still runs first, so anonymous → /login here too.
 	"GET /friends":                true,
