@@ -288,3 +288,120 @@ func TestResolveProviderCacheInvalidatedOnWrite(t *testing.T) {
 		t.Fatalf("just-created provider must resolve immediately: %+v err=%v", a, err)
 	}
 }
+
+// SPEC-0017 REQ "Provider Lifecycle": rotate replaces the held secret — the old plaintext is dead
+// on the very next resolve (the write invalidates the dispatch cache), the new one resolves, and
+// an unknown provider is ErrNotFound.
+func TestRotateProviderSecret(t *testing.T) {
+	s, ctx := testStore(t)
+
+	if _, err := s.SeedProvider(ctx, ProviderSeed{
+		Name: "homelab", Family: "webhook", Kind: "generic", TrustMode: "token", Secret: "old-secret",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, secret, err := s.ResolveProvider(ctx, "homelab"); err != nil || secret != "old-secret" {
+		t.Fatalf("resolve before rotate: %q err=%v", secret, err)
+	}
+
+	if err := s.RotateProviderSecret(ctx, "homelab", "new-secret"); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	a, secret, err := s.ResolveProvider(ctx, "homelab")
+	if err != nil || secret != "new-secret" {
+		t.Fatalf("resolve after rotate must serve the NEW secret immediately: %q err=%v", secret, err)
+	}
+	if !a.SecretConfigured {
+		t.Fatalf("rotated row must classify configured: %+v", a)
+	}
+
+	if err := s.RotateProviderSecret(ctx, "ghost", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rotate unknown provider: %v, want ErrNotFound", err)
+	}
+}
+
+// SPEC-0017 REQ "Provider Lifecycle": removal deletes ONLY the registry row — everything the
+// provider ingested (events and todos) stays queryable, and the removed name resolves ErrNotFound
+// immediately (cache invalidated). Scenario: removal never deletes ingested events or todos.
+func TestRemoveProviderKeepsEventsAndTodos(t *testing.T) {
+	s, ctx := testStore(t)
+
+	if _, err := s.SeedProvider(ctx, ProviderSeed{
+		Name: "doomed", Family: "webhook", Kind: "generic", TrustMode: "token", Secret: "tok",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, td, created, err := s.CreateEventTodo(ctx,
+		EventInput{Source: "doomed", Family: "webhook", ExternalID: "d1", TrustMode: "token",
+			Verified: false, Payload: []byte(`{}`)},
+		CreateTodoParams{Queue: "doomed", Source: "doomed", Kind: "webhook", Title: "webhook doomed delivery",
+			Payload: []byte(`{}`), IdempotencyKey: "d1"})
+	if err != nil || !created {
+		t.Fatalf("ingest fixture: created=%v err=%v", created, err)
+	}
+
+	if err := s.RemoveProvider(ctx, "doomed"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := s.GetAdapter(ctx, "doomed"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("registry row must be gone: %v, want ErrNotFound", err)
+	}
+	if _, _, err := s.ResolveProvider(ctx, "doomed"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("dispatch resolve after remove: %v, want ErrNotFound (cache must not serve the ghost)", err)
+	}
+
+	// History survives: the ingested event and its todo remain queryable by the source name.
+	events, err := s.RecentEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("recent events: %v", err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Source == "doomed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("removal must NOT delete previously ingested events")
+	}
+	got, err := s.GetTodo(ctx, td.ID)
+	if err != nil || got.Queue != "doomed" {
+		t.Fatalf("removal must NOT delete todos: %+v err=%v", got, err)
+	}
+
+	if err := s.RemoveProvider(ctx, "doomed"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second remove: %v, want ErrNotFound", err)
+	}
+}
+
+// SPEC-0017 REQ "Providers View": per-provider in-rate and last-seen derive from the events table
+// keyed by source; providers that never ingested simply have no entry.
+func TestProviderHealthBySource(t *testing.T) {
+	s, ctx := testStore(t)
+
+	if _, _, _, err := s.CreateEventTodo(ctx,
+		EventInput{Source: "hb", Family: "webhook", ExternalID: "h1", TrustMode: "token",
+			Verified: false, Payload: []byte(`{}`)},
+		CreateTodoParams{Queue: "hb", Source: "hb", Kind: "webhook", Title: "t",
+			Payload: []byte(`{}`), IdempotencyKey: "h1"}); err != nil {
+		t.Fatalf("ingest fixture: %v", err)
+	}
+
+	health, err := s.ProviderHealthBySource(ctx)
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	h, ok := health["hb"]
+	if !ok {
+		t.Fatalf("health missing source hb: %+v", health)
+	}
+	if h.EventsPerMin < 1 {
+		t.Fatalf("in-rate: got %d, want >= 1 (event just ingested)", h.EventsPerMin)
+	}
+	if h.LastSeenAt == nil {
+		t.Fatal("last-seen must be stamped by the ingested event")
+	}
+	if _, ok := health["never-ingested"]; ok {
+		t.Fatal("sources that never ingested must have no entry")
+	}
+}

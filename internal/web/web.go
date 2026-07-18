@@ -192,6 +192,15 @@ type view struct {
 	// Personas view (SPEC-0013 REQ "Personas View"): cards + create/edit modals.
 	Personas *personasView
 
+	// Providers view (SPEC-0017 REQ "Providers View"/"Provider Catalog"/"Provider Lifecycle").
+	Providers *providersPanelView // families + catalog panel
+	// ProviderReveal renders the post-rotate one-time secret reveal inline on the page (no-JS
+	// fallback, mirroring the vend flow's Reveal); the HTMX path gets the modal fragment instead.
+	ProviderReveal *providerRevealView
+	// ProviderConfirm renders the lifecycle confirmation inline on the page (no-JS fallback for
+	// the overlay confirmation modal).
+	ProviderConfirm *providerConfirmView
+
 	// Friends view (SPEC-0013 REQ "Friends View").
 	FriendGroups []friendGroup // grouped-ledger sections (Incoming/Outgoing/Active/Blocked)
 	FriendCards  []friendCard  // flat card list (the cards layout renders this)
@@ -313,19 +322,6 @@ func (h *Handler) ClaimTodo(w http.ResponseWriter, r *http.Request) {
 	// the OOB lane movement, while the Todos table and drawer get their own refreshed fragments.
 	// On a lost race the SSE stage update tells the operator who won; no internal detail leaks.
 	h.respondTodoAction(w, r, "ClaimTodo", t, err)
-}
-
-// Providers renders the Providers view's shell placement: the sixth IA entry (SPEC-0015 scenario
-// "Providers joins the IA"). The view's data contract (runtime provider registry) is SPEC-0017 and
-// lands in a later story; until then the page renders the shared chrome and an explanatory empty
-// state, so navigation always offers all six views and none of them 404s. Requires human.
-// Governing: SPEC-0015 REQ "Application Shell And Navigation", ADR-0020.
-func (h *Handler) Providers(w http.ResponseWriter, r *http.Request) {
-	human, _ := auth.FromContext(r.Context())
-	sh, _ := h.buildShell(r.Context(), "providers", &human)
-	h.render(w, "providers", view{
-		Title: "Providers", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Shell: sh,
-	})
 }
 
 // AgentsRedirect folds the retired SPEC-0012 dashboard/agent screens into the Endpoints view: the

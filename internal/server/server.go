@@ -386,10 +386,17 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/endpoints/vend", d.webh.Vend)
 		pr.Get("/agents", d.webh.AgentsRedirect)
 		pr.Get("/agents/{id}", d.webh.AgentsRedirect)
-		// Providers view shell placement (SPEC-0015 "Providers joins the IA"); the SPEC-0017
-		// registry backs it in a later story. Governing: SPEC-0015 REQ "Application Shell And
-		// Navigation", ADR-0020.
+		// Providers view over the runtime registry (SPEC-0017 REQ "Providers View" / "Provider
+		// Catalog") + the lifecycle surface: disable/rotate/remove behind a confirmation modal,
+		// enable inline (SPEC-0017 REQ "Provider Lifecycle"). CSRF via the layout hx-headers /
+		// hidden field; the group's RequireCSRF validates every POST. Governing: ADR-0020,
+		// SPEC-0015 REQ "Application Shell And Navigation".
 		pr.Get("/providers", d.webh.Providers)
+		pr.Get("/providers/{name}/confirm/{action}", d.webh.ProviderConfirmModal)
+		pr.Post("/providers/{name}/disable", d.webh.DisableProvider)
+		pr.Post("/providers/{name}/enable", d.webh.EnableProvider)
+		pr.Post("/providers/{name}/rotate", d.webh.RotateProvider)
+		pr.Post("/providers/{name}/remove", d.webh.RemoveProvider)
 		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
 		pr.Get("/events", d.webh.Events)
 		// Operator todo lifecycle actions (SPEC-0013 endpoints table). Each dispatches to a SPEC-0003

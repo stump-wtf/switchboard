@@ -1,14 +1,22 @@
 {{define "content"}}
-{{/* Providers view shell placement (SPEC-0015 scenario "Providers joins the IA"). The runtime
-     provider registry that backs this view is SPEC-0017 (ADR-0020) and lands in a later story;
-     this page keeps the sixth nav entry honest — shared chrome, an explanatory empty state, no
-     404. Governing: SPEC-0015 REQ "Application Shell And Navigation". */}}
+{{/* Providers view (SPEC-0017 REQ "Providers View" / "Provider Catalog" / "Provider Lifecycle"):
+     connected lines grouped by family with trust chips + health over the runtime registry
+     (ADR-0020), lifecycle controls behind confirmation, and the honest two-tier catalog. The
+     no-JS fallbacks render inline: a confirmation panel (ProviderConfirm) and the one-time
+     rotate reveal (ProviderReveal) — the HTMX paths get the overlay fragments instead.
+     Governing: ADR-0018; SPEC-0015 REQ "Application Shell And Navigation". */}}
 <div class="sb-view-head">
   <div>
     <h1 class="sb-page-title">providers</h1>
-    <p class="sb-tagline">inbound lines · each with an enforced trust mode</p>
+    <p class="sb-tagline">every message enters through a provider · webhooks push, queues are drained · each line has an enforced trust mode</p>
   </div>
+  {{if .Providers}}<div class="sb-view-head__aside"><span class="sb-muted sb-mono">{{.Providers.Total}} connected</span></div>{{end}}
 </div>
-<p class="sb-empty" data-sb-providers-empty>provider management arrives with the runtime provider
-registry (SPEC-0017) · until then providers are configured by environment at boot</p>
+{{if .ProviderReveal}}
+<div class="sb-prinline">{{template "provider_rotate_reveal" .ProviderReveal}}</div>
+{{end}}
+{{if .ProviderConfirm}}
+<div class="sb-prinline">{{template "provider_confirm_modal" .ProviderConfirm}}</div>
+{{end}}
+<div id="sb-providers-panel">{{if .Providers}}{{template "providers_panel" .Providers}}{{end}}</div>
 {{end}}

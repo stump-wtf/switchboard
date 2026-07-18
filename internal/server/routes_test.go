@@ -69,20 +69,27 @@ var sessionRoutes = map[string]bool{
 	"GET /endpoints/vend":         true, // vend wizard start (mints server-side step state)
 	"GET /endpoints/vend/{step}":  true, // vend wizard step pages (SPEC-0015 wizard pattern)
 	"POST /endpoints/vend/{step}": true, // step submit / confirm-step mint
-	"GET /providers":              true, // Providers view shell placement (SPEC-0015 six-view IA)
-	"POST /endpoints/vend":        true, // direct single-form mint + one-time reveal
-	"GET /agents":                 true, // retired SPEC-0012 screen — 303-redirects to /endpoints
-	"GET /agents/{id}":            true, // retired SPEC-0012 screen — 303-redirects to /endpoints
-	"GET /events":                 true,
-	"POST /todos/{id}/claim":      true, // operator claim (Board feed + Todos view)
-	"POST /todos/{id}/complete":   true, // operator complete · ack (SPEC-0013)
-	"POST /todos/{id}/fail":       true, // operator fail (SPEC-0013)
-	"POST /todos/{id}/retry":      true, // operator retry a dead-lettered todo (SPEC-0013)
-	"POST /todos/{id}/extend":     true, // operator extend lease / heartbeat (SPEC-0013)
-	"POST /todos/{id}/release":    true, // operator release lease back to pending (SPEC-0013)
-	"GET /endpoints/{id}/revoke":  true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
-	"POST /endpoints/{id}/revoke": true,
-	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)
+	// Providers view + lifecycle (SPEC-0017): the view over the runtime registry, the shared
+	// confirmation modal, and the disable/enable/rotate/remove POSTs — all session-gated.
+	"GET /providers":                         true, // Providers view (SPEC-0015 six-view IA; SPEC-0017 registry-backed)
+	"GET /providers/{name}/confirm/{action}": true, // lifecycle confirmation modal (SPEC-0017)
+	"POST /providers/{name}/disable":         true, // stop the line, keep history (SPEC-0017)
+	"POST /providers/{name}/enable":          true, // restore a disabled line (SPEC-0017)
+	"POST /providers/{name}/rotate":          true, // rotate secret + one-time reveal (SPEC-0017)
+	"POST /providers/{name}/remove":          true, // remove line, never its events/todos (SPEC-0017)
+	"POST /endpoints/vend":                   true, // direct single-form mint + one-time reveal
+	"GET /agents":                            true, // retired SPEC-0012 screen — 303-redirects to /endpoints
+	"GET /agents/{id}":                       true, // retired SPEC-0012 screen — 303-redirects to /endpoints
+	"GET /events":                            true,
+	"POST /todos/{id}/claim":                 true, // operator claim (Board feed + Todos view)
+	"POST /todos/{id}/complete":              true, // operator complete · ack (SPEC-0013)
+	"POST /todos/{id}/fail":                  true, // operator fail (SPEC-0013)
+	"POST /todos/{id}/retry":                 true, // operator retry a dead-lettered todo (SPEC-0013)
+	"POST /todos/{id}/extend":                true, // operator extend lease / heartbeat (SPEC-0013)
+	"POST /todos/{id}/release":               true, // operator release lease back to pending (SPEC-0013)
+	"GET /endpoints/{id}/revoke":             true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
+	"POST /endpoints/{id}/revoke":            true,
+	"POST /endpoints/{id}/delete":            true, // permanently delete a revoked endpoint (SPEC-0007)
 	// Friends view + approval flow (SPEC-0013). All session-gated; the handlers 404 when the friending
 	// capability is disabled, but auth (RequireHuman) still runs first, so anonymous → /login here too.
 	"GET /friends":                true,

@@ -114,18 +114,21 @@ func TestKeyHintFooterSlotIsEmptyServerSide(t *testing.T) {
 	}
 }
 
-// TestProvidersPageRendersShellPlacement: the providers stub page renders with the shared chrome,
-// marks its nav entry active, and explains where provider management lives until SPEC-0017.
+// TestProvidersPageRendersShellPlacement: the registry-backed providers page (SPEC-0017) renders
+// with the shared chrome, marks its nav entry active, and — with an empty registry — shows the
+// explanatory empty state over the catalog rather than 404ing or faking lines.
 func TestProvidersPageRendersShellPlacement(t *testing.T) {
 	h := newTestHandler(t)
+	panel := providersPanel(nil, nil, "tok")
 	body := renderPage(t, h, "providers", view{
 		Title: "Providers", Human: testHuman(), CSRF: "tok",
-		Shell: shell{Active: "providers", DBConnected: true, Initials: "JS"},
+		Shell:     shell{Active: "providers", DBConnected: true, Initials: "JS"},
+		Providers: &panel,
 	})
 	for _, want := range []string{
 		`href="/providers" aria-current="page"`, // nav marks Providers active
-		"data-sb-providers-empty",               // explanatory empty state
-		"SPEC-0017",                             // names where the registry lands
+		"data-sb-providers-empty",               // explanatory empty state (nothing connected)
+		`data-sb-catalog-state="available"`,     // the catalog still renders (static honesty)
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("providers view: missing %q", want)
