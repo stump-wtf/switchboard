@@ -86,7 +86,9 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 		"id=\"sb-overlay\"",               // overlay slot present-but-empty
 		"id=\"sb-toasts\"",                // toast region
 		"id=\"sb-todo-count\"",            // rail count pill is a swap target
-		"/static/sb.js",                   // toast TTL / feed cap helper
+		"/static/js/theme-boot.js",        // pre-paint theme boot (SPEC-0015 Theme Toggle)
+		"/static/js/sb-live.js",           // toast TTL / feed cap helper (split sb.js module)
+		"/static/js/sb-keys.js",           // keymap registry + key-hint footer
 		">JS</span>",                      // avatar initials
 		"/static/switchboard.css",         // component layer linked
 		"aria-label=\"Switchboard mark\"", // accessible inline-SVG mark

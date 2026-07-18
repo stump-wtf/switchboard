@@ -67,6 +67,7 @@ var sessionRoutes = map[string]bool{
 	"GET /todos/{id}":             true, // Todo detail drawer (fragment / standalone)
 	"GET /endpoints":              true, // Endpoints view (SPEC-0013 vended-endpoint cards)
 	"GET /endpoints/vend":         true, // vend modal fragment
+	"GET /providers":              true, // Providers view shell placement (SPEC-0015 six-view IA)
 	"POST /endpoints/vend":        true, // mint + one-time reveal
 	"GET /agents":                 true, // retired SPEC-0012 screen — 303-redirects to /endpoints
 	"GET /agents/{id}":            true, // retired SPEC-0012 screen — 303-redirects to /endpoints

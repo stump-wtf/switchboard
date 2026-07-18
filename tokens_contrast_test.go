@@ -1,10 +1,11 @@
 package switchboard
 
 // WCAG 2.1 AA contrast assertions on the design tokens, in both themes. tokens.css is the single
-// source of color truth (ADR-0016), so the ratios are asserted on the custom-property values
+// source of color truth (ADR-0018), so the ratios are asserted on the custom-property values
 // themselves: trust badge text/background pairs, todo status text/background pairs, and
-// body-text/surface pairs must hold ≥ 4.5:1 in operator-cream (light) and bakelite (dark) alike.
-// Governing: ADR-0016 (Operator design language), SPEC-0013 REQ "Design Language Conformance".
+// body-text/surface pairs must hold ≥ 4.5:1 in day (lavender paper) and night (blue-black) alike.
+// Governing: ADR-0018 (charm-web design language), SPEC-0015 REQ "Design Token System"
+// (scenario "Contrast gate").
 
 import (
 	"fmt"
@@ -21,7 +22,7 @@ var contrastPairs = [][2]string{
 	{"--sb-trust-token", "--sb-trust-token-bg"},
 	{"--sb-trust-open", "--sb-trust-open-bg"},
 	{"--sb-trust-queue", "--sb-trust-queue-bg"},
-	// todo status badges: text on tinted background (SPEC-0013 status colors)
+	// todo status badges: text on tinted background (SPEC-0015 status colors)
 	{"--sb-status-pending", "--sb-status-pending-bg"},
 	{"--sb-status-claimed", "--sb-status-claimed-bg"},
 	{"--sb-status-done", "--sb-status-done-bg"},
@@ -38,8 +39,8 @@ var contrastPairs = [][2]string{
 func TestTokenContrastMeetsAA(t *testing.T) {
 	css := tokensCSS(t)
 	themes := map[string]map[string]string{
-		"light (operator-cream)": parseCustomProps(t, css, ":root {"),
-		"dark (bakelite)":        parseCustomProps(t, css, `[data-theme="dark"] {`),
+		"day (lavender paper)": parseCustomProps(t, css, ":root {"),
+		"night (blue-black)":   parseCustomProps(t, css, `[data-theme="night"] {`),
 	}
 	for theme, props := range themes {
 		for _, pair := range contrastPairs {
@@ -52,33 +53,51 @@ func TestTokenContrastMeetsAA(t *testing.T) {
 	}
 }
 
-// TestDarkThemeBlocksAgree pins the two dark-theme delivery mechanisms (prefers-color-scheme media
-// query and the explicit data-theme attribute) to identical values, so a token edited in one block
-// but not the other fails here instead of shipping a split-brain theme.
-func TestDarkThemeBlocksAgree(t *testing.T) {
+// TestNightThemeBlocksAgree pins the two night-theme delivery mechanisms (prefers-color-scheme
+// media query and the explicit data-theme attribute) to identical values, so a token edited in one
+// block but not the other fails here instead of shipping a split-brain theme.
+// Governing: SPEC-0015 REQ "Design Token System" (prefers-color-scheme + data-theme override).
+func TestNightThemeBlocksAgree(t *testing.T) {
 	css := tokensCSS(t)
-	media := parseCustomProps(t, css, `:root:not([data-theme="light"]) {`)
-	attr := parseCustomProps(t, css, `[data-theme="dark"] {`)
+	media := parseCustomProps(t, css, `:root:not([data-theme="day"]) {`)
+	attr := parseCustomProps(t, css, `[data-theme="night"] {`)
 	if len(media) == 0 {
-		t.Fatal("tokens.css missing the prefers-color-scheme dark block")
+		t.Fatal("tokens.css missing the prefers-color-scheme night block")
 	}
 	for k, v := range media {
 		if av, ok := attr[k]; !ok {
-			t.Errorf("dark token %s set in the media-query block but missing from [data-theme=\"dark\"]", k)
+			t.Errorf("night token %s set in the media-query block but missing from [data-theme=\"night\"]", k)
 		} else if av != v {
-			t.Errorf("dark token %s differs between blocks: media=%q attr=%q", k, v, av)
+			t.Errorf("night token %s differs between blocks: media=%q attr=%q", k, v, av)
 		}
 	}
 	for k := range attr {
 		if _, ok := media[k]; !ok {
-			t.Errorf("dark token %s set in [data-theme=\"dark\"] but missing from the media-query block", k)
+			t.Errorf("night token %s set in [data-theme=\"night\"] but missing from the media-query block", k)
 		}
 	}
 }
 
-// TestRailCollapseBreakpoint asserts the nav rail's icons-only collapse (SPEC-0013: rail collapses
-// below 820px) survives in the component layer.
-func TestRailCollapseBreakpoint(t *testing.T) {
+// TestNightThemeCoversDayTokens: every custom property declared for day (:root) has a night value,
+// so no token silently falls through to its day value at night (SPEC-0015: both themes complete).
+func TestNightThemeCoversDayTokens(t *testing.T) {
+	css := tokensCSS(t)
+	day := parseCustomProps(t, css, ":root {")
+	night := parseCustomProps(t, css, `[data-theme="night"] {`)
+	for k := range day {
+		if strings.HasPrefix(k, "--sb-font-") || strings.HasPrefix(k, "--sb-radius-") ||
+			strings.HasPrefix(k, "--sb-ease") || strings.HasPrefix(k, "--sb-dur-") {
+			continue // type, shape, and motion tokens are theme-invariant by design
+		}
+		if _, ok := night[k]; !ok {
+			t.Errorf("day token %s has no night value — night theme incomplete", k)
+		}
+	}
+}
+
+// TestNavCollapseBreakpoint asserts the nav's dots-only collapse (carried over from SPEC-0013's
+// 820px rail collapse) survives in the component layer.
+func TestNavCollapseBreakpoint(t *testing.T) {
 	b, err := StaticFS.ReadFile("static/switchboard.css")
 	if err != nil {
 		t.Fatalf("read switchboard.css: %v", err)
@@ -86,10 +105,10 @@ func TestRailCollapseBreakpoint(t *testing.T) {
 	css := string(b)
 	idx := strings.Index(css, "@media (max-width: 820px)")
 	if idx < 0 {
-		t.Fatal("switchboard.css missing the 820px rail-collapse media query")
+		t.Fatal("switchboard.css missing the 820px nav-collapse media query")
 	}
 	if !strings.Contains(css[idx:], ".sb-rail") {
-		t.Error("rail-collapse media query does not restyle .sb-rail")
+		t.Error("nav-collapse media query does not restyle .sb-rail")
 	}
 }
 

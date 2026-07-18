@@ -24,19 +24,25 @@ import (
 // auth groups), asserting a 200 with a non-empty body and a plausible content type for each.
 func TestStaticAssetsServedThroughProductionRouter(t *testing.T) {
 	r := newTestRouter(t)
-	// The full set layout.html references: stylesheets, the presentation-JS helper, vendored htmx
-	// (ADR-0001: no CDN), and a self-hosted font. wantCT is a substring the resolved Content-Type
-	// must contain ("" skips the check, e.g. when the platform mime table is not guaranteed).
+	// The full set layout.html references: stylesheets, the split presentation-JS modules + the
+	// pre-paint theme boot (SPEC-0015 foundation), and vendored htmx (ADR-0001: no CDN). wantCT is
+	// a substring the resolved Content-Type must contain ("" skips the check, e.g. when the
+	// platform mime table is not guaranteed). The charm-web woff2 files join this list once
+	// vendored (static/fonts/README.md).
 	cases := []struct {
 		path   string
 		wantCT string
 	}{
 		{"/static/tokens.css", "text/css"},
 		{"/static/switchboard.css", "text/css"},
-		{"/static/sb.js", "javascript"},
+		{"/static/js/theme-boot.js", "javascript"},
+		{"/static/js/sb-live.js", "javascript"},
+		{"/static/js/sb-overlay.js", "javascript"},
+		{"/static/js/sb-vend.js", "javascript"},
+		{"/static/js/sb-theme.js", "javascript"},
+		{"/static/js/sb-keys.js", "javascript"},
 		{"/static/vendor/htmx.min.js", "javascript"},
 		{"/static/vendor/htmx-ext-sse.min.js", "javascript"},
-		{"/static/fonts/zilla-slab-600.woff2", ""},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
@@ -64,9 +70,9 @@ func TestStaticAssetsServedThroughProductionRouter(t *testing.T) {
 func TestStaticThroughRouterCarriesSecureHeaders(t *testing.T) {
 	r := newTestRouter(t)
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/sb.js", nil))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/js/sb-live.js", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /static/sb.js: status %d, want 200", rec.Code)
+		t.Fatalf("GET /static/js/sb-live.js: status %d, want 200", rec.Code)
 	}
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("static response missing nosniff through router: %q", got)

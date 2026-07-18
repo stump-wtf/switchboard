@@ -1,0 +1,34 @@
+{{/* Board fragments (SPEC-0013 REQ "Board View — Live Incoming Lines"; split per view by
+     SPEC-0015 REQ "Live Fragment Architecture" — a todos fragment change touches no board file).
+     Governing: ADR-0018. */}}
+
+{{/* feed_row — one Board incoming line. Data: web.feedRow. */}}
+{{define "feed_row"}}<li id="{{.RowID}}" class="sb-feed__row"{{if .OOB}} hx-swap-oob="true"{{end}}><span class="sb-tag" aria-hidden="true">{{tag .Source}}</span><span><span class="sb-feed__source">{{.Source}}</span><span class="sb-feed__type">{{.EventType}}</span></span><span class="sb-badge sb-badge--{{.TrustMode}}">{{.TrustMode}}</span><span class="sb-feed__stage sb-feed__stage--{{if and (eq .State "") .Deduped}}deduped{{else}}{{.State | stagemod}}{{end}}">{{if eq .State ""}}{{if .Deduped}}deduped{{else}}<span class="sb-feed__pulse" aria-hidden="true"></span>verifying…{{end}}{{else if eq .State "pending"}}patched → todo{{else if eq .State "claimed"}}claimed · {{.OwnerLabel}}{{else if eq .State "done"}}done ✓{{else}}failed{{end}}</span>{{if and (eq .State "pending") .TodoID}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.TodoID}}/claim" hx-target="closest li" hx-swap="outerHTML">Claim</button>{{end}}<span class="sb-feed__age">{{reltime .ReceivedAt}}</span></li>{{end}}
+
+{{/* tiles — the Board stat band (throughput + in flight + awaiting claim + verified %).
+     Data: web.tilesView. Replaced wholesale by counts events (id sb-tiles). The three count tiles
+     carry the design record's sublabels ('in flight · being worked', 'awaiting claim', 'verified
+     sources') under the bare value, per the DESIGN board panel (#179). aria-live: the band's
+     numbers update via SSE counts frames, so it is a polite live region present in the DOM before
+     the first update (SPEC-0013 "Dynamic Content Regions"). */}}
+{{define "tiles"}}<section id="sb-tiles" class="sb-tiles" aria-label="Queue summary" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>
+  <div class="sb-tile sb-tile--throughput">
+    <span class="sb-microlabel">Throughput</span>
+    <div class="sb-tile__value">{{.Stats.EventsPerMin}}</div>
+    <div class="sb-tile__unit">events/min</div>
+    {{if .Bars}}<div class="sb-bars" role="img" aria-label="Inbound activity, one bar per minute over the last {{len .Bars}} minutes">{{range .Bars}}<span class="sb-bars__bar{{if .Current}} sb-bars__bar--now{{end}}" style="height:{{.Pct}}%"></span>{{end}}</div>
+    <div class="sb-bars__axis" aria-hidden="true"><span>−{{len .Bars}}m</span><span>now</span></div>{{end}}
+  </div>
+  <div class="sb-tile">
+    <div class="sb-tile__value">{{.Stats.InFlight}}</div>
+    <div class="sb-tile__unit">in flight · being worked</div>
+  </div>
+  <div class="sb-tile{{if gt .Stats.AwaitingClaim 0}} sb-tile--alert{{end}}">
+    <div class="sb-tile__value">{{.Stats.AwaitingClaim}}</div>
+    <div class="sb-tile__unit">awaiting claim</div>
+  </div>
+  <div class="sb-tile">
+    <div class="sb-tile__value">{{.Stats.VerifiedPct}}%</div>
+    <div class="sb-tile__unit">verified sources</div>
+  </div>
+</section>{{end}}

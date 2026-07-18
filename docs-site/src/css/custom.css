@@ -1,7 +1,10 @@
 /*
  * switchboard docs — Infima theme override.
- * The same switchboard-era palette as the app's static/tokens.css: bakelite, brass,
+ * The switchboard-era palette of the published design record: bakelite, brass,
  * operator-cream, oxblood, patch-cable tones. Dark (dim operator room) is the default.
+ * FROZEN per ADR-0018: the app's live static/tokens.css moved to the charm-web language;
+ * the docs keep their own copy of the retired Operator tokens
+ * (static/design-tokens/tokens-operator.css) so app-token churn cannot restyle this site.
  */
 
 :root {

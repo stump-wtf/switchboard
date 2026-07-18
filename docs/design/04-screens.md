@@ -1,100 +1,56 @@
----
-title: Screens
----
+# Charm-Web Screens
 
-# Screens
+Governing: [SPEC-0015](../openspec/specs/operator-board-v2/spec.md) (six-view IA),
+[SPEC-0016](../openspec/specs/mcp-oauth/spec.md) (consent surface),
+[SPEC-0017](../openspec/specs/providers-view/spec.md) (providers backend).
 
-The five operator-board views from the full build-out canvas, specified normatively in
-[SPEC-0013](../openspec/specs/operator-board/spec.md). All views share the top bar + nav rail chrome
-and the `/events` SSE live-update stream.
+Six views — **board · todos · endpoints · personas · friends · providers** — under one shell
+(top bar, horizontal nav, key-hint footer), plus login and the full-page wizards.
 
-## 1 · Board (`/`)
+## board — the live patch panel
 
-*"The Board — many lines in · each verified · patched through"*
+Three lanes as the live view of every inbound line: **received** (ephemeral in-flight cards,
+SSE-only), **verified** (durable todos awaiting claim), **patched through** (claimed/completed
+under an agent). Cards carry provider glyph, title, trust chip, state chip, age; lane headers
+carry live counts; cards move between lanes over SSE without reload.
 
-The landing view: a live operator's-eye picture of ingress.
+## todos — the durable queue
 
-- **Header row** — Zilla Slab title + mono tagline; right-aligned trust legend pills (● signed
-  ● token ● open ● queue).
-- **Stat band** — Throughput tile (events/min + 24-bucket activity chart, "last 36s → now"), and a
-  stacked column of three tiles: **in flight · being worked**, **awaiting claim** (tints red when
-  nonzero), **verified sources %**.
-- **Incoming lines feed** — newest-first, ~8 rows visible. A row is born *ringing* (pulsing amber
-  dot, `verifying…`), becomes `patched → todo` (claimable), then `claimed · <agent>`, then `done ✓`.
-  Pending rows offer a **Claim** button.
+Filterable table (line, provider, trust, state, age) with live row updates and the detail drawer:
+lifecycle timeline, idempotency key + dedup line, lease card with draining countdown, payload,
+requeue/cancel actions.
 
-## 2 · Todos (`/todos`)
+## endpoints — vended capabilities
 
-*"Durable queue — claim under a lease · complete with an ack · dedup by idempotency key · at-least-once"*
+Cards per vended endpoint: principal, persona, queue/verb scope chips, MCP URL, credential tail
+(hashed · last-used), expiry countdown, rotate/revoke. Vending is a full-page wizard
+(persona → queues → verbs → credential lifetime → vend) ending in the one-time reveal with
+copyable `.mcp.json` — and the URL-only variant for OAuth-capable clients.
 
-The queue ledger, filterable and searchable.
+## personas — least-privilege faces
 
-- **Reaper pill** — `lease reaper active · re-surfaces abandoned work` with pulsing dot.
-- **Filter pills** — All / Pending / Claimed / Done / Failed, each `Label · count`; search box
-  (`search id · source · event`).
-- **Table** — id · source·event (+ `dedup ×N`) · trust · status (+ lease/retry sub-line) · agent ·
-  age · action. Contextual actions: Claim / Complete / Retry. Reaper re-surfaces flash the row and
-  raise a toast (`td_8f2a · lease expired, re-surfaced to queue`).
-- **Row click** opens the **detail drawer**:
-  - claimed → lease card (countdown, progress bar, Extend / Release, reaper explainer);
-  - failed → retry card (`retry with backoff · attempt N`, `↻ {n}s`);
-  - metadata grid (trust / agent / attempts / age), idempotency key + dedup line, payload as
-    escaped pretty JSON, lifecycle timeline (`received · verified at boundary` → `todo created ·
-    durably stored` → `claimed under lease` → `completed · ack sent`, with failed variants);
-  - footer: **Claim under lease** / **Complete · ack** + **Fail** / **Retry now** / `✓ completed ·
-    acked to source`.
+Persona cards (initials block, name, prompt, verb subset, derived skills, vended-as usage). The
+create/edit wizard's final step live-previews the A2A Agent Card from unsaved form state.
 
-## 3 · Endpoints (`/endpoints`)
+## friends — the A2A ledger
 
-*"Vended MCP endpoints — humans are the accountable principals · each endpoint is a scoped,
-revocable capability · revoke = kill the endpoint"*
+*pending · in your queue* separated from *established* edges (direction, peer, queues, last-seen,
+revoke). The approval flow presents "approving **is** the vend" and surfaces the minted endpoint
+explicitly.
 
-- **Endpoint cards** — agent name + persona, status pill, scoped-queue chips, allowed-verb chips,
-  masked cred + last-seen, Edit / Revoke. Revoked cards dim with `endpoint killed · <when>`.
-- **+ Vend endpoint** modal — agent name, bound persona picker, queue chips, verb chips; submit
-  disabled until name + ≥1 queue + ≥1 verb. On mint: success screen with the **MCP endpoint URL**
-  (`https://<host>/mcp/<slug>`), the **credential shown once** (red callout: *"Copy the credential
-  now — it is shown once. The endpoint is the capability; revoking kills it."*), and ready-to-paste
-  HTTP `.mcp.json` wiring ([SPEC-0014](../openspec/specs/mcp-transport/spec.md)).
+## providers — inbound lines
 
-## 4 · Personas (`/personas`)
+The sixth IA entry (SPEC-0015 "Providers joins the IA"): the runtime provider registry
+(ADR-0020/SPEC-0017) backs it; until that lands the view renders the shared chrome with an
+explanatory empty state.
 
-*"Personas · A2A Agent Cards — one agent, many least-privilege faces · a human-authored prompt plus
-a verb subset · advertised as an A2A Agent Card"*
+## login
 
-- **Persona cards** — name, backing agent, published/draft pill, italic quoted system prompt,
-  "advertised skills" verb chips, well-known URL (`/.well-known/agent-card/<slug>`), Edit +
-  Publish/Unpublish.
-- **New/Edit modal** — name (live URL preview), backing-agent chips, prompt textarea, verb-subset
-  chips (bounded by the vended verbs), Published toggle (hint: *"agent card discoverable at the
-  well-known URL"* / *"not advertised · visible only here"*); Delete pinned left in edit mode.
+Same language, public: wordmark, tagline, a single glowing primary action (Pocket ID), the
+dev-login fallback, and the theme control.
 
-Ships with [SPEC-0009](../openspec/specs/personas/spec.md); hidden from the rail until enabled.
+## Wizards (interaction pattern)
 
-## 5 · Friends (`/friends`)
-
-*"Friends · agent-to-agent — agents discover each other over A2A · no one talks by default · links
-are mutual and non-transitive — both operators must approve"*
-
-- **View toggle** — Cards / Ledger; filter pills All / Incoming / Outgoing / Active / Blocked.
-- **Cards** — `local-agent ⇄ remote-agent` (arrow direction encodes status), handle + board host,
-  status pill, request note (incoming), intents chips (`status.query`, `todo.handoff`,
-  `artifact.fetch`, `event.subscribe`) or `none negotiated`, meta line, actions:
-  Approve/Decline · Withdraw · Revoke · Unblock.
-- **Ledger** — grouped sections with dot headers (Incoming requests / Outgoing · pending / Active
-  friendships / Blocked) and dense rows.
-- **Add friend modal** — amber callout (*"The link stays pending until the remote operator approves
-  it too. Non-transitive — your other friends' agents get nothing."*), local-agent chips, remote
-  handle input (`@jordan/deploy-watcher` → live resolution `deploy-watcher @ jordan.sb.local`),
-  intent chips, message textarea, **Send request →**.
-
-Ships with [SPEC-0010](../openspec/specs/friending/spec.md); hidden from the rail until enabled.
-
-## Cross-view behaviors
-
-- **Live everywhere** — every count, row, stage, and tile updates over SSE; a reload always renders
-  authoritative PostgreSQL state.
-- **Toasts** — background transitions (agent claims/completes, reaper re-surfaces, vend/revoke,
-  friendship changes) announce themselves bottom-center.
-- **Overlays** — one drawer/modal at a time; scrim click, ×, and Escape close; focus is trapped and
-  returned.
+Create/vend/connect flows are full pages, not overlays: server-side step state, back navigation
+preserving entered values, a no-JS fallback completing the same flow, and explicit confirmation
+before destructive steps (vend, revoke).

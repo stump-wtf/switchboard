@@ -1,0 +1,115 @@
+{{/* Personas-view fragments (SPEC-0013 REQ "Personas View"; split per view by SPEC-0015 REQ
+     "Live Fragment Architecture"). Governing: ADR-0018. */}}
+
+{{/* persona_card — one persona: name, backing agent, published/draft pill, quoted system prompt,
+     advertised skill + verb chips, the resolvable agent-card URL, and Edit + Publish/Unpublish.
+     Publish/Unpublish is a CSRF-guarded form that flips only the discoverable flag (toggle_discoverable),
+     taking effect on the well-known endpoint immediately. Edit opens the per-persona modal into the
+     shared overlay. Data: web.personaCardView. Governing: SPEC-0013 REQ "Personas View". */}}
+{{define "persona_card"}}<article id="sb-persona-{{.ID}}" class="sb-card sb-persona" role="listitem">
+  <div class="sb-persona__head">
+    <div>
+      <h3 class="sb-persona__name">{{.Name}}</h3>
+      <p class="sb-persona__agent">backing agent · <span class="sb-mono">{{if .AgentName}}{{.AgentName}}{{else}}—{{end}}</span></p>
+    </div>
+    {{if .Discoverable}}<span class="sb-badge sb-badge--active" title="Discoverable — the agent card resolves">published</span>{{else}}<span class="sb-badge sb-badge--revoked" title="Draft — the agent card 404s until published">draft</span>{{end}}
+  </div>
+  {{if .SystemPrompt}}<blockquote class="sb-persona__prompt">{{.SystemPrompt}}</blockquote>{{end}}
+  <div class="sb-persona__skills">
+    <span class="sb-microlabel">Advertised skills · derived from vended verbs</span>
+    {{if .Skills}}<div class="sb-chips" aria-label="Advertised skills">{{range .Skills}}<span class="sb-chip sb-chip--skill" title="{{.Description}}">{{.Name}}</span>{{end}}</div>{{end}}
+    <div class="sb-chips sb-chips--verbs" aria-label="Advertised verbs">{{range .Verbs}}<span class="sb-chip sb-chip--mono">{{.}}</span>{{else}}<span class="sb-muted">no verbs advertised</span>{{end}}</div>
+  </div>
+  <div class="sb-persona__url">
+    <span class="sb-microlabel">Agent card</span>
+    <a class="sb-mono sb-persona__urllink" href="{{.AgentCardURL}}">{{.AgentCardURL}}</a>
+  </div>
+  <div class="sb-persona__acts">
+    <button type="button" class="sb-btn sb-btn--secondary" data-sb-open-modal="sb-persona-modal-edit-{{.ID}}" aria-haspopup="dialog">Edit</button>
+    <form method="post" action="/personas/{{.ID}}" hx-post="/personas/{{.ID}}" hx-swap="none">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="toggle_discoverable" value="1">
+      <input type="hidden" name="discoverable" value="{{if .Discoverable}}0{{else}}1{{end}}">
+      <button type="submit" class="sb-btn sb-btn--mono">{{if .Discoverable}}Unpublish{{else}}Publish{{end}}</button>
+    </form>
+  </div>
+</article>{{end}}
+
+{{/* persona_modal — the create (Edit=false) / edit (Edit=true) overlay. Create posts to /personas
+     with a selectable backing agent; edit posts to /personas/{id} with the backing agent pinned
+     (immutable, ADR-0008) and a Delete action. The agent-card URL under the name is the id-based
+     shape the well-known endpoint actually resolves (SPEC-0009): the persona's real URL in edit
+     mode, or the "{id}" placeholder in create mode (the id is assigned on create; the card then
+     shows the real URL) — never a slug URL, which the endpoint would never resolve. The verb/queue
+     chips are the SELECTED agent's vended grant (constrained: a verb the agent lacks is not rendered
+     as selectable); sb.js rebuilds them when the backing agent changes. With no vended agents the
+     create modal explains why the backing-agent list is empty and disables submit. All mutations
+     carry CSRF (hidden field + the layout's hx-headers). Data: web.personaModalView.
+     Governing: SPEC-0013 REQ "Personas View" (scenario "Verb subset is constrained"), SPEC-0009 REQ
+     "Well-Known Card Endpoint". */}}
+{{define "persona_modal"}}<div class="sb-modal" role="dialog" aria-modal="true" aria-label="{{if .Edit}}Edit persona{{else}}New persona{{end}}" data-sb-modal tabindex="-1">
+  <div class="sb-modal__head">
+    <h2 class="sb-modal__title">{{if .Edit}}Edit persona{{else}}New persona{{end}}</h2>
+    <button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button>
+  </div>
+  <form class="sb-modal__form" method="post" action="{{if .Edit}}/personas/{{.Persona.ID}}{{else}}/personas{{end}}" hx-post="{{if .Edit}}/personas/{{.Persona.ID}}{{else}}/personas{{end}}" hx-swap="none">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="sb-field">
+      <label for="sb-persona-name{{if .Edit}}-{{.Persona.ID}}{{end}}">Name</label>
+      <input id="sb-persona-name{{if .Edit}}-{{.Persona.ID}}{{end}}" name="name" required autocomplete="off" value="{{if .Edit}}{{.Persona.Name}}{{end}}" placeholder="reviewer">
+      <p class="sb-help">agent card at <span class="sb-mono sb-persona__urlpreview">{{.URLPreview}}</span>{{if not .Edit}} · <span class="sb-mono">{id}</span> is assigned on create{{end}}</p>
+    </div>
+    <div class="sb-field">
+      <label for="sb-persona-agent{{if .Edit}}-{{.Persona.ID}}{{end}}">Backing agent</label>
+      {{if .Edit}}
+      <p class="sb-mono sb-persona__pinned">{{.Selected.Name}}</p>
+      <p class="sb-help">the backing agent is immutable — delete and recreate to change it</p>
+      {{else if .Agents}}
+      <select id="sb-persona-agent" name="agent_id" data-sb-agent-select required>
+        {{range .Agents}}<option value="{{.ID}}" data-verbs="{{range $i, $v := .Verbs}}{{if $i}},{{end}}{{$v}}{{end}}" data-queues="{{range $i, $q := .Queues}}{{if $i}},{{end}}{{$q}}{{end}}">{{.Name}}</option>{{end}}
+      </select>
+      {{else}}
+      <p class="sb-help">no agent has a vended grant yet — a persona is a scoped face of a vended grant, so vend an MCP endpoint for an agent (Endpoints view) first, then create the persona.</p>
+      {{end}}
+    </div>
+    <div class="sb-field">
+      <label for="sb-persona-prompt{{if .Edit}}-{{.Persona.ID}}{{end}}">System prompt</label>
+      <textarea id="sb-persona-prompt{{if .Edit}}-{{.Persona.ID}}{{end}}" name="system_prompt" rows="4" placeholder="You are a code reviewer…">{{if .Edit}}{{.Persona.SystemPrompt}}{{end}}</textarea>
+    </div>
+    <div class="sb-field">
+      <span class="sb-label">Verbs <span class="sb-help sb-help--inline">only the backing agent's vended verbs are selectable</span></span>
+      <div class="sb-chips sb-chips--select" data-sb-verb-chips>
+        {{range .Selected.Verbs}}<label class="sb-chip sb-chip--check"><input type="checkbox" name="verbs" value="{{.}}"{{if index $.CheckedVerbs .}} checked{{end}}> {{.}}</label>{{else}}<span class="sb-muted">the backing agent vends no verbs</span>{{end}}
+      </div>
+    </div>
+    {{if .Selected.Queues}}
+    <div class="sb-field">
+      <span class="sb-label">Queues <span class="sb-help sb-help--inline">bounded to the agent's vended queues</span></span>
+      <div class="sb-chips sb-chips--select" data-sb-queue-chips>
+        {{range .Selected.Queues}}<label class="sb-chip sb-chip--check"><input type="checkbox" name="queues" value="{{.}}"{{if index $.CheckedQueues .}} checked{{end}}> {{.}}</label>{{end}}
+      </div>
+    </div>
+    {{end}}
+    {{/* Stateful Published/Draft toggle (design canvas: track + knob, dynamic title + hint — not a
+         static checkbox). Both state labels render in the DOM; :checked on the (visually hidden but
+         focusable) checkbox drives which shows, so the label flips live with no JS and the cloned
+         <template> keeps working. */}}
+    <div class="sb-field">
+      <label class="sb-pubtoggle">
+        <input type="checkbox" class="sb-pubtoggle__input" name="discoverable" value="1"{{if .Discoverable}} checked{{end}}>
+        <span class="sb-pubtoggle__track" aria-hidden="true"><span class="sb-pubtoggle__knob"></span></span>
+        <span class="sb-pubtoggle__text">
+          <span class="sb-pubtoggle__state sb-pubtoggle__state--on"><span class="sb-pubtoggle__title">Published</span><span class="sb-pubtoggle__hint">agent card discoverable at the well-known URL</span></span>
+          <span class="sb-pubtoggle__state sb-pubtoggle__state--off"><span class="sb-pubtoggle__title">Draft</span><span class="sb-pubtoggle__hint">not advertised · visible only here</span></span>
+        </span>
+      </label>
+    </div>
+    <div class="sb-modal__foot">
+      {{if .Edit}}<button type="submit" class="sb-btn sb-btn--danger" form="sb-persona-delete-{{.Persona.ID}}">Delete</button>{{end}}
+      <span class="sb-modal__foot-spacer"></span>
+      <button type="button" class="sb-btn sb-btn--secondary" data-sb-close>Cancel</button>
+      <button type="submit" class="sb-btn"{{if and (not .Edit) (not .Agents)}} disabled{{end}}>{{if .Edit}}Save{{else}}Create persona{{end}}</button>
+    </div>
+  </form>
+  {{if .Edit}}<form id="sb-persona-delete-{{.Persona.ID}}" method="post" action="/personas/{{.Persona.ID}}/delete" hx-post="/personas/{{.Persona.ID}}/delete" hx-swap="none"><input type="hidden" name="csrf_token" value="{{.CSRF}}"></form>{{end}}
+</div>{{end}}

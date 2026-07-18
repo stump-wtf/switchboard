@@ -1,8 +1,8 @@
 /*
  * switchboard — switchboard.css
- * The .sb-* component layer for the "Operator" design language, consuming tokens.css.
- * Governing: ADR-0016 (Operator design language), SPEC-0013 REQ "Design Language Conformance",
- * SPEC-0013 REQ "Information Architecture and Navigation".
+ * The .sb-* component layer for the charm-web design language, consuming tokens.css.
+ * Governing: ADR-0018 (charm-web design language), SPEC-0015 REQ "Application Shell And
+ * Navigation", REQ "Design Token System".
  */
 
 /* ---- base ---- */
@@ -14,26 +14,31 @@
 body {
   margin: 0;
   background: var(--sb-canvas);
+  /* The signature charm-web canvas: a faint Tron floor grid on the void/paper (ADR-0018). */
+  background-image:
+    linear-gradient(var(--sb-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--sb-grid) 1px, transparent 1px);
+  background-size: 28px 28px;
   color: var(--sb-text);
-  font-family: var(--sb-font-sans);
-  font-size: 14px;
+  font-family: var(--sb-font-mono);
+  font-size: 13.5px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
 a {
-  color: var(--sb-oxblood);
+  color: var(--sb-primary);
 }
 a:hover {
-  color: var(--sb-oxblood-hover);
+  color: var(--sb-primary-hover);
 }
 
 :focus-visible {
-  outline: 2px solid var(--sb-brass);
+  outline: 2px solid var(--sb-ring);
   outline-offset: 2px;
 }
 
-/* ---- app shell: top bar over rail + main ---- */
+/* ---- app shell: top bar over horizontal nav + main (SPEC-0015 shell) ---- */
 
 .sb-app {
   min-height: 100vh;
@@ -41,13 +46,15 @@ a:hover {
   flex-direction: column;
 }
 
+/* The nav strip sits full-width under the top bar; main flows beneath it. */
 .sb-shell {
   flex: 1;
   display: flex;
+  flex-direction: column;
   min-height: 0;
 }
 
-/* ---- top bar ---- */
+/* ---- top bar: wordmark · ~/operator breadcrumb · MCP indicator · + new · theme ---- */
 
 .sb-topbar {
   display: flex;
@@ -55,8 +62,8 @@ a:hover {
   gap: 10px;
   height: 56px;
   padding: 0 18px;
-  background: linear-gradient(180deg, var(--sb-raised-hi), var(--sb-raised-lo));
-  border-bottom: 1px solid var(--sb-border-strong);
+  background: var(--sb-panel);
+  border-bottom: 1px solid var(--sb-border);
 }
 
 .sb-mark {
@@ -69,22 +76,106 @@ a:hover {
 .sb-wordmark {
   font-family: var(--sb-font-display);
   font-weight: 700;
-  font-size: 19px;
+  font-size: 18px;
   color: var(--sb-ink);
-  letter-spacing: 0.01em;
+  letter-spacing: -0.02em;
 }
 
-.sb-context {
+/* ~/operator breadcrumb (SPEC-0015 "Application Shell And Navigation"). */
+.sb-crumb {
   font-family: var(--sb-font-mono);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
+  font-size: 12px;
   color: var(--sb-muted);
   margin-left: 4px;
 }
 
 .sb-topbar__spacer {
   margin-left: auto;
+}
+
+/* MCP-connected indicator: a flat highlight bar, cell-honest (no pill). */
+.sb-mcp {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border-radius: var(--sb-radius-chip);
+  background: var(--sb-live-bg);
+  color: var(--sb-live);
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.sb-mcp--down {
+  background: var(--sb-status-failed-bg);
+  color: var(--sb-status-failed);
+}
+.sb-mcp__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* "+ new" wizard launcher. */
+.sb-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--sb-radius-btn);
+  background: var(--sb-primary);
+  color: var(--sb-on-primary);
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: var(--sb-glow-primary);
+  transition: background-color var(--sb-dur-enter) var(--sb-ease), transform var(--sb-dur-enter) var(--sb-ease-spring);
+}
+.sb-new:hover {
+  background: var(--sb-primary-hover);
+  color: var(--sb-on-primary);
+  transform: translateY(-1px);
+}
+
+/* Theme control (SPEC-0015 REQ "Theme Toggle"): visible toggle, cycles day/night. */
+.sb-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-btn);
+  background: var(--sb-raised-lo);
+  color: var(--sb-secondary);
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color var(--sb-dur-enter) var(--sb-ease), color var(--sb-dur-enter) var(--sb-ease);
+}
+.sb-theme-toggle:hover {
+  border-color: var(--sb-ring);
+  color: var(--sb-ink);
+}
+/* The control shows the theme a click switches TO: night glyph on day, day glyph at night. */
+.sb-theme-toggle__night,
+[data-theme="night"] .sb-theme-toggle__day {
+  display: inline;
+}
+.sb-theme-toggle__day,
+[data-theme="night"] .sb-theme-toggle__night {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="day"]) .sb-theme-toggle__night {
+    display: none;
+  }
+  :root:not([data-theme="day"]) .sb-theme-toggle__day {
+    display: inline;
+  }
 }
 
 .sb-live {
@@ -126,8 +217,8 @@ a:hover {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--sb-oxblood);
-  color: var(--sb-on-oxblood);
+  background: var(--sb-primary);
+  color: var(--sb-on-primary);
   font-family: var(--sb-font-mono);
   font-size: 11.5px;
   font-weight: 600;
@@ -147,18 +238,21 @@ a:hover {
   text-underline-offset: 3px;
 }
 .sb-linklike:hover {
-  color: var(--sb-oxblood);
+  color: var(--sb-primary);
 }
 
-/* ---- nav rail ---- */
+/* ---- nav: the six-view horizontal strip (SPEC-0015: board · todos · endpoints ·
+   personas · friends · providers). Keeps the .sb-rail hooks the tests and sb.js target;
+   the charm-web shell renders it as a lowercase mono nav with an underline on the
+   active view, not a side rail. ---- */
 
 .sb-rail {
-  width: 196px;
   flex: none;
   display: flex;
-  flex-direction: column;
-  padding: 14px 10px;
-  border-right: 1px solid var(--sb-border);
+  align-items: center;
+  padding: 0 18px;
+  background: var(--sb-panel);
+  border-bottom: 1px solid var(--sb-border);
 }
 
 .sb-rail__list {
@@ -166,56 +260,58 @@ a:hover {
   margin: 0;
   padding: 0;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
 }
 
 .sb-rail__item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: var(--sb-radius-btn);
+  gap: 7px;
+  padding: 9px 10px;
+  border-bottom: 2px solid transparent;
   color: var(--sb-secondary);
-  font-size: 13.5px;
+  font-family: var(--sb-font-mono);
+  font-size: 13px;
   font-weight: 500;
+  text-transform: lowercase;
   text-decoration: none;
 }
 .sb-rail__item:hover {
+  color: var(--sb-ink);
   background: var(--sb-row-hover);
-  color: var(--sb-text);
 }
 
 .sb-rail__dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   flex: none;
   border-radius: 2px;
   background: var(--sb-faint-3);
 }
 
 .sb-rail__item[aria-current="page"] {
-  background: var(--sb-nav-active-bg);
+  border-bottom-color: var(--sb-accent);
   color: var(--sb-ink);
-  font-weight: 600;
+  font-weight: 700;
 }
 .sb-rail__item[aria-current="page"] .sb-rail__dot {
-  background: var(--sb-brass);
+  background: var(--sb-accent);
 }
 
 .sb-rail__count {
-  margin-left: auto;
   font-family: var(--sb-font-mono);
   font-size: 11px;
   color: var(--sb-muted);
 }
 
 .sb-rail__foot {
-  margin-top: auto;
+  margin: 0 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px;
+  padding: 8px 0;
   font-family: var(--sb-font-mono);
   font-size: 10.5px;
   color: var(--sb-muted);
@@ -235,15 +331,14 @@ a:hover {
   color: var(--sb-status-failed);
 }
 
-/* icons-only rail below 820px: labels, counts, and footer text collapse */
+/* dots-only nav below 820px: labels, counts, and the connectivity text collapse */
 @media (max-width: 820px) {
   .sb-rail {
-    width: 60px;
-    padding: 14px 8px;
+    padding: 0 10px;
   }
   .sb-rail__item {
     justify-content: center;
-    padding: 10px 0;
+    padding: 10px 8px;
   }
   .sb-rail__label,
   .sb-rail__count,
@@ -271,16 +366,20 @@ a:hover {
   flex: 1;
   min-width: 0;
   padding: 26px 30px 60px;
-  max-width: 1060px;
+  max-width: 1160px;
 }
 
-/* ---- content-info footer (contentinfo landmark) ---- */
+/* ---- content-info footer (contentinfo landmark) with the key-hint slot ---- */
 
 .sb-footer {
   flex: none;
-  padding: 12px 30px;
-  border-top: 1px solid var(--sb-border-strong);
-  background: linear-gradient(180deg, var(--sb-raised-lo), var(--sb-raised-hi));
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 30px;
+  border-top: 1px solid var(--sb-border);
+  background: var(--sb-panel);
 }
 
 .sb-footer__text {
@@ -288,6 +387,35 @@ a:hover {
   font-size: 10.5px;
   letter-spacing: 0.06em;
   color: var(--sb-muted);
+}
+
+/* Key-hint footer (SPEC-0015: every view ends in the active keymap, TUI help-line style).
+   sb-keys.js renders `key action` pairs from the single keymap registry into this slot. */
+.sb-keys {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-faint);
+}
+.sb-keys__pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.sb-keys__key {
+  padding: 1px 5px;
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-chip);
+  background: var(--sb-raised-lo);
+  color: var(--sb-secondary);
+  font-size: 10px;
+}
+.sb-keys__sep {
+  color: var(--sb-faint);
 }
 
 .sb-page-title {
@@ -686,13 +814,13 @@ a:hover {
 
 /* Claim (mono action, brass-bordered) on pending feed rows. */
 .sb-btn--claim {
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
   color: var(--sb-trust-token);
   background: var(--sb-trust-token-bg);
 }
 .sb-btn--claim:hover {
   background: var(--sb-trust-token-bg);
-  border-color: var(--sb-brass-bright);
+  border-color: var(--sb-accent-bright);
   color: var(--sb-trust-token);
 }
 
@@ -709,10 +837,10 @@ a:hover {
   flex: 1 1 0;
   min-height: 2px;
   border-radius: 2px 2px 0 0;
-  background: var(--sb-brass-chart);
+  background: var(--sb-accent-chart);
 }
 .sb-bars__bar--now {
-  background: var(--sb-oxblood);
+  background: var(--sb-primary);
 }
 .sb-bars__axis {
   display: flex;
@@ -742,20 +870,20 @@ a:hover {
   padding: 8px 16px;
   border-radius: var(--sb-radius-btn);
   border: 1px solid transparent;
-  background: var(--sb-oxblood);
-  color: var(--sb-on-oxblood);
-  font-family: var(--sb-font-sans);
+  background: var(--sb-primary);
+  color: var(--sb-on-primary);
+  font-family: var(--sb-font-mono);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   text-decoration: none;
 }
 .sb-btn:hover {
-  background: var(--sb-oxblood-hover);
-  color: var(--sb-on-oxblood);
+  background: var(--sb-primary-hover);
+  color: var(--sb-on-primary);
 }
 .sb-btn:disabled {
-  background: var(--sb-oxblood-disabled);
+  background: var(--sb-primary-disabled);
   cursor: not-allowed;
 }
 
@@ -872,7 +1000,7 @@ pre code {
 
 .sb-callout {
   border: 1px solid var(--sb-input-border-soft);
-  border-left: 3px solid var(--sb-brass);
+  border-left: 3px solid var(--sb-accent);
   border-radius: var(--sb-radius-btn);
   background: var(--sb-panel);
   padding: 10px 14px;
@@ -963,7 +1091,7 @@ pre code {
 }
 .sb-fpill--active {
   background: var(--sb-nav-active-bg);
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
   color: var(--sb-ink);
   font-weight: 600;
 }
@@ -972,7 +1100,7 @@ pre code {
   color: var(--sb-muted);
 }
 .sb-fpill--active .sb-fpill__n {
-  color: var(--sb-oxblood);
+  color: var(--sb-primary);
 }
 
 .sb-table-wrap {
@@ -1159,7 +1287,7 @@ pre code {
 }
 .sb-lease__bar {
   height: 100%;
-  background: var(--sb-brass);
+  background: var(--sb-accent);
   transition: width 1s linear;
 }
 .sb-drawer__acts {
@@ -1269,8 +1397,8 @@ pre code {
   color: var(--sb-body);
 }
 .sb-timeline__done::before {
-  background: var(--sb-brass);
-  border-color: var(--sb-brass);
+  background: var(--sb-accent);
+  border-color: var(--sb-accent);
 }
 
 .sb-drawer__foot {
@@ -1402,7 +1530,7 @@ pre code {
 .sb-persona__prompt {
   margin: 0;
   padding: 8px 12px;
-  border-left: 3px solid var(--sb-brass);
+  border-left: 3px solid var(--sb-accent);
   background: var(--sb-code-bg);
   border-radius: var(--sb-radius-btn);
   font-size: 13px;
@@ -1451,7 +1579,7 @@ pre code {
 }
 /* the agent-card URL shown under the modal's name field (oxblood-accented per the design canvas) */
 .sb-persona__urlpreview {
-  color: var(--sb-oxblood);
+  color: var(--sb-primary);
   overflow-wrap: anywhere;
 }
 
@@ -1476,7 +1604,7 @@ pre code {
 .sb-chip--skill {
   color: var(--sb-ink);
   background: var(--sb-nav-active-bg);
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
 }
 .sb-chip--mono {
   color: var(--sb-body);
@@ -1542,7 +1670,7 @@ pre code {
   gap: 8px;
   text-transform: none;
   letter-spacing: 0;
-  font-family: var(--sb-font-sans, var(--sb-font-mono));
+  font-family: var(--sb-font-mono, var(--sb-font-mono));
   font-size: 13px;
   color: var(--sb-body);
 }
@@ -1606,7 +1734,7 @@ pre code {
   left: 18px;
 }
 .sb-pubtoggle__input:focus-visible ~ .sb-pubtoggle__track {
-  outline: 2px solid var(--sb-brass);
+  outline: 2px solid var(--sb-accent);
   outline-offset: 2px;
 }
 .sb-pubtoggle__text {
@@ -1780,11 +1908,11 @@ pre code {
   gap: 10px;
 }
 .sb-fcard--incoming {
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
 }
 /* Outgoing pending: locally sent, awaiting the remote operator — provisional, so dashed (#174). */
 .sb-fcard--outgoing {
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
   border-style: dashed;
 }
 .sb-fcard__top {
@@ -1799,7 +1927,7 @@ pre code {
 }
 .sb-fcard__arrow--incoming,
 .sb-fcard__arrow--outgoing {
-  color: var(--sb-brass);
+  color: var(--sb-accent);
   font-weight: 600;
 }
 .sb-fcard__arrow--blocked {
@@ -1807,7 +1935,7 @@ pre code {
 }
 /* The remote agent reads distinct from the local face: brass mono handle + faint board host. */
 .sb-fcard__remote-handle {
-  color: var(--sb-brass);
+  color: var(--sb-accent);
   font-weight: 600;
 }
 .sb-fcard__host {
@@ -2180,7 +2308,7 @@ pre code {
   font-size: 11px;
 }
 .sb-resolve__host {
-  color: var(--sb-brass);
+  color: var(--sb-accent);
 }
 .sb-resolve__hint {
   color: var(--sb-faint);

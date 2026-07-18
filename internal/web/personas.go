@@ -29,7 +29,7 @@ import (
 // design.md "Capability gating for Personas and Friends".
 func (h *Handler) SetPersonasEnabled(enabled bool) { h.personasEnabled = enabled }
 
-// personaCardView is the render model for one persona card (fragments.html "persona_card") and for
+// personaCardView is the render model for one persona card (fragments/personas.html "persona_card") and for
 // the edit-modal prefill. Skills are the derived Agent Card skills (all-of the required verbs) that
 // the card advertises; Verbs is the raw verb_subset chip list. AgentCardURL is the persona's actual
 // resolvable well-known path. Governing: SPEC-0013 REQ "Personas View".

@@ -1,0 +1,49 @@
+{{/* Shared live-shell fragments (SPEC-0015 REQ "Live Fragment Architecture"; SPEC-0013
+     "Live Updates and Toasts"): the cross-view OOB bundle — count pills, LIVE pill, toasts —
+     every view renders and every SSE counts frame refreshes. Every fragment renders BOTH
+     server-side into full pages and standalone as an SSE payload; the OOB variants carry
+     hx-swap-oob so one named event can update its targets atomically. All dynamic strings pass
+     through html/template contextual escaping, and the SSE framing layer strips newlines.
+     Governing: ADR-0018 (fragment split), SPEC-0015. */}}
+
+{{/* live_pill — the top-bar throughput pill. Always rendered (SPEC-0013: the top bar shows the
+     live rate); at zero it renders in its idle state rather than disappearing, so the SSE swap
+     target always exists. Counts frames are only published on committed events/transitions, so a
+     quiet board would otherwise pin the last nonzero rate forever: data-sb-live-decay stamps the
+     silence window (ms) after which sb.js decays the pill to the idle zero-state client-side.
+     75s > the rate's trailing 1-minute window (store.BoardStats.EventsPerMin), so by the time the
+     decay fires the true rate IS zero — the client fakes nothing, it just catches the display up
+     (#179; the next counts frame replaces the element wholesale and re-arms the window).
+     Args via dict: Rate int, OOB bool. */}}
+{{define "live_pill"}}<span id="sb-live" class="sb-live{{if not .Rate}} sb-live--idle{{end}}"{{if .OOB}} hx-swap-oob="true"{{end}} role="status" data-sb-live-decay="75000"><span class="sb-live__dot" aria-hidden="true"></span>LIVE · {{.Rate}}/min</span>{{end}}
+
+{{/* reaper_pill — the amber 'lease reaper active' pill in the Durable-queue headers (Todos view +
+     the Board panel). Static copy per the design record: the reaper (SPEC-0003 lease expiry →
+     re-surface) is always armed while the server runs; the pulsing dot is the design's ringPulse,
+     ported as sb-ring-pulse in switchboard.css. Governing: SPEC-0013 REQ "Todos View — Durable
+     Queue" ("the view MUST surface that the reaper is active"). */}}
+{{define "reaper_pill"}}<span class="sb-reaper"><span class="sb-reaper__dot" aria-hidden="true"></span>lease reaper active · re-surfaces abandoned work</span>{{end}}
+
+{{/* todo_count — the rail's live Todos count. aria-live: the badge updates via SSE counts frames,
+     so it is a polite live region (SPEC-0013 "Dynamic Content Regions" — count pills). Args via
+     dict: Count int, OOB bool. */}}
+{{define "todo_count"}}<span id="sb-todo-count" class="sb-rail__count" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Count}}</span>{{end}}
+
+{{/* counts — the OOB bundle published after every committed transition: tiles + rail count +
+     LIVE pill. The rail count binds the TOTAL todo count (design record: the rail badge is the
+     size of the durable queue, every state), matching shell.TodoCount. Data: web.countsView. */}}
+{{define "counts"}}{{template "tiles" .Tiles}}{{template "todo_count" dict "Count" .Todos.All "OOB" true}}{{template "live_pill" dict "Rate" .Tiles.Stats.EventsPerMin "OOB" true}}{{template "todo_pill_counts" dict "C" .Todos "OOB" true}}{{end}}
+
+{{/* todo_pill_counts — the five Todos-view filter-pill count numbers, each an independent OOB swap
+     target (ignored on pages that don't render the pills). Each span is a polite live region — the
+     numbers update via SSE counts frames (SPEC-0013 "Dynamic Content Regions" — count pills).
+     Args via dict: C store.TodoCounts, OOB bool. */}}
+{{define "todo_pill_counts"}}<span id="sb-tc-all" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.All}}</span><span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Pending}}</span><span id="sb-tc-claimed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Claimed}}</span><span id="sb-tc-done" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Done}}</span><span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Failed}}</span>{{end}}
+
+{{/* toast — a transient announcement prepended into the aria-live toast region. Data: string. */}}
+{{define "toast"}}<div class="sb-toast" role="status" hx-swap-oob="afterbegin:#sb-toasts">{{.}}</div>{{end}}
+
+{{/* overlay_clear — empties the shared overlay OOB in the same response (sb.js's overlay watcher
+     then hides it), so a successful add-friend submit dismisses its modal (#175). innerHTML swap on
+     purpose: replacing the #sb-overlay element itself would detach sb.js's MutationObserver. */}}
+{{define "overlay_clear"}}<div hx-swap-oob="innerHTML:#sb-overlay"></div>{{end}}
