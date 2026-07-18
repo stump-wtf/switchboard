@@ -70,9 +70,9 @@ When orchestrating multiple SDD plugin skills in a single session (e.g., running
 
 - **Type**: gitea
 - **Base URL**: https://gitea.stump.rocks
-- **Owner**: joestump
+- **Owner**: stump.wtf
 - **Repo**: switchboard
-- **Note**: the Gitea MCP has no token in this environment — use the Gitea REST API with the osxkeychain git credential. GitHub (github.com/joestump/switchboard) is a push mirror; docs publish to GitHub Pages at https://joestump.github.io/switchboard/.
+- **Note**: origin of truth is https://gitea.stump.rocks/stump.wtf/switchboard; GitHub (github.com/stump-wtf/switchboard) is a push mirror. Docs publish to GitHub Pages at https://joestump.github.io/switchboard/. If the Gitea MCP has no token, use the Gitea REST API with the available git credential.
 
 #### Branch Conventions
 
