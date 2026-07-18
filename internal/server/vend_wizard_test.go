@@ -60,7 +60,9 @@ func (c *wizClient) do(method, path string, form url.Values) *httptest.ResponseR
 	return rec
 }
 
-func (c *wizClient) get(path string) *httptest.ResponseRecorder { return c.do(http.MethodGet, path, nil) }
+func (c *wizClient) get(path string) *httptest.ResponseRecorder {
+	return c.do(http.MethodGet, path, nil)
+}
 
 // followTo asserts a 303 See Other to want and returns the redirect target.
 func followTo(t *testing.T, rec *httptest.ResponseRecorder, want string) string {

@@ -105,7 +105,7 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 
 // templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown}
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown}
 }
 
 // parsePages composes layout.html and the per-view fragment files (templates/fragments/*.html)
