@@ -141,7 +141,11 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		log:     log,
 	})
 
-	go reaper(ctx, st, log)
+	// The reaper also enforces vend-time credential lifetimes: an endpoint whose expires_at has
+	// passed is flipped to revoked in the store and its live MCP sessions are torn down through the
+	// SAME CloseEndpointSessions path the web UI's revoke uses — expiry IS revocation, not a
+	// parallel lifecycle. Governing: SPEC-0016 REQ "Credential Lifetime", ADR-0019.
+	go reaper(ctx, st, log, mcph.CloseEndpointSessions, reapInterval)
 	// Retention pruner: the periodic task SPEC-0004 mandates so events and terminal todos cannot
 	// grow unbounded. Same lifecycle pattern as the reaper — context-managed, exits on shutdown.
 	go pruner(ctx, st, log, pruneInterval)
@@ -528,12 +532,34 @@ func pruner(ctx context.Context, st pruneStore, log *slog.Logger, interval time.
 	}
 }
 
+// reapInterval is how often the reaper ticks. Lease recovery, due retries, and endpoint expiry all
+// tolerate up to one interval of lag; expired CREDENTIALS are additionally refused at auth the
+// instant the expiry passes (store.EndpointByCredHash), so the tick only bounds how long a live
+// session can linger and when the card flips to revoked.
+const reapInterval = 30 * time.Second
+
+// reapStore is the store seam the reaper needs; *store.Store satisfies it. Narrowed to an
+// interface so the loop wiring is unit-testable without a database (mirroring pruneStore).
+type reapStore interface {
+	ReapExpired(ctx context.Context) (int64, error)
+	RequeueDueRetries(ctx context.Context) (int64, error)
+	ExpireEndpoints(ctx context.Context) ([]string, error)
+}
+
 // reaper periodically requeues (or dead-letters) todos with expired leases — crash safety (ADR-0002)
 // — and re-queues failed todos whose scheduled retry backoff has elapsed (SPEC-0003 REQ "Bounded
 // Retries via max_attempts", scheduled backoff). The claim scan also picks up due retries directly,
 // so this loop only bounds how long a due retry can sit without a claimant asking.
-func reaper(ctx context.Context, st *store.Store, log *slog.Logger) {
-	t := time.NewTicker(30 * time.Second)
+//
+// It also enforces endpoint credential lifetimes: every tick, endpoints whose vend-time expiry has
+// passed are flipped to revoked in the store and each affected endpoint's live MCP sessions are
+// closed via closeSessions — the same path a web-UI revoke rings — so an agent holding a live
+// session loses it and subsequent bearer or OAuth access fails identically to revocation.
+// Errors are logged and the loop keeps going, mirroring the pruner: a transient DB failure must not
+// disable enforcement for the life of the process. Governing: SPEC-0016 REQ "Credential Lifetime"
+// (scenario "Expiry enforcement"), SPEC-0007 revocation semantics reused, ADR-0019.
+func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions func(endpointID string), interval time.Duration) {
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
@@ -549,6 +575,18 @@ func reaper(ctx context.Context, st *store.Store, log *slog.Logger) {
 				log.Warn("retry scheduler", "err", err)
 			} else if n > 0 {
 				log.Info("re-queued scheduled retries", "count", n)
+			}
+			if ids, err := st.ExpireEndpoints(ctx); err != nil {
+				log.Warn("endpoint expiry", "err", err)
+			} else if len(ids) > 0 {
+				// Close sessions AFTER the store flip: auth already refuses the expired credential,
+				// so a session re-established between flip and close is impossible.
+				for _, id := range ids {
+					if closeSessions != nil {
+						closeSessions(id)
+					}
+				}
+				log.Info("expired endpoints revoked", "count", len(ids))
 			}
 		}
 	}

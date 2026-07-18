@@ -505,6 +505,10 @@
     <div class="sb-epcard__row"><dt class="sb-microlabel">Queues</dt><dd>{{range $c.Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span> {{else}}<span class="sb-muted">—</span>{{end}}</dd></div>
     <div class="sb-epcard__row"><dt class="sb-microlabel">Verbs</dt><dd>{{range $c.Verbs}}<span class="sb-chip sb-chip--verb">{{.}}</span> {{else}}<span class="sb-muted">—</span>{{end}}</dd></div>
     <div class="sb-epcard__row"><dt class="sb-microlabel">Credential</dt><dd><code class="sb-code">{{$c.CredPrefix}}…</code> <span class="sb-muted">shown once at vend</span></dd></div>
+    {{/* Vend-time credential lifetime, exposed as countdown DATA (data-sb-expires-at, RFC 3339 UTC)
+         for the SPEC-0015 charm-web card styling to hydrate; endpoints without an expiry render no
+         row and stay valid until revoked. Governing: SPEC-0016 REQ "Credential Lifetime". */}}
+    {{if $c.ExpiresAt}}<div class="sb-epcard__row"><dt class="sb-microlabel">Expires</dt><dd><time id="sb-ep-expiry-{{$c.ID}}" class="sb-epcard__expiry" datetime="{{$c.ExpiresAt.UTC.Format "2006-01-02T15:04:05Z"}}" data-sb-expires-at="{{$c.ExpiresAt.UTC.Format "2006-01-02T15:04:05Z"}}">{{$c.ExpiresAt.UTC.Format "2006-01-02 15:04"}} UTC</time></dd></div>{{end}}
   </dl>
   <div class="sb-epcard__foot">
     {{if eq $c.State "revoked"}}
@@ -575,6 +579,15 @@
       {{range .VerbOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="verbs" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
     </div>
     <p class="sb-help">allowed MCP tools · at least one required</p>
+  </div>
+  {{/* Optional credential lifetime (SPEC-0016 REQ "Credential Lifetime"): empty = valid until
+       revoked. Plain input for now — the SPEC-0015 wizard's lifetime step restyles this; the server
+       accepts durations ("1h", "24h") plus day/week shorthand ("7d", "4w") and rejects malformed or
+       non-positive values before minting. */}}
+  <div class="sb-field">
+    <label for="sb-vend-lifetime">Lifetime (optional)</label>
+    <input id="sb-vend-lifetime" class="sb-input" name="lifetime" placeholder="e.g. 24h or 7d" autocomplete="off" data-sb-vend-lifetime>
+    <p class="sb-help">how long the credential lives · expiry revokes the endpoint · empty = until revoked</p>
   </div>
   <div class="sb-vend__foot">
     <a class="sb-btn sb-btn--secondary" href="/endpoints" data-sb-close>Cancel</a>
