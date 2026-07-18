@@ -3,7 +3,9 @@
  * One of the sb.js feature modules (split per SPEC-0015 foundation; ADR-0018). Governing:
  * SPEC-0013 REQ "Todo Detail Drawer", REQ "Personas View": manages the shared overlay (open on
  * swap-in, close on Escape / scrim / close control, focus trap + focus return), forwards
- * whole-row clicks/Enter on todo rows to the row's drawer trigger, and opens persona modals from
+ * whole-row clicks/Space on todo rows to the row's drawer trigger (Enter-opens-selection lives in
+ * the sb-keys.js keymap registry — SPEC-0015 "Global Keyboard Map", one source of truth), and
+ * opens persona modals from
  * hidden <template> elements while constraining their verb/queue chips to the selected agent.
  * Presentation-only; the server renders truth and validates every mutation.
  */
@@ -23,8 +25,10 @@
   // ---- whole-row drawer open (Todos table) ----
   // The design record makes the entire todo row clickable. The id cell's button
   // ([data-sb-row-trigger]) stays the accessible, HTMX-wired trigger; a click on the row body (not
-  // on a real control) or Enter/Space while the row itself is focused (tabindex="0" on the <tr>)
-  // just forwards to it, so focus return and the drawer wiring stay on one path.
+  // on a real control) or Space while the row itself is focused (tabindex="0" on the <tr>) just
+  // forwards to it, so focus return and the drawer wiring stay on one path. Enter on a focused row
+  // takes the SAME forwarding path but is declared in the sb-keys.js registry (`enter` open) so
+  // the key-hint footer and the binding share one source of truth (SPEC-0015).
   function rowTrigger(target) {
     var row = target && target.closest ? target.closest("[data-sb-row-open]") : null;
     if (!row) return null;
@@ -38,7 +42,7 @@
       if (trigger) trigger.click();
     });
     document.body.addEventListener("keydown", function (e) {
-      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.key !== " ") return;
       var row = e.target.closest ? e.target.closest("[data-sb-row-open]") : null;
       if (!row || e.target !== row) return; // only when the ROW is focused — controls keep their keys
       e.preventDefault();
