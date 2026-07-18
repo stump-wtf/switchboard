@@ -41,7 +41,7 @@ const (
 	feedCap = 8
 )
 
-// feedRow is the render model for one Board incoming line (templates/fragments.html "feed_row").
+// feedRow is the render model for one Board incoming line (templates/fragments/board.html "feed_row").
 type feedRow struct {
 	RowID      string // stable DOM id: sb-ev-<event id>, or sb-td-<todo id> for event-less todos
 	Source     string
@@ -276,7 +276,7 @@ func (h *Handler) enqueueLive(fn func(context.Context)) {
 	}
 }
 
-// renderFragment executes one named fragment from templates/fragments.html into a string ready
+// renderFragment executes one named fragment from the per-view fragment files (templates/fragments/) into a string ready
 // for SSE framing (the transport strips newlines; HTML is whitespace-insensitive).
 func (h *Handler) renderFragment(name string, data any) (string, error) {
 	var buf bytes.Buffer

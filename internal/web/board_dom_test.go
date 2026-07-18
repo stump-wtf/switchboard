@@ -144,9 +144,13 @@ func TestBoardExposesPresentationJSContract(t *testing.T) {
 	if !strings.Contains(body, `id="sb-toasts"`) {
 		t.Error("toast region #sb-toasts missing — sb.js schedules TTL expiry on its children")
 	}
-	// The layout links the helper so the hooks are actually driven.
-	if !strings.Contains(body, "/static/sb.js") {
-		t.Error("layout must link /static/sb.js")
+	// The layout links the split helper modules so the hooks are actually driven (SPEC-0015
+	// foundation: sb.js is feature modules now).
+	for _, js := range []string{"/static/js/sb-live.js", "/static/js/sb-overlay.js", "/static/js/sb-vend.js",
+		"/static/js/sb-theme.js", "/static/js/sb-keys.js"} {
+		if !strings.Contains(body, js) {
+			t.Errorf("layout must link %s", js)
+		}
 	}
 }
 

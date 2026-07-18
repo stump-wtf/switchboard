@@ -1,0 +1,14 @@
+{{define "content"}}
+{{/* Providers view shell placement (SPEC-0015 scenario "Providers joins the IA"). The runtime
+     provider registry that backs this view is SPEC-0017 (ADR-0020) and lands in a later story;
+     this page keeps the sixth nav entry honest — shared chrome, an explanatory empty state, no
+     404. Governing: SPEC-0015 REQ "Application Shell And Navigation". */}}
+<div class="sb-view-head">
+  <div>
+    <h1 class="sb-page-title">providers</h1>
+    <p class="sb-tagline">inbound lines · each with an enforced trust mode</p>
+  </div>
+</div>
+<p class="sb-empty" data-sb-providers-empty>provider management arrives with the runtime provider
+registry (SPEC-0017) · until then providers are configured by environment at boot</p>
+{{end}}

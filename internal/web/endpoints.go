@@ -48,7 +48,7 @@ func vendVerbOptions() []vendVerbOption {
 	return opts
 }
 
-// endpointCard is the render model for one Endpoints-view card (fragments.html "endpoint_card"). It
+// endpointCard is the render model for one Endpoints-view card (fragments/endpoints.html "endpoint_card"). It
 // carries only the non-secret credential display prefix — never a reusable credential — plus the
 // backing agent name, bound persona (when personas are enabled), scope chips, status, and the
 // last-seen / killed-at stamps.
@@ -91,7 +91,7 @@ func cardInitials(name string) string {
 	return string(out)
 }
 
-// revealView feeds the one-time credential reveal (fragments.html "vend_reveal"): the minted URL,
+// revealView feeds the one-time credential reveal (fragments/endpoints.html "vend_reveal"): the minted URL,
 // the plaintext credential shown exactly once, and the ready-to-paste HTTP .mcp.json wiring. It is
 // produced only as the response to a successful vend POST and is never persisted, so it cannot be
 // re-rendered from any card or later page. Governing: SPEC-0013 (credential reveal is one-time),

@@ -26,7 +26,7 @@ import (
 // and searches to narrow). The store clamps too.
 const todoListCap = 100
 
-// todoRow is the render model for one Todos table row (fragments.html "todo_row") and the drawer
+// todoRow is the render model for one Todos table row (fragments/todos.html "todo_row") and the drawer
 // header. The lease and retry-backoff countdowns are driven by server-stamped deadlines (data
 // attributes) that sb.js animates toward — the UI never computes lifecycle, only presents it.
 type todoRow struct {

@@ -4,12 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · Switchboard</title>
+{{/* Pre-paint theme boot (SPEC-0015 REQ "Theme Toggle"): a tiny EXTERNAL script — CSP stays
+     script-src 'self', no inline JS — loaded synchronously before the stylesheets so a stored
+     night/day choice paints from the first frame (no flash of the wrong theme). */}}
+<script src="/static/js/theme-boot.js"></script>
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/switchboard.css">
-{{/* Vendored + embedded per ADR-0001 (no CDN; CSP script-src 'self'). SSE live regions: SPEC-0012. */}}
+{{/* Vendored + embedded per ADR-0001 (no CDN; CSP script-src 'self'). SSE live regions: SPEC-0012.
+     sb.js is split into feature modules (SPEC-0015 foundation de-serialization): each is a
+     self-contained deferred IIFE; sb-overlay must load before sb-vend (shared overlay helpers)
+     but the modules otherwise stand alone. */}}
 <script src="/static/vendor/htmx.min.js" defer></script>
 <script src="/static/vendor/htmx-ext-sse.min.js" defer></script>
-<script src="/static/sb.js" defer></script>
+<script src="/static/js/sb-live.js" defer></script>
+<script src="/static/js/sb-overlay.js" defer></script>
+<script src="/static/js/sb-vend.js" defer></script>
+<script src="/static/js/sb-theme.js" defer></script>
+<script src="/static/js/sb-keys.js" defer></script>
 </head>
 {{/* hx-headers injects the per-session CSRF synchronizer token into every HTMX request
      uniformly (SPEC-0013 "CSRF over HTMX"; auth.RequireCSRF reads X-CSRF-Token). */}}
@@ -18,23 +29,35 @@
      subscribe to named events via sse-swap. Dropped frames only stale a region — a reload
      renders authoritative database state. */}}
 <div class="sb-app"{{if .Human}} hx-ext="sse" sse-connect="/events"{{end}}>
-{{/* Governing: SPEC-0013 REQ "Information Architecture and Navigation" — persistent top bar
-     (mark + wordmark + LIVE pill + avatar) as the banner landmark. The explicit role makes the
-     banner landmark unambiguous for AT and for the SPEC-0008 login-accessibility contract. */}}
+{{/* Governing: SPEC-0015 REQ "Application Shell And Navigation" — the top bar carries the
+     wordmark, the ~/operator breadcrumb, the MCP-connected indicator, the "+ new" launcher,
+     and the theme control. The explicit role makes the banner landmark unambiguous for AT and
+     for the SPEC-0008 login-accessibility contract. */}}
 <header class="sb-topbar" role="banner">
   <svg class="sb-mark" viewBox="0 0 28 28" fill="none" role="img" aria-label="Switchboard mark" xmlns="http://www.w3.org/2000/svg">
-    <path d="M8 11 C 5.3 13.2, 6.1 16.4, 9.6 17.4" style="stroke: var(--sb-copper)" stroke-width="2.3" stroke-linecap="round"/>
-    <circle cx="8" cy="8.4" r="2.7" style="stroke: var(--sb-brass-logo)" stroke-width="1.8"/>
-    <circle cx="9.8" cy="19.7" r="2.7" style="stroke: var(--sb-brass-logo)" stroke-width="1.8"/>
-    <circle cx="20.2" cy="9" r="2.7" style="stroke: var(--sb-brass-logo)" stroke-width="1.8"/>
+    <path d="M8 11 C 5.3 13.2, 6.1 16.4, 9.6 17.4" style="stroke: var(--sb-cyan)" stroke-width="2.3" stroke-linecap="round"/>
+    <circle cx="8" cy="8.4" r="2.7" style="stroke: var(--sb-accent-logo)" stroke-width="1.8"/>
+    <circle cx="9.8" cy="19.7" r="2.7" style="stroke: var(--sb-accent-logo)" stroke-width="1.8"/>
+    <circle cx="20.2" cy="9" r="2.7" style="stroke: var(--sb-accent-logo)" stroke-width="1.8"/>
   </svg>
-  <span class="sb-wordmark">Switchboard</span>
-  <span class="sb-context">operator board</span>
+  <span class="sb-wordmark">switchboard</span>
+  <span class="sb-crumb" data-sb-breadcrumb>~/operator</span>
   <span class="sb-topbar__spacer"></span>
   {{if .Human}}
+    {{/* MCP-connected indicator (SPEC-0015 shell): backed by the same connectivity probe as the
+         nav's postgres line — the MCP mount serves nothing without the store behind it. */}}
+    <span class="sb-mcp{{if not .Shell.DBConnected}} sb-mcp--down{{end}}" data-sb-mcp role="status"><span class="sb-mcp__dot" aria-hidden="true"></span>mcp {{if .Shell.DBConnected}}connected{{else}}down{{end}}</span>
     {{/* Live throughput pill (SPEC-0013 IA & Navigation): always present — the idle zero-state
          keeps the SSE swap target in the DOM before the first counts frame arrives. */}}
     {{template "live_pill" dict "Rate" .Shell.LiveRate}}
+    {{/* "+ new" launcher: the create/vend flows live on the Endpoints view until the SPEC-0015
+         full-page wizards land in a later story. */}}
+    <a class="sb-new" href="/endpoints" data-sb-new>+ new</a>
+  {{end}}
+  {{/* Theme control: visible on every page including login (SPEC-0015 REQ "Theme Toggle");
+       sb-theme.js cycles day/night and persists to localStorage, `t` via the keymap. */}}
+  <button type="button" class="sb-theme-toggle" data-sb-theme-toggle aria-label="Switch between day and night theme"><span class="sb-theme-toggle__night" aria-hidden="true">☾ night</span><span class="sb-theme-toggle__day" aria-hidden="true">☀ day</span></button>
+  {{if .Human}}
     <span class="sb-avatar" title="{{.Human.DisplayName}}" aria-label="Signed in as {{.Human.DisplayName}}">{{.Shell.Initials}}</span>
     <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="sb-linklike">log out</button></form>
   {{else}}
@@ -43,18 +66,22 @@
 </header>
 <div class="sb-shell">
 {{if .Human}}
-{{/* Nav rail: Board / Todos / Endpoints / Personas. Personas renders only when its backing
-     capability is enabled (SPEC-0013 hidden-not-broken); Friends stays hidden until its
-     capability lands. */}}
+{{/* Six-view nav (SPEC-0015: board · todos · endpoints · personas · friends · providers).
+     Personas/Friends render only when their backing capability is enabled (SPEC-0013
+     hidden-not-broken carries over). data-sb-nav keys feed the `g` go-to-view keymap
+     (sb-keys.js reads them, so bindings and nav can never disagree). */}}
 <nav class="sb-rail" aria-label="Primary">
   <ul class="sb-rail__list">
-    <li><a class="sb-rail__item" href="/"{{if eq .Shell.Active "board"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Board</span></a></li>
-    <li><a class="sb-rail__item" href="/todos"{{if eq .Shell.Active "todos"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Todos</span>{{template "todo_count" dict "Count" .Shell.TodoCount}}</a></li>
-    <li><a class="sb-rail__item" href="/endpoints"{{if eq .Shell.Active "endpoints"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Endpoints</span></a></li>
-    {{if .Shell.PersonasEnabled}}<li><a class="sb-rail__item" href="/personas"{{if eq .Shell.Active "personas"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Personas</span></a></li>{{end}}
+    <li><a class="sb-rail__item" data-sb-nav="b" href="/"{{if eq .Shell.Active "board"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Board</span></a></li>
+    <li><a class="sb-rail__item" data-sb-nav="t" href="/todos"{{if eq .Shell.Active "todos"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Todos</span>{{template "todo_count" dict "Count" .Shell.TodoCount}}</a></li>
+    <li><a class="sb-rail__item" data-sb-nav="e" href="/endpoints"{{if eq .Shell.Active "endpoints"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Endpoints</span></a></li>
+    {{if .Shell.PersonasEnabled}}<li><a class="sb-rail__item" data-sb-nav="p" href="/personas"{{if eq .Shell.Active "personas"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Personas</span></a></li>{{end}}
     {{/* Friends: revealed only when the friending capability is enabled (SPEC-0013 hidden-not-broken);
          the pending-incoming badge shows only when nonzero. */}}
-    {{if .Shell.FriendsEnabled}}<li><a class="sb-rail__item" href="/friends"{{if eq .Shell.Active "friends"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Friends</span>{{template "friend_badge" dict "Count" .Shell.FriendsIncoming}}</a></li>{{end}}
+    {{if .Shell.FriendsEnabled}}<li><a class="sb-rail__item" data-sb-nav="f" href="/friends"{{if eq .Shell.Active "friends"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Friends</span>{{template "friend_badge" dict "Count" .Shell.FriendsIncoming}}</a></li>{{end}}
+    {{/* Providers joins the IA (SPEC-0015 scenario "Providers joins the IA"); the SPEC-0017
+         registry backs the view in a later story. */}}
+    <li><a class="sb-rail__item" data-sb-nav="r" href="/providers"{{if eq .Shell.Active "providers"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Providers</span></a></li>
   </ul>
   <p class="sb-rail__foot sb-conn{{if not .Shell.DBConnected}} sb-conn--down{{end}}"><span class="sb-conn__dot" aria-hidden="true"></span><span class="sb-conn__label">postgres · {{if .Shell.DBConnected}}connected{{else}}disconnected{{end}}</span></p>
 </nav>
@@ -62,13 +89,16 @@
 <main class="sb-main">{{template "content" .}}</main>
 </div>
 {{/* Content-info landmark, present on every page including the public login screen so the
-     SPEC-0008 accessibility contract (banner + main + contentinfo landmarks) holds there too. */}}
+     SPEC-0008 accessibility contract (banner + main + contentinfo landmarks) holds there too.
+     The key-hint slot renders the active keymap (SPEC-0015: hints come from the single
+     sb-keys.js registry, so they can never drift from the bindings). */}}
 <footer class="sb-footer" role="contentinfo">
-  <span class="sb-footer__text">Switchboard · many lines in · each verified · patched through</span>
+  <span class="sb-footer__text">switchboard · many lines in · each verified · patched through</span>
+  <span class="sb-keys" id="sb-keys" data-sb-keys aria-label="Keyboard shortcuts"></span>
 </footer>
 {{/* Overlay slot (drawer/modal stories) + toast region. The toast region exists in the DOM before
      any update and is aria-live so background transitions are announced (SPEC-0013 "Live Updates
-     and Toasts"); sb.js expires each toast after a short TTL. */}}
+     and Toasts"); sb-live.js expires each toast after a short TTL. */}}
 <div id="sb-overlay" class="sb-overlay" hidden></div>
 <div id="sb-toasts" class="sb-toasts" aria-live="polite"></div>
 {{if .Human}}

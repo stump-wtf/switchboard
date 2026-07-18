@@ -1,4 +1,4 @@
-// Package web is the human-facing UI (ADR-0016: the "Operator" design language over html/template):
+// Package web is the human-facing UI (ADR-0018: the charm-web design language over html/template):
 // the Board landing view, agent registration, and vend/revoke of scoped MCP endpoints. Handlers
 // marked "requires human" read the authenticated principal from context (the server wraps them in
 // auth.RequireHuman).
@@ -28,13 +28,14 @@ import (
 	"github.com/joestump/switchboard/internal/store"
 )
 
-//go:embed templates/*.html
+//go:embed templates/*.html templates/fragments/*.html
 var tmplFS embed.FS
 
-// pageNames are the page templates composed with layout.html and the shared fragments. Startup
-// parses every one of them.
-// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
-var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "personas", "friends"}
+// pageNames are the page templates composed with layout.html and the per-view fragment files.
+// Startup parses every one of them.
+// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
+// "Application Shell And Navigation" (providers joins the IA).
+var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "personas", "friends", "providers"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -46,7 +47,7 @@ type Handler struct {
 	cfg   config.Config
 	log   *slog.Logger
 	pages map[string]*template.Template
-	frags *template.Template // shared live fragments (templates/fragments.html), standalone-renderable
+	frags *template.Template // per-view live fragments (templates/fragments/*.html), standalone-renderable
 
 	// personasEnabled gates the SPEC-0013 Personas view AND the persona chip on endpoint cards +
 	// the persona field in the vend modal. The server sets it by feature detection (personas store +
@@ -100,15 +101,17 @@ func templateFuncs() template.FuncMap {
 	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod, "join": joinScope}
 }
 
-// parsePages composes layout.html and fragments.html with each page template from fsys
-// (pages reuse the shared feed rows, tiles, and pills). Split from New so tests can prove that a
-// broken or missing template surfaces a startup-failing error.
-// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
+// parsePages composes layout.html and the per-view fragment files (templates/fragments/*.html)
+// with each page template from fsys (pages reuse the shared feed rows, tiles, and pills). The
+// fragments are one file per view so a todos fragment change never touches a board or friends
+// template file (SPEC-0015 REQ "Live Fragment Architecture"). Split from New so tests can prove
+// that a broken or missing template surfaces a startup-failing error.
+// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", ADR-0018.
 func parsePages(fsys fs.FS) (map[string]*template.Template, error) {
 	pages := make(map[string]*template.Template, len(pageNames))
 	for _, p := range pageNames {
 		t, err := template.New(p).Funcs(templateFuncs()).ParseFS(fsys,
-			"templates/layout.html", "templates/fragments.html", "templates/"+p+".html")
+			"templates/layout.html", "templates/fragments/*.html", "templates/"+p+".html")
 		if err != nil {
 			return nil, fmt.Errorf("parse templates for %q: %w", p, err)
 		}
@@ -117,10 +120,10 @@ func parsePages(fsys fs.FS) (map[string]*template.Template, error) {
 	return pages, nil
 }
 
-// parseFrags parses fragments.html once standalone for the SSE publisher (live.go renders
-// fragments with no page around them). Like parsePages, a parse failure fails startup.
+// parseFrags parses the per-view fragment files once standalone for the SSE publisher (live.go
+// renders fragments with no page around them). Like parsePages, a parse failure fails startup.
 func parseFrags(fsys fs.FS) (*template.Template, error) {
-	frags, err := template.New("fragments").Funcs(templateFuncs()).ParseFS(fsys, "templates/fragments.html")
+	frags, err := template.New("fragments").Funcs(templateFuncs()).ParseFS(fsys, "templates/fragments/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse fragment templates: %w", err)
 	}
@@ -151,11 +154,11 @@ func stageMod(state string) string {
 	return state
 }
 
-// shell carries the layout-shell state every authenticated view renders: the active rail entry,
+// shell carries the layout-shell state every authenticated view renders: the active nav entry,
 // live counts, database connectivity, and the avatar initials.
-// Governing: SPEC-0013 REQ "Information Architecture and Navigation".
+// Governing: SPEC-0015 REQ "Application Shell And Navigation" (six-view IA).
 type shell struct {
-	Active          string // board | todos | endpoints | personas | friends — marks aria-current on the rail
+	Active          string // board | todos | endpoints | personas | friends | providers — marks aria-current on the nav
 	TodoCount       int    // total todos (every state), shown beside the Todos rail entry (design record, #179)
 	LiveRate        int    // events/min for the LIVE pill (hidden when zero)
 	DBConnected     bool   // pool ping result — the rail footer indicator
@@ -290,6 +293,19 @@ func (h *Handler) ClaimTodo(w http.ResponseWriter, r *http.Request) {
 	// a feed_row, while the Todos table and drawer get their own refreshed fragments. On a lost race
 	// the SSE stage update tells the operator who won; no internal detail leaks (SPEC-0013).
 	h.respondTodoAction(w, r, "ClaimTodo", t, err)
+}
+
+// Providers renders the Providers view's shell placement: the sixth IA entry (SPEC-0015 scenario
+// "Providers joins the IA"). The view's data contract (runtime provider registry) is SPEC-0017 and
+// lands in a later story; until then the page renders the shared chrome and an explanatory empty
+// state, so navigation always offers all six views and none of them 404s. Requires human.
+// Governing: SPEC-0015 REQ "Application Shell And Navigation", ADR-0020.
+func (h *Handler) Providers(w http.ResponseWriter, r *http.Request) {
+	human, _ := auth.FromContext(r.Context())
+	sh, _ := h.buildShell(r.Context(), "providers", &human)
+	h.render(w, "providers", view{
+		Title: "Providers", Human: &human, CSRF: auth.CSRFFromContext(r.Context()), Shell: sh,
+	})
 }
 
 // AgentsRedirect folds the retired SPEC-0012 dashboard/agent screens into the Endpoints view: the

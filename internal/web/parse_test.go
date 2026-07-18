@@ -11,12 +11,13 @@ import (
 	"testing/fstest"
 )
 
-// validPageFS returns a minimal in-memory template FS covering the full page set, including the
-// shared SSE fragment definitions each page set parses alongside the layout (SPEC-0013).
+// validPageFS returns a minimal in-memory template FS covering the full page set, including a
+// per-view fragment file each page set parses alongside the layout (SPEC-0015 REQ "Live Fragment
+// Architecture": templates/fragments/*.html, one file per view).
 func validPageFS() fstest.MapFS {
 	fsys := fstest.MapFS{
-		"templates/layout.html":    {Data: []byte(`{{define "layout"}}<html>{{template "content" .}}</html>{{end}}`)},
-		"templates/fragments.html": {Data: []byte(`{{define "feed_row"}}{{end}}`)},
+		"templates/layout.html":          {Data: []byte(`{{define "layout"}}<html>{{template "content" .}}</html>{{end}}`)},
+		"templates/fragments/board.html": {Data: []byte(`{{define "feed_row"}}{{end}}`)},
 	}
 	for _, p := range pageNames {
 		fsys["templates/"+p+".html"] = &fstest.MapFile{Data: []byte(`{{define "content"}}` + p + `{{end}}`)}

@@ -375,6 +375,10 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/endpoints/vend", d.webh.Vend)
 		pr.Get("/agents", d.webh.AgentsRedirect)
 		pr.Get("/agents/{id}", d.webh.AgentsRedirect)
+		// Providers view shell placement (SPEC-0015 "Providers joins the IA"); the SPEC-0017
+		// registry backs it in a later story. Governing: SPEC-0015 REQ "Application Shell And
+		// Navigation", ADR-0020.
+		pr.Get("/providers", d.webh.Providers)
 		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
 		pr.Get("/events", d.webh.Events)
 		// Operator todo lifecycle actions (SPEC-0013 endpoints table). Each dispatches to a SPEC-0003
