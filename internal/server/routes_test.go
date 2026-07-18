@@ -97,20 +97,25 @@ var sessionRoutes = map[string]bool{
 	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)
 	// Friends view + approval flow (SPEC-0013). All session-gated; the handlers 404 when the friending
 	// capability is disabled, but auth (RequireHuman) still runs first, so anonymous → /login here too.
-	"GET /friends":                true,
-	"GET /friends/new":            true,
-	"GET /friends/resolve":        true,
-	"POST /friends":               true,
-	"POST /friends/{id}/approve":  true,
-	"POST /friends/{id}/decline":  true,
-	"POST /friends/{id}/withdraw": true,
-	"POST /friends/{id}/revoke":   true,
-	"POST /friends/{id}/unblock":  true,
-	"GET /personas":               true, // Personas view (SPEC-0013; capability-gated in the handler)
-	"POST /personas":              true, // create persona
-	"POST /personas/{id}":         true, // update persona (incl. publish toggle)
-	"POST /personas/{id}/delete":  true, // delete persona
-	"POST /logout":                true,
+	"GET /friends":                  true,
+	"GET /friends/new":              true,
+	"GET /friends/resolve":          true,
+	"POST /friends":                 true,
+	"POST /friends/{id}/approve":    true,
+	"POST /friends/{id}/decline":    true,
+	"POST /friends/{id}/withdraw":   true,
+	"POST /friends/{id}/revoke":     true,
+	"POST /friends/{id}/unblock":    true,
+	"GET /personas":                 true, // Personas view (SPEC-0015; capability-gated in the handler)
+	"GET /personas/wizard":          true, // persona create wizard start (mints server-side step state)
+	"GET /personas/wizard/{step}":   true, // persona wizard step pages (identity → scope → publish)
+	"POST /personas/wizard/{step}":  true, // step submit / publish-step save
+	"POST /personas/wizard/preview": true, // live A2A card preview from the unsaved draft (SPEC-0015)
+	"GET /personas/{id}/edit":       true, // persona edit wizard start (seeded from the persona)
+	"POST /personas":                true, // direct single-form create persona
+	"POST /personas/{id}":           true, // update persona (incl. publish toggle)
+	"POST /personas/{id}/delete":    true, // delete persona
+	"POST /logout":                  true,
 }
 
 // publicRoutes are the routes deliberately reachable without a session or bearer credential, each

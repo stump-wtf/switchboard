@@ -1,18 +1,21 @@
 {{define "content"}}
-{{/* Governing: SPEC-0013 REQ "Personas View" — persona cards (name, backing agent, published/draft
-     pill, quoted system prompt, advertised verb/skill chips, agent-card URL) with Edit and
-     Publish/Unpublish, plus a create/edit modal opened into the shared #sb-overlay slot. The view is
-     capability-gated: the handler 404s and the rail entry hides until the personas capability lands
-     (design.md "hidden-not-broken"). All mutations are CSRF-guarded HTMX POSTs (the layout's body
-     hx-headers carries the token). */}}
+{{/* Governing: SPEC-0015 REQ "Personas View And Wizard" — persona cards (initials block, name,
+     backing agent, published/draft chip, quoted system prompt, verb subset + derived skill chips,
+     agent-card URL, vended-as usage) with Edit (→ the full-page edit wizard) and
+     Publish/Unpublish. Create is the full-page wizard at /personas/wizard (REQ "Wizard
+     Interaction Pattern") — the SPEC-0013 modal is retired. The view is capability-gated: the
+     handler 404s and the rail entry hides while the personas capability is disabled
+     (hidden-not-broken). All mutations are CSRF-guarded (hidden field + the layout's body
+     hx-headers). ADR-0018. */}}
 <div class="sb-page-head">
   <div>
     <h1 class="sb-page-title">Personas · A2A Agent Cards</h1>
     <p class="sb-tagline">one agent, many least-privilege faces · a human-authored prompt plus a verb subset · advertised as an A2A Agent Card</p>
   </div>
-  {{/* Always visible (design canvas shows it unconditionally): when no agent has a vended grant the
-       modal explains the empty backing-agent list instead of the page hiding the entry point. */}}
-  <button type="button" class="sb-btn" data-sb-open-modal="sb-persona-modal-new" aria-haspopup="dialog">+ New persona</button>
+  {{/* Always visible (design canvas shows it unconditionally): with no vended agent the wizard's
+       identity step explains the empty backing-agent list instead of the page hiding the entry
+       point. */}}
+  <a class="sb-btn" href="/personas/wizard" data-sb-persona-new>+ New persona</a>
 </div>
 
 {{if .Personas.Cards}}
@@ -22,9 +25,4 @@
 {{else}}
 <p class="sb-empty">no personas yet · create one to publish a discoverable agent card</p>
 {{end}}
-
-{{/* Hidden modal templates opened into #sb-overlay by sb.js (data-sb-open-modal). Rendering them
-     inline keeps the SPEC-0013 routes table to its four persona routes — no extra modal-fetch GET. */}}
-<template id="sb-persona-modal-new">{{template "persona_modal" .Personas.NewModal}}</template>
-{{range .Personas.Cards}}<template id="sb-persona-modal-edit-{{.ID}}">{{template "persona_modal" (index $.Personas.EditModal .ID)}}</template>{{end}}
 {{end}}
