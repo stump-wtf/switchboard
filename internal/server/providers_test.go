@@ -101,10 +101,10 @@ func TestProviderStatusesFromRegistry(t *testing.T) {
 		{Name: "github", Family: "webhook", Kind: "github", TrustMode: "signed", Enabled: false,
 			SecretConfigured: true},
 		{Name: "lan", Family: "webhook", Kind: "generic", TrustMode: "open", Enabled: true},
-		{Name: "pending", Family: "webhook", Kind: "generic", TrustMode: "token", Enabled: true},   // no token yet
-		{Name: "stripe", Family: "webhook", Kind: "stripe", TrustMode: "signed", Enabled: true},    // no secret
-		{Name: "mystery", Family: "webhook", Kind: "generic", TrustMode: "weird", Enabled: true},   // unknown trust
-		{Name: "foreign", Family: "carrier-pigeon", Kind: "x", TrustMode: "open", Enabled: true},   // unknown family
+		{Name: "pending", Family: "webhook", Kind: "generic", TrustMode: "token", Enabled: true}, // no token yet
+		{Name: "stripe", Family: "webhook", Kind: "stripe", TrustMode: "signed", Enabled: true},  // no secret
+		{Name: "mystery", Family: "webhook", Kind: "generic", TrustMode: "weird", Enabled: true}, // unknown trust
+		{Name: "foreign", Family: "carrier-pigeon", Kind: "x", TrustMode: "open", Enabled: true}, // unknown family
 	}
 	got := providerStatuses(rows)
 
