@@ -1,11 +1,12 @@
-// Server-level coverage for the SPEC-0013 Personas view routes: the CSRF guard on every persona
+// Server-level coverage for the SPEC-0015 Personas view routes: the CSRF guard on every persona
 // mutation and the end-to-end HTMX create/update/publish/delete flow against the real router (the
 // same newRouter Run uses) with a live session. These are DB-backed, so they run against Postgres on
 // the GitHub mirror and skip without SWITCHBOARD_TEST_DATABASE_URL — the CI-gate coverage of the
-// cards/modal render and the capability gating lives in internal/web (no database).
+// cards/wizard render and the capability gating lives in internal/web (no database). The full-page
+// wizard flow (create/edit with the live card preview) is bound in persona_wizard_test.go.
 //
-// Governing: SPEC-0013 REQ "Personas View", REQ "Error Handling Standards"; SPEC-0008 CSRF;
-// SPEC-0009 REQ "Persona Record", REQ "Discoverability Is Owner-Controlled".
+// Governing: SPEC-0015 REQ "Personas View And Wizard"; SPEC-0008 CSRF; SPEC-0009 REQ "Persona
+// Record", REQ "Discoverability Is Owner-Controlled".
 package server
 
 import (
@@ -73,13 +74,11 @@ func TestPersonasCreatePublishDeleteFlow(t *testing.T) {
 		t.Fatalf("create endpoint: %v", err)
 	}
 
-	// Scrape the per-session CSRF token from the rendered Personas page.
+	// Scrape the per-session CSRF token from the rendered Personas page. (The backing-agent offer
+	// now lives on the wizard's identity step — covered by persona_wizard_test.go.)
 	page := getAs(t, r, token, "/personas")
 	if page.Code != http.StatusOK {
 		t.Fatalf("GET /personas: got %d, want 200", page.Code)
-	}
-	if !strings.Contains(page.Body.String(), "review-bot") {
-		t.Fatalf("personas page should offer the backing agent as an option:\n%.400s", page.Body.String())
 	}
 	csrf := scrapeCSRF(t, page.Body.String())
 
@@ -146,8 +145,8 @@ func TestPersonasCreatePublishDeleteFlow(t *testing.T) {
 
 // TestPersonaVerbSubsetConstraintEnforced proves the server rejects a persona whose verb_subset
 // exceeds the backing agent's vended grant with a 400 (the store's ErrScopeExceeded, mapped generic):
-// the modal constrains the chips, so an out-of-grant verb is a forged request and never persists.
-// Governing: SPEC-0013 REQ "Personas View" (scenario "Verb subset is constrained"), SPEC-0009.
+// the wizard constrains the chips, so an out-of-grant verb is a forged request and never persists.
+// Governing: SPEC-0015 REQ "Personas View And Wizard", SPEC-0009 REQ "Persona Record".
 func TestPersonaVerbSubsetConstraintEnforced(t *testing.T) {
 	r, st, ctx := newDBRouter(t)
 	human, token := mintSession(t, st, ctx, "persona-scope-op", "Scope Op", "persona-scope@example.com")

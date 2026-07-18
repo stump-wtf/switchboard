@@ -142,6 +142,42 @@ func TestPersonaCardDescriptionFallbackToSummary(t *testing.T) {
 	}
 }
 
+// TestPersonaCardJSONOutputUnchanged pins the exact serialized well-known card for a fixed persona,
+// byte for byte. The SPEC-0015 personas story moved the skill derivation into internal/persona and
+// added the wizard's live preview over the same projection — this golden proves the public
+// SPEC-0009 card output did not change in the process (issue #28 AC "well-known card output
+// unchanged"). Governing: SPEC-0009 REQ "Agent Card Mapping", REQ "Skills Derived From Vended
+// Capability".
+func TestPersonaCardJSONOutputUnchanged(t *testing.T) {
+	dp := store.DiscoverablePersona{
+		Persona: store.Persona{
+			ID:          "11111111-1111-1111-1111-111111111111",
+			Name:        "Reviewer",
+			Description: "Reviews pull requests.",
+			VerbSubset:  []string{"list_todos", "claim", "complete", "create_for"},
+			Queues:      []string{"reviews"},
+		},
+		OwnerDisplayName: "Ada Lovelace",
+	}
+	body, err := json.Marshal(personaCard("https://sb.example.com", dp))
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	want := `{"protocolVersion":"0.3.0","name":"Reviewer","description":"Reviews pull requests.",` +
+		`"url":"https://sb.example.com/a/11111111-1111-1111-1111-111111111111/",` +
+		`"provider":{"organization":"Ada Lovelace","url":"https://sb.example.com"},"version":"1.0.0",` +
+		`"capabilities":{"streaming":false,"pushNotifications":false,"stateTransitionHistory":false},` +
+		`"defaultInputModes":["application/json"],"defaultOutputModes":["application/json"],` +
+		`"skills":[{"id":"process-work","name":"Process work",` +
+		`"description":"Drains todos from its queues: lists pending work, claims it under a lease, and reports completion.",` +
+		`"tags":["todo","queue","worker"]},{"id":"delegate-work","name":"Delegate work",` +
+		`"description":"Creates todos on behalf of other principals, routing work into their queues.",` +
+		`"tags":["todo","delegation"]}]}`
+	if string(body) != want {
+		t.Errorf("well-known card output changed:\n got %s\nwant %s", body, want)
+	}
+}
+
 // The projected card, once serialized, must never leak owner PII (email, OIDC subject) or the
 // persona's capability slice (verb_subset/queues/system_prompt). It carries only outward-facing
 // discovery metadata. Governing: SPEC-0009 REQ "Agent Card Mapping"; #59 AC "not leaking owner PII".

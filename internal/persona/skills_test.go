@@ -32,14 +32,12 @@ func TestDeriveSkills_AllOfSemantics(t *testing.T) {
 			[]string{"claim", "complete"}, []string{}},
 		{"create_for advertises delegate-work",
 			[]string{"create_for"}, []string{"delegate-work"}},
-		{"event read pair advertises inspect-events",
-			[]string{"list_webhook_events", "get_webhook_event"}, []string{"inspect-events"}},
-		{"only list_webhook_events advertises nothing",
-			[]string{"list_webhook_events"}, []string{}},
 		{"replay advertises replay-events",
 			[]string{"replay_webhook_event"}, []string{"replay-events"}},
+		{"list_providers advertises inspect-providers",
+			[]string{"list_providers"}, []string{"inspect-providers"}},
 		{"unrelated verbs advertise nothing",
-			[]string{"heartbeat", "fail", "list_providers"}, []string{}},
+			[]string{"heartbeat", "fail", "list_webhook_events", "get_webhook_event"}, []string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

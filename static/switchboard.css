@@ -2881,4 +2881,94 @@ pre code {
 .sb-oauth__foot {
   margin: 14px 0 0;
   font-size: 11.5px;
+/* ============================================================================
+   Personas view + wizard (SPEC-0015 REQ "Personas View And Wizard"; ADR-0018):
+   the card's initials block + vended-as row, and the wizard's live A2A card
+   preview panel rendered from the unsaved draft.
+   ========================================================================== */
+.sb-persona__ident {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+/* Two-letter initials tile mirroring the endpoint card's avatar (design canvas: rounded square,
+   verb-chip palette so persona ≠ endpoint at a glance). */
+.sb-persona__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--sb-chip-verb-bg);
+  color: var(--sb-chip-verb);
+  font-family: var(--sb-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+.sb-persona__vendedas {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* The wizard's live agent-card preview: a bordered panel beside/below the step form. */
+.sb-wiz__preview {
+  margin: 14px 0 0;
+}
+.sb-cardprev {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px dashed var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  background: var(--sb-code-bg);
+}
+.sb-cardprev__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sb-cardprev__name {
+  font-family: var(--sb-font-display);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--sb-ink);
+}
+.sb-cardprev__desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--sb-body);
+}
+.sb-cardprev__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.sb-cardprev__url {
+  overflow-wrap: anywhere;
+  color: var(--sb-secondary);
+}
+.sb-cardprev__skills {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sb-cardprev__json summary {
+  cursor: pointer;
+}
+.sb-cardprev__json pre {
+  margin: 8px 0 0;
+  max-height: 320px;
+  overflow: auto;
+}
+/* Delete on the edit wizard's final page: separated from the save form by a rule. */
+.sb-wiz__danger {
+  margin: 16px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--sb-divider);
 }

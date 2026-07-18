@@ -1,17 +1,17 @@
 // Package persona holds the pure, storage-independent projections a persona publishes — chiefly the
 // derivation of its advertised A2A skills from the verbs it actually vends. Keeping this logic free of
-// any store or HTTP dependency lets both the store (SPEC-0009 persona record) and the well-known
-// Agent Card route (#59) build a card from the same authoritative map.
+// any store or HTTP dependency lets the well-known Agent Card route, the operator Personas view, and
+// the persona wizard's live card preview (SPEC-0015) all build a card from the same authoritative map.
 //
 // Governing: ADR-0009 (personas as scoped Agent Cards), SPEC-0009 REQ "Skills Derived From Vended
-// Capability".
+// Capability", SPEC-0015 REQ "Personas View And Wizard".
 package persona
 
 import "sort"
 
 // Skill is an A2A AgentSkill-shaped descriptor: the outward, discovery-only advertisement of one thing
 // a persona can do. Its fields map directly onto the A2A Agent Card `skills[]` entries the well-known
-// endpoint serves (#59). A Skill is never hand-authored on a persona; it is derived from the persona's
+// endpoint serves. A Skill is never hand-authored on a persona; it is derived from the persona's
 // vended verb_subset by DeriveSkills, so "what a card says it does" equals "what the persona can do" by
 // construction. Governing: SPEC-0009 REQ "Skills Derived From Vended Capability", REQ "Agent Card
 // Mapping".
@@ -36,22 +36,24 @@ type skillDefinition struct {
 	requiredVerbs []string
 }
 
-// skillCatalog is the authoritative verb→skill map. It is maintained in code alongside the verb
-// registry (internal/mcp) so the derivation stays current as verbs are added; the covering test in
-// skills_test.go asserts derived skills are a pure function of the subset. Order here is the order
-// skills are advertised on a card, so it is kept deterministic.
+// skillCatalog is the authoritative verb→skill map (SPEC-0009 / ADR-0009: canonical in code with a
+// covering test). It is maintained alongside the verb registry (internal/mcp) so the derivation stays
+// current as verbs are added. Order here is the order skills are advertised on a card, so it is kept
+// deterministic. This is THE single source of truth: the well-known Agent Card endpoint
+// (internal/web/agentcard.go) and the wizard's live card preview both derive from it, so preview and
+// published card can never disagree.
 //
-// The map is grounded in the real vended verb surface: the SPEC-0006 drain verbs
-// (list_todos/claim/complete/fail/heartbeat), the SPEC-0007 delegation verb (create_for), and the
-// SPEC-0005 event-history verbs (list_webhook_events/get_webhook_event/replay_webhook_event).
+// The entries are grounded in the real vended verb surface: the SPEC-0006 drain verbs
+// (list_todos/claim/complete), the SPEC-0007 delegation verb (create_for), the SPEC-0005 replay verb
+// (replay_webhook_event), and the SPEC-0017 registry read verb (list_providers).
 // Governing: ADR-0009 (derivation rule), SPEC-0009 REQ "Skills Derived From Vended Capability".
 var skillCatalog = []skillDefinition{
 	{
 		skill: Skill{
 			ID:          "process-work",
 			Name:        "Process work",
-			Description: "Claim queued work items and complete them.",
-			Tags:        []string{"todos", "work"},
+			Description: "Drains todos from its queues: lists pending work, claims it under a lease, and reports completion.",
+			Tags:        []string{"todo", "queue", "worker"},
 		},
 		requiredVerbs: []string{"list_todos", "claim", "complete"},
 	},
@@ -59,28 +61,28 @@ var skillCatalog = []skillDefinition{
 		skill: Skill{
 			ID:          "delegate-work",
 			Name:        "Delegate work",
-			Description: "Hand work to a peer by creating todos in its queue.",
-			Tags:        []string{"todos", "delegation"},
+			Description: "Creates todos on behalf of other principals, routing work into their queues.",
+			Tags:        []string{"todo", "delegation"},
 		},
 		requiredVerbs: []string{"create_for"},
 	},
 	{
 		skill: Skill{
-			ID:          "inspect-events",
-			Name:        "Inspect webhook events",
-			Description: "Browse stored webhook and queue events and read their full records.",
-			Tags:        []string{"events", "read-only"},
+			ID:          "replay-events",
+			Name:        "Replay inbound events",
+			Description: "Replays a previously verified inbound webhook event to its configured destination.",
+			Tags:        []string{"webhook", "replay"},
 		},
-		requiredVerbs: []string{"list_webhook_events", "get_webhook_event"},
+		requiredVerbs: []string{"replay_webhook_event"},
 	},
 	{
 		skill: Skill{
-			ID:          "replay-events",
-			Name:        "Replay webhook events",
-			Description: "Re-deliver a stored webhook event to a target endpoint.",
-			Tags:        []string{"events", "replay"},
+			ID:          "inspect-providers",
+			Name:        "Inspect providers",
+			Description: "Enumerates the configured inbound providers and their trust modes (never their secrets).",
+			Tags:        []string{"providers", "read-only"},
 		},
-		requiredVerbs: []string{"replay_webhook_event"},
+		requiredVerbs: []string{"list_providers"},
 	},
 }
 

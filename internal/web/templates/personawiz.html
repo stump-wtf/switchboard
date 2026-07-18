@@ -1,0 +1,137 @@
+{{define "content"}}
+{{/* The persona wizard's step pages (SPEC-0015 REQ "Personas View And Wizard", REQ "Wizard
+     Interaction Pattern"): identity → scope → publish, each a FULL routed page rendered from
+     server-side step state (internal/web/wizard.go). Every form is a plain method=post with a 303
+     between steps, so the flow completes identically with JS disabled; Back is a plain link to the
+     previous step, which re-renders the saved values. The scope and publish steps render the LIVE
+     A2A card preview from the unsaved draft — the scope step's preview re-renders on every chip
+     change via the HTMX POST /personas/wizard/preview endpoint, so the advertised skills update to
+     the derived set before anything is persisted (scenario "Preview before publish").
+     Governing: ADR-0018. */}}
+{{$v := .PersonaWiz}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">{{if $v.Edit}}Edit persona{{else}}New persona{{end}}</h1>
+    <p class="sb-tagline">{{if $v.Edit}}editing {{$v.EditName}} · the backing agent is pinned — scope stays bounded to its vended grant{{else}}a least-privilege face of one vended agent · the final step previews the exact A2A card peers will discover{{end}}</p>
+  </div>
+</div>
+
+<section class="sb-wiz sb-wiz--persona" data-sb-wizard="persona" aria-label="Persona wizard">
+  {{/* Step tracker: the routed pages ARE the steps; the tracker only reports position (links would
+       tempt skipping validation — navigation is Back/Continue). */}}
+  <ol class="sb-wiz__steps" data-sb-wiz-steps>
+    {{range $v.Steps}}<li class="sb-wiz__step{{if .Current}} sb-wiz__step--current{{end}}{{if .Done}} sb-wiz__step--done{{end}}"{{if .Current}} aria-current="step"{{end}} data-sb-wiz-step="{{.Slug}}"><span class="sb-wiz__stepnum">{{printf "%02d" .Num}}</span> {{.Slug}}</li>{{end}}
+  </ol>
+  <p class="sb-wiz__progress sb-muted">step {{$v.StepNum}} of {{$v.StepTotal}}</p>
+
+  {{if $v.Error}}<p class="sb-callout sb-callout--danger" role="alert" data-sb-wiz-error>{{$v.Error}}</p>{{end}}
+
+  <form id="sb-wiz-form" class="sb-wiz__form" method="post" action="{{$v.ActionURL}}" data-sb-persona-wiz>
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+
+    {{if eq $v.Step "identity"}}
+    <div class="sb-field">
+      <label for="sb-pw-name">Name</label>
+      <input id="sb-pw-name" class="sb-input" name="name" value="{{$v.Name}}" placeholder="e.g. reviewer" required autocomplete="off" data-sb-pw-name>
+      <p class="sb-help">the name the agent card advertises</p>
+    </div>
+    <div class="sb-field">
+      <label for="sb-pw-agent">Backing agent</label>
+      {{if $v.Edit}}
+      <p class="sb-mono sb-persona__pinned" data-sb-pw-agent-pinned>{{if $v.AgentName}}{{$v.AgentName}}{{else}}—{{end}}</p>
+      <p class="sb-help">the backing agent is immutable — delete and recreate to change it</p>
+      {{else if $v.Agents}}
+      <select id="sb-pw-agent" class="sb-input" name="agent_id" required data-sb-pw-agent>
+        {{range $v.Agents}}<option value="{{.ID}}"{{if eq .ID $v.AgentID}} selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+      <p class="sb-help">a persona is a scoped face of this agent's vended grant — only its vended verbs/queues become selectable</p>
+      {{else}}
+      <p class="sb-help" data-sb-pw-no-agents>no agent has a vended grant yet — a persona is a scoped face of a vended grant, so vend an MCP endpoint for an agent (Endpoints view) first, then create the persona.</p>
+      {{end}}
+    </div>
+    <div class="sb-field">
+      <label for="sb-pw-prompt">System prompt</label>
+      <textarea id="sb-pw-prompt" class="sb-input" name="system_prompt" rows="4" placeholder="You are a code reviewer…" data-sb-pw-prompt>{{$v.SystemPrompt}}</textarea>
+      <p class="sb-help">human-authored · quoted on the card view · summarized onto the agent card when no description is set</p>
+    </div>
+    <div class="sb-field">
+      <label for="sb-pw-desc">Card description (optional)</label>
+      <input id="sb-pw-desc" class="sb-input" name="description" value="{{$v.Description}}" placeholder="Reviews pull requests." autocomplete="off" data-sb-pw-desc>
+      <p class="sb-help">the one-line description peers see on the agent card</p>
+    </div>
+
+    {{else if eq $v.Step "scope"}}
+    <div class="sb-field">
+      <span class="sb-label" id="sb-pw-verbs-label">Verb subset</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-pw-verbs-label" data-sb-pw-verbs>
+        {{range $v.VerbOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="verbs" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{else}}<span class="sb-muted">the backing agent vends no verbs</span>{{end}}
+      </div>
+      <p class="sb-help">only the backing agent's vended verbs are selectable · the advertised skills derive from this subset</p>
+    </div>
+    {{if $v.QueueOptions}}
+    <div class="sb-field">
+      <span class="sb-label" id="sb-pw-queues-label">Queues</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-pw-queues-label" data-sb-pw-queues>
+        {{range $v.QueueOptions}}<label class="sb-chip sb-chip--queue sb-chip--toggle"><input type="checkbox" name="queues" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+      </div>
+      <p class="sb-help">bounded to the agent's vended queues</p>
+    </div>
+    {{end}}
+
+    {{else if eq $v.Step "publish"}}
+    {{/* The executing step: create/save from the SERVER-SIDE draft; the form carries only the CSRF
+         token and the publish toggle. The full live preview above the toggle is the final "this is
+         what peers will discover" check (SPEC-0015). */}}
+    <dl class="sb-wiz__summary" data-sb-wiz-summary>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Persona</dt><dd>{{$v.Name}}</dd></div>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Verbs</dt><dd>{{range $v.Verbs}}<span class="sb-chip sb-chip--verb">{{.}}</span> {{else}}<span class="sb-muted">none — the card advertises no skills</span>{{end}}</dd></div>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Queues</dt><dd>{{range $v.Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span> {{else}}<span class="sb-muted">none</span>{{end}}</dd></div>
+    </dl>
+    <div class="sb-field">
+      <label class="sb-pubtoggle">
+        <input type="checkbox" class="sb-pubtoggle__input" name="discoverable" value="1"{{if $v.Discoverable}} checked{{end}}>
+        <span class="sb-pubtoggle__track" aria-hidden="true"><span class="sb-pubtoggle__knob"></span></span>
+        <span class="sb-pubtoggle__text">
+          <span class="sb-pubtoggle__state sb-pubtoggle__state--on"><span class="sb-pubtoggle__title">Published</span><span class="sb-pubtoggle__hint">agent card discoverable at the well-known URL</span></span>
+          <span class="sb-pubtoggle__state sb-pubtoggle__state--off"><span class="sb-pubtoggle__title">Draft</span><span class="sb-pubtoggle__hint">not advertised · visible only here</span></span>
+        </span>
+      </label>
+    </div>
+    {{end}}
+
+    <div class="sb-vend__foot">
+      <a class="sb-btn sb-btn--secondary" href="/personas" data-sb-wiz-cancel>Cancel</a>
+      {{if $v.BackURL}}<a class="sb-btn sb-btn--secondary" href="{{$v.BackURL}}" data-sb-wiz-back>← Back</a>{{end}}
+      {{if eq $v.Step "publish"}}
+      <button type="submit" class="sb-btn sb-btn--mono" data-sb-pw-submit>{{if $v.Edit}}Save persona →{{else}}Create persona →{{end}}</button>
+      {{else}}
+      <button type="submit" class="sb-btn"{{if and (eq $v.Step "identity") (not $v.Edit) (not $v.Agents)}} disabled{{end}} data-sb-pw-submit>Continue →</button>
+      {{end}}
+    </div>
+  </form>
+
+  {{if eq $v.Step "scope"}}
+  {{/* Live A2A card preview (scenario "Preview before publish"): server-rendered from the unsaved
+       draft, then re-rendered on every chip change by POSTing the form's CURRENT fields to the
+       preview endpoint — the derived skills update before anything is persisted. Plain no-JS
+       visitors get the same preview re-rendered on the next step page instead. */}}
+  <section id="sb-persona-preview" class="sb-wiz__preview" aria-label="Agent card preview" aria-live="polite"
+    hx-post="/personas/wizard/preview" hx-trigger="change from:#sb-wiz-form" hx-include="#sb-wiz-form" hx-target="this" hx-swap="innerHTML">
+    {{template "persona_card_preview" $v.Preview}}
+  </section>
+  {{else if eq $v.Step "publish"}}
+  <section id="sb-persona-preview" class="sb-wiz__preview" aria-label="Agent card preview">
+    {{template "persona_card_preview" $v.Preview}}
+  </section>
+  {{end}}
+
+  {{if and $v.Edit (eq $v.Step "publish")}}
+  {{/* Delete lives on the edit wizard's final page (the modal that used to carry it is retired).
+       CSRF-guarded plain form; the store constrains ownership. */}}
+  <form class="sb-wiz__danger" method="post" action="/personas/{{$v.EditID}}/delete" data-sb-pw-delete>
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <button type="submit" class="sb-btn sb-btn--danger">Delete persona</button>
+  </form>
+  {{end}}
+</section>
+{{end}}

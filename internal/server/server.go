@@ -437,10 +437,21 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/friends/{id}/withdraw", d.webh.WithdrawFriend)
 		pr.Post("/friends/{id}/revoke", d.webh.RevokeFriend)
 		pr.Post("/friends/{id}/unblock", d.webh.UnblockFriend)
-		// Personas view (SPEC-0013 endpoints table). Capability-gated inside the handler: while the
-		// personas capability is disabled these 404 (hidden-not-broken); the routes stay session- and
-		// CSRF-gated like every other web mutation. Governing: SPEC-0013 REQ "Personas View".
+		// Personas view + wizard (SPEC-0015 REQ "Personas View And Wizard", REQ "Wizard Interaction
+		// Pattern"). Capability-gated inside the handler: while the personas capability is disabled
+		// these 404 (hidden-not-broken); the routes stay session- and CSRF-gated like every other web
+		// mutation. GET /personas/wizard starts the create wizard (mints server-side step state, 303
+		// → the first step); GET /personas/{id}/edit starts the edit wizard seeded from the persona;
+		// GET/POST /personas/wizard/{step} are the routed step pages (identity → scope → publish) —
+		// the publish POST is the save. POST /personas/wizard/preview is the HTMX live A2A card
+		// preview over the UNSAVED draft (nothing persisted). POST /personas and /personas/{id}
+		// remain the direct single-form create/update paths (same store validation gates).
 		pr.Get("/personas", d.webh.Personas)
+		pr.Get("/personas/wizard", d.webh.PersonaWizardStart)
+		pr.Get("/personas/wizard/{step}", d.webh.PersonaWizardStep)
+		pr.Post("/personas/wizard/preview", d.webh.PersonaCardPreview)
+		pr.Post("/personas/wizard/{step}", d.webh.PersonaWizardStepSubmit)
+		pr.Get("/personas/{id}/edit", d.webh.PersonaWizardEdit)
 		pr.Post("/personas", d.webh.CreatePersona)
 		pr.Post("/personas/{id}", d.webh.UpdatePersona)
 		pr.Post("/personas/{id}/delete", d.webh.DeletePersona)

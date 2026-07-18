@@ -1,12 +1,12 @@
 /* Switchboard overlay/drawer/modal machinery (embedded, CSP script-src 'self' — ADR-0001).
  *
  * One of the sb.js feature modules (split per SPEC-0015 foundation; ADR-0018). Governing:
- * SPEC-0013 REQ "Todo Detail Drawer", REQ "Personas View": manages the shared overlay (open on
- * swap-in, close on Escape / scrim / close control, focus trap + focus return), forwards
- * whole-row clicks/Space on todo rows to the row's drawer trigger (Enter-opens-selection lives in
- * the sb-keys.js keymap registry — SPEC-0015 "Global Keyboard Map", one source of truth), and
- * opens persona modals from
- * hidden <template> elements while constraining their verb/queue chips to the selected agent.
+ * SPEC-0013 REQ "Todo Detail Drawer": manages the shared overlay (open on swap-in, close on
+ * Escape / scrim / close control, focus trap + focus return), forwards whole-row clicks/Space on
+ * todo rows to the row's drawer trigger (Enter-opens-selection lives in the sb-keys.js keymap
+ * registry — SPEC-0015 "Global Keyboard Map", one source of truth), and opens generic modals from
+ * hidden <template> elements (data-sb-open-modal). The persona modal is retired — personas
+ * create/edit through the full-page wizard (SPEC-0015 REQ "Personas View And Wizard").
  * Presentation-only; the server renders truth and validates every mutation.
  */
 (function () {
@@ -154,60 +154,10 @@
     });
   }
 
-  // ---- persona modal: open a hidden <template> into the overlay and drive the verb/queue chip
-  // constraint. Presentation only — the server validates every subset against the backing agent's
-  // vended grant (SPEC-0009); this just hides what the human cannot choose. The agent-card URL under
-  // the name is server-rendered (the id-based shape the well-known endpoint resolves; ids are
-  // assigned on create) so there is no client-side URL derivation to drift from the endpoint.
-  // Governing: SPEC-0013 REQ "Personas View" (create/edit modal), SPEC-0009 REQ "Well-Known Card
-  // Endpoint". ----
-
-  // renderChips rebuilds a chip container's checkboxes from a verb/queue list, preserving any values
-  // that were checked before the swap. name is the form field ("verbs" / "queues").
-  function renderChips(container, values, name) {
-    if (!container) return;
-    var checked = {};
-    container.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
-      if (cb.checked) checked[cb.value] = true;
-    });
-    if (!values.length) {
-      container.innerHTML = '<span class="sb-muted">the backing agent vends no ' + name + "</span>";
-      return;
-    }
-    container.innerHTML = values
-      .map(function (v) {
-        return (
-          '<label class="sb-chip sb-chip--check"><input type="checkbox" name="' +
-          name +
-          '" value="' +
-          v +
-          '"' +
-          (checked[v] ? " checked" : "") +
-          "> " +
-          v +
-          "</label>"
-        );
-      })
-      .join("");
-  }
-
-  // wireModal binds the agent-driven chip constraint on a freshly opened modal.
-  function wireModal(modal) {
-    if (!modal) return;
-    var select = modal.querySelector("[data-sb-agent-select]");
-    if (select) {
-      select.addEventListener("change", function () {
-        var opt = select.options[select.selectedIndex];
-        var verbs = (opt.getAttribute("data-verbs") || "").split(",").filter(Boolean);
-        var queues = (opt.getAttribute("data-queues") || "").split(",").filter(Boolean);
-        renderChips(modal.querySelector("[data-sb-verb-chips]"), verbs, "verbs");
-        renderChips(modal.querySelector("[data-sb-queue-chips]"), queues, "queues");
-      });
-    }
-  }
-
-  // initModals opens a persona modal (referenced by data-sb-open-modal → a hidden <template> id) into
-  // the shared overlay; the overlay watcher then shows and focuses it.
+  // initModals opens a generic modal (referenced by data-sb-open-modal → a hidden <template> id)
+  // into the shared overlay; the overlay watcher then shows and focuses it. (The persona modal's
+  // agent-driven chip constraint is retired with the modal itself — the persona wizard renders its
+  // scope chips server-side from the wizard draft.)
   function initModals() {
     document.body.addEventListener("click", function (e) {
       var trigger = e.target.closest ? e.target.closest("[data-sb-open-modal]") : null;
@@ -219,7 +169,6 @@
       lastFocused = trigger; // return focus here on close
       overlay.innerHTML = "";
       overlay.appendChild(tpl.content.cloneNode(true));
-      wireModal(overlay.querySelector("[data-sb-modal]"));
     });
   }
 
