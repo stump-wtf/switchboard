@@ -67,10 +67,9 @@
 </article>{{end}}
 
 {{/* provider_catalog — the two-tier catalog (SPEC-0017 REQ "Provider Catalog"). Connectable =
-     implemented, an honest future connect entry point (the wizard is its own story — until it
-     lands the card says so instead of dead-ending). Available = SQS/NATS/AMQP, visually distinct
-     (dashed, dimmed, "planned" badge) with NO interactive connect path at all.
-     Data: web.providersPanelView. */}}
+     implemented, with a real connect entry point (the SPEC-0017 connect wizard, seeded with the
+     card's kind). Available = SQS/NATS/AMQP, visually distinct (dashed, dimmed, "planned" badge)
+     with NO interactive connect path at all. Data: web.providersPanelView. */}}
 {{define "provider_catalog"}}<section class="sb-prcat" aria-label="Provider catalog">
   <h2 class="sb-prfam__head"><span class="sb-prfam__glyph" aria-hidden="true">▤</span>catalog <span class="sb-prfam__rule" aria-hidden="true"></span></h2>
   <div class="sb-prcat__grid">
@@ -80,7 +79,7 @@
 </section>{{end}}
 
 {{/* provider_catalog_card — one catalog entry. The two states are visually and structurally
-     distinct: a connectable card is a normal card stating the wizard is how it connects; an
+     distinct: a connectable card links into the connect wizard seeded with its kind; an
      available card is dashed/dimmed, badged "planned", and contains no form, link, or button —
      nothing that could dead-end (scenario "Catalog honesty"). Data: web.catalogCard. */}}
 {{define "provider_catalog_card"}}<article class="sb-catcard sb-catcard--{{.State}}" data-sb-catalog-kind="{{.Kind}}" data-sb-catalog-state="{{.State}}">
@@ -91,7 +90,7 @@
   </div>
   <p class="sb-catcard__desc">{{.Desc}} <span class="sb-muted">· {{.Family}}</span></p>
   <div class="sb-catcard__foot">
-    {{if eq .State "available"}}<span class="sb-catcard__state sb-muted">available · no connect path yet — this card never fakes one</span>{{else}}<span class="sb-catcard__state">connectable · the connect wizard lands with the next story</span>{{end}}
+    {{if eq .State "available"}}<span class="sb-catcard__state sb-muted">available · no connect path yet — this card never fakes one</span>{{else}}<a class="sb-btn sb-btn--secondary sb-btn--mono" href="/providers/connect?kind={{.Kind}}" data-sb-catalog-connect>connect →</a>{{end}}
   </div>
 </article>{{end}}
 

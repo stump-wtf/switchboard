@@ -9,8 +9,8 @@ package web
 // Governing: SPEC-0017 REQ "Providers View" (secrets never render — only configured/missing), REQ
 // "Provider Catalog" (available ≠ connectable; the UI never fakes a backend), REQ "Provider
 // Lifecycle" (removal keeps every ingested event and todo); ADR-0020 (runtime registry), ADR-0018
-// (charm-web design language). The connect wizard itself is a separate story (#36) — until it
-// lands, connectable catalog cards state that plainly instead of offering a dead-end entry point.
+// (charm-web design language). Connectable catalog cards link into the connect wizard
+// (connectwizard.go), seeded with the card's kind; available cards still expose no path at all.
 
 import (
 	"crypto/rand"

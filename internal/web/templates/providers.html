@@ -10,7 +10,12 @@
     <h1 class="sb-page-title">providers</h1>
     <p class="sb-tagline">every message enters through a provider · webhooks push, queues are drained · each line has an enforced trust mode</p>
   </div>
-  {{if .Providers}}<div class="sb-view-head__aside"><span class="sb-muted sb-mono">{{.Providers.Total}} connected</span></div>{{end}}
+  <div class="sb-view-head__aside">
+    {{if .Providers}}<span class="sb-muted sb-mono">{{.Providers.Total}} connected</span>{{end}}
+    {{/* Wizard launcher: a plain link — the connect wizard is routed pages with server-side state
+         (SPEC-0017 REQ "Connect Provider Wizard"; SPEC-0015 wizard pattern). */}}
+    <a class="sb-btn sb-btn--mono" href="/providers/connect" data-sb-connect-start>+ connect provider</a>
+  </div>
 </div>
 {{if .ProviderReveal}}
 <div class="sb-prinline">{{template "provider_rotate_reveal" .ProviderReveal}}</div>
