@@ -29,6 +29,14 @@
      subscribe to named events via sse-swap. Dropped frames only stale a region — a reload
      renders authoritative database state. */}}
 <div class="sb-app"{{if .Human}} hx-ext="sse" sse-connect="/events"{{end}}>
+{{if .Landing}}
+{{/* Public marketing landing (GET / when logged out): the Home template is a full-bleed page with
+     its own header/hero/footer — none of the operator shell (top bar, rail, key-hint footer, SSE
+     sink) renders. It still inherits the shared <head>: tokens.css, switchboard.css, the pre-paint
+     theme boot, and sb-theme.js, so the day/night toggle works exactly as it does in the app.
+     Governing: ADR-0018 (charm-web design language). */}}
+{{template "content" .}}
+{{else}}
 {{/* Governing: SPEC-0015 REQ "Application Shell And Navigation" — the top bar carries the
      wordmark, the ~/operator breadcrumb, the MCP-connected indicator, the "+ new" launcher,
      and the theme control. The explicit role makes the banner landmark unambiguous for AT and
@@ -108,6 +116,7 @@
      elements; nothing renders inside this node. Governing: SPEC-0013 REQ "Live Updates and
      Toasts". */}}
 <div class="sb-sse-sink" hidden aria-hidden="true" sse-swap="todo_created,todo_claimed,todo_completed,todo_failed,todo_resurfaced,counts"></div>
+{{end}}
 {{end}}
 </div>
 </body>

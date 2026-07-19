@@ -357,11 +357,21 @@ func (a *Authenticator) RequireCSRF(next http.Handler) http.Handler {
 	})
 }
 
-// LoadHuman is middleware that injects the human when present but does not require it.
+// LoadHuman is middleware that injects the human when present but does not require it — the seam for
+// dual-mode routes like GET / that render one surface for an authenticated operator and another for
+// an anonymous visitor. When a live session is present it also stashes the per-session CSRF token
+// (exactly as RequireHuman does), so a human-facing page mounted here can embed it in forms and the
+// HTMX header without a second lookup; an anonymous request carries neither value and flows through
+// untouched. Governing: SPEC-0008 REQ "Session-Gated Human Surface" (a dead/absent cookie is simply
+// unauthenticated here, never an error).
 func (a *Authenticator) LoadHuman(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h, ok := a.human(r); ok {
-			r = r.WithContext(context.WithValue(r.Context(), humanKey, h))
+			ctx := context.WithValue(r.Context(), humanKey, h)
+			if c, err := r.Cookie(sessionCookie); err == nil {
+				ctx = context.WithValue(ctx, csrfKey, csrfToken(c.Value))
+			}
+			r = r.WithContext(ctx)
 		}
 		next.ServeHTTP(w, r)
 	})

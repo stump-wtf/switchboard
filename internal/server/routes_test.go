@@ -2,8 +2,9 @@
 // router (the same newRouter Run uses) and walk its route table, so every registered route must be
 // explicitly classified — session-gated, bearer-gated, or deliberately public — and a new route
 // that is not classified fails the suite. Auth-by-default, enforced by test.
-// Governing: SPEC-0012 REQ "Screen Set and Routes" (public GET /login; everything else behind
-// RequireHuman); SPEC-0013 REQ "Information Architecture and Navigation" (GET / Board is gated).
+// Governing: SPEC-0012 REQ "Screen Set and Routes" (public GET /login and the dual-mode GET /
+// landing; every data route behind RequireHuman); SPEC-0013 REQ "Information Architecture and
+// Navigation" (GET / renders the Board for an authenticated operator).
 package server
 
 import (
@@ -62,7 +63,6 @@ func newTestRouter(t *testing.T) chi.Router {
 // to /login, and the set itself is asserted, so dropping a route from the RequireHuman group (or
 // adding one without updating this contract) fails.
 var sessionRoutes = map[string]bool{
-	"GET /":                       true, // Board landing (SPEC-0013) — gated, per PR #120 wiring
 	"GET /todos":                  true, // Todos view (SPEC-0013 durable-queue table)
 	"GET /todos/{id}":             true, // Todo detail drawer (fragment / standalone)
 	"GET /endpoints":              true, // Endpoints view (SPEC-0015 vended-endpoint cards)
@@ -127,6 +127,14 @@ var sessionRoutes = map[string]bool{
 // publicRoutes are the routes deliberately reachable without a session or bearer credential, each
 // with its justification (SPEC-0012 security checklist: "public routes explicitly justified").
 var publicRoutes = map[string]bool{
+	// GET / is a dual-mode surface, mounted under auth.LoadHuman (injects the human when a live
+	// session is present but never redirects): an authenticated operator gets the Board, a logged-out
+	// visitor gets the public marketing Home page — the homepage, not a bounce to /login. It is
+	// deliberately public and exposes nothing sensitive: the Home page is static, and the Board branch
+	// still relies on the human LoadHuman injected. Anon-safety (200 landing, no operator shell) is
+	// asserted by TestRootPublicLandingWhenAnonymous. Governing: SPEC-0012 REQ "Authentication
+	// Boundary" (a public landing face on / opens no data route).
+	"GET /":                true, // dual-mode: public landing (anon) / Board (authed) via LoadHuman
 	"GET /login":           true, // the login screen itself (SPEC-0012: public GET /login)
 	"GET /auth/login":      true, // OIDC initiation — must be reachable to authenticate
 	"GET /auth/callback":   true, // OIDC redirect target — verified by state/nonce, not session
@@ -227,6 +235,40 @@ func TestEveryRouteClassifiedAndAnonymousRejected(t *testing.T) {
 	for key := range publicRoutes {
 		if !walked[key] {
 			t.Errorf("%s: expected public route missing from the router table", key)
+		}
+	}
+}
+
+// TestRootPublicLandingWhenAnonymous: GET / for a logged-out visitor renders the public marketing
+// Home page (200), not a redirect to /login and not the authenticated operator shell. This is the
+// anon-safety half of the dual-mode / route: the landing exposes only static marketing content, so
+// none of the session-gated navigation (the primary rail, the SSE sink, the live pill) may appear.
+// The authenticated half (GET / → Board) is covered by the web package's board render tests and the
+// DB-gated ownership tests. Governing: SPEC-0012 REQ "Authentication Boundary", ADR-0018.
+func TestRootPublicLandingWhenAnonymous(t *testing.T) {
+	r := newTestRouter(t)
+	rec := anonRequest(t, r, http.MethodGet, "/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / anonymous: got %d, want 200 (public landing, not a /login bounce)", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="sb-landing"`,      // the full-bleed landing wrapper rendered
+		"and patches it through.", // hero headline copy
+		`href="/login"`,           // the "open the board" CTA routes an anon visitor to login
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("anonymous landing missing %q", want)
+		}
+	}
+	// The authenticated shell must NOT render for an anonymous visitor.
+	for _, forbidden := range []string{
+		`aria-label="Primary"`,  // the session-gated navigation rail
+		`sse-connect="/events"`, // the authenticated live stream
+		`class="sb-sse-sink"`,   // the SSE OOB sink
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("anonymous landing leaked authenticated shell markup %q", forbidden)
 		}
 	}
 }

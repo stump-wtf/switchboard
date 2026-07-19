@@ -1,0 +1,176 @@
+{{define "content"}}
+{{/* Public marketing landing (GET / when logged out). Full-bleed page in the charm-web design
+     language (ADR-0018): a Tron floor grid + top brand glow on the void/paper canvas, a hero, the
+     receive · verify · patch-through story, a "what's in the box" capability grid, a live board
+     preview, and a footer. Every colour, radius, and motion value is a --sb-* token so day/night
+     flips with the shared theme. The header reuses the app wordmark mark and the same
+     data-sb-theme-toggle control the shell carries, so sb-theme.js drives it unchanged. */}}
+<div class="sb-landing">
+  <div class="sb-landing__glow" aria-hidden="true"></div>
+
+  <header class="sb-landing__topbar">
+    <a class="sb-landing__brand" href="/" aria-label="Switchboard home">
+      <svg class="sb-mark" viewBox="0 0 28 28" fill="none" role="img" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+        <path d="M8 11 C 5.3 13.2, 6.1 16.4, 9.6 17.4" style="stroke: var(--sb-cyan)" stroke-width="2.3" stroke-linecap="round"/>
+        <circle cx="8" cy="8.4" r="2.7" style="stroke: var(--sb-accent-logo)" stroke-width="1.8"/>
+        <circle cx="9.8" cy="19.7" r="2.7" style="stroke: var(--sb-accent-logo)" stroke-width="1.8"/>
+        <circle cx="20.2" cy="9" r="2.7" style="stroke: var(--sb-accent-logo)" stroke-width="1.8"/>
+      </svg>
+      <span class="sb-wordmark">switchboard</span>
+    </a>
+    <div class="sb-landing__topbar-actions">
+      <button type="button" class="sb-theme-toggle" data-sb-theme-toggle aria-label="Switch between day and night theme"><span class="sb-theme-toggle__night" aria-hidden="true">☾ night</span><span class="sb-theme-toggle__day" aria-hidden="true">☀ day</span></button>
+      <a class="sb-btn sb-landing__cta" href="/login">open the board →</a>
+    </div>
+  </header>
+
+  <main class="sb-landing__main">
+    <section class="sb-landing__hero">
+      <span class="sb-landing__eyebrow">// MCP SERVER · DURABLE TODO QUEUE · LOCAL WEB UI</span>
+      <h1 class="sb-landing__title">many lines come in.<br>the operator <span class="sb-landing__grad">verifies</span> each caller,<br>and patches it through.</h1>
+      <p class="sb-landing__lead">switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human-vended MCP endpoints. one box: <span class="sb-landing__lead-strong">receive · verify · patch through.</span></p>
+      <div class="sb-landing__hero-actions">
+        <a class="sb-btn sb-landing__cta sb-landing__cta--lg" href="/login">open the operator board →</a>
+        <a class="sb-btn sb-btn--secondary sb-landing__cta--lg" href="https://joestump.github.io/switchboard/">read the docs</a>
+      </div>
+      <ul class="sb-landing__facts">
+        <li><span class="sb-landing__fact-dot" style="color: var(--sb-mint)">●</span> live over SSE</li>
+        <li>go · net/http · htmx</li>
+        <li>postgres-backed</li>
+        <li>A2A + MCP</li>
+      </ul>
+    </section>
+
+    <section class="sb-landing__section">
+      <div class="sb-landing__section-head">
+        <span class="sb-landing__kicker">// ONE BOX · THREE JOBS</span>
+        <span class="sb-landing__kicker-note">the name is the architecture — a manual exchange, patching lines through</span>
+      </div>
+      <div class="sb-landing__jobs">
+        <article class="sb-landing__job sb-landing__job--accent">
+          <div class="sb-landing__job-head">
+            <span class="sb-landing__job-num">01</span>
+            <span class="sb-landing__job-glyph">◆</span>
+            <span class="sb-landing__job-name">receive</span>
+          </div>
+          <p class="sb-landing__job-body">every inbound line, from any provider. push webhooks — github, stripe, slack, docker hub, generic — and pull queues like redis all normalize into one todo.</p>
+        </article>
+        <article class="sb-landing__job sb-landing__job--cyan">
+          <div class="sb-landing__job-head">
+            <span class="sb-landing__job-num">02</span>
+            <span class="sb-landing__job-glyph">✓</span>
+            <span class="sb-landing__job-name">verify</span>
+          </div>
+          <p class="sb-landing__job-body">each caller is checked at the boundary. every line carries an enforced trust mode — signed, token, open, or queue. nothing is patched through unverified.</p>
+        </article>
+        <article class="sb-landing__job sb-landing__job--mint">
+          <div class="sb-landing__job-head">
+            <span class="sb-landing__job-num">03</span>
+            <span class="sb-landing__job-glyph">→</span>
+            <span class="sb-landing__job-name">patch through</span>
+          </div>
+          <p class="sb-landing__job-body">the verified line becomes a durable todo. agents claim it under a lease over scoped, human-vended MCP endpoints — and complete it with an ack.</p>
+        </article>
+      </div>
+      <div class="sb-landing__trust">
+        <span class="sb-landing__trust-label">TRUST PER LINE</span>
+        <span class="sb-badge sb-badge--signed">● signed</span>
+        <span class="sb-badge sb-badge--token">● token</span>
+        <span class="sb-badge sb-badge--open">● open</span>
+        <span class="sb-badge sb-badge--queue">● queue</span>
+        <span class="sb-landing__trust-note">verified sources get the same badge across the api, mcp, and board</span>
+      </div>
+    </section>
+
+    <section class="sb-landing__section">
+      <div class="sb-landing__section-head">
+        <span class="sb-landing__kicker sb-landing__kicker--accent">// WHAT'S IN THE BOX</span>
+        <span class="sb-landing__kicker-note">one process: ingestion, a durable queue, and human-vended agent access</span>
+      </div>
+      <div class="sb-landing__cards">
+        <article class="sb-landing__card sb-landing__card--mint">
+          <span class="sb-landing__card-glyph" style="color: var(--sb-mint)">▤</span>
+          <span class="sb-landing__card-title">durable todo queue</span>
+          <p class="sb-landing__card-body">every event becomes a work-item with a lifecycle: claimed under a lease, completed with an ack, deduped by idempotency key. a crashed worker's todo re-surfaces — nothing is read-once and lost.</p>
+          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0007-todos-as-core-primitive">ADR-0007 →</a>
+        </article>
+        <article class="sb-landing__card sb-landing__card--accent">
+          <span class="sb-landing__card-glyph" style="color: var(--sb-accent)">⬡</span>
+          <span class="sb-landing__card-title">per-agent vended MCP</span>
+          <p class="sb-landing__card-body">humans are the accountable principals. each agent is vended a scoped MCP endpoint — queues plus a verb allowlist. the credential is stored hashed in postgres, short-lived and revocable. revoke = kill the endpoint.</p>
+          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0008-human-principal-vended-endpoints">ADR-0008 →</a>
+        </article>
+        <article class="sb-landing__card sb-landing__card--cyan">
+          <span class="sb-landing__card-glyph" style="color: var(--sb-cyan)">◈</span>
+          <span class="sb-landing__card-title">personas as A2A cards</span>
+          <p class="sb-landing__card-body">one agent, many least-privilege faces. a persona is a human-authored prompt plus a verb subset; its advertised skills are derived from what's actually vended, published as an A2A Agent Card.</p>
+          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0009-personas-as-scoped-agent-cards">ADR-0009 →</a>
+        </article>
+        <article class="sb-landing__card sb-landing__card--mint">
+          <span class="sb-landing__card-glyph" style="color: var(--sb-mint)">⇄</span>
+          <span class="sb-landing__card-title">human-approved friending</span>
+          <p class="sb-landing__card-body">agents discover peers over A2A and send a scoped friend request. approval lands as a todo in the target human's queue — and approving is the vend. per-direction, revocable, non-transitive.</p>
+          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0010-a2a-discovery-human-vended-friending">ADR-0010 →</a>
+        </article>
+        <article class="sb-landing__card sb-landing__card--gold">
+          <span class="sb-landing__card-glyph" style="color: var(--sb-gold)">◇</span>
+          <span class="sb-landing__card-title">channels push delivery</span>
+          <p class="sb-landing__card-body">when a harness is attached, switchboard pushes new todos straight into the session over the Claude Code Channels standard — a doorbell, not the ledger. offline? the durable queue holds the work until it's pulled.</p>
+          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0013-channels-push-delivery">ADR-0013 →</a>
+        </article>
+        <article class="sb-landing__card sb-landing__card--lilac">
+          <span class="sb-landing__card-glyph" style="color: var(--sb-lilac)">↘</span>
+          <span class="sb-landing__card-title">push &amp; pull ingestion</span>
+          <p class="sb-landing__card-body">push webhooks and pull queue adapters normalize into the same todo, each with an enforced trust mode. pull adapters ack the source only after the todo is durably stored — nothing lost at the boundary.</p>
+          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0014-ingestion-adapters-push-pull">ADR-0014 →</a>
+        </article>
+      </div>
+    </section>
+
+    <section class="sb-landing__section">
+      <div class="sb-landing__board-head">
+        <div class="sb-landing__board-head-text">
+          <span class="sb-landing__kicker sb-landing__kicker--accent">// THE OPERATOR BOARD · LIVE</span>
+          <span class="sb-landing__board-title">watch every line, live.</span>
+          <span class="sb-landing__board-sub">five views — board, todos, endpoints, personas, friends — updating over server-sent events, wearing the same trust badges the api and mcp surfaces carry.</span>
+        </div>
+        <a class="sb-landing__board-link" href="/login">open the board ↗</a>
+      </div>
+
+      <figure class="sb-landing__shot">
+        <div class="sb-landing__shot-chrome">
+          <span class="sb-landing__shot-dot" style="background:#FF5F57"></span>
+          <span class="sb-landing__shot-dot" style="background:#FEBC2E"></span>
+          <span class="sb-landing__shot-dot" style="background:#28C840"></span>
+          <span class="sb-landing__shot-url">switchboard.stump.wtf</span>
+        </div>
+        <img class="sb-landing__shot-img" src="/static/img/board-preview.png" width="3244" height="2012" loading="lazy" decoding="async" alt="The Switchboard operator board: a three-lane patch panel — received, verified, patched through — with trust badges and live throughput tiles.">
+      </figure>
+    </section>
+
+    <section class="sb-landing__closer">
+      <span class="sb-landing__kicker sb-landing__kicker--accent">// ONE BOX</span>
+      <div class="sb-landing__closer-title">receive · verify · patch through.</div>
+      <p class="sb-landing__closer-body">the canonical, SDD-governed design record — architecture decision records and OpenSpec capability specs. the app is built from the documents.</p>
+      <div class="sb-landing__hero-actions">
+        <a class="sb-btn sb-landing__cta sb-landing__cta--lg" href="/login">open the operator board →</a>
+        <a class="sb-btn sb-btn--secondary sb-landing__cta--lg" href="https://joestump.github.io/switchboard/">read the design record</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="sb-landing__footer">
+    <div class="sb-landing__footer-brand">
+      <svg class="sb-mark" viewBox="0 0 28 28" fill="none" role="img" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+        <path d="M8 11 C 5.3 13.2, 6.1 16.4, 9.6 17.4" style="stroke: var(--sb-cyan)" stroke-width="2.3" stroke-linecap="round"/>
+        <circle cx="8" cy="8.4" r="2.7" style="stroke: var(--sb-accent-logo)" stroke-width="1.8"/>
+        <circle cx="9.8" cy="19.7" r="2.7" style="stroke: var(--sb-accent-logo)" stroke-width="1.8"/>
+        <circle cx="20.2" cy="9" r="2.7" style="stroke: var(--sb-accent-logo)" stroke-width="1.8"/>
+      </svg>
+      <span class="sb-wordmark">switchboard</span>
+      <span class="sb-landing__footer-tag">many lines come in; the operator patches each through.</span>
+    </div>
+    <div class="sb-landing__footer-legal">© 2026 Joe Stump · MIT</div>
+  </footer>
+</div>
+{{end}}
