@@ -31,8 +31,9 @@ import (
 // wrappers can be integration-tested without Postgres. failErr, when set, makes every todo
 // operation fail with it (the injected-DB-failure path).
 type fakeStore struct {
-	byHash  map[string]store.AuthEndpoint
-	touches atomic.Int64
+	byHash      map[string]store.AuthEndpoint // static sbk_ bearers, by credential hash
+	byOAuthHash map[string]store.AuthEndpoint // OAuth access tokens, by token hash (SPEC-0016)
+	touches     atomic.Int64
 
 	mu             sync.Mutex
 	todos          map[string]store.Todo
@@ -47,6 +48,7 @@ type fakeStore struct {
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		byHash:         map[string]store.AuthEndpoint{},
+		byOAuthHash:    map[string]store.AuthEndpoint{},
 		todos:          map[string]store.Todo{},
 		events:         map[int64]store.EventHistoryDetail{},
 		webhooks:       map[string]store.Webhook{},
@@ -68,6 +70,17 @@ func (f *fakeStore) SettingString(_ context.Context, key, def string) (string, e
 
 func (f *fakeStore) EndpointByCredHash(_ context.Context, hash string) (store.AuthEndpoint, error) {
 	ep, ok := f.byHash[hash]
+	if !ok {
+		return store.AuthEndpoint{}, store.ErrNotFound
+	}
+	return ep, nil
+}
+
+// EndpointByOAuthToken mirrors store.Store.EndpointByOAuthToken: a live OAuth access token
+// resolves to the same AuthEndpoint shape a static bearer does; unknown, revoked, and expired
+// tokens are uniformly ErrNotFound (SPEC-0016 REQ "Resource-Server Token Validation").
+func (f *fakeStore) EndpointByOAuthToken(_ context.Context, hash string) (store.AuthEndpoint, error) {
+	ep, ok := f.byOAuthHash[hash]
 	if !ok {
 		return store.AuthEndpoint{}, store.ErrNotFound
 	}

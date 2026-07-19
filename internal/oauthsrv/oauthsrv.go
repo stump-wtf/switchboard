@@ -9,9 +9,9 @@
 // authorization server MCP clients flow INTO. Different trust directions, different failure modes
 // (design.md "New sibling package, not an extension of internal/auth").
 //
-// The authorize + token endpoints (consent, PKCE exchange, refresh) land in follow-on stories;
-// this package already advertises their URLs in the AS metadata because the document is the
-// discovery contract clients hold onto across the whole flow.
+// The full flow lives here now: authorize-request plumbing (authorize.go — the consent screen
+// itself renders in internal/web behind the human session) and the token endpoint (token.go —
+// code + PKCE exchange and rotating refresh, SPEC-0016 REQ "Token Issuance And Refresh").
 package oauthsrv
 
 import (
@@ -43,9 +43,8 @@ const (
 	ProtectedResourcePrefix = "/.well-known/oauth-protected-resource"
 	// RegisterPath accepts RFC 7591 dynamic client registrations.
 	RegisterPath = "/oauth/register"
-	// AuthorizePath and TokenPath are advertised in the AS metadata; their handlers land with the
-	// consent and token-exchange stories (SPEC-0016 REQ "Authorization Code Flow With Consent",
-	// REQ "Token Issuance And Refresh").
+	// AuthorizePath is served by internal/web (the consent screen sits behind the human session);
+	// TokenPath is served by Handler.Token (token.go). Both are advertised in the AS metadata.
 	AuthorizePath = "/oauth/authorize"
 	TokenPath     = "/oauth/token"
 )
@@ -65,18 +64,27 @@ type ClientStore interface {
 	CreateOAuthClient(ctx context.Context, clientID, name string, redirectURIs []string) (store.OAuthClient, error)
 }
 
-// Handler serves the discovery metadata documents and dynamic client registration.
+// Store is everything the AS surface needs from the store: client registration (this file) plus
+// code redemption and token issuance/rotation (token.go). *store.Store satisfies it.
+type Store interface {
+	ClientStore
+	TokenStore
+}
+
+// Handler serves the discovery metadata documents, dynamic client registration, and the token
+// endpoint.
 type Handler struct {
-	store ClientStore
-	base  string // externally-reachable origin (cfg.BaseURL), no trailing slash; the RFC 8414 issuer
-	log   *slog.Logger
+	store  ClientStore
+	tokens TokenStore
+	base   string // externally-reachable origin (cfg.BaseURL), no trailing slash; the RFC 8414 issuer
+	log    *slog.Logger
 }
 
 // New builds the AS surface over the deployed base URL. base is cfg.BaseURL — the issuer identity
 // every metadata URL derives from, so the documents are consistent with the deployment by
 // construction (SPEC-0016 REQ "Authorization Server Metadata").
-func New(st ClientStore, base string, log *slog.Logger) *Handler {
-	return &Handler{store: st, base: strings.TrimRight(base, "/"), log: log}
+func New(st Store, base string, log *slog.Logger) *Handler {
+	return &Handler{store: st, tokens: st, base: strings.TrimRight(base, "/"), log: log}
 }
 
 // ResourceMetadataURL is the absolute URL of the RFC 9728 protected-resource metadata for the MCP

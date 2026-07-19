@@ -308,6 +308,11 @@ func newRouter(d routerDeps) chi.Router {
 		or.Get(oauthsrv.ASMetadataPath, d.oauth.ASMetadata)
 		or.Get(oauthsrv.ProtectedResourcePrefix+"/mcp/{endpoint}", d.oauth.ProtectedResourceMetadata)
 		or.With(maxBytes(64<<10)).Post(oauthsrv.RegisterPath, d.oauth.Register)
+		// The token endpoint (SPEC-0016 REQ "Token Issuance And Refresh") is public like the rest of
+		// the AS surface: clients are public (no client secret), so the proof is PKCE possession on
+		// the code grant and the rotating refresh token on the refresh grant — never a session. Same
+		// per-IP throttle, same 64 KiB bound (a token request is a handful of short form fields).
+		or.With(maxBytes(64<<10)).Post(oauthsrv.TokenPath, d.oauth.Token)
 	})
 
 	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, per-endpoint

@@ -336,9 +336,19 @@ func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]E
 }
 
 // RevokeEndpoint marks an endpoint revoked, but only if it belongs to the given human (via its agent).
-// Revoke = invalidate credential + unroute; instant and total (ADR-0008).
+// Revoke = invalidate credential + unroute; instant and total (ADR-0008). The OAuth cascade runs in
+// the SAME transaction: every token minted onto the endpoint is revoked and every unspent code is
+// force-expired, so the one act atomically kills the static bearer, the OAuth credentials, and (via
+// the caller's endpointRevoked hook) the live MCP sessions. Governing: SPEC-0016 REQ "Revocation
+// Cascade" ("endpoint revoke atomically kills tokens, codes, sessions, and the endpoint").
 func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID string) error {
-	ct, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: revoke endpoint begin: %w", err)
+	}
+	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+
+	ct, err := tx.Exec(ctx, `
 		UPDATE endpoints SET state = 'revoked', revoked_at = now()
 		WHERE id = $1 AND state = 'active'
 		  AND agent_id IN (SELECT id FROM agents WHERE owner_human_id = $2)`,
@@ -348,6 +358,12 @@ func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID str
 	}
 	if ct.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	if err := revokeEndpointOAuth(ctx, tx, []string{endpointID}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: revoke endpoint commit: %w", err)
 	}
 	return nil
 }
@@ -402,26 +418,45 @@ func (s *Store) EndpointByCredHash(ctx context.Context, credHash string) (AuthEn
 // (server reaper → CloseEndpointSessions), exactly like a web-UI revoke. Expiry deliberately
 // REUSES the SPEC-0007 revocation lifecycle rather than inventing an "expired" state: credentials
 // are already dead at auth (EndpointByCredHash), the card dims like any killed endpoint, and a
-// second call returns nothing (the rows are no longer active). Governing: SPEC-0016 REQ
-// "Credential Lifetime", SPEC-0007 REQ "Instant, Total Revocation", ADR-0019.
+// second call returns nothing (the rows are no longer active). The OAuth cascade rides the same
+// transaction — an expired endpoint's tokens and codes die with it, exactly as a revoke's do —
+// so expiry and revocation stay ONE lifecycle from every credential's point of view. Governing:
+// SPEC-0016 REQ "Credential Lifetime", REQ "Revocation Cascade", SPEC-0007 REQ "Instant, Total
+// Revocation", ADR-0019.
 func (s *Store) ExpireEndpoints(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: expire endpoints begin: %w", err)
+	}
+	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+
+	rows, err := tx.Query(ctx, `
 		UPDATE endpoints SET state = 'revoked', revoked_at = now()
 		WHERE state = 'active' AND expires_at IS NOT NULL AND expires_at <= now()
 		RETURNING id::text`)
 	if err != nil {
 		return nil, fmt.Errorf("store: expire endpoints: %w", err)
 	}
-	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("store: scan expired endpoint: %w", err)
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: expire endpoints rows: %w", err)
+	}
+	if err := revokeEndpointOAuth(ctx, tx, ids); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: expire endpoints commit: %w", err)
+	}
+	return ids, nil
 }
 
 // EndpointOwner resolves the human who owns an endpoint (endpoint → agent → owner_human_id).

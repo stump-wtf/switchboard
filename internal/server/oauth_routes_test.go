@@ -69,6 +69,29 @@ func TestASMetadataServedAndConsistent(t *testing.T) {
 	}
 }
 
+// TestTokenEndpointServed: the advertised token endpoint resolves on the production router — a
+// grantless POST draws the RFC 6749 §5.2 error document (unsupported_grant_type) with
+// Cache-Control: no-store, not a 404 — without touching the store. Handler-level grant conformance
+// lives in internal/oauthsrv/token_test.go. Governing: SPEC-0016 REQ "Token Issuance And Refresh",
+// REQ "Authorization Server Metadata" (every advertised URL resolves here).
+func TestTokenEndpointServed(t *testing.T) {
+	r := newTestRouter(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, oauthsrv.TokenPath, strings.NewReader("grant_type=password"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST %s: got %d, want 400 — the advertised token endpoint must resolve here", oauthsrv.TokenPath, rec.Code)
+	}
+	var errDoc map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errDoc); err != nil || errDoc["error"] != "unsupported_grant_type" {
+		t.Fatalf("token error document = %.200s (parse err %v)", rec.Body.String(), err)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
 // TestProtectedResourceMetadataServed: the RFC 9728 document for an MCP mount is served at the
 // path-insertion well-known URL and names the mount + AS on the deployed base. Governing:
 // SPEC-0016 REQ "Protected Resource Metadata".
