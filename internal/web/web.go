@@ -1,4 +1,4 @@
-// Package web is the human-facing UI (ADR-0016: the "Operator" design language over html/template):
+// Package web is the human-facing UI (ADR-0018: the charm-web design language over html/template):
 // the Board landing view, agent registration, and vend/revoke of scoped MCP endpoints. Handlers
 // marked "requires human" read the authenticated principal from context (the server wraps them in
 // auth.RequireHuman).
@@ -28,13 +28,14 @@ import (
 	"github.com/joestump/switchboard/internal/store"
 )
 
-//go:embed templates/*.html
+//go:embed templates/*.html templates/fragments/*.html
 var tmplFS embed.FS
 
-// pageNames are the page templates composed with layout.html and the shared fragments. Startup
-// parses every one of them.
-// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
-var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "personas", "friends"}
+// pageNames are the page templates composed with layout.html and the per-view fragment files.
+// Startup parses every one of them.
+// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
+// "Application Shell And Navigation" (providers joins the IA).
+var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "providers", "authorize", "connect"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -46,13 +47,14 @@ type Handler struct {
 	cfg   config.Config
 	log   *slog.Logger
 	pages map[string]*template.Template
-	frags *template.Template // shared live fragments (templates/fragments.html), standalone-renderable
+	frags *template.Template // per-view live fragments (templates/fragments/*.html), standalone-renderable
 
-	// personasEnabled gates the SPEC-0013 Personas view AND the persona chip on endpoint cards +
-	// the persona field in the vend modal. The server sets it by feature detection (personas store +
-	// well-known Agent Card route both wired); while false the Personas rail entry is hidden, every
-	// /personas route 404s, and the Endpoints surface renders no persona slot. Governing: SPEC-0013
-	// REQ "Personas View" (capability-gated), REQ "Endpoints View and Vend Modal".
+	// personasEnabled gates the Personas view AND the persona chip on endpoint cards + the persona
+	// select on the vend wizard's persona step. The server sets it by feature detection (personas
+	// store + well-known Agent Card route both wired); while false the Personas rail entry is
+	// hidden, every /personas route 404s, and the Endpoints surface renders no persona slot.
+	// Governing: SPEC-0013 REQ "Personas View" (capability-gated), SPEC-0015 REQ "Endpoints View
+	// And Vend Wizard".
 	personasEnabled bool
 
 	// SSE plumbing (SPEC-0012 "Live Updates via SSE"). sseRetryMS and keepAlive are fields so
@@ -65,6 +67,11 @@ type Handler struct {
 	// publish so template-only construction never spins a worker.
 	liveOnce sync.Once
 	liveCh   chan func(context.Context)
+
+	// wizards holds the server-side step state for every full-page wizard (SPEC-0015 REQ "Wizard
+	// Interaction Pattern"; wizard.go). One table serves all wizards — entries are keyed by opaque
+	// per-flow cookie tokens.
+	wizards *wizardStates
 
 	// endpointRevoked, when set, observes successful endpoint revocations (endpoint id). The
 	// server wires it to the MCP mount so revoking an endpoint also closes its live notification
@@ -90,25 +97,28 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 		return nil, err
 	}
 	h := &Handler{store: st, cfg: cfg, log: log, pages: pages, frags: frags,
-		events: newEventHub(), keepAlive: defaultKeepAlive}
+		events: newEventHub(), keepAlive: defaultKeepAlive,
+		wizards: newWizardStates(wizardTTL)}
 	h.sseRetryMS = h.sseRetrySetting
 	return h, nil
 }
 
 // templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "stagemod": stageMod, "join": joinScope}
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown}
 }
 
-// parsePages composes layout.html and fragments.html with each page template from fsys
-// (pages reuse the shared feed rows, tiles, and pills). Split from New so tests can prove that a
-// broken or missing template surfaces a startup-failing error.
-// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates".
+// parsePages composes layout.html and the per-view fragment files (templates/fragments/*.html)
+// with each page template from fsys (pages reuse the shared feed rows, tiles, and pills). The
+// fragments are one file per view so a todos fragment change never touches a board or friends
+// template file (SPEC-0015 REQ "Live Fragment Architecture"). Split from New so tests can prove
+// that a broken or missing template surfaces a startup-failing error.
+// Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", ADR-0018.
 func parsePages(fsys fs.FS) (map[string]*template.Template, error) {
 	pages := make(map[string]*template.Template, len(pageNames))
 	for _, p := range pageNames {
 		t, err := template.New(p).Funcs(templateFuncs()).ParseFS(fsys,
-			"templates/layout.html", "templates/fragments.html", "templates/"+p+".html")
+			"templates/layout.html", "templates/fragments/*.html", "templates/"+p+".html")
 		if err != nil {
 			return nil, fmt.Errorf("parse templates for %q: %w", p, err)
 		}
@@ -117,10 +127,10 @@ func parsePages(fsys fs.FS) (map[string]*template.Template, error) {
 	return pages, nil
 }
 
-// parseFrags parses fragments.html once standalone for the SSE publisher (live.go renders
-// fragments with no page around them). Like parsePages, a parse failure fails startup.
+// parseFrags parses the per-view fragment files once standalone for the SSE publisher (live.go
+// renders fragments with no page around them). Like parsePages, a parse failure fails startup.
 func parseFrags(fsys fs.FS) (*template.Template, error) {
-	frags, err := template.New("fragments").Funcs(templateFuncs()).ParseFS(fsys, "templates/fragments.html")
+	frags, err := template.New("fragments").Funcs(templateFuncs()).ParseFS(fsys, "templates/fragments/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse fragment templates: %w", err)
 	}
@@ -143,19 +153,11 @@ func dict(pairs ...any) (map[string]any, error) {
 	return m, nil
 }
 
-// stageMod maps a todo state onto the feed row's stage class modifier ("" = still verifying).
-func stageMod(state string) string {
-	if state == "" {
-		return "verifying"
-	}
-	return state
-}
-
-// shell carries the layout-shell state every authenticated view renders: the active rail entry,
+// shell carries the layout-shell state every authenticated view renders: the active nav entry,
 // live counts, database connectivity, and the avatar initials.
-// Governing: SPEC-0013 REQ "Information Architecture and Navigation".
+// Governing: SPEC-0015 REQ "Application Shell And Navigation" (six-view IA).
 type shell struct {
-	Active          string // board | todos | endpoints | personas | friends — marks aria-current on the rail
+	Active          string // board | todos | endpoints | personas | friends | providers — marks aria-current on the nav
 	TodoCount       int    // total todos (every state), shown beside the Todos rail entry (design record, #179)
 	LiveRate        int    // events/min for the LIVE pill (hidden when zero)
 	DBConnected     bool   // pool ping result — the rail footer indicator
@@ -167,38 +169,59 @@ type shell struct {
 
 type view struct {
 	Title          string
+	Landing        bool // public marketing landing (GET / when logged out): render the full-bleed home template, not the app shell
 	Human          *store.Human
 	CSRF           string
 	Shell          shell
 	OIDCConfigured bool
 	DevLogin       bool
 	Tiles          tilesView        // Board stat band (stats + activity bars)
-	Rows           []feedRow        // Board incoming-lines feed
+	Lanes          lanesView        // Board three-lane patch panel (SPEC-0015)
 	Counts         store.TodoCounts // Todos view filter-pill counts
 	TodoItems      []todoRow        // Todos view table rows
 	Filter         string           // active Todos filter pill (all|pending|claimed|done|failed)
 	Query          string           // Todos search text
 	Drawer         *drawerView      // standalone todo detail page (drawer fallback)
 
-	// Endpoints view (SPEC-0013 REQ "Endpoints View and Vend Modal").
-	EndpointCards      []endpointCard      // the vended-endpoint cards
-	PersonasEnabled    bool                // gates the persona chip on cards + the persona field in the modal
-	VendPersonaOptions []vendPersonaOption // the vend-modal persona select choices (the human's personas)
-	VerbOptions        []vendVerbOption    // the vend-modal verb toggle chips (the agent-tools surface)
-	QueueOptions       []string            // the vend-modal queue toggle chips (queues known to the store)
-	VendOpen           bool                // no-JS fallback: render the vend form inline in the page
-	Reveal             *revealView         // set on a no-JS vend to render the one-time credential reveal inline
+	// Endpoints view + vend wizard (SPEC-0015 REQ "Endpoints View And Vend Wizard").
+	EndpointCards   []endpointCard     // the vended-endpoint cards
+	PersonasEnabled bool               // gates the persona chip on cards + the wizard's persona step select
+	Reveal          *revealView        // set on a successful vend to render the one-time credential reveal inline
+	Vend            *vendStepView      // the active vend-wizard step page (templates/vend.html)
+	RevokeConfirm   *revokeConfirmView // the revoke confirm page (templates/revoke.html)
 
-	// Personas view (SPEC-0013 REQ "Personas View"): cards + create/edit modals.
-	Personas *personasView
+	// Personas view + wizard (SPEC-0015 REQ "Personas View And Wizard"): cards, and the active
+	// create/edit wizard step page (templates/personawiz.html) with its live A2A card preview.
+	Personas   *personasView
+	PersonaWiz *personaWizStepView
 
-	// Friends view (SPEC-0013 REQ "Friends View").
-	FriendGroups []friendGroup // grouped-ledger sections (Incoming/Outgoing/Active/Blocked)
-	FriendCards  []friendCard  // flat card list (the cards layout renders this)
-	FriendCounts friendCounts  // filter-pill counts
-	FriendLayout string        // active layout: cards | ledger
-	FriendFilter string        // active filter pill: all | incoming | outgoing | active | blocked
-	Agents       []store.Agent // the add-friend modal's local-agent picker (the human's own agents)
+	// Providers view (SPEC-0017 REQ "Providers View"/"Provider Catalog"/"Provider Lifecycle").
+	Providers *providersPanelView // families + catalog panel
+	// ProviderReveal renders the post-rotate one-time secret reveal inline on the page (no-JS
+	// fallback, mirroring the vend flow's Reveal); the HTMX path gets the modal fragment instead.
+	ProviderReveal *providerRevealView
+	// ProviderConfirm renders the lifecycle confirmation inline on the page (no-JS fallback for
+	// the overlay confirmation modal).
+	ProviderConfirm *providerConfirmView
+	// Connect wizard (SPEC-0017 REQ "Connect Provider Wizard"; templates/connect.html): the active
+	// step page, or the completion page with the copyable URL + one-time token reveal.
+	Connect     *connectStepView
+	ConnectDone *connectDoneView
+
+	// OAuth consent screen (SPEC-0016 REQ "Authorization Code Flow With Consent"): the
+	// "authorize access" surface (templates/authorize.html) or its dead-end error state.
+	Authorize *authorizeView
+
+	// Friends view + approval flow (SPEC-0015 REQ "Friends View And Approval Flow").
+	FriendGroups []friendGroup // ordered sections: pending-in-your-queue / awaiting-them / established / blocked
+	FriendCounts friendCounts  // per-group counts (the rail badge reads Incoming)
+	// FriendVended renders the post-approval vended result inline on the Friends page — the minted
+	// endpoint's identity and scope, surfaced explicitly (never only a toast).
+	FriendVended *friendVendedView
+	// FriendApprove feeds the approve confirm page (approving IS the vend; templates/friend_approve.html).
+	FriendApprove *friendApproveView
+	// FriendRevoke feeds the friend revoke confirm page (templates/friend_revoke.html).
+	FriendRevoke *friendRevokeView
 }
 
 // buildShell computes the layout-shell state. Store errors are logged and rendered as the
@@ -242,30 +265,71 @@ func (h *Handler) buildShell(ctx context.Context, active string, human *store.Hu
 	return sh, stats
 }
 
+// Root serves GET / for everyone: an authenticated operator gets the Board (the working surface),
+// a logged-out visitor gets the public marketing Home page instead of a bare bounce to /login. The
+// route is mounted under auth.LoadHuman (injects the human when a live session is present, never
+// redirects), so the auth boundary is unchanged — every DATA route stays behind RequireHuman; only
+// the pre-auth face of / becomes a landing page rather than a redirect.
+// Governing: SPEC-0012 REQ "Screen Set and Routes" (GET / renders the Board for a human),
+// SPEC-0015 REQ "Application Shell And Navigation".
+func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
+	if _, ok := auth.FromContext(r.Context()); ok {
+		h.Board(w, r)
+		return
+	}
+	h.Home(w, r)
+}
+
+// Home renders the public marketing landing page (receive · verify · patch through) with the app's
+// own charm-web design language and day/night theme. It reads nothing from the store — it is a
+// static, unauthenticated surface — and renders the full-bleed home template (its own header/footer),
+// not the operator shell. Governing: ADR-0018 (charm-web design language).
+func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
+	h.render(w, "home", view{Landing: true, Title: "switchboard — receive · verify · patch through"})
+}
+
 // Login renders the public login page.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "login", view{Title: "Log in", OIDCConfigured: h.cfg.OIDCConfigured(), DevLogin: h.cfg.DevLogin})
 }
 
 // Board renders the landing view: trust legend, stat tiles (throughput + activity bars), and the
-// incoming-lines feed with lifecycle stages, all server-rendered from the database — the same
-// fragments the SSE stream then keeps live, so reload always renders authoritative state.
-// Requires human. Governing: SPEC-0013 REQ "Board View — Live Incoming Lines".
+// three-lane patch panel, all server-rendered from the database — the same fragments the SSE
+// stream then keeps live, so reload always renders authoritative state. The received lane renders
+// EMPTY here by design: its cards are ephemeral in-flight deliveries (SSE-only, never persisted),
+// so a quiet reload is truthful. Verified holds durable unclaimed todos; patched through holds
+// claimed and beyond. Requires human. Governing: SPEC-0015 REQ "Patch Panel Board".
 func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	sh, stats := h.buildShell(r.Context(), "board", &human)
-	var rows []feedRow
+	var lanes lanesView
 	var bars []bar
 	if sh.DBConnected {
-		events, err := h.store.RecentEvents(r.Context(), feedCap)
+		// One durable-queue read partitions into the two persisted lanes, newest first, capped per
+		// lane. Errors are suppressed to a log so the Board still renders its shell; the lanes show
+		// their empty states.
+		items, err := h.store.ListTodoItems(r.Context(), "", "", boardLaneQuery)
 		if err != nil {
-			// Suppressed to a log so the Board still renders its shell (with whatever tiles
-			// resolved); the feed shows its empty state.
-			h.log.Warn("board recent events", "err", err)
+			h.log.Warn("board lane todos", "err", err)
 		}
-		for _, e := range events {
-			rows = append(rows, h.feedRowFromEvent(r.Context(), e, false))
+		for _, it := range items {
+			card := h.laneCardFromItem(r.Context(), it)
+			switch card.Lane {
+			case laneVerified:
+				if len(lanes.Verified) < laneCap {
+					lanes.Verified = append(lanes.Verified, card)
+				}
+			case lanePatched:
+				if len(lanes.Patched) < laneCap {
+					lanes.Patched = append(lanes.Patched, card)
+				}
+			}
 		}
+		counts, err := h.store.TodoCounts(r.Context())
+		if err != nil {
+			h.log.Warn("board lane counts", "err", err)
+		}
+		lanes.Counts = laneCountsFrom(counts)
 		buckets, err := h.store.EventBuckets(r.Context(), activityBuckets)
 		if err != nil {
 			h.log.Warn("board event buckets", "err", err)
@@ -274,21 +338,26 @@ func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 	}
 	h.render(w, "board", view{
 		Title: "The Board", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
-		Shell: sh, Tiles: tilesView{Stats: stats, Bars: bars}, Rows: rows,
+		Shell: sh, Tiles: tilesView{Stats: stats, Bars: bars}, Lanes: lanes,
 	})
 }
 
-// ClaimTodo claims a pending todo under a lease as the operator (the feed row's Claim action).
-// Responds with the refreshed feed-row fragment for the HTMX outerHTML swap; the SSE
-// todo_claimed frame updates every other open view. Requires human (session + CSRF via the
-// layout's hx-headers). Governing: SPEC-0013 endpoints table POST /todos/{id}/claim, SPEC-0003
-// claim-under-lease semantics (the UI implements no lifecycle rules of its own).
+// boardLaneQuery is how many todos the Board reads to fill its two persisted lanes (each capped at
+// laneCap after partitioning by state).
+const boardLaneQuery = 60
+
+// ClaimTodo claims a pending todo under a lease as the operator (the lane card's Claim action).
+// The Board's Claim posts with hx-swap="none" and receives the OOB lane movement (verified →
+// patched through) directly, so the card crosses even if the SSE todo_claimed frame is dropped;
+// the SSE frame updates every other open view. Requires human (session + CSRF via the layout's
+// hx-headers). Governing: SPEC-0015 REQ "Patch Panel Board", SPEC-0003 claim-under-lease semantics
+// (the UI implements no lifecycle rules of its own).
 func (h *Handler) ClaimTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	t, err := h.store.ClaimTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
-	// respondTodoAction picks the fragment by HTMX target: the Board feed's Claim (default) still gets
-	// a feed_row, while the Todos table and drawer get their own refreshed fragments. On a lost race
-	// the SSE stage update tells the operator who won; no internal detail leaks (SPEC-0013).
+	// respondTodoAction picks the fragment by HTMX target: the Board card's Claim (default) gets
+	// the OOB lane movement, while the Todos table and drawer get their own refreshed fragments.
+	// On a lost race the SSE stage update tells the operator who won; no internal detail leaks.
 	h.respondTodoAction(w, r, "ClaimTodo", t, err)
 }
 
@@ -302,8 +371,10 @@ func (h *Handler) AgentsRedirect(w http.ResponseWriter, r *http.Request) {
 }
 
 // Revoke revokes (kills) an endpoint the human owns. Revoke is instant and total (ADR-0008); the
-// scope is immutable, so changing access means revoke + re-vend. Requires human.
-// Governing: SPEC-0013 REQ "Endpoints View and Vend Modal", SPEC-0007 REQ "Revocation Is Total".
+// scope is immutable, so changing access means revoke + re-vend. The kill POST is reached only
+// from the full-page confirm (RevokeConfirm, endpoints.go) per the SPEC-0015 wizard pattern.
+// Requires human. Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard", SPEC-0007 REQ
+// "Instant, Total Revocation".
 func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	id := chi.URLParam(r, "id")
@@ -370,6 +441,13 @@ func (h *Handler) safeRedirectTarget(r *http.Request, fallback string) string {
 }
 
 func (h *Handler) render(w http.ResponseWriter, page string, v view) {
+	h.renderStatus(w, http.StatusOK, page, v)
+}
+
+// renderStatus renders a page with an explicit response status — wizard steps re-render themselves
+// with 400 on a validation failure (SPEC-0015: a failed step is re-shown with the entered values,
+// never a dead-end error page).
+func (h *Handler) renderStatus(w http.ResponseWriter, status int, page string, v view) {
 	var buf bytes.Buffer
 	if err := h.pages[page].ExecuteTemplate(&buf, "layout", v); err != nil {
 		h.log.Error("render", "page", page, "err", err)
@@ -377,6 +455,7 @@ func (h *Handler) render(w http.ResponseWriter, page string, v view) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	_, _ = buf.WriteTo(w)
 }
 
@@ -435,6 +514,27 @@ func upperFirst(s string) string {
 	return ""
 }
 
+// countdown renders the compact time-remaining chip for an endpoint card's expiry ("5d", "3h",
+// "12m", "<1m", "expired"). The server-rendered value is authoritative at page render; the card
+// also stamps data-sb-expires-at so client hydration can tick it live without a reload.
+// Governing: SPEC-0016 REQ "Credential Lifetime" (the endpoints view shows the countdown).
+func countdown(t time.Time) string {
+	d := time.Until(t)
+	switch {
+	case d <= 0:
+		return "expired"
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		// Round half-up per displayed unit so "vended for 30m" reads 30m, not 29m.
+		return fmt.Sprintf("%dm", int(d.Round(time.Minute)/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Round(time.Hour)/time.Hour))
+	default:
+		return fmt.Sprintf("%dd", int((d+12*time.Hour)/(24*time.Hour)))
+	}
+}
+
 // relTime renders a compact relative age for feed rows ("just now", "5m ago", "3h ago", "2d ago").
 func relTime(t time.Time) string {
 	d := time.Since(t)
@@ -490,6 +590,20 @@ func buildMCPJSON(baseURL, slug, token string) string {
 		"type":    "http",
 		"url":     mcpURL,
 		"headers": map[string]string{"Authorization": "Bearer " + token},
+	}}}
+	b, _ := json.MarshalIndent(m, "", "  ")
+	return string(b)
+}
+
+// buildMCPJSONURLOnly renders the URL-only .mcp.json variant the reveal offers for OAuth-capable
+// clients: same Streamable-HTTP endpoint, no embedded credential — the client discovers the
+// authorization server from the endpoint's RFC 9728 metadata and signs the human in through the
+// OAuth flow instead of carrying a static bearer. Governing: SPEC-0015 REQ "Endpoints View And
+// Vend Wizard" (URL-only variant), SPEC-0016 (protected-resource discovery), ADR-0019.
+func buildMCPJSONURLOnly(baseURL, slug string) string {
+	m := map[string]any{"mcpServers": map[string]any{"switchboard": map[string]any{
+		"type": "http",
+		"url":  mcpEndpointURL(baseURL, slug),
 	}}}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	return string(b)

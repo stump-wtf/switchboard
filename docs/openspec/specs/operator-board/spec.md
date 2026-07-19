@@ -1,5 +1,5 @@
 ---
-status: implemented
+status: deprecated
 date: 2026-07-10
 implements: [ADR-0016, ADR-0001]
 requires: [SPEC-0003, SPEC-0007, SPEC-0012]

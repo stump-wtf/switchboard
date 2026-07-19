@@ -1,53 +1,52 @@
----
-title: Overview
----
+# Charm-Web Design Exploration — Overview
 
-# Design · Overview
+**Canonical design reference for the switchboard UI.**
+Governing: [ADR-0018](../adrs/ADR-0018-charm-web-design-language.md) (charm-web design language),
+[SPEC-0015](../openspec/specs/operator-board-v2/spec.md) (Operator Board v2).
+Supersedes the Operator/brass "hero journey" package that previously lived in this directory
+(ADR-0016, retired).
 
-Switchboard's visual identity is the **"Operator" design language** — brass & bakelite,
-switchboard-era telephony — adopted in
-[ADR-0016](../adrs/ADR-0016-operator-design-language.md) and realized by the operator board
-([SPEC-0013](../openspec/specs/operator-board/spec.md)). It originates from the high-fidelity
-Claude Design *hero journey* package, which explored two directions and built the chosen one out
-into a complete five-view application.
+## What this is
 
-## Where the language came from
+The 2026-07 redesign rebuilt the operator board in a **charm-web** dialect — a browser-native
+re-expression of the Charm/Bubbletea TUI visual language:
 
-The design package (`Switchboard hero journey design.zip`) contains two canvases:
+- **Monospace-first typography** — JetBrains Mono is the workhorse (body/UI/code), Space Mono the
+  chunky display voice (wordmark, view titles). No non-mono families anywhere.
+- **Two complete themes** — **day** (lavender paper, the same brand hues deepened for contrast) and
+  **night** (blue-black void, ANSI neon, Tron grid). Day is the default; night follows
+  `prefers-color-scheme` and the `<html data-theme>` override.
+- **Keyboard-first interaction** — a global keymap (`g` go-to-view, `/` filter, `t` theme) rendered
+  as a terminal-style key-hint footer on every view.
+- **Full-page wizards** — create/vend/connect flows become multi-step pages with server-side step
+  state, replacing overlay modals.
+- **Cell-honest components** — flat square chips for trust/state, box-drawing-adjacent borders,
+  glyph icons over icon fonts, glow reserved for surface chrome.
 
-| Canvas | Contents |
-|--------|----------|
-| **Hero Board** (Turn 1) | Two competing directions of the live board: **1a "Operator"** — warm parchment, brass, oxblood, Zilla Slab — and **1b "Console"** — dark dev-tool, Space Grotesk, amber. See [Directions](./06-directions.md). |
-| **Switchboard** (full build-out) | Direction 1a taken to a complete product: Board, Todos, Endpoints, Personas, and Friends views, the todo detail drawer, the vend/persona/friend modals, and toast notifications. See [Screens](./04-screens.md). |
+## What carried over from the Operator system (ADR-0016)
 
-Direction **1a "Operator"** won. It extends the identity the project has carried since
-[ADR-0000](../adrs/ADR-0000-project-naming-and-scope.md): a manual telephone exchange took many
-incoming lines, an operator verified each caller and patched the line through — hence brass jacks,
-bakelite, operator-cream, oxblood, and patch-cable tones.
+The *architecture* was validated and survives wholesale: hand-rolled token CSS (no framework),
+vendored OFL fonts as woff2 (no CDN, same-origin CSP), inline SVG, HTMX + SSE, `embed.FS`, the
+`sb-*` class namespace and `data-sb-*` behavior-attribute convention, and the WCAG-AA contrast
+test gating both themes. Only the language on top changed.
 
-## What lives in this section
+## Files in this package
 
-- **[Design language](./02-design-language.md)** — the canonical tokens: palette, typography,
-  shape, elevation, and motion, for both the operator-cream (light) and bakelite (dark) themes.
-- **[Components](./03-components.md)** — the `.sb-*` component inventory: badges, pills, cards,
-  stat tiles, feed rows, chip pickers, drawers, modals, and toasts.
-- **[Screens](./04-screens.md)** — the five operator-board views and their interaction patterns.
-- **[Voice](./05-voice.md)** — microcopy rules: the operator metaphor, mono taglines, verbs.
-- **[Directions](./06-directions.md)** — the 1a/1b exploration record, including the road not taken.
+| File | Contents |
+|---|---|
+| `01-overview.md` | This overview |
+| `02-design-language.md` | Tokens, themes, typography, iconography |
+| `03-components.md` | Component vocabulary + provider tag table |
+| `04-screens.md` | The six views, wizards, consent surface |
+| `05-voice.md` | Copy voice and microcopy rules |
+| `06-directions.md` | Directions explored and rejected |
 
-## How it's implemented
-
-The language ships as two owned stylesheets plus vendored fonts, embedded in the binary and shared
-with this docs site (no CDN, strict same-origin CSP):
+## Implementation anchors
 
 | Artifact | Role |
-|----------|------|
+|---|---|
 | `static/tokens.css` | Design tokens only — custom properties for both themes |
-| `static/switchboard.css` | The `.sb-*` component classes consuming those tokens |
-| `static/fonts/` | Zilla Slab, IBM Plex Sans, IBM Plex Mono (woff2, OFL) |
-
-Governing artifacts: [ADR-0016](../adrs/ADR-0016-operator-design-language.md) (the decision),
-[SPEC-0013](../openspec/specs/operator-board/spec.md) (the operator board that realizes it),
-[ADR-0001](../adrs/ADR-0001-web-stack-go-htmx-pico.md) (the web stack it rides on), and
-[ADR-0003](../adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) (the trust vocabulary the
-badge tokens encode).
+| `static/switchboard.css` | The `.sb-*` component layer |
+| `static/js/` | Split presentation modules + the pre-paint theme boot |
+| `static/fonts/` | Vendored woff2 (see its README for the required files) |
+| `tokens_contrast_test.go` | The AA contrast gate over both themes |

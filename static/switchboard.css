@@ -1,8 +1,8 @@
 /*
  * switchboard — switchboard.css
- * The .sb-* component layer for the "Operator" design language, consuming tokens.css.
- * Governing: ADR-0016 (Operator design language), SPEC-0013 REQ "Design Language Conformance",
- * SPEC-0013 REQ "Information Architecture and Navigation".
+ * The .sb-* component layer for the charm-web design language, consuming tokens.css.
+ * Governing: ADR-0018 (charm-web design language), SPEC-0015 REQ "Application Shell And
+ * Navigation", REQ "Design Token System".
  */
 
 /* ---- base ---- */
@@ -14,26 +14,31 @@
 body {
   margin: 0;
   background: var(--sb-canvas);
+  /* The signature charm-web canvas: a faint Tron floor grid on the void/paper (ADR-0018). */
+  background-image:
+    linear-gradient(var(--sb-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--sb-grid) 1px, transparent 1px);
+  background-size: 28px 28px;
   color: var(--sb-text);
-  font-family: var(--sb-font-sans);
-  font-size: 14px;
+  font-family: var(--sb-font-mono);
+  font-size: 13.5px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
 a {
-  color: var(--sb-oxblood);
+  color: var(--sb-primary);
 }
 a:hover {
-  color: var(--sb-oxblood-hover);
+  color: var(--sb-primary-hover);
 }
 
 :focus-visible {
-  outline: 2px solid var(--sb-brass);
+  outline: 2px solid var(--sb-ring);
   outline-offset: 2px;
 }
 
-/* ---- app shell: top bar over rail + main ---- */
+/* ---- app shell: top bar over horizontal nav + main (SPEC-0015 shell) ---- */
 
 .sb-app {
   min-height: 100vh;
@@ -41,13 +46,15 @@ a:hover {
   flex-direction: column;
 }
 
+/* The nav strip sits full-width under the top bar; main flows beneath it. */
 .sb-shell {
   flex: 1;
   display: flex;
+  flex-direction: column;
   min-height: 0;
 }
 
-/* ---- top bar ---- */
+/* ---- top bar: wordmark · ~/operator breadcrumb · MCP indicator · + new · theme ---- */
 
 .sb-topbar {
   display: flex;
@@ -55,8 +62,8 @@ a:hover {
   gap: 10px;
   height: 56px;
   padding: 0 18px;
-  background: linear-gradient(180deg, var(--sb-raised-hi), var(--sb-raised-lo));
-  border-bottom: 1px solid var(--sb-border-strong);
+  background: var(--sb-panel);
+  border-bottom: 1px solid var(--sb-border);
 }
 
 .sb-mark {
@@ -69,22 +76,106 @@ a:hover {
 .sb-wordmark {
   font-family: var(--sb-font-display);
   font-weight: 700;
-  font-size: 19px;
+  font-size: 18px;
   color: var(--sb-ink);
-  letter-spacing: 0.01em;
+  letter-spacing: -0.02em;
 }
 
-.sb-context {
+/* ~/operator breadcrumb (SPEC-0015 "Application Shell And Navigation"). */
+.sb-crumb {
   font-family: var(--sb-font-mono);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
+  font-size: 12px;
   color: var(--sb-muted);
   margin-left: 4px;
 }
 
 .sb-topbar__spacer {
   margin-left: auto;
+}
+
+/* MCP-connected indicator: a flat highlight bar, cell-honest (no pill). */
+.sb-mcp {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border-radius: var(--sb-radius-chip);
+  background: var(--sb-live-bg);
+  color: var(--sb-live);
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.sb-mcp--down {
+  background: var(--sb-status-failed-bg);
+  color: var(--sb-status-failed);
+}
+.sb-mcp__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* "+ new" wizard launcher. */
+.sb-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--sb-radius-btn);
+  background: var(--sb-primary);
+  color: var(--sb-on-primary);
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: var(--sb-glow-primary);
+  transition: background-color var(--sb-dur-enter) var(--sb-ease), transform var(--sb-dur-enter) var(--sb-ease-spring);
+}
+.sb-new:hover {
+  background: var(--sb-primary-hover);
+  color: var(--sb-on-primary);
+  transform: translateY(-1px);
+}
+
+/* Theme control (SPEC-0015 REQ "Theme Toggle"): visible toggle, cycles day/night. */
+.sb-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-btn);
+  background: var(--sb-raised-lo);
+  color: var(--sb-secondary);
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color var(--sb-dur-enter) var(--sb-ease), color var(--sb-dur-enter) var(--sb-ease);
+}
+.sb-theme-toggle:hover {
+  border-color: var(--sb-ring);
+  color: var(--sb-ink);
+}
+/* The control shows the theme a click switches TO: night glyph on day, day glyph at night. */
+.sb-theme-toggle__night,
+[data-theme="night"] .sb-theme-toggle__day {
+  display: inline;
+}
+.sb-theme-toggle__day,
+[data-theme="night"] .sb-theme-toggle__night {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="day"]) .sb-theme-toggle__night {
+    display: none;
+  }
+  :root:not([data-theme="day"]) .sb-theme-toggle__day {
+    display: inline;
+  }
 }
 
 .sb-live {
@@ -126,8 +217,8 @@ a:hover {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--sb-oxblood);
-  color: var(--sb-on-oxblood);
+  background: var(--sb-primary);
+  color: var(--sb-on-primary);
   font-family: var(--sb-font-mono);
   font-size: 11.5px;
   font-weight: 600;
@@ -147,18 +238,21 @@ a:hover {
   text-underline-offset: 3px;
 }
 .sb-linklike:hover {
-  color: var(--sb-oxblood);
+  color: var(--sb-primary);
 }
 
-/* ---- nav rail ---- */
+/* ---- nav: the six-view horizontal strip (SPEC-0015: board · todos · endpoints ·
+   personas · friends · providers). Keeps the .sb-rail hooks the tests and sb.js target;
+   the charm-web shell renders it as a lowercase mono nav with an underline on the
+   active view, not a side rail. ---- */
 
 .sb-rail {
-  width: 196px;
   flex: none;
   display: flex;
-  flex-direction: column;
-  padding: 14px 10px;
-  border-right: 1px solid var(--sb-border);
+  align-items: center;
+  padding: 0 18px;
+  background: var(--sb-panel);
+  border-bottom: 1px solid var(--sb-border);
 }
 
 .sb-rail__list {
@@ -166,56 +260,58 @@ a:hover {
   margin: 0;
   padding: 0;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
 }
 
 .sb-rail__item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: var(--sb-radius-btn);
+  gap: 7px;
+  padding: 9px 10px;
+  border-bottom: 2px solid transparent;
   color: var(--sb-secondary);
-  font-size: 13.5px;
+  font-family: var(--sb-font-mono);
+  font-size: 13px;
   font-weight: 500;
+  text-transform: lowercase;
   text-decoration: none;
 }
 .sb-rail__item:hover {
+  color: var(--sb-ink);
   background: var(--sb-row-hover);
-  color: var(--sb-text);
 }
 
 .sb-rail__dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   flex: none;
   border-radius: 2px;
   background: var(--sb-faint-3);
 }
 
 .sb-rail__item[aria-current="page"] {
-  background: var(--sb-nav-active-bg);
+  border-bottom-color: var(--sb-accent);
   color: var(--sb-ink);
-  font-weight: 600;
+  font-weight: 700;
 }
 .sb-rail__item[aria-current="page"] .sb-rail__dot {
-  background: var(--sb-brass);
+  background: var(--sb-accent);
 }
 
 .sb-rail__count {
-  margin-left: auto;
   font-family: var(--sb-font-mono);
   font-size: 11px;
   color: var(--sb-muted);
 }
 
 .sb-rail__foot {
-  margin-top: auto;
+  margin: 0 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px;
+  padding: 8px 0;
   font-family: var(--sb-font-mono);
   font-size: 10.5px;
   color: var(--sb-muted);
@@ -235,15 +331,14 @@ a:hover {
   color: var(--sb-status-failed);
 }
 
-/* icons-only rail below 820px: labels, counts, and footer text collapse */
+/* dots-only nav below 820px: labels, counts, and the connectivity text collapse */
 @media (max-width: 820px) {
   .sb-rail {
-    width: 60px;
-    padding: 14px 8px;
+    padding: 0 10px;
   }
   .sb-rail__item {
     justify-content: center;
-    padding: 10px 0;
+    padding: 10px 8px;
   }
   .sb-rail__label,
   .sb-rail__count,
@@ -271,16 +366,20 @@ a:hover {
   flex: 1;
   min-width: 0;
   padding: 26px 30px 60px;
-  max-width: 1060px;
+  max-width: 1160px;
 }
 
-/* ---- content-info footer (contentinfo landmark) ---- */
+/* ---- content-info footer (contentinfo landmark) with the key-hint slot ---- */
 
 .sb-footer {
   flex: none;
-  padding: 12px 30px;
-  border-top: 1px solid var(--sb-border-strong);
-  background: linear-gradient(180deg, var(--sb-raised-lo), var(--sb-raised-hi));
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 30px;
+  border-top: 1px solid var(--sb-border);
+  background: var(--sb-panel);
 }
 
 .sb-footer__text {
@@ -288,6 +387,35 @@ a:hover {
   font-size: 10.5px;
   letter-spacing: 0.06em;
   color: var(--sb-muted);
+}
+
+/* Key-hint footer (SPEC-0015: every view ends in the active keymap, TUI help-line style).
+   sb-keys.js renders `key action` pairs from the single keymap registry into this slot. */
+.sb-keys {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-faint);
+}
+.sb-keys__pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.sb-keys__key {
+  padding: 1px 5px;
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-chip);
+  background: var(--sb-raised-lo);
+  color: var(--sb-secondary);
+  font-size: 10px;
+}
+.sb-keys__sep {
+  color: var(--sb-faint);
 }
 
 .sb-page-title {
@@ -352,7 +480,7 @@ a:hover {
   align-items: center;
   gap: 7px;
   padding: 5px 11px;
-  border-radius: var(--sb-radius-pill);
+  border-radius: var(--sb-radius-chip);
   background: var(--sb-trust-token-bg);
   color: var(--sb-trust-token);
   font-family: var(--sb-font-mono);
@@ -440,10 +568,12 @@ a:hover {
 
 /* ---- badges, pills, tags, status ---- */
 
+/* Flat, square, cell-honest chips (ADR-0018: no pill radii on trust/state — only the LIVE
+   throughput pill keeps --sb-radius-pill). */
 .sb-badge {
   display: inline-block;
   padding: 2px 9px;
-  border-radius: var(--sb-radius-pill);
+  border-radius: var(--sb-radius-chip);
   font-family: var(--sb-font-mono);
   font-size: 9.5px;
   font-weight: 600;
@@ -508,12 +638,19 @@ a:hover {
   background: var(--sb-trust-queue-bg);
 }
 
+/* Todo state chips: ● dot + lowercase mono word on the AA-gated status tint pair — flat and
+   square like the trust badges (ADR-0018 "flat chips for trust/state"; SPEC-0015 REQ "Design
+   Token System" holds the pairs to AA in both themes). */
 .sb-status {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--sb-radius-chip);
   font-family: var(--sb-font-mono);
   font-size: 11px;
+  background: var(--sb-divider);
+  color: var(--sb-status-neutral);
 }
 .sb-status__dot {
   width: 7px;
@@ -523,24 +660,28 @@ a:hover {
 }
 .sb-status--pending {
   color: var(--sb-status-pending);
+  background: var(--sb-status-pending-bg);
 }
 .sb-status--pending .sb-status__dot {
   background: var(--sb-trust-queue-dot);
 }
 .sb-status--claimed {
   color: var(--sb-status-claimed);
+  background: var(--sb-status-claimed-bg);
 }
 .sb-status--claimed .sb-status__dot {
   background: var(--sb-trust-token-dot);
 }
 .sb-status--done {
   color: var(--sb-status-done);
+  background: var(--sb-status-done-bg);
 }
 .sb-status--done .sb-status__dot {
   background: var(--sb-trust-signed-dot);
 }
 .sb-status--failed {
   color: var(--sb-status-failed);
+  background: var(--sb-status-failed-bg);
 }
 .sb-status--failed .sb-status__dot {
   background: var(--sb-trust-open-dot);
@@ -602,81 +743,154 @@ a:hover {
   background: var(--sb-row-hover);
 }
 
-/* ---- feed (Board recent events) ---- */
+/* ---- patch-panel lanes (SPEC-0015 REQ "Patch Panel Board") ---- */
 
-.sb-feed {
+.sb-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin: 18px 0;
+  align-items: start;
+}
+
+.sb-lane__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 2px 10px;
+  border-bottom: 1px solid var(--sb-border);
+}
+
+.sb-lane__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  align-self: center;
+  background: var(--sb-status-neutral);
+}
+.sb-lane--received .sb-lane__dot {
+  background: var(--sb-trust-token-dot);
+}
+.sb-lane--verified .sb-lane__dot {
+  background: var(--sb-cyan);
+}
+.sb-lane--patched .sb-lane__dot {
+  background: var(--sb-status-done);
+}
+
+.sb-lane__title {
+  margin: 0;
+  font-family: var(--sb-font-mono);
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--sb-ink);
+}
+
+.sb-lane__count {
+  margin-left: auto;
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-muted);
+  white-space: nowrap;
+}
+.sb-lane__n {
+  color: var(--sb-text);
+  font-weight: 600;
+}
+
+.sb-lane__cards {
   list-style: none;
-  margin: 10px 0;
+  margin: 12px 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
-.sb-feed__row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+/* One patch-panel card: glyph + headline, chips, detail · age foot (SPEC-0015 card anatomy). */
+.sb-lcard {
   background: var(--sb-panel);
   border: 1px solid var(--sb-border);
   border-radius: var(--sb-radius-card);
-  padding: 10px 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
 }
 
-.sb-feed__source {
+.sb-lcard__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.sb-lcard__text {
+  min-width: 0;
+}
+
+.sb-lcard__title {
+  display: block;
   font-weight: 600;
   font-size: 13.5px;
   color: var(--sb-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.sb-feed__type {
+.sb-lcard__sub {
   display: block;
   font-family: var(--sb-font-mono);
   font-size: 11px;
   color: var(--sb-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.sb-feed__age {
-  margin-left: auto;
+.sb-lcard__chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sb-lcard__foot {
   font-family: var(--sb-font-mono);
   font-size: 11px;
   color: var(--sb-faint-2);
-  white-space: nowrap;
+}
+.sb-lcard__detail {
+  color: var(--sb-muted);
 }
 
-/* Lifecycle stage (SPEC-0013): dot + mono label advancing verifying… → patched → todo →
-   claimed · <agent> → done ✓, updated live via out-of-band SSE swaps. */
-.sb-feed__stage {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--sb-font-mono);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.sb-feed__stage--verifying {
+/* Ephemeral received-lane states (SSE-only; sb-live.js expires them via data-sb-ephemeral). */
+.sb-status--verifying {
   color: var(--sb-trust-token-dot);
 }
-.sb-feed__stage--pending {
-  color: var(--sb-status-pending);
+.sb-lcard--rejected {
+  border-color: var(--sb-status-failed);
+  background: var(--sb-alert-tint);
 }
-.sb-feed__stage--claimed {
-  color: var(--sb-status-claimed);
-}
-.sb-feed__stage--done {
-  color: var(--sb-status-done);
-}
-.sb-feed__stage--failed {
+.sb-status--rejected {
   color: var(--sb-status-failed);
 }
-/* Deduped: this delivery collapsed onto an earlier one's todo — a truthful terminal stage rather
-   than a perpetual "verifying…" (SPEC-0013 carry-over). */
-.sb-feed__stage--deduped {
+.sb-status--rejected .sb-status__dot {
+  background: var(--sb-trust-open-dot);
+}
+/* Deduped: this delivery collapsed onto an existing todo — a truthful transient resolution rather
+   than a perpetual "verifying". */
+.sb-status--deduped {
   color: var(--sb-dedup);
+}
+.sb-status--deduped .sb-status__dot {
+  background: var(--sb-dedup);
 }
 
 /* Ringing pulse: a just-received line, still verifying. */
-.sb-feed__pulse {
+.sb-lcard__pulse {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -686,13 +900,13 @@ a:hover {
 
 /* Claim (mono action, brass-bordered) on pending feed rows. */
 .sb-btn--claim {
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
   color: var(--sb-trust-token);
   background: var(--sb-trust-token-bg);
 }
 .sb-btn--claim:hover {
   background: var(--sb-trust-token-bg);
-  border-color: var(--sb-brass-bright);
+  border-color: var(--sb-accent-bright);
   color: var(--sb-trust-token);
 }
 
@@ -709,10 +923,10 @@ a:hover {
   flex: 1 1 0;
   min-height: 2px;
   border-radius: 2px 2px 0 0;
-  background: var(--sb-brass-chart);
+  background: var(--sb-accent-chart);
 }
 .sb-bars__bar--now {
-  background: var(--sb-oxblood);
+  background: var(--sb-primary);
 }
 .sb-bars__axis {
   display: flex;
@@ -742,20 +956,20 @@ a:hover {
   padding: 8px 16px;
   border-radius: var(--sb-radius-btn);
   border: 1px solid transparent;
-  background: var(--sb-oxblood);
-  color: var(--sb-on-oxblood);
-  font-family: var(--sb-font-sans);
+  background: var(--sb-primary);
+  color: var(--sb-on-primary);
+  font-family: var(--sb-font-mono);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   text-decoration: none;
 }
 .sb-btn:hover {
-  background: var(--sb-oxblood-hover);
-  color: var(--sb-on-oxblood);
+  background: var(--sb-primary-hover);
+  color: var(--sb-on-primary);
 }
 .sb-btn:disabled {
-  background: var(--sb-oxblood-disabled);
+  background: var(--sb-primary-disabled);
   cursor: not-allowed;
 }
 
@@ -872,7 +1086,7 @@ pre code {
 
 .sb-callout {
   border: 1px solid var(--sb-input-border-soft);
-  border-left: 3px solid var(--sb-brass);
+  border-left: 3px solid var(--sb-accent);
   border-radius: var(--sb-radius-btn);
   background: var(--sb-panel);
   padding: 10px 14px;
@@ -928,15 +1142,29 @@ pre code {
   pointer-events: auto;
 }
 
-/* ---- Todos view: search, filter pills, queue table (SPEC-0013) ---- */
+/* ---- Todos view: ❯ search prompt, flat filter chips, queue table (SPEC-0015 REQ "Todos View
+   And Drawer"; ADR-0018) ---- */
 
+/* Search behind the terminal prompt glyph (design language: prompts are ❯, typed in the mono
+   face). The global `/` key (sb-keys.js) focuses the input. */
 .sb-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   margin: 4px 0 14px;
+}
+.sb-search__prompt {
+  font-family: var(--sb-font-mono);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--sb-cyan);
 }
 .sb-search__input {
   max-width: 340px;
 }
 
+/* Filter chips: flat and square (ADR-0018 — no pill radii on state controls), lowercase mono,
+   active chip carried on the hot-pink accent like the nav's active underline. */
 .sb-fpills {
   display: flex;
   flex-wrap: wrap;
@@ -948,13 +1176,13 @@ pre code {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 5px 13px;
-  border-radius: var(--sb-radius-pill);
+  padding: 4px 12px;
+  border-radius: var(--sb-radius-chip);
   border: 1px solid var(--sb-input-border-soft);
   background: var(--sb-panel);
   color: var(--sb-secondary);
   font-family: var(--sb-font-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   text-decoration: none;
 }
 .sb-fpill:hover {
@@ -963,16 +1191,16 @@ pre code {
 }
 .sb-fpill--active {
   background: var(--sb-nav-active-bg);
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
   color: var(--sb-ink);
-  font-weight: 600;
+  font-weight: 700;
 }
 .sb-fpill__n {
   font-size: 11px;
   color: var(--sb-muted);
 }
 .sb-fpill--active .sb-fpill__n {
-  color: var(--sb-oxblood);
+  color: var(--sb-accent);
 }
 
 .sb-table-wrap {
@@ -1030,12 +1258,12 @@ pre code {
 }
 
 /* Reaper re-surface flash: a claimed lease expired back to pending — highlight the row briefly as
-   its OOB swap lands (SPEC-0013 "Reaper re-surface is visible"). */
+   its OOB swap lands (SPEC-0015 REQ "Todos View And Drawer": SSE row updates preserved). */
 .sb-trow--flash {
   animation: sb-row-flash var(--sb-dur-row) var(--sb-ease);
 }
 
-/* ---- todo detail drawer (SPEC-0013) ---- */
+/* ---- todo detail drawer (SPEC-0015 REQ "Todos View And Drawer"; ADR-0018) ---- */
 
 .sb-drawer {
   position: fixed;
@@ -1073,9 +1301,11 @@ pre code {
   align-items: center;
   gap: 10px;
 }
+/* The line id leads in the display voice (Space Mono, like view titles). */
 .sb-drawer__id {
+  font-family: var(--sb-font-display);
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--sb-ink);
 }
 .sb-drawer__close {
@@ -1159,7 +1389,7 @@ pre code {
 }
 .sb-lease__bar {
   height: 100%;
-  background: var(--sb-brass);
+  background: var(--sb-accent);
   transition: width 1s linear;
 }
 .sb-drawer__acts {
@@ -1242,6 +1472,8 @@ pre code {
   word-break: break-word;
 }
 
+/* Glyph lifecycle timeline (ADR-0018 iconography: type the glyph in the mono face — ✓ for
+   resolved steps, ○ for the steps ahead — over a faint box-drawing rail). */
 .sb-timeline {
   list-style: none;
   margin: 6px 0 16px;
@@ -1249,28 +1481,35 @@ pre code {
 }
 .sb-timeline li {
   position: relative;
-  padding: 4px 0 4px 20px;
+  padding: 4px 0 4px 22px;
   font-family: var(--sb-font-mono);
   font-size: 11.5px;
   color: var(--sb-faint-2);
 }
 .sb-timeline li::before {
+  content: "○";
+  position: absolute;
+  left: 2px;
+  top: 4px;
+  font-family: var(--sb-font-mono);
+  font-size: 11.5px;
+  line-height: inherit;
+  color: var(--sb-faint-3);
+}
+.sb-timeline li + li::after {
   content: "";
   position: absolute;
-  left: 4px;
-  top: 9px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1px solid var(--sb-faint-3);
-  background: var(--sb-panel);
+  left: 7px;
+  top: -6px;
+  height: 10px;
+  border-left: 1px solid var(--sb-divider);
 }
 .sb-timeline__done {
   color: var(--sb-body);
 }
 .sb-timeline__done::before {
-  background: var(--sb-brass);
-  border-color: var(--sb-brass);
+  content: "✓";
+  color: var(--sb-mint);
 }
 
 .sb-drawer__foot {
@@ -1402,7 +1641,7 @@ pre code {
 .sb-persona__prompt {
   margin: 0;
   padding: 8px 12px;
-  border-left: 3px solid var(--sb-brass);
+  border-left: 3px solid var(--sb-accent);
   background: var(--sb-code-bg);
   border-radius: var(--sb-radius-btn);
   font-size: 13px;
@@ -1451,7 +1690,7 @@ pre code {
 }
 /* the agent-card URL shown under the modal's name field (oxblood-accented per the design canvas) */
 .sb-persona__urlpreview {
-  color: var(--sb-oxblood);
+  color: var(--sb-primary);
   overflow-wrap: anywhere;
 }
 
@@ -1476,7 +1715,7 @@ pre code {
 .sb-chip--skill {
   color: var(--sb-ink);
   background: var(--sb-nav-active-bg);
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
 }
 .sb-chip--mono {
   color: var(--sb-body);
@@ -1542,7 +1781,7 @@ pre code {
   gap: 8px;
   text-transform: none;
   letter-spacing: 0;
-  font-family: var(--sb-font-sans, var(--sb-font-mono));
+  font-family: var(--sb-font-mono, var(--sb-font-mono));
   font-size: 13px;
   color: var(--sb-body);
 }
@@ -1606,7 +1845,7 @@ pre code {
   left: 18px;
 }
 .sb-pubtoggle__input:focus-visible ~ .sb-pubtoggle__track {
-  outline: 2px solid var(--sb-brass);
+  outline: 2px solid var(--sb-accent);
   outline-offset: 2px;
 }
 .sb-pubtoggle__text {
@@ -1645,7 +1884,7 @@ pre code {
 
 @media (prefers-reduced-motion: reduce) {
   .sb-live__dot,
-  .sb-feed__pulse,
+  .sb-lcard__pulse,
   .sb-reaper__dot,
   .sb-ring,
   .sb-drawer,
@@ -1658,7 +1897,7 @@ pre code {
   }
 }
 
-/* ============================ Friends view (SPEC-0013) ============================ */
+/* ============================ Friends view (SPEC-0015) ============================ */
 /* ============================ Endpoints view + vend modal (SPEC-0013) ============================ */
 
 .sb-page-head {
@@ -1669,66 +1908,9 @@ pre code {
   flex-wrap: wrap;
 }
 
-/* view toggle + filter pills row */
-.sb-friends-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin: 16px 0 14px;
-}
-.sb-friends-toolbar .sb-fpills {
-  margin: 0;
-}
-/* "view" microlabel + segmented control cluster (DESIGN Friends view toggle). */
-.sb-friends-toolbar__view {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-/* 2a/2b variant badges on the toggle options (DESIGN Friends). */
-.sb-seg__badge {
-  font-family: var(--sb-font-mono);
-  font-size: 9.5px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: var(--sb-radius-pill);
-  background: var(--sb-nav-active-bg);
-  color: var(--sb-muted);
-}
-.sb-seg__opt--active .sb-seg__badge {
-  background: var(--sb-panel);
-  color: var(--sb-ink);
-}
-
-/* segmented cards|ledger control */
-.sb-seg {
-  display: inline-flex;
-  border: 1px solid var(--sb-border);
-  border-radius: var(--sb-radius-pill);
-  overflow: hidden;
-}
-.sb-seg__opt {
-  padding: 5px 15px;
-  font-family: var(--sb-font-mono);
-  font-size: 12px;
-  color: var(--sb-muted);
-  text-decoration: none;
-  background: var(--sb-panel);
-}
-.sb-seg__opt:hover {
-  color: var(--sb-ink);
-}
-.sb-seg__opt--active {
-  background: var(--sb-nav-active-bg);
-  color: var(--sb-ink);
-  font-weight: 600;
-}
-
-/* friend status badges reuse the badge grammar keyed by ledger group, matching the design canvas
-   FR_STATUS palette (incoming amber · awaiting blue · active green · blocked red) via the shared
-   trust/status tokens (DESIGN Friends; ADR-0016 no per-template colors). */
+/* friend status badges reuse the badge grammar keyed by section group, matching the design canvas
+   FR_STATUS palette (incoming amber · awaiting blue · established green · blocked red) via the
+   shared trust/status tokens (ADR-0018 no per-template colors). */
 .sb-badge--fr-incoming {
   color: var(--sb-status-claimed);
   background: var(--sb-status-claimed-bg);
@@ -1780,11 +1962,11 @@ pre code {
   gap: 10px;
 }
 .sb-fcard--incoming {
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
 }
 /* Outgoing pending: locally sent, awaiting the remote operator — provisional, so dashed (#174). */
 .sb-fcard--outgoing {
-  border-color: var(--sb-brass);
+  border-color: var(--sb-accent);
   border-style: dashed;
 }
 .sb-fcard__top {
@@ -1799,7 +1981,7 @@ pre code {
 }
 .sb-fcard__arrow--incoming,
 .sb-fcard__arrow--outgoing {
-  color: var(--sb-brass);
+  color: var(--sb-accent);
   font-weight: 600;
 }
 .sb-fcard__arrow--blocked {
@@ -1807,7 +1989,7 @@ pre code {
 }
 /* The remote agent reads distinct from the local face: brass mono handle + faint board host. */
 .sb-fcard__remote-handle {
-  color: var(--sb-brass);
+  color: var(--sb-accent);
   font-weight: 600;
 }
 .sb-fcard__host {
@@ -1876,8 +2058,8 @@ pre code {
   font-style: italic;
 }
 
-/* grouped ledger (2b): status dot + mono uppercase heading + count + rule line over a compact
-   row-based table per group (DESIGN Friends ledger). */
+/* SPEC-0015 sections: status dot + mono uppercase heading + count + rule line over the cards grid
+   per group (pending · in your queue / awaiting their operator / established / blocked). */
 .sb-fledger {
   display: flex;
   flex-direction: column;
@@ -1924,80 +2106,12 @@ pre code {
   height: 1px;
   background: var(--sb-border);
 }
-.sb-frows {
-  background: var(--sb-panel);
-  border: 1px solid var(--sb-border);
-  border-radius: var(--sb-radius-card);
-  overflow: hidden;
-}
-.sb-frow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--sb-divider);
-}
-.sb-frow:last-child {
-  border-bottom: none;
-}
-.sb-frow__ident {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-.sb-frow__intents {
-  width: 200px;
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.sb-frow__meta {
-  width: 150px;
-  flex: none;
-  font-family: var(--sb-font-mono);
-  font-size: 10.5px;
-  color: var(--sb-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.sb-frow__acts {
-  flex: none;
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 7px;
-  margin-left: auto;
-}
-/* Narrow viewports: the fixed columns wrap under the identity line instead of overflowing. */
-@media (max-width: 760px) {
-  .sb-frow {
-    flex-wrap: wrap;
-  }
-  .sb-frow__ident {
-    flex-basis: 100%;
-  }
-  .sb-frow__intents,
-  .sb-frow__meta {
-    width: auto;
-  }
-}
-
-/* inline action forms + small select */
+/* inline action forms */
 .sb-fform {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   margin: 0;
-}
-.sb-input--sm {
-  width: auto;
-  max-width: 180px;
-  padding: 5px 9px;
-  font-size: 12px;
 }
 
 /* A killed endpoint is dimmed but still legible — proof it existed and was revoked. */
@@ -2180,7 +2294,7 @@ pre code {
   font-size: 11px;
 }
 .sb-resolve__host {
-  color: var(--sb-brass);
+  color: var(--sb-accent);
 }
 .sb-resolve__hint {
   color: var(--sb-faint);
@@ -2246,5 +2360,964 @@ pre code {
   100% {
     opacity: 1;
     transform: translate(-50%, -50%);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Wizard pages (SPEC-0015 REQ "Wizard Interaction Pattern"; ADR-0018): full-page
+   routed steps — the vend wizard first (templates/vend.html), the revoke confirm
+   page (templates/revoke.html), and every later create/connect flow. */
+.sb-wiz {
+  max-width: 620px;
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  padding: 18px 20px 16px;
+  margin: 16px 0;
+}
+/* Step tracker: terminal-style numbered rail; the current step reads accent, done steps muted. */
+.sb-wiz__steps {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 0 4px;
+  padding: 0;
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  color: var(--sb-faint);
+}
+.sb-wiz__step--current {
+  color: var(--sb-accent);
+  font-weight: 600;
+}
+.sb-wiz__step--done {
+  color: var(--sb-muted);
+}
+.sb-wiz__step--done::after {
+  content: " ✓";
+}
+.sb-wiz__stepnum {
+  opacity: 0.7;
+}
+.sb-wiz__progress {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  margin: 0 0 12px;
+}
+/* Lifetime radios render as a vertical choice list (radio stays native for no-JS + a11y). */
+.sb-wiz__choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+.sb-wiz__choice {
+  font-family: var(--sb-font-mono);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+/* Confirm summaries (vend confirm, revoke confirm) reuse the endpoint-card scope rows. */
+.sb-wiz__summary {
+  margin: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Endpoint-card head flags: countdown chip + state badge, right-aligned together. */
+.sb-epcard__flags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Expiry countdown chip (SPEC-0016 "the endpoints view SHALL show the countdown"): claimed-amber
+   family — time-bounded, not failed. sb-live.js may hydrate it live from data-sb-expires-at. */
+.sb-chip--expiry {
+  color: var(--sb-status-claimed);
+  background: var(--sb-status-claimed-bg);
+  border-color: transparent;
+}
+
+/* One-time reveal, now an inline page section (the wizard completes as a full page render —
+   no overlay). */
+.sb-reveal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ============================================================================
+   Providers view (SPEC-0017; ADR-0020): family sections over the runtime
+   registry, per-line trust chips + health + lifecycle, and the two-tier
+   catalog — connectable (implemented) vs available (planned, visually
+   distinct, no connect path). Governing: ADR-0018.
+   ========================================================================== */
+.sb-prfam {
+  margin: 0 0 22px;
+}
+/* Family heading mirrors the ledger group heading: mono uppercase + count + rule line. */
+.sb-prfam__head {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sb-secondary);
+  margin: 0 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.sb-prfam__glyph {
+  color: var(--sb-accent);
+}
+.sb-prfam__n {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--sb-faint);
+}
+.sb-prfam__rule {
+  flex: 1;
+  height: 1px;
+  background: var(--sb-border);
+}
+.sb-prcards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+}
+.sb-prcard {
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  padding: 13px 15px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+/* A disabled line stays legible but reads dead — the chip says why (SPEC-0017 lifecycle). */
+.sb-prcard--disabled {
+  opacity: 0.62;
+  border-style: dashed;
+}
+.sb-prcard__head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.sb-prcard__ident {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  margin-right: auto;
+}
+.sb-prcard__name {
+  font-weight: 600;
+  color: var(--sb-ink);
+}
+.sb-prcard__kind {
+  font-size: 11px;
+  color: var(--sb-faint-2);
+}
+.sb-prcard__meta {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sb-prcard__row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+.sb-prcard__row dt {
+  flex: none;
+  min-width: 52px;
+}
+.sb-prcard__row dd {
+  margin: 0;
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sb-prcard__secret {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-trust-signed);
+}
+/* A held-secret gap is a rejected line, not a warning footnote — token/signed reject everything. */
+.sb-prcard__secret--missing {
+  color: var(--sb-trust-open);
+}
+.sb-prcard__err {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-trust-open);
+}
+.sb-prcard__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--sb-divider);
+  padding-top: 9px;
+  margin-top: 2px;
+}
+.sb-prcard__rate {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-cyan);
+}
+.sb-prcard__seen {
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+}
+/* Configure affordance: a native disclosure so the lifecycle controls work with no JS. */
+.sb-prcard__config {
+  margin-left: auto;
+}
+.sb-prcard__config summary {
+  list-style: none;
+  cursor: pointer;
+}
+.sb-prcard__config summary::-webkit-details-marker {
+  display: none;
+}
+.sb-prcard__acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+/* Catalog (SPEC-0017 REQ "Provider Catalog"): connectable vs available must read differently at a
+   glance — available is dashed, dimmed, badged "planned", and contains nothing interactive. */
+.sb-prcat {
+  margin: 4px 0 8px;
+}
+.sb-prcat__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.sb-catcard {
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.sb-catcard--available {
+  border-style: dashed;
+  background: transparent;
+  opacity: 0.72;
+}
+.sb-catcard__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sb-catcard__title {
+  font-weight: 600;
+  color: var(--sb-ink);
+  margin-right: auto;
+}
+.sb-catcard__desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--sb-body);
+}
+.sb-catcard__foot {
+  border-top: 1px solid var(--sb-divider);
+  padding-top: 7px;
+}
+.sb-catcard__state {
+  font-family: var(--sb-font-mono);
+  font-size: 10.5px;
+  color: var(--sb-secondary);
+}
+/* Planned badge: neutral — deliberately NOT a trust tint; there is no enforced mode to claim. */
+.sb-badge--planned {
+  color: var(--sb-secondary);
+  background: var(--sb-code-bg);
+}
+
+/* No-JS inline slot for the confirmation / rotate-reveal panels: the shared modal fragments
+   render statically in-flow (the overlay positioning only applies inside #sb-overlay). */
+.sb-prinline {
+  margin: 0 0 18px;
+}
+.sb-prinline .sb-modal {
+  position: static;
+  transform: none;
+  animation: none;
+  width: min(560px, 100%);
+  box-shadow: none;
+}
+
+/* ── OAuth consent — the "authorize access" surface (SPEC-0016 REQ "Authorization Code Flow
+   With Consent"; ADR-0019). One centered card in the SPEC-0015 full-page pattern: the client's
+   ask, the accountable principal, the endpoint binding, and scope bullets derived from the
+   endpoint's stored scope. Both themes come free of charge from the token layer. */
+.sb-oauth {
+  text-align: center;
+}
+.sb-oauth__bars {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 5px;
+  margin: 6px 0 14px;
+}
+.sb-oauth__bars span {
+  width: 12px;
+  height: 26px;
+  border-radius: 3px;
+  background: var(--sb-mint);
+  opacity: 0.55;
+}
+.sb-oauth__bars span:nth-child(2) {
+  height: 38px;
+  opacity: 1;
+}
+.sb-oauth__title {
+  margin: 0 0 10px;
+  font-family: var(--sb-font-mono);
+  font-size: 21px;
+  letter-spacing: 0.02em;
+  color: var(--sb-ink);
+}
+.sb-oauth__ask {
+  margin: 0 auto 14px;
+  max-width: 34ch;
+  color: var(--sb-body);
+  line-height: 1.55;
+}
+.sb-oauth__principal {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 5px 14px 5px 6px;
+  border: 1px solid var(--sb-border);
+  border-radius: 999px;
+  font-family: var(--sb-font-mono);
+  font-size: 12.5px;
+  color: var(--sb-secondary);
+}
+.sb-oauth__avatar {
+  width: 26px;
+  height: 26px;
+  font-size: 10px;
+}
+.sb-oauth__binding {
+  text-align: left;
+}
+.sb-oauth__scope {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  text-align: left;
+  background: var(--sb-code-bg);
+  border-radius: var(--sb-radius-card);
+}
+.sb-oauth__bullets {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.sb-oauth__bullet {
+  font-family: var(--sb-font-mono);
+  font-size: 12.5px;
+  color: var(--sb-body);
+}
+.sb-oauth__check {
+  color: var(--sb-mint);
+  margin-right: 4px;
+}
+.sb-oauth__form .sb-vend__foot {
+  justify-content: center;
+}
+.sb-oauth__foot {
+  margin: 14px 0 0;
+  font-size: 11.5px;
+}
+/* ============================================================================
+   Personas view + wizard (SPEC-0015 REQ "Personas View And Wizard"; ADR-0018):
+   the card's initials block + vended-as row, and the wizard's live A2A card
+   preview panel rendered from the unsaved draft.
+   ========================================================================== */
+.sb-persona__ident {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+/* Two-letter initials tile mirroring the endpoint card's avatar (design canvas: rounded square,
+   verb-chip palette so persona ≠ endpoint at a glance). */
+.sb-persona__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--sb-chip-verb-bg);
+  color: var(--sb-chip-verb);
+  font-family: var(--sb-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+.sb-persona__vendedas {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* The wizard's live agent-card preview: a bordered panel beside/below the step form. */
+.sb-wiz__preview {
+  margin: 14px 0 0;
+}
+.sb-cardprev {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px dashed var(--sb-border);
+  border-radius: var(--sb-radius-card);
+  background: var(--sb-code-bg);
+}
+.sb-cardprev__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sb-cardprev__name {
+  font-family: var(--sb-font-display);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--sb-ink);
+}
+.sb-cardprev__desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--sb-body);
+}
+.sb-cardprev__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.sb-cardprev__url {
+  overflow-wrap: anywhere;
+  color: var(--sb-secondary);
+}
+.sb-cardprev__skills {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sb-cardprev__json summary {
+  cursor: pointer;
+}
+.sb-cardprev__json pre {
+  margin: 8px 0 0;
+  max-height: 320px;
+  overflow: auto;
+}
+/* Delete on the edit wizard's final page: separated from the save form by a rule. */
+.sb-wiz__danger {
+  margin: 16px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--sb-divider);
+}
+
+/* ============================================================================
+ * Public marketing landing (GET / when logged out): templates/home.html.
+ * Full-bleed charm-web surface — hero, receive·verify·patch-through story, a
+ * capability grid, a live board preview, and a footer — built entirely on the
+ * --sb-* tokens so it flips day/night with the shared theme (ADR-0018). No
+ * external origins (assets_test asserts this file references none).
+ * ==========================================================================*/
+
+.sb-landing {
+  position: relative;
+  overflow-x: clip;
+  min-height: 100vh;
+  color: var(--sb-body);
+  font-family: var(--sb-font-mono);
+}
+
+/* A soft brand glow bleeding from the top of the page, over the body's Tron
+ * grid. color-mix keeps it accent-tinted in both themes. */
+.sb-landing__glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 680px;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(1100px 480px at 50% -6%,
+    color-mix(in oklab, var(--sb-accent) 20%, transparent), transparent 70%);
+}
+
+.sb-landing > *:not(.sb-landing__glow) {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---- landing top bar (its own — not the operator shell) ---- */
+.sb-landing__topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 14px clamp(16px, 4vw, 40px);
+  background: color-mix(in oklab, var(--sb-canvas) 86%, transparent);
+  border-bottom: 1px solid var(--sb-divider);
+  backdrop-filter: blur(6px);
+}
+.sb-landing__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+.sb-landing__topbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* CTA: the app button given the signature charm gradient + glow. */
+.sb-landing__cta {
+  background: linear-gradient(90deg, var(--sb-accent) 0%, var(--sb-primary) 100%);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 0 22px color-mix(in oklab, var(--sb-accent) 28%, transparent);
+  transition: transform var(--sb-dur-enter) var(--sb-ease-spring),
+    filter var(--sb-dur-enter) var(--sb-ease);
+}
+.sb-landing__cta:hover {
+  background: linear-gradient(90deg, var(--sb-accent) 0%, var(--sb-primary) 100%);
+  color: #fff;
+  transform: translateY(-1px);
+  filter: brightness(1.07);
+}
+.sb-landing__cta--lg {
+  padding: 13px 24px;
+  font-size: 15px;
+}
+
+/* ---- main column ---- */
+.sb-landing__main {
+  display: block;
+}
+.sb-landing__section,
+.sb-landing__hero,
+.sb-landing__closer {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 40px);
+  padding-right: clamp(16px, 4vw, 40px);
+}
+
+/* ---- hero ---- */
+.sb-landing__hero {
+  max-width: 980px;
+  padding-top: clamp(56px, 9vw, 104px);
+  padding-bottom: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 24px;
+}
+.sb-landing__eyebrow {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--sb-accent);
+}
+.sb-landing__title {
+  margin: 0;
+  font-family: var(--sb-font-display);
+  font-weight: 700;
+  font-size: clamp(34px, 6.4vw, 60px);
+  line-height: 1.08;
+  letter-spacing: -0.045em;
+  color: var(--sb-ink);
+  text-wrap: balance;
+}
+.sb-landing__grad {
+  background: linear-gradient(90deg, var(--sb-accent) 0%, var(--sb-primary) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.sb-landing__lead {
+  margin: 0;
+  max-width: 64ch;
+  font-size: 16.5px;
+  line-height: 1.6;
+  color: var(--sb-muted);
+  text-wrap: pretty;
+}
+.sb-landing__lead-strong {
+  color: var(--sb-body);
+}
+.sb-landing__hero-actions {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 6px;
+}
+.sb-landing__facts {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-size: 12.5px;
+  color: var(--sb-muted);
+}
+.sb-landing__facts li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* ---- section scaffolding ---- */
+.sb-landing__section {
+  padding-top: 40px;
+  padding-bottom: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+.sb-landing__section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.sb-landing__kicker {
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--sb-muted);
+}
+.sb-landing__kicker--accent {
+  color: var(--sb-accent);
+}
+.sb-landing__kicker-note {
+  font-size: 14px;
+  color: var(--sb-faint);
+}
+
+/* ---- one box · three jobs ---- */
+.sb-landing__jobs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+.sb-landing__job {
+  position: relative;
+  padding: 26px 24px;
+  border: 1px solid var(--sb-divider);
+  border-radius: var(--sb-radius-card);
+  background: var(--sb-panel);
+  overflow: hidden;
+}
+.sb-landing__job::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--sb-primary);
+}
+.sb-landing__job--accent::before { background: var(--sb-accent); }
+.sb-landing__job--cyan::before { background: var(--sb-cyan); }
+.sb-landing__job--mint::before { background: var(--sb-mint); }
+.sb-landing__job-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.sb-landing__job-num {
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+.sb-landing__job--accent .sb-landing__job-num,
+.sb-landing__job--accent .sb-landing__job-glyph { color: var(--sb-accent); }
+.sb-landing__job--cyan .sb-landing__job-num,
+.sb-landing__job--cyan .sb-landing__job-glyph { color: var(--sb-cyan); }
+.sb-landing__job--mint .sb-landing__job-num,
+.sb-landing__job--mint .sb-landing__job-glyph { color: var(--sb-mint); }
+.sb-landing__job-glyph {
+  font-size: 21px;
+  line-height: 1;
+}
+.sb-landing__job-name {
+  font-family: var(--sb-font-display);
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--sb-ink);
+}
+.sb-landing__job-body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.62;
+  color: var(--sb-muted);
+  text-wrap: pretty;
+}
+
+/* ---- trust-per-line strip ---- */
+.sb-landing__trust {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+  border: 1px dashed var(--sb-divider);
+  border-radius: var(--sb-radius-btn);
+  background: color-mix(in oklab, var(--sb-panel) 60%, transparent);
+  font-size: 13px;
+  color: var(--sb-faint);
+}
+.sb-landing__trust-label {
+  font-family: var(--sb-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--sb-muted);
+}
+.sb-landing__trust-note {
+  margin-left: auto;
+  color: var(--sb-faint);
+}
+
+/* ---- what's in the box ---- */
+.sb-landing__cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+.sb-landing__card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid var(--sb-divider);
+  border-radius: var(--sb-radius-card);
+  background: var(--sb-panel);
+  transition: border-color var(--sb-dur-enter) var(--sb-ease),
+    transform var(--sb-dur-enter) var(--sb-ease);
+}
+.sb-landing__card--accent { background:
+  linear-gradient(180deg, color-mix(in oklab, var(--sb-accent) 9%, transparent), transparent 58%), var(--sb-panel); }
+.sb-landing__card--cyan { background:
+  linear-gradient(180deg, color-mix(in oklab, var(--sb-cyan) 9%, transparent), transparent 58%), var(--sb-panel); }
+.sb-landing__card--mint { background:
+  linear-gradient(180deg, color-mix(in oklab, var(--sb-mint) 9%, transparent), transparent 58%), var(--sb-panel); }
+.sb-landing__card--gold { background:
+  linear-gradient(180deg, color-mix(in oklab, var(--sb-gold) 9%, transparent), transparent 58%), var(--sb-panel); }
+.sb-landing__card--lilac { background:
+  linear-gradient(180deg, color-mix(in oklab, var(--sb-lilac) 9%, transparent), transparent 58%), var(--sb-panel); }
+.sb-landing__card:hover {
+  border-color: var(--sb-border-strong);
+  transform: translateY(-2px);
+}
+.sb-landing__card-glyph {
+  font-size: 20px;
+  line-height: 1;
+}
+.sb-landing__card-title {
+  font-family: var(--sb-font-display);
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--sb-ink);
+}
+.sb-landing__card-body {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--sb-muted);
+  text-wrap: pretty;
+}
+.sb-landing__card-link {
+  margin-top: auto;
+  font-size: 12px;
+  color: var(--sb-faint);
+  text-decoration: none;
+}
+.sb-landing__card-link:hover {
+  color: var(--sb-cyan);
+}
+
+/* ---- live board preview ---- */
+.sb-landing__board-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.sb-landing__board-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sb-landing__board-title {
+  font-family: var(--sb-font-display);
+  font-weight: 700;
+  font-size: clamp(26px, 4vw, 34px);
+  letter-spacing: -0.03em;
+  color: var(--sb-ink);
+}
+.sb-landing__board-sub {
+  font-size: 14px;
+  color: var(--sb-muted);
+  max-width: 56ch;
+  line-height: 1.55;
+}
+.sb-landing__board-link {
+  font-size: 13px;
+  color: var(--sb-cyan);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.sb-landing__board-link:hover { text-decoration: underline; }
+
+.sb-landing__shot {
+  margin: 0;
+  border-radius: var(--sb-radius-modal);
+  overflow: hidden;
+  box-shadow: var(--sb-shadow-modal), 0 0 0 1px color-mix(in oklab, var(--sb-primary) 16%, transparent);
+  background: #08080f;
+}
+.sb-landing__shot-chrome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 16px;
+  background: #111121;
+  border-bottom: 1px solid #262645;
+}
+.sb-landing__shot-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+.sb-landing__shot-url {
+  margin: 0 auto;
+  padding: 4px 16px;
+  border-radius: var(--sb-radius-chip);
+  background: #0a0a14;
+  color: #8888b0;
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
+}
+.sb-landing__shot-img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* ---- closer ---- */
+.sb-landing__closer {
+  max-width: 900px;
+  padding-top: 24px;
+  padding-bottom: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 20px;
+}
+.sb-landing__closer-title {
+  font-family: var(--sb-font-display);
+  font-weight: 700;
+  font-size: clamp(28px, 5vw, 40px);
+  letter-spacing: -0.035em;
+  color: var(--sb-ink);
+  line-height: 1.12;
+}
+.sb-landing__closer-body {
+  margin: 0;
+  max-width: 58ch;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--sb-muted);
+}
+
+/* ---- footer ---- */
+.sb-landing__footer {
+  border-top: 1px solid var(--sb-divider);
+  background: color-mix(in oklab, var(--sb-canvas) 70%, transparent);
+  padding: 32px clamp(16px, 4vw, 40px);
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.sb-landing__footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sb-landing__footer-tag {
+  font-size: 13px;
+  color: var(--sb-faint);
+  font-style: italic;
+}
+.sb-landing__footer-legal {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--sb-faint);
+}
+
+/* ---- responsive ---- */
+@media (max-width: 900px) {
+  .sb-landing__jobs,
+  .sb-landing__cards {
+    grid-template-columns: 1fr;
+  }
+  .sb-landing__trust-note { margin-left: 0; width: 100%; }
+  .sb-landing__footer-legal { margin-left: 0; }
+}
+@media (max-width: 560px) {
+  .sb-landing__cta:not(.sb-landing__cta--lg) {
+    padding: 8px 12px;
+    font-size: 12px;
   }
 }

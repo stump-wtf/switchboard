@@ -34,6 +34,9 @@ type Endpoint struct {
 	State            string
 	CreatedAt        time.Time
 	LastSeenAt       *time.Time // nil until the credential first authenticates (TouchEndpoint)
+	// ExpiresAt is the optional credential lifetime chosen at vend time; nil = valid until revoked.
+	// Enforced as revocation (auth + reaper). Governing: SPEC-0016 REQ "Credential Lifetime", ADR-0019.
+	ExpiresAt *time.Time
 }
 
 // AuthEndpoint is the minimal view resolved from a presented credential to authorize an agent call.
@@ -148,7 +151,7 @@ func MintSlug(agentName string) (string, error) {
 // immutable (ADR-0008). The endpoint is bound to no persona (persona_id NULL) — persona binding is
 // done through VendAgentEndpoint, which validates the persona against the endpoint's agent.
 func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefix, slug string, queues, verbs []string) (Endpoint, error) {
-	return createEndpoint(ctx, s.pool, agentID, credHash, credPrefix, slug, queues, verbs, nil)
+	return createEndpoint(ctx, s.pool, agentID, credHash, credPrefix, slug, queues, verbs, nil, nil)
 }
 
 // createEndpoint is the querier-based core of CreateEndpoint: it runs on either the pool or a
@@ -156,15 +159,17 @@ func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefi
 // that transitions a friend edge to approved — approval is the vend, atomically. Governing:
 // ADR-0008 (URL + credential together = the grant; scope immutable). personaID is nil for an
 // agent-level endpoint, or a persona uuid (as a string) to scope the endpoint to a persona of the
-// SAME agent — the caller is responsible for that same-agent invariant (ADR-0009).
-func createEndpoint(ctx context.Context, q querier, agentID, credHash, credPrefix, slug string, queues, verbs []string, personaID any) (Endpoint, error) {
+// SAME agent — the caller is responsible for that same-agent invariant (ADR-0009). expiresAt is
+// the optional credential lifetime chosen at vend time; nil = valid until revoked (SPEC-0016 REQ
+// "Credential Lifetime").
+func createEndpoint(ctx context.Context, q querier, agentID, credHash, credPrefix, slug string, queues, verbs []string, personaID any, expiresAt *time.Time) (Endpoint, error) {
 	var e Endpoint
 	err := q.QueryRow(ctx, `
-		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues, scope_verbs, persona_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at`,
-		agentID, credHash, credPrefix, slug, queues, verbs, personaID,
-	).Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt)
+		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues, scope_verbs, persona_id, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at, expires_at`,
+		agentID, credHash, credPrefix, slug, queues, verbs, personaID, expiresAt,
+	).Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt, &e.ExpiresAt)
 	return e, err
 }
 
@@ -181,6 +186,10 @@ type VendParams struct {
 	Slug         string
 	Queues       []string
 	Verbs        []string
+	// ExpiresAt is the optional credential lifetime chosen in the vend flow (SPEC-0015 lifetime
+	// step); nil vends an endpoint valid until revoked. Governing: SPEC-0016 REQ "Credential
+	// Lifetime", ADR-0019.
+	ExpiresAt *time.Time
 }
 
 // VendResult is what VendAgentEndpoint returns: the backing agent's name (for the one-time reveal)
@@ -241,7 +250,7 @@ func (s *Store) VendAgentEndpoint(ctx context.Context, p VendParams) (VendResult
 		}
 	}
 
-	ep, err := createEndpoint(ctx, tx, agentID, p.CredHash, p.CredPrefix, p.Slug, p.Queues, p.Verbs, personaID)
+	ep, err := createEndpoint(ctx, tx, agentID, p.CredHash, p.CredPrefix, p.Slug, p.Queues, p.Verbs, personaID, p.ExpiresAt)
 	if err != nil {
 		return VendResult{}, fmt.Errorf("store: vend create endpoint: %w", err)
 	}
@@ -254,7 +263,7 @@ func (s *Store) VendAgentEndpoint(ctx context.Context, p VendParams) (VendResult
 // ListEndpoints returns an agent's endpoints, newest first.
 func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at, last_seen_at
+		SELECT id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at, last_seen_at, expires_at
 		FROM endpoints WHERE agent_id = $1 ORDER BY created_at DESC`, agentID)
 	if err != nil {
 		return nil, err
@@ -263,7 +272,7 @@ func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, 
 	var out []Endpoint
 	for rows.Next() {
 		var e Endpoint
-		if err := rows.Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt, &e.LastSeenAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt, &e.LastSeenAt, &e.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -279,6 +288,7 @@ type EndpointCard struct {
 	ID               string
 	AgentID          string
 	AgentName        string
+	PersonaID        string // "" when no persona is bound — seeds the re-vend wizard (SPEC-0015)
 	PersonaName      string // "" when no persona is bound (or personas are disabled)
 	Slug             string
 	CredentialPrefix string
@@ -288,6 +298,9 @@ type EndpointCard struct {
 	CreatedAt        time.Time
 	RevokedAt        *time.Time // set once the endpoint was killed (revoke), for the dimmed card stamp
 	LastSeenAt       *time.Time // nil until the credential first authenticates
+	// ExpiresAt is the optional vend-time credential lifetime the card's countdown renders from;
+	// nil = valid until revoked. Governing: SPEC-0016 REQ "Credential Lifetime".
+	ExpiresAt *time.Time
 }
 
 // ListEndpointCards returns every endpoint owned by a human (via its agents), enriched with the
@@ -297,9 +310,9 @@ type EndpointCard struct {
 // Principal".
 func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]EndpointCard, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT e.id::text, e.agent_id::text, ag.name, COALESCE(p.name, ''),
+		SELECT e.id::text, e.agent_id::text, ag.name, COALESCE(p.id::text, ''), COALESCE(p.name, ''),
 		       e.slug, e.credential_prefix, e.scope_queues, e.scope_verbs,
-		       e.state, e.created_at, e.revoked_at, e.last_seen_at
+		       e.state, e.created_at, e.revoked_at, e.last_seen_at, e.expires_at
 		FROM endpoints e
 		JOIN agents ag ON ag.id = e.agent_id
 		LEFT JOIN personas p ON p.id = e.persona_id
@@ -312,9 +325,9 @@ func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]E
 	var out []EndpointCard
 	for rows.Next() {
 		var c EndpointCard
-		if err := rows.Scan(&c.ID, &c.AgentID, &c.AgentName, &c.PersonaName, &c.Slug,
+		if err := rows.Scan(&c.ID, &c.AgentID, &c.AgentName, &c.PersonaID, &c.PersonaName, &c.Slug,
 			&c.CredentialPrefix, &c.ScopeQueues, &c.ScopeVerbs, &c.State, &c.CreatedAt,
-			&c.RevokedAt, &c.LastSeenAt); err != nil {
+			&c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("store: scan endpoint card: %w", err)
 		}
 		out = append(out, c)
@@ -323,9 +336,19 @@ func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]E
 }
 
 // RevokeEndpoint marks an endpoint revoked, but only if it belongs to the given human (via its agent).
-// Revoke = invalidate credential + unroute; instant and total (ADR-0008).
+// Revoke = invalidate credential + unroute; instant and total (ADR-0008). The OAuth cascade runs in
+// the SAME transaction: every token minted onto the endpoint is revoked and every unspent code is
+// force-expired, so the one act atomically kills the static bearer, the OAuth credentials, and (via
+// the caller's endpointRevoked hook) the live MCP sessions. Governing: SPEC-0016 REQ "Revocation
+// Cascade" ("endpoint revoke atomically kills tokens, codes, sessions, and the endpoint").
 func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID string) error {
-	ct, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: revoke endpoint begin: %w", err)
+	}
+	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+
+	ct, err := tx.Exec(ctx, `
 		UPDATE endpoints SET state = 'revoked', revoked_at = now()
 		WHERE id = $1 AND state = 'active'
 		  AND agent_id IN (SELECT id FROM agents WHERE owner_human_id = $2)`,
@@ -335,6 +358,12 @@ func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID str
 	}
 	if ct.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	if err := revokeEndpointOAuth(ctx, tx, []string{endpointID}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: revoke endpoint commit: %w", err)
 	}
 	return nil
 }
@@ -402,14 +431,18 @@ func (s *Store) DeleteEndpoint(ctx context.Context, endpointID, ownerHumanID str
 }
 
 // EndpointByCredHash resolves an active endpoint from a presented credential hash, for agent auth.
-// Returns ErrNotFound for unknown or revoked credentials.
+// Returns ErrNotFound for unknown, revoked, or expired credentials — an expired endpoint fails auth
+// identically to a revoked one, even before the reaper's next tick flips its row, so a passed
+// expiry can never be spent. Governing: SPEC-0016 REQ "Credential Lifetime" (scenario "Expiry
+// enforcement"), SPEC-0007 REQ "Instant, Total Revocation".
 func (s *Store) EndpointByCredHash(ctx context.Context, credHash string) (AuthEndpoint, error) {
 	var a AuthEndpoint
 	err := s.pool.QueryRow(ctx, `
 		SELECT e.id::text, e.agent_id::text, ag.name, ag.owner_human_id::text, e.slug, e.scope_queues, e.scope_verbs,
 		       e.webhook_max, e.webhook_source_types, e.webhook_queues
 		FROM endpoints e JOIN agents ag ON ag.id = e.agent_id
-		WHERE e.credential_hash = $1 AND e.state = 'active'`,
+		WHERE e.credential_hash = $1 AND e.state = 'active'
+		  AND (e.expires_at IS NULL OR e.expires_at > now())`,
 		credHash,
 	).Scan(&a.ID, &a.AgentID, &a.AgentName, &a.OwnerHumanID, &a.Slug, &a.ScopeQueues, &a.ScopeVerbs,
 		&a.WebhookMax, &a.WebhookSourceTypes, &a.WebhookQueues)
@@ -417,6 +450,52 @@ func (s *Store) EndpointByCredHash(ctx context.Context, credHash string) (AuthEn
 		return AuthEndpoint{}, ErrNotFound
 	}
 	return a, err
+}
+
+// ExpireEndpoints flips every active endpoint whose expiry has passed to state='revoked'
+// (revoked_at stamped) and returns the affected ids so the caller can tear down live MCP sessions
+// (server reaper → CloseEndpointSessions), exactly like a web-UI revoke. Expiry deliberately
+// REUSES the SPEC-0007 revocation lifecycle rather than inventing an "expired" state: credentials
+// are already dead at auth (EndpointByCredHash), the card dims like any killed endpoint, and a
+// second call returns nothing (the rows are no longer active). The OAuth cascade rides the same
+// transaction — an expired endpoint's tokens and codes die with it, exactly as a revoke's do —
+// so expiry and revocation stay ONE lifecycle from every credential's point of view. Governing:
+// SPEC-0016 REQ "Credential Lifetime", REQ "Revocation Cascade", SPEC-0007 REQ "Instant, Total
+// Revocation", ADR-0019.
+func (s *Store) ExpireEndpoints(ctx context.Context) ([]string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: expire endpoints begin: %w", err)
+	}
+	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+
+	rows, err := tx.Query(ctx, `
+		UPDATE endpoints SET state = 'revoked', revoked_at = now()
+		WHERE state = 'active' AND expires_at IS NOT NULL AND expires_at <= now()
+		RETURNING id::text`)
+	if err != nil {
+		return nil, fmt.Errorf("store: expire endpoints: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: scan expired endpoint: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: expire endpoints rows: %w", err)
+	}
+	if err := revokeEndpointOAuth(ctx, tx, ids); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: expire endpoints commit: %w", err)
+	}
+	return ids, nil
 }
 
 // EndpointOwner resolves the human who owns an endpoint (endpoint → agent → owner_human_id).

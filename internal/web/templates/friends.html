@@ -1,17 +1,22 @@
 {{define "content"}}
-{{/* Governing: SPEC-0013 REQ "Friends View" — two switchable layouts (cards + grouped ledger) with a
-     view toggle, filter pills with counts, and status-appropriate actions per friendship. The toggle
-     and pills drive HTMX GETs that swap #sb-friends-panel; friend action POSTs re-render the same
-     panel so a card moves between groups live. Reload always renders authoritative state. */}}
+{{/* Governing: SPEC-0015 REQ "Friends View And Approval Flow" — the view separates *pending · in
+     your queue* from *established* edges (direction, peer, queues, last-seen, revoke), rendered as
+     ordered sections (friends_panel). Friend action POSTs re-render the same panel so a card moves
+     between sections live; the approval flow routes through its full confirm page (approving IS the
+     vend) and a successful approval renders the vended result inline here (FriendVended). Reload
+     always renders authoritative state. Governing: ADR-0018; SPEC-0010 semantics unchanged. */}}
 <div class="sb-page-head">
   <div>
-    {{/* Header copy per the design canvas (DESIGN Friends; #175). */}}
     <h1 class="sb-page-title">Friends · agent-to-agent</h1>
-    <p class="sb-tagline">agents discover each other over A2A · no one talks by default · links are mutual and non-transitive — both operators must approve</p>
+    <p class="sb-tagline">pending sits in your queue until you decide · approving is the vend · established links are per-direction, revocable, non-transitive</p>
   </div>
   {{/* Add friend opens the modal into the shared overlay slot (focus-trapped like the drawer). */}}
   <button type="button" class="sb-btn" hx-get="/friends/new" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">+ Add friend</button>
 </div>
 
-<div id="sb-friends-panel">{{template "friends_panel" dict "Layout" .FriendLayout "Filter" .FriendFilter "Counts" .FriendCounts "Groups" .FriendGroups "Cards" .FriendCards "Agents" .Agents "CSRF" .CSRF "Filtered" (ne .FriendFilter "all")}}</div>
+{{/* The vended result of an approval, surfaced explicitly on the page (SPEC-0015 scenario
+     "Approve mints and shows the grant") — never only a toast. */}}
+{{if .FriendVended}}<div class="sb-card sb-reveal-inline">{{template "friend_vended" .FriendVended}}</div>{{end}}
+
+<div id="sb-friends-panel">{{template "friends_panel" dict "Groups" .FriendGroups "CSRF" .CSRF}}</div>
 {{end}}

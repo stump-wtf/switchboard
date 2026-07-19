@@ -1,0 +1,144 @@
+{{/* Todos-view fragments — the durable queue as a filterable table plus the detail drawer, in
+     the charm-web language (lowercase mono microcopy, flat square chips, glyph timeline).
+     Governing: ADR-0018; SPEC-0015 REQ "Todos View And Drawer" (every SPEC-0003 action and SSE
+     row update preserved), REQ "Live Fragment Architecture" (per-view fragment file). */}}
+
+{{/* todos_panel — the swappable region under the view head: search + filter chips + the table.
+     Returned wholesale on HTMX filter/search GETs and rendered server-side into the full page.
+     Data carries Filter, Query, Counts, Rows (web.panelView, or the equivalent dict from the
+     page). */}}
+{{define "todos_panel"}}{{template "todos_search" .}}{{template "todo_pills" .}}{{template "todos_table" .Rows}}{{end}}
+
+{{/* todos_search — id/source/event search behind the terminal ❯ prompt. The input drives live
+     HTMX swaps (debounced); the plain form action is the no-JS fallback. htmx restores focus +
+     caret to #sb-todos-search after each swap because the id is stable; the global `/` key
+     (sb-keys.js registry) focuses it. */}}
+{{define "todos_search"}}<form class="sb-search" role="search" action="/todos" method="get">
+  <input type="hidden" name="filter" value="{{.Filter}}">
+  <span class="sb-search__prompt" aria-hidden="true">❯</span>
+  <input id="sb-todos-search" class="sb-input sb-search__input" type="search" name="q" value="{{.Query}}" placeholder="search id · source · event" autocomplete="off" aria-label="Search todos"
+    hx-get="/todos" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-trigger="input changed delay:300ms, search" hx-include="[name=filter]" hx-push-url="true">
+</form>{{end}}
+
+{{/* todo_pills — the five filter chips (all/pending/claimed/done/failed) with live counts, flat
+     and square per ADR-0018 (no pill radii on state controls). Each chip carries its canonical
+     filter key as data-sb-filter; each count span keeps the sb-tc-<key> id so the counts SSE
+     frame refreshes the numbers OOB without disturbing the active-chip state. hx-include pulls
+     the current search text along on a chip click. */}}
+{{define "todo_pills"}}<div class="sb-fpills" role="tablist" aria-label="Filter todos">
+  <a class="sb-fpill{{if eq .Filter "all"}} sb-fpill--active{{end}}" data-sb-filter="all" href="/todos?filter=all" hx-get="/todos?filter=all" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "all"}}true{{else}}false{{end}}">all <span id="sb-tc-all" class="sb-fpill__n" aria-live="polite">{{.Counts.All}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "pending"}} sb-fpill--active{{end}}" data-sb-filter="pending" href="/todos?filter=pending" hx-get="/todos?filter=pending" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "pending"}}true{{else}}false{{end}}">pending <span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite">{{.Counts.Pending}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "claimed"}} sb-fpill--active{{end}}" data-sb-filter="claimed" href="/todos?filter=claimed" hx-get="/todos?filter=claimed" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "claimed"}}true{{else}}false{{end}}">claimed <span id="sb-tc-claimed" class="sb-fpill__n" aria-live="polite">{{.Counts.Claimed}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "done"}} sb-fpill--active{{end}}" data-sb-filter="done" href="/todos?filter=done" hx-get="/todos?filter=done" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "done"}}true{{else}}false{{end}}">done <span id="sb-tc-done" class="sb-fpill__n" aria-live="polite">{{.Counts.Done}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "failed"}} sb-fpill--active{{end}}" data-sb-filter="failed" href="/todos?filter=failed" hx-get="/todos?filter=failed" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "failed"}}true{{else}}false{{end}}">failed <span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite">{{.Counts.Failed}}</span></a>
+</div>{{end}}
+
+{{/* todos_table — the durable-queue table (SPEC-0015 columns: line · provider · trust · state ·
+     age, plus the agent and action cells the SPEC-0003 lifecycle needs). Headers render as mono
+     microlabels. Data: []web.todoRow. */}}
+{{define "todos_table"}}<div class="sb-table-wrap"><table class="sb-table sb-table--todos">
+  <thead><tr><th scope="col">line</th><th scope="col">provider · event</th><th scope="col">trust</th><th scope="col">state</th><th scope="col">agent</th><th scope="col">age</th><th scope="col">action</th></tr></thead>
+  <tbody id="sb-todos-body" aria-live="polite">{{range .}}{{template "todo_row" .}}{{end}}</tbody>
+</table></div>{{if not .}}<p class="sb-empty" data-sb-todos-empty>no todos match · the queue is clear</p>{{end}}{{end}}
+
+{{/* todo_row — one durable-queue row. The WHOLE row opens the detail drawer (design record: row
+     onClick): data-sb-row-open + tabindex let sb-overlay.js forward a click on the row body (or
+     Enter/Space while the row is focused) to the line cell's button (data-sb-row-trigger), which
+     stays the accessible, HTMX-wired trigger — the <tr> keeps its native row role so the table
+     remains a table for AT, and clicks on real controls inside the row are never hijacked. The
+     trust badge and state chip carry their modes as data-sb-trust/data-sb-state stamps (the DOM
+     contract tests key on). The action cell dispatches a lifecycle POST scoped to the row
+     (closest tr → the responder returns a refreshed row). Live SSE transitions replace this row
+     OOB by its sb-tr-<id> id; a reaper re-surface arrives with the flash modifier. Data:
+     web.todoRow. Governing: SPEC-0015 REQ "Todos View And Drawer" (scenario "Live claim"). */}}
+{{define "todo_row"}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}" data-sb-row-open{{if .Flash}} data-sb-flash{{end}} tabindex="0"{{if .OOB}} hx-swap-oob="true"{{end}}>
+  <td><button type="button" class="sb-linklike sb-mono" data-sb-row-trigger hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>
+  <td>{{if .Source}}<span class="sb-tag" data-sb-tag aria-hidden="true">{{tag .Source}}</span> {{end}}<span class="sb-trow__source" data-sb-source>{{if .Source}}{{.Source}}{{else}}—{{end}}</span> <span class="sb-trow__kind" data-sb-kind>{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" data-sb-dedup title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
+  <td><span class="sb-badge sb-badge--{{.TrustMode}}" data-sb-trust="{{.TrustMode}}">{{.TrustMode}}</span></td>
+  <td><span class="sb-status sb-status--{{.State}}" data-sb-state="{{.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.State}}</span>{{if and (eq .State "claimed") .HasLease}}<span class="sb-trow__sub" data-sb-countdown data-sb-deadline="{{.LeaseDeadlineMS}}" data-sb-suffix=" left">lease {{.LeaseSecs}}s left</span>{{else if and (eq .State "failed") .RetryScheduled}}<span class="sb-trow__sub sb-trow__sub--retry" data-sb-countdown data-sb-deadline="{{.RetryDeadlineMS}}" data-sb-prefix="↻ retry " data-sb-expired="↻ re-queuing…">↻ retry {{.RetrySecs}}s</span>{{else if eq .State "failed"}}<span class="sb-trow__sub">{{.Attempt}}/{{.MaxAttempts}} attempts</span>{{end}}</td>
+  <td class="sb-mono">{{if .OwnerLabel}}{{.OwnerLabel}}{{else}}—{{end}}</td>
+  <td class="sb-trow__age">{{reltime .CreatedAt}}</td>
+  <td class="sb-trow__act">{{if eq .State "pending"}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.ID}}/claim" hx-target="closest tr" hx-swap="outerHTML">Claim</button>{{else if eq .State "claimed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/complete" hx-target="closest tr" hx-swap="outerHTML">Complete</button>{{else if eq .State "failed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/retry" hx-target="closest tr" hx-swap="outerHTML">Retry</button>{{else}}<span class="sb-muted">—</span>{{end}}</td>
+</tr>{{end}}
+
+{{/* drawer — the todo detail overlay: identity block, lease/retry cards, metadata, escaped
+     payload, glyph lifecycle timeline, and state-appropriate footer actions. Rendered into
+     #sb-overlay on HTMX and inline on the standalone /todos/{id} page. All actions are HTMX
+     POSTs (CSRF via the layout's body hx-headers). Data: web.drawerView. Governing: SPEC-0015
+     REQ "Todos View And Drawer" (lifecycle timeline · idempotency key · lease · claimed-by ·
+     payload · actions); SPEC-0003 owns every transition this surface dispatches. */}}
+{{define "drawer"}}<div class="sb-drawer" role="dialog" aria-modal="true" aria-label="Todo {{.Row.ShortID}}" data-sb-drawer tabindex="-1">
+  <div class="sb-drawer__head">
+    <div class="sb-drawer__title"><span class="sb-drawer__id sb-mono">{{.Row.ShortID}}</span><span class="sb-status sb-status--{{.Row.State}}" data-sb-state="{{.Row.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.Row.State}}</span></div>
+    <button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button>
+  </div>
+  {{/* Identity block — the trust-tinted provider tag, the source, and the event type (design
+       drawer: detail.tag / detail.src / detail.type). Governing: SPEC-0015 REQ "Todos View And
+       Drawer" (drawer identity). */}}
+  <div class="sb-identity" data-sb-identity>
+    <span class="sb-tag sb-tag--{{.Row.TrustMode}}" data-sb-tag data-sb-trust="{{.Row.TrustMode}}" aria-hidden="true">{{tag .Row.Source}}</span>
+    <div class="sb-identity__text">
+      <span class="sb-identity__src" data-sb-source>{{if .Row.Source}}{{.Row.Source}}{{else}}—{{end}}</span>
+      <span class="sb-identity__type" data-sb-kind>{{.Row.Kind}}</span>
+    </div>
+  </div>
+  {{if and (eq .Row.State "claimed") .Row.HasLease}}
+  {{/* Visibility-lease card (design: "visibility lease · {agent}" + live draining countdown +
+       reaper hint). Governing: SPEC-0015 REQ "Todos View And Drawer" (lease, claimed-by),
+       SPEC-0003 REQ "Visibility Window, Lease, Heartbeat" (reaper re-surface). */}}
+  <div class="sb-lease" data-sb-lease>
+    <div class="sb-lease__head">
+      <span class="sb-microlabel">visibility lease{{if .Row.OwnerLabel}} · {{.Row.OwnerLabel}}{{end}}</span>
+      <span class="sb-lease__count" data-sb-countdown data-sb-deadline="{{.Row.LeaseDeadlineMS}}" data-sb-suffix=" left" role="timer" aria-live="off">{{.Row.LeaseSecs}}s left</span>
+    </div>
+    <div class="sb-lease__track" aria-hidden="true"><div class="sb-lease__bar" data-sb-leasebar data-sb-deadline="{{.Row.LeaseDeadlineMS}}" style="width:100%"></div></div>
+    <p class="sb-lease__hint">if the lease expires, the reaper re-surfaces this todo to the queue</p>
+    <div class="sb-drawer__acts">
+      <button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.Row.ID}}/extend" hx-target="#sb-overlay" hx-swap="innerHTML">Extend lease</button>
+      <button type="button" class="sb-btn sb-btn--mono sb-btn--secondary" hx-post="/todos/{{.Row.ID}}/release" hx-target="#sb-overlay" hx-swap="innerHTML">Release</button>
+    </div>
+  </div>
+  {{end}}
+  {{if and (eq .Row.State "failed") .Row.RetryScheduled}}
+  {{/* Scheduled-backoff retry card (SPEC-0003 scheduled backoff; design failed-card): the ↻
+       countdown ticks toward the server-stamped next_retry_at via the same sb-live.js mechanism
+       as the lease countdown. "Retry now" in the footer remains the manual override. */}}
+  <div class="sb-retry" data-sb-retry>
+    <span class="sb-retry__label">retry with backoff · attempt {{.Row.Attempt}}</span>
+    <span class="sb-retry__count" data-sb-countdown data-sb-deadline="{{.Row.RetryDeadlineMS}}" data-sb-prefix="↻ " data-sb-expired="↻ re-queuing…" role="timer" aria-live="off">↻ {{.Row.RetrySecs}}s</span>
+  </div>
+  {{else if eq .Row.State "failed"}}
+  <div class="sb-callout sb-callout--danger">Dead-lettered after {{.Row.Attempt}}/{{.Row.MaxAttempts}} attempts. Retry re-queues it with a fresh attempt budget.</div>
+  {{end}}
+  <dl class="sb-meta">
+    <div class="sb-meta__cell"><dt>trust</dt><dd><span class="sb-badge sb-badge--{{.Row.TrustMode}}" data-sb-trust="{{.Row.TrustMode}}">{{.Row.TrustMode}}</span></dd></div>
+    <div class="sb-meta__cell"><dt>agent</dt><dd class="sb-mono">{{if .Row.OwnerLabel}}{{.Row.OwnerLabel}}{{else}}—{{end}}</dd></div>
+    <div class="sb-meta__cell"><dt>attempts</dt><dd>{{.Row.Attempt}}/{{.Row.MaxAttempts}}</dd></div>
+    <div class="sb-meta__cell"><dt>age</dt><dd>{{reltime .Row.CreatedAt}}</dd></div>
+  </dl>
+  <div class="sb-meta__idem"><span class="sb-microlabel">idempotency key</span><code class="sb-code" data-sb-idem>{{if .IdempotencyKey}}{{.IdempotencyKey}}{{else}}—{{end}}</code>{{if gt .Row.DedupCount 1}} <span class="sb-dedup" data-sb-dedup>dedup ×{{.Row.DedupCount}}</span>{{end}}
+    {{/* dedupLine — always rendered (design: "N duplicate deliveries collapsed via idempotency
+         key" / "no duplicate deliveries"). Governing: SPEC-0015 REQ "Todos View And Drawer"
+         (idempotency key with a dedup summary). */}}
+    <span class="sb-meta__dedupline" data-sb-dedupline>{{if gt .Row.DedupCount 1}}{{.Row.DedupCount}} duplicate deliveries collapsed via idempotency key{{else}}no duplicate deliveries{{end}}</span></div>
+  <span class="sb-microlabel">payload</span>
+  <pre class="sb-pre sb-drawer__payload" data-sb-payload>{{.PayloadJSON}}</pre>
+  <span class="sb-microlabel">lifecycle</span>
+  {{/* Glyph timeline (ADR-0018 iconography: ✓ done · ○ ahead) — resolved steps carry
+       data-sb-done so the DOM contract is attribute-keyed, not class-keyed. */}}
+  <ol class="sb-timeline" data-sb-timeline>
+    <li data-sb-step="received"{{if .HasEvent}} class="sb-timeline__done" data-sb-done{{end}}>received · verified{{if .HasEvent}} · {{reltime .ReceivedAt}}{{end}}</li>
+    <li data-sb-step="created" class="sb-timeline__done" data-sb-done>todo created · {{reltime .Row.CreatedAt}}</li>
+    <li data-sb-step="claimed"{{if .ClaimedAt}} class="sb-timeline__done" data-sb-done{{end}}>claimed under lease{{if .ClaimedAt}} · {{reltime .ClaimedAt}}{{end}}</li>
+    <li data-sb-step="resolved"{{if .CompletedAt}} class="sb-timeline__done" data-sb-done{{end}}>{{if eq .Row.State "failed"}}failed{{else}}completed · ack{{end}}{{if .CompletedAt}} · {{reltime .CompletedAt}}{{end}}</li>
+  </ol>
+  <div class="sb-drawer__foot">
+    {{if eq .Row.State "pending"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/claim" hx-target="#sb-overlay" hx-swap="innerHTML">Claim under lease</button>
+    {{else if eq .Row.State "claimed"}}<button type="button" class="sb-btn sb-btn--success" hx-post="/todos/{{.Row.ID}}/complete" hx-target="#sb-overlay" hx-swap="innerHTML">Complete · ack</button><button type="button" class="sb-btn sb-btn--danger" hx-post="/todos/{{.Row.ID}}/fail" hx-target="#sb-overlay" hx-swap="innerHTML">Fail</button>
+    {{else if eq .Row.State "failed"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/retry" hx-target="#sb-overlay" hx-swap="innerHTML">Retry now</button>
+    {{/* Terminal footer for done todos (design: detail.isDone → "✓ completed · acked to
+         source"). Governing: SPEC-0015 REQ "Todos View And Drawer" (footer appropriate to the
+         state). */}}
+    {{else if eq .Row.State "done"}}<span class="sb-drawer__done" data-sb-acked>✓ completed · acked to source</span>{{end}}
+  </div>
+</div>{{end}}

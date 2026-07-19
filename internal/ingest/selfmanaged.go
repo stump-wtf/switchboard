@@ -65,6 +65,15 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Idempotency key scoped to this webhook so a redelivery to the SAME webhook dedups but identical
+	// payloads to different self-managed webhooks (which share a source namespace like "github") never
+	// collide. Prefer a provider delivery id where one exists; fall back to a body hash otherwise.
+	deliveryID := r.Header.Get("X-GitHub-Delivery")
+	key := wh.ID + ":" + idempotencyKey(deliveryID, body)
+	// The routed line is in flight: surface it on the board's ephemeral received lane (SPEC-0015).
+	// Unknown tokens (the 404s above) never ring the board — a guess is not a line.
+	i.observeReceived(wh.SourceType, "webhook", wh.TrustMode, key)
+
 	// Verify per the webhook's trust mode. signed → provider HMAC over the raw body against the stored
 	// secret (fail closed on a bad/missing signature); token → caller authenticated by the unguessable
 	// URL, body not verified. No trust downgrade is possible: the mode is switchboard's, fixed at create.
@@ -75,6 +84,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			// A signed webhook with no stored secret cannot be verified — refuse rather than fake trust.
 			// Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency".
 			i.log.Error("self-managed signed webhook missing secret", "webhook", wh.ID, "remote", clientIP(r))
+			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "webhook not configured")
 			writeErr(w, http.StatusServiceUnavailable, "webhook not configured")
 			return
 		}
@@ -82,6 +92,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// An unsupported signed source type is a server-side misconfiguration, not a client fault.
 			i.log.Error("self-managed signed webhook verify", "webhook", wh.ID, "source", wh.SourceType, "err", err)
+			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "verification unavailable")
 			writeErr(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -90,6 +101,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			// exactly like the operator-configured signed receivers.
 			i.log.Warn("self-managed webhook signature rejected", "webhook", wh.ID, "source", wh.SourceType,
 				"delivery", r.Header.Get("X-GitHub-Delivery"), "remote", clientIP(r))
+			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "signature verification failed")
 			writeErr(w, http.StatusUnauthorized, "signature verification failed")
 			return
 		}
@@ -97,12 +109,6 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		verified = true
 		verifyDetail = "hmac-sha256 ok"
 	}
-
-	// Idempotency key scoped to this webhook so a redelivery to the SAME webhook dedups but identical
-	// payloads to different self-managed webhooks (which share a source namespace like "github") never
-	// collide. Prefer a provider delivery id where one exists; fall back to a body hash otherwise.
-	deliveryID := r.Header.Get("X-GitHub-Delivery")
-	key := wh.ID + ":" + idempotencyKey(deliveryID, body)
 
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event and todo commit in one transaction.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
@@ -123,6 +129,9 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	}
 	if created {
 		i.hub.Publish(td)
+	} else {
+		// Idempotent redelivery: resolve the in-flight card without a lane advance (SPEC-0015).
+		i.observeDeduped(wh.SourceType, "webhook", wh.TrustMode, key)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"id": td.ID, "queue": td.Queue, "verified": verified, "trust_mode": wh.TrustMode,

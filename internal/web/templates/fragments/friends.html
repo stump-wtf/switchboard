@@ -1,0 +1,128 @@
+{{/* Friends-view fragments (SPEC-0015 REQ "Friends View And Approval Flow"; split per view by
+     SPEC-0015 REQ "Live Fragment Architecture"). Governing: ADR-0018; SPEC-0010 (per-direction,
+     revocable, non-transitive semantics — this layer only renders them). */}}
+
+{{/* friend_badge — the rail's pending-incoming badge (shown only when nonzero). Args: Count int. */}}
+{{define "friend_badge"}}{{if gt .Count 0}}<span id="sb-friends-badge" class="sb-rail__count" aria-live="polite">{{.Count}}</span>{{else}}<span id="sb-friends-badge" class="sb-rail__count" aria-live="polite" hidden></span>{{end}}{{end}}
+
+{{/* friend_counts — OOB refresh of the rail badge after a friend action (same HTTP response, NOT
+     the shared SSE hub — friend counts are per-human and must not fan out cross-tenant).
+     Data: web.friendCountsView. */}}
+{{define "friend_counts"}}<span id="sb-friends-badge" class="sb-rail__count" aria-live="polite"{{if not .Counts.Incoming}} hidden{{end}}{{if .OOB}} hx-swap-oob="true"{{end}}>{{.Counts.Incoming}}</span>{{end}}
+
+{{/* friends_panel — the swappable region: the SPEC-0015 sections in canonical order (Pending · in
+     your queue / Pending · awaiting their operator / Established / Blocked), each headed by a
+     status dot + mono uppercase title + count + rule line over the cards grid. Empty sections are
+     dropped; no friendships at all renders the whole-view empty state. Returned wholesale on
+     friend action POSTs (HTMX) and rendered server-side into the full page. Data:
+     web.friendPanelView (or the equivalent dict from the page). */}}
+{{define "friends_panel"}}<div class="sb-fledger" aria-live="polite">{{range .Groups}}<section class="sb-fgroup" aria-label="{{.Title}}" data-sb-friend-group="{{.Key}}">
+  <h2 class="sb-fgroup__head"><span class="sb-fgroup__dot sb-fgroup__dot--{{.Key}}" aria-hidden="true"></span>{{.Title}} <span class="sb-fgroup__n">{{len .Cards}}</span><span class="sb-fgroup__rule" aria-hidden="true"></span></h2>
+  <div class="sb-fcards">{{range .Cards}}{{template "friend_card" dict "Card" . "CSRF" $.CSRF}}{{end}}</div>
+</section>{{else}}<p class="sb-empty">no friendships yet · add one to hand work across boards</p>{{end}}</div>{{end}}
+
+{{/* friend_card — one friendship. Shows the direction-aware identity row (local persona, a
+     direction arrow — → outgoing pending, ← incoming pending, ↔ established — and the remote
+     agent's handle + board host, styled distinct from the local face), the status badge, the
+     requester's note as a quoted callout on incoming requests, the scope chips (requested until
+     established, negotiated after), and a footer meta line (relative request times; last A2A
+     activity for established links) with the status-appropriate actions. Blocked cards render
+     dimmed. Args via dict: Card web.friendCard, CSRF string. */}}
+{{define "friend_card"}}<article id="{{.Card.RowID}}" class="sb-fcard sb-fcard--{{.Card.Group}}"{{if .Card.OOB}} hx-swap-oob="true"{{end}}>
+  <div class="sb-fcard__top">
+    <span class="sb-fcard__local sb-mono">{{.Card.LocalPersona}}</span>
+    <span class="sb-fcard__arrow sb-fcard__arrow--{{.Card.Group}}" aria-hidden="true">{{.Card.Arrow}}</span>
+    <span class="sb-fcard__remote"><span class="sb-fcard__remote-handle sb-mono">{{.Card.RemoteHandle}}</span>{{if .Card.RemoteHost}} <span class="sb-fcard__host">{{.Card.RemoteHost}}</span>{{end}}</span>
+    <span class="sb-badge sb-badge--fr-{{.Card.Group}}">{{.Card.StatusLabel}}</span>
+  </div>
+  {{if and .Card.Reason (eq .Card.Group "incoming")}}<blockquote class="sb-fcard__note">“{{.Card.Reason}}”</blockquote>{{end}}
+  <div class="sb-fcard__intents">
+    <span class="sb-microlabel">{{if .Card.Negotiated}}negotiated scope{{else}}requested scope{{end}}</span>
+    {{template "friend_scope" .Card}}
+  </div>
+  <div class="sb-fcard__foot">
+    {{if .Card.Meta}}<span class="sb-fcard__meta">{{.Card.Meta}}</span>{{end}}
+    <div class="sb-fcard__acts">{{template "friend_actions" .}}</div>
+  </div>
+</article>{{end}}
+
+{{/* friend_scope — the edge's scope chips: queues then verbs (SPEC-0015: established edges show
+     queues alongside the negotiated verbs), with the none-negotiated fallback. Data: web.friendCard. */}}
+{{define "friend_scope"}}{{if or .Queues .Intents}}<span class="sb-chips">{{range .Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span>{{end}}{{range .Intents}}<span class="sb-chip sb-chip--verb">{{.}}</span>{{end}}</span>{{else}}<span class="sb-chip sb-chip--none">none negotiated</span>{{end}}{{end}}
+
+{{/* friend_actions — the status-appropriate actions. The irreversible ones route through their
+     full confirm pages (SPEC-0015 REQ "Wizard Interaction Pattern"): an incoming request's
+     "Review & approve" LINKS to the approval page (approving is the vend — the scoped endpoint it
+     mints is presented there), and an established link's Revoke LINKS to the revoke confirm page.
+     Decline/Withdraw/Unblock stay direct POST forms (no-JS fallback) upgraded with hx-post to
+     re-render the panel live. Args via dict: Card, CSRF. */}}
+{{define "friend_actions"}}{{$c := .Card}}{{$csrf := .CSRF}}{{if eq $c.Group "incoming"}}
+  <a class="sb-btn sb-btn--success" href="/friends/{{$c.ID}}/approve" data-sb-friend-approve>Review &amp; approve →</a>
+  <form method="post" action="/friends/{{$c.ID}}/decline" hx-post="/friends/{{$c.ID}}/decline" hx-target="#sb-friends-panel" hx-swap="innerHTML" class="sb-fform"><input type="hidden" name="csrf_token" value="{{$csrf}}"><button type="submit" class="sb-btn sb-btn--danger">Decline</button></form>
+{{else if eq $c.Group "outgoing"}}
+  <form method="post" action="/friends/{{$c.ID}}/withdraw" hx-post="/friends/{{$c.ID}}/withdraw" hx-target="#sb-friends-panel" hx-swap="innerHTML" class="sb-fform"><input type="hidden" name="csrf_token" value="{{$csrf}}"><button type="submit" class="sb-btn sb-btn--secondary">Withdraw</button></form>
+{{else if eq $c.Group "active"}}
+  <a class="sb-btn sb-btn--danger" href="/friends/{{$c.ID}}/revoke" data-sb-friend-revoke>Revoke</a>
+{{else}}
+  <form method="post" action="/friends/{{$c.ID}}/unblock" hx-post="/friends/{{$c.ID}}/unblock" hx-target="#sb-friends-panel" hx-swap="innerHTML" class="sb-fform"><input type="hidden" name="csrf_token" value="{{$csrf}}"><button type="submit" class="sb-btn sb-btn--secondary">Unblock</button></form>
+{{end}}{{end}}
+
+{{/* friend_vended — the post-approval result panel, rendered inline at the top of the Friends page
+     as the response to a successful approval (SPEC-0015: the vended result is surfaced explicitly,
+     never only a toast): the minted endpoint's identity (agent + MCP URL + credential display
+     prefix) and its granted scope, with the edge now established. The plaintext credential is NOT
+     here — it is delivered to the remote agent in the A2A response (SPEC-0010), never shown to
+     this operator. Data: web.friendVendedView. */}}
+{{define "friend_vended"}}<section class="sb-reveal" aria-labelledby="sb-frvended-title" data-sb-friend-vended>
+  <h2 class="sb-modal__title" id="sb-frvended-title">Friendship established · endpoint vended</h2>
+  <p class="sb-muted">Approving was the vend: <strong class="sb-mono">{{.Peer}}</strong>{{if .PeerHost}} <span class="sb-fcard__host">{{.PeerHost}}</span>{{end}} now holds a scoped line onto <strong class="sb-mono">{{.AgentName}}</strong>. The link is per-direction and non-transitive; revoking it kills this endpoint.</p>
+  <span class="sb-label" id="sb-frvended-url-label">Vended MCP endpoint</span>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-frvended-url-label">{{.URL}}</pre>
+  <p class="sb-muted sb-mono">credential <code>{{.CredPrefix}}…</code> · delivered to their agent over A2A — never shown here</p>
+  <div class="sb-fcard__intents">
+    <span class="sb-microlabel">granted scope</span>
+    <span class="sb-chips">{{range .Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span>{{end}}{{range .Verbs}}<span class="sb-chip sb-chip--verb">{{.}}</span>{{end}}</span>
+  </div>
+</section>{{end}}
+
+{{/* add_friend_modal — the "Request an A2A friendship" overlay (focus-trapped via data-sb-drawer,
+     closes on Escape / scrim / ✕ / Cancel, and dismisses itself on a successful submit via the
+     overlay_clear OOB in the response — #175). Collects your agent, the remote agent handle (with a
+     live "resolves to" preview), the requested intents as toggle chips (create_for pre-checked so
+     the no-JS form still submits a valid scope), and a message to their operator. Data:
+     web.friendPanelView (Agents + CSRF + IntentOptions). */}}
+{{define "add_friend_modal"}}<div class="sb-modal" role="dialog" aria-modal="true" aria-label="Request an A2A friendship" data-sb-drawer tabindex="-1">
+  <div class="sb-modal__head"><h2 class="sb-modal__title">Request an A2A friendship</h2><button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button></div>
+  <p class="sb-modal__note">Friendships are mutual and non-transitive — the link stays pending until the remote operator approves it, and grants nothing until they do. Your other friends' agents get nothing.</p>
+  <form method="post" action="/friends" hx-post="/friends" hx-target="#sb-friends-panel" hx-swap="innerHTML" class="sb-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="sb-field">
+      <label for="sb-add-agent">Your agent</label>
+      {{if .Agents}}<select id="sb-add-agent" name="agent_id" class="sb-input" required>{{range .Agents}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select>{{else}}<p class="sb-help">register an agent first</p>{{end}}
+    </div>
+    <div class="sb-field">
+      <label for="sb-add-handle">Remote agent handle</label>
+      <input id="sb-add-handle" name="handle" class="sb-input" placeholder="agent@board.example" autocomplete="off" required hx-get="/friends/resolve" hx-target="#sb-add-resolve" hx-swap="innerHTML" hx-trigger="input changed delay:300ms">
+      <div id="sb-add-resolve" class="sb-resolve">{{template "friend_resolve" dict "Handle" "" "Host" "" "Valid" false}}</div>
+    </div>
+    <div class="sb-field">
+      <span class="sb-label" id="sb-add-intents-label">Requested intents</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-add-intents-label">
+        {{range .IntentOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="intents" value="{{.}}"{{if eq . "create_for"}} checked{{end}}> {{.}}</label>{{end}}
+      </div>
+      <p class="sb-help">the verbs you ask to invoke on their board · at least one required</p>
+    </div>
+    <div class="sb-field">
+      <label for="sb-add-message">Message to their operator</label>
+      <textarea id="sb-add-message" name="reason" class="sb-input" rows="2" placeholder="Why should they approve this link?"></textarea>
+    </div>
+    <div class="sb-modal__foot">
+      <button type="button" class="sb-btn sb-btn--secondary" data-sb-close>Cancel</button>
+      <button type="submit" class="sb-btn">Send request →</button>
+    </div>
+  </form>
+</div>{{end}}
+
+{{/* friend_resolve — the add-friend modal's live "resolves to" handle preview (syntactic; never
+     dials the host). Data: web.friendResolveView (or the equivalent dict). */}}
+{{define "friend_resolve"}}{{if .Valid}}resolves to <span class="sb-resolve__ok">{{.Handle}}{{if .Host}} · <span class="sb-resolve__host">{{.Host}}</span>{{end}}</span>{{else}}resolves to <span class="sb-resolve__hint">nobody yet</span>{{end}}{{end}}

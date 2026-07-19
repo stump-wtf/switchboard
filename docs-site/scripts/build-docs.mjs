@@ -90,6 +90,7 @@ hide_table_of_contents: true
 ---
 
 import Link from '@docusaurus/Link';
+import useBaseUrl from '@docusaurus/useBaseUrl';
 
 <div className="sb-hero">
   <div className="sb-hero__eyebrow">MCP server · durable todo queue · local web UI</div>
@@ -144,7 +145,7 @@ import Link from '@docusaurus/Link';
   <Link className="sb-tile" to="/decisions/ADR-0001-web-stack-go-htmx-pico">
     <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 8h18"/><circle cx="5.8" cy="6" r="0.5"/><circle cx="7.8" cy="6" r="0.5"/></svg>
     <div className="sb-tile__title">Live operator board</div>
-    <p className="sb-tile__body">A five‑view operator board — Board, Todos, Endpoints, Personas, Friends — on Go (net/http) + HTMX, wearing the brass‑and‑bakelite Operator design language and updating live over Server‑Sent Events, with the same trust badges the API and MCP surfaces carry.</p>
+    <p className="sb-tile__body">A six‑view operator board — Board, Todos, Endpoints, Personas, Friends, Providers — on Go (net/http) + HTMX, wearing the charm‑web design language (day/night, monospace‑first) and updating live over Server‑Sent Events, with the same trust badges the API and MCP surfaces carry.</p>
   </Link>
 
 </div>
@@ -158,13 +159,39 @@ import Link from '@docusaurus/Link';
   <span>— see <Link to="/decisions/ADR-0003-per-provider-ingestion-and-trust-model">ADR‑0003</Link>.</span>
 </div>
 
+<div className="sb-shots">
+  <div className="sb-shots__head">
+    <div className="sb-shots__eyebrow">The operator board · live</div>
+    <div className="sb-shots__title">See it live</div>
+    <p className="sb-shots__sub">Six views — Board, Todos, Endpoints, Personas, Friends, Providers — server‑rendered on Go + HTMX and updating over Server‑Sent Events, wearing the same trust badges the API and MCP surfaces carry.</p>
+  </div>
+  <div className="sb-shots__grid">
+    <figure className="sb-shot">
+      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf</span></div>
+      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/board.png')} alt="The Switchboard operator board: a three-lane patch panel — received, verified, patched through — with trust badges and live throughput tiles." loading="lazy" />
+      <figcaption className="sb-shot__cap"><strong>The Board</strong> — the three‑lane patch panel: received → verified → patched through, with live throughput tiles and the trust legend.</figcaption>
+    </figure>
+    <figure className="sb-shot">
+      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf/providers</span></div>
+      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/providers.png')} alt="The Providers view: connected webhook and queue providers with their enforced trust mode, plus a catalog of providers to connect." loading="lazy" />
+      <figcaption className="sb-shot__cap"><strong>Providers</strong> — every inbound line enters through a provider; each carries an enforced trust mode, connected inline from the catalog.</figcaption>
+    </figure>
+    <figure className="sb-shot">
+      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf/todos</span></div>
+      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/todos.png')} alt="The Todos view: the durable work-queue table — claim under a lease, complete with an ack, dedup by idempotency key, at-least-once delivery." loading="lazy" />
+      <figcaption className="sb-shot__cap"><strong>Todos</strong> — the durable queue: claim under a lease, complete with an ack, dedup by idempotency key, at‑least‑once.</figcaption>
+    </figure>
+  </div>
+</div>
+
 :::note Design record
 This site is the **canonical, SDD‑governed design record** for switchboard — ${adrFiles.length} architecture
 decision records and ${capDirs.length} OpenSpec capability specs (each a requirements + design pair),
 plus machine‑readable reference contracts. The MVP application code is built from these documents. The
 name is the architecture: a manual telephone exchange took many incoming lines, an operator verified
-the caller, and patched the line through — which is why these pages wear a switchboard‑era palette of
-brass, bakelite, operator‑cream, oxblood, and patch‑cable tones.
+the caller, and patched the line through — and these pages wear the same charm‑web design language as
+the app (ADR‑0018): a blue‑black void lit by ANSI neon — Charm purple and hot pink, cyan and mint —
+with a lavender‑paper day mode, monospace throughout.
 :::
 
 ## Start here
@@ -174,8 +201,8 @@ brass, bakelite, operator‑cream, oxblood, and patch‑cable tones.
 - **[Specifications](/specs)** — ${capDirs.length} OpenSpec capabilities (RFC 2119 requirements + Mermaid design):
   ingestion, the durable todo queue, persistence, the MCP + agent tool surfaces, vended endpoints,
   identity, personas, friending, Channels push delivery, and the web UI.
-- **[Design](/design)** — the "Operator" design language (ADR‑0016): tokens, components, the five
-  operator‑board screens, voice, and the directions explored.
+- **[Design](/design)** — the charm‑web design language (ADR‑0018): day/night tokens, components,
+  the six operator‑board screens, voice, and the directions explored.
 - **[Reference](/reference)** — the OpenAPI (HTTP surface) and AsyncAPI (SSE stream) contracts.
 `);
 
@@ -198,9 +225,12 @@ for (const f of adrFiles) {
   const date = fmValue(fm, 'date') || '';
   const deciders = fmValue(fm, 'decision-makers') || 'Joe Stump';
 
+  // ADR-0018 decoupling: token links resolve to the docs site's FROZEN Operator token copy
+  // (docs-site/static/design-tokens/), never the app's live static/tokens.css — app-token churn
+  // must not silently restyle the published design record.
   let content = body.replace(
     /\]\(\.\.\/\.\.\/static\/tokens\.css\)/g,
-    `](${GITHUB_RAW}/static/tokens.css)`,
+    '](/design-tokens/tokens-operator.css)',
   );
   content = rewriteDesignLinks(rewriteRepoLinks(content));
   content = content.replace(
@@ -309,7 +339,7 @@ writeFileSync(
     {
       label: 'Design',
       position: 4,
-      link: { type: 'generated-index', slug: '/design', title: 'Design', description: 'The "Operator" design language (ADR-0016): tokens, components, screens, voice, and the directions explored.' },
+      link: { type: 'generated-index', slug: '/design', title: 'Design', description: 'The charm-web design language (ADR-0018): day/night tokens, components, screens, voice, and the directions explored.' },
     },
     null,
     2,

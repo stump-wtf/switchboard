@@ -26,7 +26,9 @@ func newStaticRouter() http.Handler {
 func TestStaticServedFromEmbed(t *testing.T) {
 	r := newStaticRouter()
 	// Every asset class the layout template references: stylesheets, vendored htmx (ADR-0001:
-	// no CDN), and self-hosted fonts. All must come out of the embedded FS with content.
+	// no CDN), and the split sb.js feature modules + theme boot (SPEC-0015 foundation). All must
+	// come out of the embedded FS with content. (The charm-web woff2 files join this list once
+	// vendored — fonts_test.go and static/fonts/README.md govern them until then.)
 	cases := []struct {
 		path       string
 		wantPrefix string // magic bytes / leading content, "" to skip
@@ -35,8 +37,12 @@ func TestStaticServedFromEmbed(t *testing.T) {
 		{"/static/switchboard.css", ""},
 		{"/static/vendor/htmx.min.js", ""},
 		{"/static/vendor/htmx-ext-sse.min.js", ""},
-		{"/static/fonts/zilla-slab-600.woff2", "wOF2"},
-		{"/static/fonts/ibm-plex-mono-400.woff2", "wOF2"},
+		{"/static/js/theme-boot.js", ""},
+		{"/static/js/sb-live.js", ""},
+		{"/static/js/sb-overlay.js", ""},
+		{"/static/js/sb-vend.js", ""},
+		{"/static/js/sb-theme.js", ""},
+		{"/static/js/sb-keys.js", ""},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()

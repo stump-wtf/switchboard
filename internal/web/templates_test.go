@@ -44,16 +44,20 @@ func testHuman() *store.Human {
 func TestBoardRendersShellAndTiles(t *testing.T) {
 	h := newTestHandler(t)
 	stats := store.BoardStats{TodosToday: 12, InFlight: 2, AwaitingClaim: 3, VerifiedPct: 83, EventsPerMin: 7}
+	queued := laneCardFromItem(store.TodoItem{Todo: store.Todo{
+		ID: "td_1", Source: "github", Kind: "push", Title: "github push", State: "pending",
+		IdempotencyKey: "gh-d-1", CreatedAt: time.Now().Add(-2 * time.Minute),
+	}, TrustMode: "signed"})
+	claimed := laneCardFromItem(store.TodoItem{Todo: store.Todo{
+		ID: "td_2", Source: "stripe", Kind: "invoice.paid", Title: "stripe invoice.paid", State: "claimed",
+		Owner: "agent:0a1b2c3d-x", CreatedAt: time.Now().Add(-3 * time.Hour),
+	}, TrustMode: "token"})
 	body := renderPage(t, h, "board", view{
 		Title: "The Board", Human: testHuman(), CSRF: "tok",
 		Shell: shell{Active: "board", TodoCount: 3, LiveRate: 7, DBConnected: true, Initials: "JS"},
 		Tiles: tilesView{Stats: stats, Bars: activityBars([]int{0, 3, 7, 1})},
-		Rows: []feedRow{
-			feedRowFromEvent(store.EventSummary{ID: 1, Source: "github", EventType: "push", TrustMode: "signed",
-				ReceivedAt: time.Now().Add(-2 * time.Minute), TodoID: "td_1", TodoState: "pending"}, false),
-			feedRowFromEvent(store.EventSummary{ID: 2, Source: "stripe", EventType: "invoice.paid", TrustMode: "token",
-				ReceivedAt: time.Now().Add(-3 * time.Hour), TodoID: "td_2", TodoState: "claimed", TodoOwner: "agent:0a1b2c3d-x"}, false),
-		},
+		Lanes: lanesView{Verified: []laneCard{queued}, Patched: []laneCard{claimed},
+			Counts: laneCounts{Verified: 1, Patched: 1}},
 	})
 
 	for _, want := range []string{
@@ -63,33 +67,36 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 		"aria-current=\"page\"",                                                    // active rail entry
 		"LIVE · 7/min",                                                             // LIVE pill from DB rate
 		"postgres · connected",                                                     // connectivity footer
-		"The Board",                                                                // Zilla Slab page title
-		"many lines in · each verified · patched through",                          // mono tagline
+		"The Board",                                                                // display page title
+		"every inbound line, from arrival to hand-off",                             // tagline
 		"sb-badge--signed", "sb-badge--token", "sb-badge--open", "sb-badge--queue", // trust legend
 		"sb-tile--alert", // awaiting-claim tile tinted (count > 0)
 		"83%",            // verified pct tile
 		">GH<", ">ST<",   // provider tags
 		"2m ago", "3h ago", // relative ages
-		"id=\"sb-tiles\"",                  // tiles band is the counts swap target
-		"sb-bars__bar--now",                // throughput activity bars w/ current bucket
-		"events/min",                       // throughput tile unit
-		"patched → todo",                   // pending row lifecycle stage
-		"claimed · agent · 0a1b2c3",        // claimed row stage with owner label
-		"hx-post=\"/todos/td_1/claim\"",    // Claim action on the pending row
-		"id=\"sb-ev-1\"", "id=\"sb-ev-2\"", // stable row ids for OOB stage updates
-		"sse-connect=\"/events\"",     // one authenticated stream per page
-		"sse-swap=\"event_received\"", // feed subscribes to new lines
-		"hx-swap=\"afterbegin\"",      // rows enter at the top
+		"id=\"sb-tiles\"",   // tiles band is the counts swap target
+		"sb-bars__bar--now", // throughput activity bars w/ current bucket
+		"events/min",        // throughput tile unit
+		// Patch panel (SPEC-0015): three lanes with insertion targets, cards with stable ids.
+		"id=\"sb-lane-received-cards\"", "id=\"sb-lane-verified-cards\"", "id=\"sb-lane-patched-cards\"",
+		">queued<",                               // pending card state chip
+		"claimed · agent · 0a1b2c3",              // claimed card detail with owner label
+		"hx-post=\"/todos/td_1/claim\"",          // Claim action on the queued card
+		"id=\"sb-td-td_1\"", "id=\"sb-td-td_2\"", // stable card ids for OOB lane movement
+		"sse-connect=\"/events\"",                                                                  // one authenticated stream per page
+		"sse-swap=\"lane_received,lane_rejected,lane_deduped\"",                                    // page-local sink: ephemeral received lane
 		"sse-swap=\"todo_created,todo_claimed,todo_completed,todo_failed,todo_resurfaced,counts\"", // OOB sink
 		"hx-headers='{\"X-CSRF-Token\":\"tok\"}'",                                                  // CSRF injected into HTMX requests
-		"aria-live=\"polite\"",            // live regions present in DOM
-		"id=\"sb-overlay\"",               // overlay slot present-but-empty
-		"id=\"sb-toasts\"",                // toast region
-		"id=\"sb-todo-count\"",            // rail count pill is a swap target
-		"/static/sb.js",                   // toast TTL / feed cap helper
-		">JS</span>",                      // avatar initials
-		"/static/switchboard.css",         // component layer linked
-		"aria-label=\"Switchboard mark\"", // accessible inline-SVG mark
+		"aria-live=\"polite\"",                                                                     // live regions present in DOM
+		"id=\"sb-overlay\"",                                                                        // overlay slot present-but-empty
+		"id=\"sb-toasts\"",                                                                         // toast region
+		"id=\"sb-todo-count\"",                                                                     // rail count pill is a swap target
+		"/static/js/theme-boot.js",                                                                 // pre-paint theme boot (SPEC-0015 Theme Toggle)
+		"/static/js/sb-live.js",                                                                    // toast TTL / lane cap helper (split sb.js module)
+		"/static/js/sb-keys.js",                                                                    // keymap registry + key-hint footer
+		">JS</span>",                                                                               // avatar initials
+		"/static/switchboard.css",                                                                  // component layer linked
+		"aria-label=\"Switchboard mark\"",                                                          // accessible inline-SVG mark
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board: missing %q", want)
@@ -116,11 +123,11 @@ func TestLivePillIdleAtZeroRate(t *testing.T) {
 	if !strings.Contains(body, "LIVE · 0/min") {
 		t.Error("LIVE pill zero-state should still show the rate")
 	}
-	if !strings.Contains(body, "no lines in yet") {
-		t.Error("empty feed state missing")
+	if !strings.Contains(body, "quiet · no lines in flight") {
+		t.Error("empty received-lane state missing")
 	}
-	if !strings.Contains(body, "id=\"sb-feed\"") {
-		t.Error("feed live region must exist in the DOM before the first SSE frame")
+	if !strings.Contains(body, "id=\"sb-lane-received-cards\"") {
+		t.Error("received lane must exist in the DOM before the first SSE frame")
 	}
 }
 
@@ -168,22 +175,27 @@ func TestLoginRendersWithoutRail(t *testing.T) {
 	}
 }
 
-// TestEndpointsViewRendersCards: the Endpoints view renders active + revoked cards with the agent
-// name, scope chips, credential DISPLAY PREFIX only, last-seen / killed stamps, and Revoke on active
-// cards — and marks the Endpoints rail entry active. Governing: SPEC-0013 REQ "Endpoints View and
-// Vend Modal".
+// TestEndpointsViewRendersCards: the Endpoints view renders active + revoked cards with the full
+// SPEC-0015 card set — principal, persona slot, scope chips, MCP URL, credential DISPLAY PREFIX
+// only (hashed note), expiry countdown, last-seen / killed stamps, Rotate (re-vend) and Revoke
+// (via confirm page) on active cards — and marks the Endpoints rail entry active.
+// Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard"; SPEC-0016 (countdown).
 func TestEndpointsViewRendersCards(t *testing.T) {
 	h := newTestHandler(t)
 	sh := shell{Active: "endpoints", DBConnected: true, Initials: "JS"}
 	seen := time.Now().Add(-2 * time.Minute)
 	killed := time.Now().Add(-1 * time.Hour)
-	active := endpointCard{ID: "e1", AgentName: "reviewer-bot", Initials: "RE", Slug: "reviewer-bot-ab12cd",
-		CredPrefix: "sbk_ab12cd", Queues: []string{"reviews"}, Verbs: []string{"claim"}, State: "active", LastSeenAt: &seen}
-	revoked := endpointCard{ID: "e2", AgentName: "old-bot", Initials: "OL", Slug: "old-bot-99",
+	expires := time.Now().Add(5*24*time.Hour + time.Hour)
+	active := endpointCard{ID: "e1", AgentName: "reviewer-bot", Initials: "RE", Principal: "Joe Stump",
+		Slug: "reviewer-bot-ab12cd", URL: "https://sb.example.com/mcp/reviewer-bot-ab12cd",
+		CredPrefix: "sbk_ab12cd", Queues: []string{"reviews"}, Verbs: []string{"claim"}, State: "active",
+		LastSeenAt: &seen, ExpiresAt: &expires}
+	revoked := endpointCard{ID: "e2", AgentName: "old-bot", Initials: "OL", Principal: "Joe Stump",
+		Slug: "old-bot-99", URL: "https://sb.example.com/mcp/old-bot-99",
 		CredPrefix: "sbk_dead00", Queues: []string{"deploys"}, Verbs: []string{"complete"}, State: "revoked", RevokedAt: &killed}
 
 	body := renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: testHuman(), CSRF: "tok",
-		Shell: sh, EndpointCards: []endpointCard{active, revoked}, VerbOptions: vendVerbOptions()})
+		Shell: sh, EndpointCards: []endpointCard{active, revoked}})
 
 	for _, want := range []string{
 		"Vended MCP endpoints", // header copy per the design canvas
@@ -191,15 +203,20 @@ func TestEndpointsViewRendersCards(t *testing.T) {
 		"reviewer-bot", "old-bot",
 		`class="sb-epcard__avatar" aria-hidden="true">RE<`, // two-letter initials avatar tiles
 		`class="sb-epcard__avatar" aria-hidden="true">OL<`,
+		`data-sb-ep-principal`, "Joe Stump · human", // the accountable principal (SPEC-0007)
 		"sbk_ab12cd", "sbk_dead00", // credential display prefixes
+		"hashed · shown once at vend",     // the hashed note beside the prefix
 		"sb-chip--queue", "sb-chip--verb", // scope chips
+		`data-sb-ep-url="https://sb.example.com/mcp/reviewer-bot-ab12cd"`, // the endpoint's MCP URL
 		"sb-badge--active", "sb-badge--revoked",
+		`id="sb-ep-expiry-e1"`, `data-sb-expires-at="`, ">⌛ 5d<", // expiry countdown chip + data
 		"sb-epcard--revoked",                // the killed card is dimmed
 		"endpoint killed",                   // + stamped with when
 		`id="sb-ep-seen-e1"`, "seen 2m ago", // active card last-seen swap target + stamp
-		`action="/endpoints/e1/revoke"`,         // Revoke on the active card
-		`action="/endpoints/e2/delete"`,         // Delete on the revoked card (housekeeping)
-		"+ Vend endpoint",                       // the vend trigger
+		`href="/endpoints/vend?from=e1" data-sb-ep-rotate`, // Rotate = re-vend, seeded from this card
+		`href="/endpoints/e1/revoke" data-sb-ep-revoke`,    // Revoke goes via the confirm page
+		`action="/endpoints/e2/delete"`,                    // Delete on the revoked card (housekeeping)
+		"+ Vend endpoint", `href="/endpoints/vend"`,        // the wizard launcher
 		`sse-swap="endpoint_seen"`,              // page-local sink subscribes the endpoint screen
 		`href="/endpoints" aria-current="page"`, // rail marks Endpoints active
 	} {
@@ -207,9 +224,21 @@ func TestEndpointsViewRendersCards(t *testing.T) {
 			t.Errorf("endpoints view: missing %q", want)
 		}
 	}
-	// The revoked card must NOT offer a Revoke action, and no full credential ever appears.
-	if strings.Contains(body, `action="/endpoints/e2/revoke"`) {
+	// Revocation must never fire straight off the card (irreversible steps confirm first): no POST
+	// form targeting the revoke route may render here.
+	if strings.Contains(body, `action="/endpoints/e1/revoke"`) {
+		t.Error("card must link to the revoke confirm page, not POST the kill directly")
+	}
+	// The revoked card must NOT offer Revoke or Rotate, and no full credential ever appears.
+	if strings.Contains(body, `href="/endpoints/e2/revoke"`) {
 		t.Error("revoked card must not render a Revoke action")
+	}
+	if strings.Contains(body, `href="/endpoints/vend?from=e2"`) {
+		t.Error("revoked card must not render a Rotate action")
+	}
+	// A card without an expiry renders no countdown chip.
+	if strings.Contains(body, `id="sb-ep-expiry-e2"`) {
+		t.Error("card without expires_at must not render a countdown chip")
 	}
 	// Delete is revoked-only: an active endpoint must be revoked before it can be removed, so the
 	// active card must never render a Delete action (SPEC-0007 "Permanent Deletion of Revoked
@@ -219,96 +248,17 @@ func TestEndpointsViewRendersCards(t *testing.T) {
 	}
 }
 
-// TestVendModalRendersFields: the vend modal collects a name, scoped-queue toggle chips (the
-// queues known to the store), and allowed-verb toggle chips (the agent-tools surface, drain verbs
-// pre-checked), carries the CSRF token, posts to /endpoints/vend, offers a Cancel affordance, and
-// wires the overlay focus/close machinery. Governing: SPEC-0013 REQ "Endpoints View and Vend
-// Modal" (queues and verbs "via toggle chips"), the Endpoints design canvas.
-func TestVendModalRendersFields(t *testing.T) {
-	h := newTestHandler(t)
-	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: vendVerbOptions(),
-		QueueOptions: []string{"deploys", "reviews"}})
-	for _, want := range []string{
-		`role="dialog"`, `aria-modal="true"`, `data-sb-modal`, // modal a11y + overlay hook
-		`data-sb-close`,                  // close control (Escape/scrim/return handled by sb.js)
-		"Vend a scoped endpoint",         // modal title per the design canvas
-		"Scoped queues", "Allowed verbs", // field labels per the design canvas
-		`action="/endpoints/vend"`, `hx-post="/endpoints/vend"`, // no-JS + HTMX submit
-		`name="csrf_token" value="tok"`,    // CSRF over the POST
-		`name="name"`, `data-sb-vend-name`, // agent name field
-		`name="queues" value="deploys"`, `name="queues" value="reviews"`, // queue toggle chips
-		`data-sb-vend-queue-chips`,                // sb.js counts checked queue chips
-		`name="verbs" value="list_todos" checked`, // drain verbs pre-checked
-		`name="verbs" value="claim" checked`, `name="verbs" value="heartbeat" checked`,
-		`name="verbs" value="create_webhook"`, `name="verbs" value="list_webhook_events"`, // wider surface offered…
-		`href="/endpoints" data-sb-close>Cancel</a>`, // Cancel: closes the overlay, or navigates back inline (no-JS)
-		"Vend endpoint →",                            // submit label per the design canvas
-		`data-sb-vend-submit`,                        // the submit sb.js gates on scope
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("vend modal: missing %q", want)
-		}
-	}
-	// …but the webhook/event verbs start unchecked: wider grants are a deliberate toggle.
-	for _, verb := range []string{"create_webhook", "list_webhook_events", "replay_webhook_event"} {
-		if strings.Contains(body, `value="`+verb+`" checked`) {
-			t.Errorf("vend modal: %s must not be pre-checked", verb)
-		}
-	}
-	// With queue chips on offer, the free-text queue fallback must not also render.
-	if strings.Contains(body, "data-sb-vend-queues") {
-		t.Error("vend modal: free-text queue field must not render alongside queue chips")
-	}
-}
-
-// TestVendModalQueueFreeTextFallback: when the store knows no queues yet there are no chips to
-// toggle, so the form falls back to the free-text comma-separated queue field — a first vend is
-// never blocked. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal".
-func TestVendModalQueueFreeTextFallback(t *testing.T) {
-	h := newTestHandler(t)
-	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: vendVerbOptions()})
-	for _, want := range []string{
-		`name="queues"`, `data-sb-vend-queues`, // the CSV queue input
-		`data-sb-vend-queue-preview`, // sb.js mirrors typed queues as preview chips
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("vend modal (no known queues): missing %q", want)
-		}
-	}
-}
-
-// TestVendModalRendersPersonaSelectWhenEnabled: with personas enabled the vend modal offers the
-// human's personas as a select whose option values are persona ids (what binds endpoints.persona_id),
-// plus a "none" agent-level choice. Governing: SPEC-0013 REQ "Endpoints View and Vend Modal" (optional
-// persona), ADR-0009.
-func TestVendModalRendersPersonaSelectWhenEnabled(t *testing.T) {
-	h := newTestHandler(t)
-	body := renderFrag(t, h, "vend_modal", view{CSRF: "tok", PersonasEnabled: true, VerbOptions: vendVerbOptions(),
-		VendPersonaOptions: []vendPersonaOption{{ID: "pr_123", Name: "Reviewer"}}})
-	for _, want := range []string{
-		`<select id="sb-vend-persona"`, `name="persona"`, // the persona select posts as name="persona"
-		`<option value="">`,                        // the agent-level (no persona) choice
-		`<option value="pr_123">Reviewer</option>`, // value is the persona id, label the name
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("vend modal (personas on): missing %q", want)
-		}
-	}
-	// With personas OFF the persona slot must not render at all.
-	off := renderFrag(t, h, "vend_modal", view{CSRF: "tok", VerbOptions: vendVerbOptions()})
-	if strings.Contains(off, `name="persona"`) {
-		t.Error("vend modal must not render a persona field while personas are disabled")
-	}
-}
-
 // TestVendRevealShowsCredentialOnceAndHTTPWiring: the one-time reveal shows the plaintext credential
-// once, the minted /mcp/{slug} URL, HTTP-only .mcp.json wiring, and a shown-once warning.
-// Governing: SPEC-0013 (credential reveal is one-time), SPEC-0014 REQ "HTTP Wiring Is the Only Wiring".
+// once, the minted /mcp/{slug} URL, HTTP-only .mcp.json wiring, a shown-once warning, and the
+// URL-only wiring variant for OAuth-capable clients (no embedded credential).
+// Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard" (one-time reveal + .mcp.json; URL-only
+// variant), SPEC-0014 REQ "HTTP Wiring Is the Only Wiring", SPEC-0016.
 func TestVendRevealShowsCredentialOnceAndHTTPWiring(t *testing.T) {
 	h := newTestHandler(t)
 	mcpjson := buildMCPJSON("https://sb.example.com", "reviewer-bot-ab12cd", "sbk_secret")
+	urlOnly := buildMCPJSONURLOnly("https://sb.example.com", "reviewer-bot-ab12cd")
 	body := html.UnescapeString(renderFrag(t, h, "vend_reveal", revealView{AgentName: "reviewer-bot",
-		Slug: "reviewer-bot-ab12cd", Token: "sbk_secret", MCPJSON: mcpjson,
+		Slug: "reviewer-bot-ab12cd", Token: "sbk_secret", MCPJSON: mcpjson, MCPJSONURLOnly: urlOnly,
 		URL:    mcpEndpointURL("https://sb.example.com", "reviewer-bot-ab12cd"),
 		Queues: []string{"reviews"}, Verbs: []string{"claim"}, CSRF: "tok"}))
 	for _, want := range []string{
@@ -318,16 +268,22 @@ func TestVendRevealShowsCredentialOnceAndHTTPWiring(t *testing.T) {
 		"MCP endpoint URL", ">https://sb.example.com/mcp/reviewer-bot-ab12cd</pre>",
 		"Credential · shown once",
 		`"type": "http"`, "/mcp/reviewer-bot-ab12cd", "Bearer sbk_secret",
-		"data-sb-close", // closing clears the overlay → the plaintext is unrecoverable
+		`data-sb-reveal-wiring`,          // the bearer wiring block
+		`data-sb-reveal-wiring-url-only`, // the OAuth-capable URL-only variant (SPEC-0016)
+		"URL-only wiring",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("vend reveal: missing %q", want)
 		}
 	}
 	// The reveal must carry exactly one copy of the plaintext credential outside the wiring's Bearer
-	// header (the credential block) — i.e. it is not sprinkled across many surfaces.
+	// header (the credential block) — i.e. it is not sprinkled across many surfaces, and the
+	// URL-only variant must NOT embed it.
 	if n := strings.Count(body, "sbk_secret"); n != 2 { // once in the <pre> block, once in the Bearer header
 		t.Errorf("plaintext credential appears %d times, want exactly 2 (credential block + wiring)", n)
+	}
+	if strings.Contains(urlOnly, "sbk_secret") || strings.Contains(urlOnly, "Authorization") {
+		t.Error("URL-only wiring variant must not embed a credential")
 	}
 }
 
@@ -370,6 +326,18 @@ func TestHelpers(t *testing.T) {
 	}
 	if got := relTime(time.Now().Add(-49 * time.Hour)); got != "2d ago" {
 		t.Errorf("relTime(49h) = %q", got)
+	}
+	// countdown: the endpoint card's compact time-remaining chip (SPEC-0016 countdown).
+	for d, want := range map[time.Duration]string{
+		-time.Minute:               "expired",
+		30 * time.Second:           "<1m",
+		30 * time.Minute:           "30m",
+		5 * time.Hour:              "5h",
+		5*24*time.Hour + time.Hour: "5d",
+	} {
+		if got := countdown(time.Now().Add(d)); got != want {
+			t.Errorf("countdown(+%v) = %q, want %q", d, got, want)
+		}
 	}
 	// cardInitials: the endpoint card's two-letter avatar tile (design canvas: first two characters
 	// upper-cased; letters/digits only so hyphenated names stay legible).

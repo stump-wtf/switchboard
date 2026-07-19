@@ -2,7 +2,8 @@
 // /mcp/{endpoint}, using the official Go MCP SDK (ADR-0017, SPEC-0014).
 //
 // A chi middleware authenticates the bearer credential BEFORE the SDK sees the request: the token
-// is hashed (internal/cred), resolved to an ACTIVE endpoint row, checked against the {endpoint}
+// — a static sbk_ bearer or an OAuth access token (SPEC-0016), both accepted interchangeably — is
+// hashed (internal/cred), resolved to an ACTIVE endpoint row, checked against the {endpoint}
 // path slug, and the endpoint's immutable scope is injected into the request context for the tool
 // layer to enforce. Unknown/revoked credentials get 401; a valid credential presented against a
 // different endpoint's path gets 403. The URL alone grants nothing, and session cookies carry no
@@ -30,6 +31,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/joestump/switchboard/internal/cred"
+	"github.com/joestump/switchboard/internal/oauthsrv"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -53,10 +55,14 @@ const (
 		`Use list_todos to see work, claim to take a todo (which sets a lease), then complete or fail it.`
 )
 
-// EndpointStore is the slice of the store the auth middleware needs: credential resolution and the
-// last-seen stamp. *store.Store satisfies it; tests substitute a fake.
+// EndpointStore is the slice of the store the auth middleware needs: resolution of BOTH credential
+// shapes — the static sbk_ bearer and the OAuth access token — plus the last-seen stamp. Both
+// lookups return the same AuthEndpoint, so everything past "resolve to endpoint ID" is identical
+// regardless of shape (SPEC-0016 REQ "Resource-Server Token Validation"). *store.Store satisfies
+// it; tests substitute a fake.
 type EndpointStore interface {
 	EndpointByCredHash(ctx context.Context, credHash string) (store.AuthEndpoint, error)
+	EndpointByOAuthToken(ctx context.Context, tokenHash string) (store.AuthEndpoint, error)
 	TouchEndpoint(ctx context.Context, endpointID string) error
 }
 
@@ -105,6 +111,12 @@ type Handler struct {
 	// providers is the configured-provider snapshot served by list_providers (SPEC-0005),
 	// installed at wiring time via SetProviders. Atomic so live sessions read it race-free.
 	providers atomic.Pointer[[]ProviderStatus]
+
+	// providerSource, when installed via SetProviderSource, resolves the provider enumeration LIVE
+	// on each list_providers call (registry-backed — internal/server wires it over the provider
+	// registry) and takes precedence over the providers snapshot. Atomic for the same reason.
+	// Governing: ADR-0020, SPEC-0017 REQ "Runtime Provider Registry".
+	providerSource atomic.Pointer[func(context.Context) []ProviderStatus]
 
 	// baseURL is the externally-reachable origin used to build the ingest_url returned by
 	// create_webhook/rotate_webhook (SPEC-0006). Installed at wiring time via SetBaseURL; read
@@ -227,7 +239,7 @@ func (h *Handler) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ep, ok := EndpointFromContext(r.Context())
 		if !ok { // cannot happen behind auth; defense in depth
-			unauthorized(w)
+			h.unauthorized(w, r)
 			return
 		}
 		if !h.rl.allow(ep.ID) {
@@ -275,14 +287,27 @@ func (h *Handler) auth(next http.Handler) http.Handler {
 		slug := chi.URLParam(r, "endpoint")
 		tok := bearer(r)
 		if tok == "" {
-			unauthorized(w)
+			h.unauthorized(w, r)
 			return
 		}
-		ep, err := h.store.EndpointByCredHash(r.Context(), cred.Hash(tok))
+		// Two credential shapes, one capability (SPEC-0016 REQ "Resource-Server Token Validation"):
+		// the sbk_ prefix marks a static endpoint bearer (internal/cred.Mint), everything else is
+		// tried as an OAuth access token (internal/oauthsrv.MintToken — deliberately unprefixed).
+		// Both resolve to the SAME AuthEndpoint shape, so scope enforcement, sessions, doorbells,
+		// and tooling downstream are byte-for-byte identical; the dispatch only picks which hash
+		// column answers. Expired/revoked tokens and dead endpoints are uniformly ErrNotFound → the
+		// RFC 9728 challenge below.
+		var ep store.AuthEndpoint
+		var err error
+		if strings.HasPrefix(tok, "sbk_") {
+			ep, err = h.store.EndpointByCredHash(r.Context(), cred.Hash(tok))
+		} else {
+			ep, err = h.store.EndpointByOAuthToken(r.Context(), cred.Hash(tok))
+		}
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				// Unknown or revoked — same answer either way, revealing nothing about the slug.
-				unauthorized(w)
+				h.unauthorized(w, r)
 				return
 			}
 			h.log.Error("mcp auth", "slug", slug, "err", err)
@@ -370,7 +395,20 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-func unauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Bearer realm="switchboard"`)
+// unauthorized answers a failed bearer authentication with the RFC 9728 challenge: alongside the
+// realm, WWW-Authenticate carries resource_metadata pointing at this mount's protected-resource
+// metadata document — how a spec-following MCP client discovers the authorization server and
+// begins the OAuth flow instead of dead-ending on a bare 401. The challenge stays bare when no
+// base URL is wired (partial wiring, tests) or the path slug is not even slug-shaped (client-
+// supplied path input is never reflected into a response header).
+// Governing: ADR-0019, SPEC-0016 REQ "Protected Resource Metadata".
+func (h *Handler) unauthorized(w http.ResponseWriter, r *http.Request) {
+	challenge := `Bearer realm="switchboard"`
+	if base := h.baseURL.Load(); base != nil && *base != "" {
+		if slug := chi.URLParam(r, "endpoint"); oauthsrv.SlugOK(slug) {
+			challenge += `, resource_metadata="` + oauthsrv.ResourceMetadataURL(*base, slug) + `"`
+		}
+	}
+	w.Header().Set("WWW-Authenticate", challenge)
 	http.Error(w, "invalid or revoked credential", http.StatusUnauthorized)
 }

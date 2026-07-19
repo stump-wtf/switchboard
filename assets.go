@@ -4,7 +4,8 @@ package switchboard
 
 import "embed"
 
-// StaticFS holds the static assets served at /static/ (the switchboard-era tokens.css + icons).
+// StaticFS holds the static assets served at /static/ (the charm-web tokens.css + component CSS,
+// the split JS modules, fonts, and icons — ADR-0018).
 //
 //go:embed static
 var StaticFS embed.FS

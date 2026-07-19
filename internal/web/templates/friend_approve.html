@@ -1,0 +1,53 @@
+{{define "content"}}
+{{/* Approve confirm page (SPEC-0015 REQ "Friends View And Approval Flow"): approving IS the vend,
+     so this page shows the scoped endpoint approval mints BEFORE the operator executes it — the
+     vend target (one of YOUR agents) and the granted scope as narrow-only toggle chips pre-checked
+     to the requested scope (SPEC-0010 REQ "Approval Is the Vend, Narrow-Only": you can uncheck to
+     narrow, never widen). Full page per the wizard interaction pattern — plain form, no JS
+     required; the POST only fires from this page's explicit confirm. Governing: ADR-0018. */}}
+{{$a := .FriendApprove}}{{$c := $a.Card}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">Approve friendship</h1>
+    <p class="sb-tagline">approving is the vend · it mints a live scoped MCP endpoint for their agent · per-direction, revocable, non-transitive</p>
+  </div>
+</div>
+
+<section class="sb-wiz sb-wiz--confirm" data-sb-friend-approve-confirm aria-label="Approve friendship — vend the endpoint">
+  <dl class="sb-wiz__summary" data-sb-wiz-summary>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Requester</dt><dd><span class="sb-fcard__remote-handle sb-mono">{{$c.RemoteHandle}}</span>{{if $c.RemoteHost}} <span class="sb-fcard__host">{{$c.RemoteHost}}</span>{{end}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Asked for</dt><dd class="sb-mono">{{$c.LocalPersona}}</dd></div>
+    {{if $c.Meta}}<div class="sb-epcard__row"><dt class="sb-microlabel">Requested</dt><dd>{{$c.Meta}}</dd></div>{{end}}
+  </dl>
+  {{if $c.Reason}}<blockquote class="sb-fcard__note">“{{$c.Reason}}”</blockquote>{{end}}
+
+  <form method="post" action="/friends/{{$c.ID}}/approve" class="sb-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="sb-field">
+      <label for="sb-approve-agent">Vend the endpoint onto</label>
+      {{if $a.Agents}}<select id="sb-approve-agent" name="agent_id" class="sb-input" required>{{range $a.Agents}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select>
+      <p class="sb-help">one of your own agents · the minted endpoint lives on it and dies with your revoke</p>
+      {{else}}<p class="sb-help">register an agent first — approval mints the endpoint onto one of your own agents</p>{{end}}
+    </div>
+    {{if $c.Queues}}<div class="sb-field">
+      <span class="sb-label" id="sb-approve-queues-label">Granted queues</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-approve-queues-label" data-sb-approve-queues>
+        {{range $c.Queues}}<label class="sb-chip sb-chip--queue sb-chip--toggle"><input type="checkbox" name="granted_queues" value="{{.}}" checked> {{.}}</label>{{end}}
+      </div>
+      <p class="sb-help">narrow-only · uncheck to grant less than they asked — you can never grant more</p>
+    </div>{{end}}
+    <div class="sb-field">
+      <span class="sb-label" id="sb-approve-verbs-label">Granted verbs</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-approve-verbs-label" data-sb-approve-verbs>
+        {{range $c.Intents}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="granted_verbs" value="{{.}}" checked> {{.}}</label>{{end}}
+      </div>
+      <p class="sb-help">narrow-only · the requested verbs start checked; unchecking everything grants the full requested scope</p>
+    </div>
+    <p class="sb-callout sb-callout--danger">Approving is the vend: it mints a live scoped endpoint their agent can call from the moment you confirm. The credential is delivered to their agent over A2A — it is shown to no one here. Revoking the friendship kills the endpoint.</p>
+    <div class="sb-vend__foot">
+      <a class="sb-btn sb-btn--secondary" href="/friends">Cancel</a>
+      {{if $a.Agents}}<button type="submit" class="sb-btn sb-btn--success sb-btn--mono" data-sb-friend-approve-submit>Approve — vend the endpoint →</button>{{end}}
+    </div>
+  </form>
+</section>
+{{end}}

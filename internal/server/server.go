@@ -7,10 +7,8 @@ import (
 	"context"
 	"io/fs"
 	"log/slog"
-	"maps"
 	"net/http"
 	"os"
-	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -24,6 +22,7 @@ import (
 	"github.com/joestump/switchboard/internal/db"
 	"github.com/joestump/switchboard/internal/ingest"
 	mcpsrv "github.com/joestump/switchboard/internal/mcp"
+	"github.com/joestump/switchboard/internal/oauthsrv"
 	"github.com/joestump/switchboard/internal/store"
 	"github.com/joestump/switchboard/internal/web"
 )
@@ -112,7 +111,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	ing := ingest.New(st, hub, log, ingest.Config{
+	icfg := ingest.Config{
 		GitHubSecret: os.Getenv("SWITCHBOARD_GITHUB_SECRET"),
 		GitHubQueue:  os.Getenv("SWITCHBOARD_GITHUB_QUEUE"),
 		StripeSecret: os.Getenv("SWITCHBOARD_STRIPE_SECRET"),
@@ -121,14 +120,31 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		SlackQueue:   os.Getenv("SWITCHBOARD_SLACK_QUEUE"),
 		Generic:      generic,
 		DevLogin:     cfg.DevLogin,
+	}.Normalized()
+	ing := ingest.New(st, hub, log, icfg)
+	// Ephemeral received-lane instrumentation (SPEC-0015 REQ "Patch Panel Board"): the receivers
+	// report in-flight deliveries — arrival, redacted rejection, dedup collapse — so the board's
+	// received lane renders the moment of verification live. SSE-only; nothing new is persisted,
+	// and the SPEC-0001 rejection doctrine is unchanged.
+	ing.SetInstrument(webh)
+	// Env config becomes an idempotent boot seed into the provider registry (create-if-absent,
+	// never clobber operator edits); the registry is authoritative thereafter, and dispatch
+	// resolves it live. Governing: ADR-0020, SPEC-0017 REQ "Environment Config Import".
+	if err := seedEnvProviders(ctx, st, icfg, log); err != nil {
+		return err
+	}
+	// list_providers (SPEC-0005) reads the provider registry LIVE, so runtime-created providers
+	// enumerate without a restart; the output shape (presence/absence classification only, never
+	// secret material) is unchanged. Governing: SPEC-0005 REQ "Provider Enumeration Without
+	// Secrets"; ADR-0020, SPEC-0017 REQ "Runtime Provider Registry".
+	mcph.SetProviderSource(func(pctx context.Context) []mcpsrv.ProviderStatus {
+		rows, err := st.ListProviders(pctx)
+		if err != nil {
+			log.Error("list providers from registry", "err", err)
+			return nil
+		}
+		return providerStatuses(rows)
 	})
-	// list_providers (SPEC-0005) serves this snapshot: presence/absence classification only, never
-	// the secret material. Governing: SPEC-0005 REQ "Provider Enumeration Without Secrets".
-	mcph.SetProviders(providerStatuses(
-		os.Getenv("SWITCHBOARD_GITHUB_SECRET") != "",
-		os.Getenv("SWITCHBOARD_STRIPE_SECRET") != "",
-		os.Getenv("SWITCHBOARD_SLACK_SECRET") != "",
-		generic))
 
 	r := newRouter(routerDeps{
 		st:      st,
@@ -136,12 +152,17 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		webh:    webh,
 		ing:     ing,
 		mcp:     mcph,
+		oauth:   oauthsrv.New(st, cfg.BaseURL, log),
 		friends: newFriendIntake(st, authr, log),
 		ping:    pool.Ping,
 		log:     log,
 	})
 
-	go reaper(ctx, st, log)
+	// The reaper also enforces vend-time credential lifetimes: an endpoint whose expires_at has
+	// passed is flipped to revoked in the store and its live MCP sessions are torn down through the
+	// SAME CloseEndpointSessions path the web UI's revoke uses — expiry IS revocation, not a
+	// parallel lifecycle. Governing: SPEC-0016 REQ "Credential Lifetime", ADR-0019.
+	go reaper(ctx, st, log, mcph.CloseEndpointSessions, reapInterval)
 	// Retention pruner: the periodic task SPEC-0004 mandates so events and terminal todos cannot
 	// grow unbounded. Same lifecycle pattern as the reaper — context-managed, exits on shutdown.
 	go pruner(ctx, st, log, pruneInterval)
@@ -204,6 +225,7 @@ type routerDeps struct {
 	webh    *web.Handler
 	ing     *ingest.Ingest
 	mcp     *mcpsrv.Handler             // the Run-wired MCP handler (doorbell + revocation hooks attached)
+	oauth   *oauthsrv.Handler           // OAuth AS surface: discovery metadata + dynamic client registration (ADR-0019)
 	friends *friendIntake               // A2A friend-request intake (OIDC-provenance authenticated)
 	ping    func(context.Context) error // /healthz DB probe
 	log     *slog.Logger
@@ -269,6 +291,30 @@ func newRouter(d routerDeps) chi.Router {
 	// Owner-Controlled", "Security Requirements → Authentication / Rate Limiting".
 	r.With(cardRL.middleware).Get("/a/{persona_id}/.well-known/agent-card.json", d.webh.AgentCard)
 
+	// OAuth authorization-server surface (ADR-0019; SPEC-0016): RFC 8414 AS metadata, RFC 9728
+	// protected-resource metadata per MCP mount, and RFC 7591 dynamic client registration. All three
+	// are DELIBERATELY public — discovery documents are how an unauthenticated MCP client learns to
+	// authorize at all, and DCR is anonymous by design (public clients + PKCE; the flow's human gate
+	// is the consent screen behind the session, not registration). The metadata GETs read nothing
+	// from the store; registration validates every field (exact redirect-URI rules) and its body is
+	// bounded at 64 KiB — a registration is a handful of URIs and a name, never a blob. One per-IP
+	// throttle covers the surface, same limiter shape as the other public groups.
+	// Governing: SPEC-0016 REQ "Protected Resource Metadata", REQ "Authorization Server Metadata",
+	// REQ "Dynamic Client Registration", "Security notes" (rate limiting on /oauth/* consistent with
+	// the existing limiter).
+	oauthRL := newRateLimiter(5, 20)
+	r.Group(func(or chi.Router) {
+		or.Use(oauthRL.middleware)
+		or.Get(oauthsrv.ASMetadataPath, d.oauth.ASMetadata)
+		or.Get(oauthsrv.ProtectedResourcePrefix+"/mcp/{endpoint}", d.oauth.ProtectedResourceMetadata)
+		or.With(maxBytes(64<<10)).Post(oauthsrv.RegisterPath, d.oauth.Register)
+		// The token endpoint (SPEC-0016 REQ "Token Issuance And Refresh") is public like the rest of
+		// the AS surface: clients are public (no client secret), so the proof is PKCE possession on
+		// the code grant and the rotating refresh token on the refresh grant — never a session. Same
+		// per-IP throttle, same 64 KiB bound (a token request is a handful of short form fields).
+		or.With(maxBytes(64<<10)).Post(oauthsrv.TokenPath, d.oauth.Token)
+	})
+
 	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, per-endpoint
 	// rate limit, and the 1 MiB body cap all live inside the package's own middleware stack.
 	// The handler is Run-wired (doorbell + revocation hooks) and passed in — never constructed here.
@@ -311,6 +357,17 @@ func newRouter(d routerDeps) chi.Router {
 		ar.With(maxBytes(64<<10)).Post("/auth/dev-login", d.authr.DevLogin)
 	})
 
+	// GET / is the one dual-mode surface. auth.LoadHuman injects the human when a live session is
+	// present but NEVER redirects, so the Root handler renders the operator Board for an
+	// authenticated human and the public marketing Home page for a logged-out visitor — the
+	// homepage, not a bare bounce to /login. Alongside /login this is the only web route reachable
+	// without a session, and it exposes nothing sensitive: the Home page is static, and an
+	// authenticated Board render still relies on the human LoadHuman just injected. Every data and
+	// mutation route stays behind RequireHuman in the group below.
+	// Governing: SPEC-0012 REQ "Screen Set and Routes", REQ "Authentication Boundary" (the human
+	// surface is session-gated; / adds a public landing face without opening any data route).
+	r.With(d.authr.LoadHuman).Get("/", d.webh.Root)
+
 	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB;
 	// RequireCSRF guards every state-changing form with a per-session synchronizer token (SPEC-0008).
 	// Logout is a session-gated POST — never a GET — so it cannot be triggered cross-site.
@@ -325,20 +382,43 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Use(d.authr.RequireHuman)
 		pr.Use(humanRL.postMiddleware) // after RequireHuman: keyed by the authenticated human
 		pr.Use(d.authr.RequireCSRF)
-		// Governing: SPEC-0013 REQ "Information Architecture and Navigation" — GET / renders the
-		// Board; the agents screen moves to /agents (surfaced as "Endpoints" in the rail).
-		pr.Get("/", d.webh.Board)
 		// Todos view: the durable-queue table + detail drawer (SPEC-0013). GET /todos/{id} serves the
 		// drawer fragment (HTMX) or a standalone page (deep link / no-JS fallback).
 		pr.Get("/todos", d.webh.Todos)
 		pr.Get("/todos/{id}", d.webh.TodoDrawer)
-		// Endpoints view + vend modal (SPEC-0013). The retired SPEC-0012 /agents screens 303-redirect
-		// here; GET /endpoints/vend serves the modal fragment, POST /endpoints/vend mints + reveals once.
+		// Endpoints view + the vend wizard (SPEC-0015 REQ "Endpoints View And Vend Wizard", REQ
+		// "Wizard Interaction Pattern"). The retired SPEC-0012 /agents screens 303-redirect here.
+		// GET /endpoints/vend starts the wizard (mints server-side step state, 303 → the first step);
+		// GET/POST /endpoints/vend/{step} are the routed step pages (persona → queues → verbs →
+		// lifetime → confirm) — the confirm POST is the mint. POST /endpoints/vend remains the direct
+		// single-form mint path (same executeVend, same validation gates).
 		pr.Get("/endpoints", d.webh.Endpoints)
-		pr.Get("/endpoints/vend", d.webh.VendModal)
+		pr.Get("/endpoints/vend", d.webh.VendStart)
+		pr.Get("/endpoints/vend/{step}", d.webh.VendStep)
+		pr.Post("/endpoints/vend/{step}", d.webh.VendStepSubmit)
 		pr.Post("/endpoints/vend", d.webh.Vend)
 		pr.Get("/agents", d.webh.AgentsRedirect)
 		pr.Get("/agents/{id}", d.webh.AgentsRedirect)
+		// Providers view over the runtime registry (SPEC-0017 REQ "Providers View" / "Provider
+		// Catalog") + the lifecycle surface: disable/rotate/remove behind a confirmation modal,
+		// enable inline (SPEC-0017 REQ "Provider Lifecycle"). CSRF via the layout hx-headers /
+		// hidden field; the group's RequireCSRF validates every POST. Governing: ADR-0020,
+		// SPEC-0015 REQ "Application Shell And Navigation".
+		pr.Get("/providers", d.webh.Providers)
+		// Connect-provider wizard (SPEC-0017 REQ "Connect Provider Wizard"; SPEC-0015 wizard
+		// pattern): GET /providers/connect starts it (server-side step state, 303 → source);
+		// GET/POST /providers/connect/{step} are the routed step pages — the confirm POST
+		// registers the provider (enabled) and renders the completion reveal. The static
+		// "connect" segment wins over {name} in chi, which is why the wizard refuses to create
+		// a provider named "connect". Governing: ADR-0020, ADR-0003.
+		pr.Get("/providers/connect", d.webh.ConnectStart)
+		pr.Get("/providers/connect/{step}", d.webh.ConnectStep)
+		pr.Post("/providers/connect/{step}", d.webh.ConnectStepSubmit)
+		pr.Get("/providers/{name}/confirm/{action}", d.webh.ProviderConfirmModal)
+		pr.Post("/providers/{name}/disable", d.webh.DisableProvider)
+		pr.Post("/providers/{name}/enable", d.webh.EnableProvider)
+		pr.Post("/providers/{name}/rotate", d.webh.RotateProvider)
+		pr.Post("/providers/{name}/remove", d.webh.RemoveProvider)
 		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
 		pr.Get("/events", d.webh.Events)
 		// Operator todo lifecycle actions (SPEC-0013 endpoints table). Each dispatches to a SPEC-0003
@@ -350,28 +430,55 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/todos/{id}/retry", d.webh.RetryTodo)
 		pr.Post("/todos/{id}/extend", d.webh.ExtendTodo)
 		pr.Post("/todos/{id}/release", d.webh.ReleaseTodo)
+		// OAuth consent (SPEC-0016 REQ "Authorization Code Flow With Consent"): GET renders the
+		// "authorize access" screen, its POST records the decision (approve mints the single-use
+		// PKCE-bound code; deny returns the standard error). DELIBERATELY inside the RequireHuman
+		// group — consent is the flow's human gate, so an anonymous authorize request is bounced
+		// through login first (scenario "Human absent") — with CSRF on the decision POST and the
+		// shared human-surface limiter, like every other session mutation. Governing: ADR-0019.
+		pr.Get(oauthsrv.AuthorizePath, d.webh.OAuthAuthorize)
+		pr.Post(oauthsrv.AuthorizePath, d.webh.OAuthDecision)
+		// Revocation is irreversible, so it confirms on a full page first (SPEC-0015 REQ "Wizard
+		// Interaction Pattern"): GET renders the confirm, the POST from that page executes the kill.
+		pr.Get("/endpoints/{id}/revoke", d.webh.RevokeConfirm)
 		pr.Post("/endpoints/{id}/revoke", d.webh.Revoke)
 		// Permanently delete a revoked endpoint's card (SPEC-0007 REQ "Permanent Deletion of Revoked
 		// Endpoints"). Store constrains to state='revoked' + ownership; active endpoints must be revoked
 		// first. CSRF arrives via the layout hx-headers / hidden field; the group's RequireCSRF validates.
 		pr.Post("/endpoints/{id}/delete", d.webh.DeleteEndpoint)
-		// Friends view + approval flow (SPEC-0013 endpoints table; SPEC-0010 approval-is-vend). The
-		// handlers 404 until the friending capability is enabled (capability gating lives in the
-		// handler, so the routes stay classified session-gated for the route-table baseline). Approve
-		// mints a scoped endpoint onto a target-OWNED agent; CSRF arrives via the layout hx-headers.
+		// Friends view + approval flow (SPEC-0015 REQ "Friends View And Approval Flow"; SPEC-0010
+		// approval-is-vend). The handlers 404 until the friending capability is enabled (capability
+		// gating lives in the handler, so the routes stay classified session-gated for the route-table
+		// baseline). Approve and revoke follow the full-page confirm pattern (SPEC-0015 REQ "Wizard
+		// Interaction Pattern"): GET renders the confirm page — the approve page presents the scoped
+		// endpoint approval mints — and the POST from that page executes. Approve mints a scoped
+		// endpoint onto a target-OWNED agent; CSRF arrives via the layout hx-headers.
 		pr.Get("/friends", d.webh.Friends)
 		pr.Get("/friends/new", d.webh.AddFriendModal)
 		pr.Get("/friends/resolve", d.webh.ResolveFriendHandle)
 		pr.Post("/friends", d.webh.AddFriend)
+		pr.Get("/friends/{id}/approve", d.webh.ApproveFriendPage)
 		pr.Post("/friends/{id}/approve", d.webh.ApproveFriend)
 		pr.Post("/friends/{id}/decline", d.webh.DeclineFriend)
 		pr.Post("/friends/{id}/withdraw", d.webh.WithdrawFriend)
+		pr.Get("/friends/{id}/revoke", d.webh.RevokeFriendPage)
 		pr.Post("/friends/{id}/revoke", d.webh.RevokeFriend)
 		pr.Post("/friends/{id}/unblock", d.webh.UnblockFriend)
-		// Personas view (SPEC-0013 endpoints table). Capability-gated inside the handler: while the
-		// personas capability is disabled these 404 (hidden-not-broken); the routes stay session- and
-		// CSRF-gated like every other web mutation. Governing: SPEC-0013 REQ "Personas View".
+		// Personas view + wizard (SPEC-0015 REQ "Personas View And Wizard", REQ "Wizard Interaction
+		// Pattern"). Capability-gated inside the handler: while the personas capability is disabled
+		// these 404 (hidden-not-broken); the routes stay session- and CSRF-gated like every other web
+		// mutation. GET /personas/wizard starts the create wizard (mints server-side step state, 303
+		// → the first step); GET /personas/{id}/edit starts the edit wizard seeded from the persona;
+		// GET/POST /personas/wizard/{step} are the routed step pages (identity → scope → publish) —
+		// the publish POST is the save. POST /personas/wizard/preview is the HTMX live A2A card
+		// preview over the UNSAVED draft (nothing persisted). POST /personas and /personas/{id}
+		// remain the direct single-form create/update paths (same store validation gates).
 		pr.Get("/personas", d.webh.Personas)
+		pr.Get("/personas/wizard", d.webh.PersonaWizardStart)
+		pr.Get("/personas/wizard/{step}", d.webh.PersonaWizardStep)
+		pr.Post("/personas/wizard/preview", d.webh.PersonaCardPreview)
+		pr.Post("/personas/wizard/{step}", d.webh.PersonaWizardStepSubmit)
+		pr.Get("/personas/{id}/edit", d.webh.PersonaWizardEdit)
 		pr.Post("/personas", d.webh.CreatePersona)
 		pr.Post("/personas/{id}", d.webh.UpdatePersona)
 		pr.Post("/personas/{id}/delete", d.webh.DeletePersona)
@@ -412,56 +519,6 @@ func secureHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
-}
-
-// providerStatuses projects the configured inbound providers into the SPEC-0005 list_providers
-// shape. It receives only presence booleans for the signed providers — never the secret values —
-// so no secret material can reach the enumeration surface. A built-in signed provider (github,
-// stripe, slack) is only enumerated when its secret is actually configured: with no secret the
-// route rejects every delivery, so advertising it would misrepresent an unreachable provider as
-// part of the inventory. Generic providers already appear only when the operator declares them.
-// Queue-family providers join once the Redis adapters register with the runner (SPEC-0002 chain);
-// until then the webhook family is the whole inventory.
-// Governing: SPEC-0005 REQ "Provider Enumeration Without Secrets" ("for each configured provider").
-func providerStatuses(github, stripe, slack bool, generic map[string]ingest.GenericProvider) []mcpsrv.ProviderStatus {
-	var out []mcpsrv.ProviderStatus
-	builtin := []struct {
-		name, path string
-		configured bool
-	}{
-		{"github", "/webhooks/github", github},
-		{"stripe", "/webhooks/stripe", stripe},
-		{"slack", "/webhooks/slack", slack},
-	}
-	for _, b := range builtin {
-		if !b.configured {
-			continue
-		}
-		out = append(out, mcpsrv.ProviderStatus{
-			Name: b.name, Family: "webhook", TrustMode: "signed", Enabled: true,
-			SecretStatus: "configured", Path: b.path,
-		})
-	}
-	for _, name := range slices.Sorted(maps.Keys(generic)) {
-		gp := generic[name]
-		ps := mcpsrv.ProviderStatus{Name: name, Family: "webhook", TrustMode: gp.Mode,
-			Path: "/webhooks/generic/" + name}
-		switch gp.Mode {
-		case "token":
-			// A token provider with no token configured is disabled (403s everything) by design, so
-			// it is an unreachable route — skip it, matching the built-in "only configured" rule.
-			if gp.Token == "" {
-				continue
-			}
-			ps.Enabled = true
-			ps.SecretStatus = "configured"
-		case "open":
-			ps.Enabled = true
-			ps.SecretStatus = "none-by-design"
-		}
-		out = append(out, ps)
-	}
-	return out
 }
 
 // maxBytes caps a request body at n bytes via http.MaxBytesReader, so a read past the limit errors
@@ -528,12 +585,34 @@ func pruner(ctx context.Context, st pruneStore, log *slog.Logger, interval time.
 	}
 }
 
+// reapInterval is how often the reaper ticks. Lease recovery, due retries, and endpoint expiry all
+// tolerate up to one interval of lag; expired CREDENTIALS are additionally refused at auth the
+// instant the expiry passes (store.EndpointByCredHash), so the tick only bounds how long a live
+// session can linger and when the card flips to revoked.
+const reapInterval = 30 * time.Second
+
+// reapStore is the store seam the reaper needs; *store.Store satisfies it. Narrowed to an
+// interface so the loop wiring is unit-testable without a database (mirroring pruneStore).
+type reapStore interface {
+	ReapExpired(ctx context.Context) (int64, error)
+	RequeueDueRetries(ctx context.Context) (int64, error)
+	ExpireEndpoints(ctx context.Context) ([]string, error)
+}
+
 // reaper periodically requeues (or dead-letters) todos with expired leases — crash safety (ADR-0002)
 // — and re-queues failed todos whose scheduled retry backoff has elapsed (SPEC-0003 REQ "Bounded
 // Retries via max_attempts", scheduled backoff). The claim scan also picks up due retries directly,
 // so this loop only bounds how long a due retry can sit without a claimant asking.
-func reaper(ctx context.Context, st *store.Store, log *slog.Logger) {
-	t := time.NewTicker(30 * time.Second)
+//
+// It also enforces endpoint credential lifetimes: every tick, endpoints whose vend-time expiry has
+// passed are flipped to revoked in the store and each affected endpoint's live MCP sessions are
+// closed via closeSessions — the same path a web-UI revoke rings — so an agent holding a live
+// session loses it and subsequent bearer or OAuth access fails identically to revocation.
+// Errors are logged and the loop keeps going, mirroring the pruner: a transient DB failure must not
+// disable enforcement for the life of the process. Governing: SPEC-0016 REQ "Credential Lifetime"
+// (scenario "Expiry enforcement"), SPEC-0007 revocation semantics reused, ADR-0019.
+func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions func(endpointID string), interval time.Duration) {
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
@@ -549,6 +628,18 @@ func reaper(ctx context.Context, st *store.Store, log *slog.Logger) {
 				log.Warn("retry scheduler", "err", err)
 			} else if n > 0 {
 				log.Info("re-queued scheduled retries", "count", n)
+			}
+			if ids, err := st.ExpireEndpoints(ctx); err != nil {
+				log.Warn("endpoint expiry", "err", err)
+			} else if len(ids) > 0 {
+				// Close sessions AFTER the store flip: auth already refuses the expired credential,
+				// so a session re-established between flip and close is impossible.
+				for _, id := range ids {
+					if closeSessions != nil {
+						closeSessions(id)
+					}
+				}
+				log.Info("expired endpoints revoked", "count", len(ids))
 			}
 		}
 	}

@@ -1,0 +1,125 @@
+{{/* Providers-view fragments (SPEC-0017 REQ "Providers View" / "Provider Catalog" / "Provider
+     Lifecycle"; split per view by SPEC-0015 REQ "Live Fragment Architecture"). Governing:
+     ADR-0020 (runtime registry backs the view), ADR-0018. Secrets NEVER render here — the render
+     model carries only a presence classification (configured/missing/none-by-design), and the
+     one-time rotate reveal is a separate post-action response, never re-renderable. */}}
+
+{{/* providers_panel — the swappable region: the family sections (webhook · push, queue · pull)
+     with per-line trust chips, health, and lifecycle controls, then the two-tier catalog.
+     Returned wholesale on lifecycle POSTs and rendered server-side into the full page.
+     Data: web.providersPanelView. */}}
+{{define "providers_panel"}}{{if .Families}}{{range .Families}}{{template "provider_family" dict "F" . "CSRF" $.CSRF}}{{end}}{{else}}<p class="sb-empty" data-sb-providers-empty>no providers connected yet · deployment env seeds the registry at boot · the catalog below shows what can be connected</p>{{end}}
+{{template "provider_catalog" .}}{{end}}
+
+{{/* providers_panel_oob — the same panel as an out-of-band replacement of #sb-providers-panel,
+     appended to responses whose primary target is the overlay (the rotate reveal), so the line's
+     updated state reflects in the same response. Data: web.providersPanelView. */}}
+{{define "providers_panel_oob"}}<div id="sb-providers-panel" hx-swap-oob="true">{{template "providers_panel" .}}</div>{{end}}
+
+{{/* provider_family — one family section: mono uppercase heading + count + rule, then the line
+     cards. Args via dict: F web.providerFamily, CSRF string. */}}
+{{define "provider_family"}}<section class="sb-prfam" aria-label="{{.F.Title}}" data-sb-provider-family="{{.F.Key}}">
+  <h2 class="sb-prfam__head"><span class="sb-prfam__glyph" aria-hidden="true">{{if eq .F.Key "webhook"}}⇥{{else}}⇊{{end}}</span>{{.F.Title}} <span class="sb-prfam__n">{{len .F.Lines}}</span><span class="sb-prfam__rule" aria-hidden="true"></span></h2>
+  <div class="sb-prcards">{{range .F.Lines}}{{template "provider_line" dict "L" . "CSRF" $.CSRF}}{{end}}</div>
+</section>{{end}}
+
+{{/* provider_line — one connected provider card: glyph tile, name, kind → queue routing, the
+     enforced trust mode as a chip (SPEC-0017 scenario "Trust at a glance"), secret PRESENCE only,
+     in-rate + last-seen, and the configure affordance (a native disclosure holding the lifecycle
+     controls: disable/enable inline forms; rotate/remove behind confirmation modals). Disabled
+     lines render dimmed with an explicit chip. Args via dict: L web.providerLine, CSRF string. */}}
+{{define "provider_line"}}{{$l := .L}}<article id="{{$l.RowID}}" class="sb-prcard{{if not $l.Enabled}} sb-prcard--disabled{{end}}" data-sb-provider="{{$l.Name}}" data-sb-provider-kind="{{$l.Kind}}">
+  <div class="sb-prcard__head">
+    <span class="sb-prcard__tag sb-tag sb-tag--{{$l.TrustMode}}" aria-hidden="true">{{$l.Tag}}</span>
+    <div class="sb-prcard__ident">
+      <span class="sb-prcard__name">{{$l.Name}}</span>
+      <span class="sb-prcard__kind sb-mono">{{$l.Kind}} → {{$l.Queue}}</span>
+    </div>
+    {{/* The enforced trust mode, SPEC-0001 chip vocabulary. */}}
+    <span class="sb-badge sb-badge--{{$l.TrustMode}}" data-sb-trust="{{$l.TrustMode}}">{{$l.TrustMode}}</span>
+    {{if not $l.Enabled}}<span class="sb-badge sb-badge--revoked" data-sb-provider-disabled>disabled</span>{{end}}
+  </div>
+  <dl class="sb-prcard__meta">
+    {{if $l.Path}}<div class="sb-prcard__row"><dt class="sb-microlabel">Ingest</dt><dd><code class="sb-code">{{$l.Path}}</code></dd></div>{{end}}
+    <div class="sb-prcard__row"><dt class="sb-microlabel">Secret</dt><dd>{{if eq $l.SecretStatus "configured"}}<span class="sb-prcard__secret" data-sb-secret-status="configured">configured · sealed · never shown</span>{{else if eq $l.SecretStatus "missing"}}<span class="sb-prcard__secret sb-prcard__secret--missing" data-sb-secret-status="missing">missing · line rejects everything until set</span>{{else}}<span class="sb-prcard__secret sb-muted" data-sb-secret-status="none-by-design">none by design</span>{{end}}</dd></div>
+    {{if $l.LastError}}<div class="sb-prcard__row"><dt class="sb-microlabel">Health</dt><dd><span class="sb-prcard__err">{{$l.LastError}}</span></dd></div>{{end}}
+  </dl>
+  <div class="sb-prcard__foot">
+    <span class="sb-prcard__rate" data-sb-in-rate="{{$l.InRate}}">in {{$l.InRate}}/min</span>
+    <span class="sb-prcard__seen sb-muted">{{if $l.LastSeenAt}}seen {{reltime $l.LastSeenAt.UTC}}{{else if $l.LastPollAt}}polled {{reltime $l.LastPollAt.UTC}}{{else}}never seen{{end}}</span>
+    {{/* Configure affordance (SPEC-0017 REQ "Providers View"): a native disclosure — works with
+         no JS — opening the lifecycle controls. Rotate/remove confirm in the shared overlay;
+         their in-form buttons are the no-JS fallback path (the server renders the confirmation
+         inline on the page when JS is off). */}}
+    <details class="sb-prcard__config">
+      <summary class="sb-btn sb-btn--secondary sb-btn--mono" data-sb-configure>configure</summary>
+      <div class="sb-prcard__acts">
+        {{if $l.Enabled}}
+        <form method="get" action="/providers/{{$l.Name}}/confirm/disable" hx-get="/providers/{{$l.Name}}/confirm/disable" hx-target="#sb-overlay" hx-swap="innerHTML"><button type="submit" class="sb-btn sb-btn--secondary sb-btn--mono" aria-haspopup="dialog">disable</button></form>
+        {{else}}
+        <form method="post" action="/providers/{{$l.Name}}/enable" hx-post="/providers/{{$l.Name}}/enable" hx-target="#sb-providers-panel" hx-swap="innerHTML"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit" class="sb-btn sb-btn--mono">enable</button></form>
+        {{end}}
+        {{if $l.CanRotate}}<form method="get" action="/providers/{{$l.Name}}/confirm/rotate" hx-get="/providers/{{$l.Name}}/confirm/rotate" hx-target="#sb-overlay" hx-swap="innerHTML"><button type="submit" class="sb-btn sb-btn--secondary sb-btn--mono" aria-haspopup="dialog">rotate secret</button></form>{{end}}
+        <form method="get" action="/providers/{{$l.Name}}/confirm/remove" hx-get="/providers/{{$l.Name}}/confirm/remove" hx-target="#sb-overlay" hx-swap="innerHTML"><button type="submit" class="sb-btn sb-btn--danger sb-btn--mono" aria-haspopup="dialog">remove</button></form>
+      </div>
+    </details>
+  </div>
+</article>{{end}}
+
+{{/* provider_catalog — the two-tier catalog (SPEC-0017 REQ "Provider Catalog"). Connectable =
+     implemented, with a real connect entry point (the SPEC-0017 connect wizard, seeded with the
+     card's kind). Available = SQS/NATS/AMQP, visually distinct (dashed, dimmed, "planned" badge)
+     with NO interactive connect path at all. Data: web.providersPanelView. */}}
+{{define "provider_catalog"}}<section class="sb-prcat" aria-label="Provider catalog">
+  <h2 class="sb-prfam__head"><span class="sb-prfam__glyph" aria-hidden="true">▤</span>catalog <span class="sb-prfam__rule" aria-hidden="true"></span></h2>
+  <div class="sb-prcat__grid">
+    {{range .Connectable}}{{template "provider_catalog_card" .}}{{end}}
+    {{range .Available}}{{template "provider_catalog_card" .}}{{end}}
+  </div>
+</section>{{end}}
+
+{{/* provider_catalog_card — one catalog entry. The two states are visually and structurally
+     distinct: a connectable card links into the connect wizard seeded with its kind; an
+     available card is dashed/dimmed, badged "planned", and contains no form, link, or button —
+     nothing that could dead-end (scenario "Catalog honesty"). Data: web.catalogCard. */}}
+{{define "provider_catalog_card"}}<article class="sb-catcard sb-catcard--{{.State}}" data-sb-catalog-kind="{{.Kind}}" data-sb-catalog-state="{{.State}}">
+  <div class="sb-catcard__head">
+    <span class="sb-catcard__tag sb-tag sb-tag--{{.Trust}}" aria-hidden="true">{{tag .Kind}}</span>
+    <span class="sb-catcard__title">{{.Title}}</span>
+    {{if eq .State "available"}}<span class="sb-badge sb-badge--planned">planned</span>{{else}}<span class="sb-badge sb-badge--{{.Trust}}">{{.Trust}}</span>{{end}}
+  </div>
+  <p class="sb-catcard__desc">{{.Desc}} <span class="sb-muted">· {{.Family}}</span></p>
+  <div class="sb-catcard__foot">
+    {{if eq .State "available"}}<span class="sb-catcard__state sb-muted">available · no connect path yet — this card never fakes one</span>{{else}}<a class="sb-btn sb-btn--secondary sb-btn--mono" href="/providers/connect?kind={{.Kind}}" data-sb-catalog-connect>connect →</a>{{end}}
+  </div>
+</article>{{end}}
+
+{{/* provider_confirm_modal — the shared lifecycle confirmation (disable / rotate / remove),
+     swapped into the shared overlay (focus-trapped, Escape/scrim/✕ close). The form is a real
+     POST (no-JS safe); rotate targets the overlay (its response IS the one-time reveal) while
+     disable/remove target the panel and clear the overlay OOB. Data: web.providerConfirmView.
+     Governing: SPEC-0017 REQ "Provider Lifecycle" (removal requires confirmation). */}}
+{{define "provider_confirm_modal"}}<div class="sb-modal" role="dialog" aria-modal="true" aria-labelledby="sb-prconfirm-title" data-sb-modal data-sb-provider-confirm="{{.Action}}" tabindex="-1">
+  <div class="sb-modal__head"><h2 class="sb-modal__title" id="sb-prconfirm-title">{{.Title}}</h2><button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button></div>
+  <p class="sb-callout{{if eq .Action "remove"}} sb-callout--danger{{end}}">{{.Body}}</p>
+  <form method="post" action="/providers/{{.Name}}/{{.Action}}" hx-post="/providers/{{.Name}}/{{.Action}}"{{if eq .Action "rotate"}} hx-target="#sb-overlay" hx-swap="innerHTML"{{else}} hx-target="#sb-providers-panel" hx-swap="innerHTML"{{end}}>
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="sb-modal__foot">
+      <button type="button" class="sb-btn sb-btn--secondary" data-sb-close>Cancel</button>
+      <button type="submit" class="sb-btn{{if ne .Action "rotate"}} sb-btn--danger{{end}}" data-sb-provider-confirm-submit>{{.Button}}</button>
+    </div>
+  </form>
+</div>{{end}}
+
+{{/* provider_rotate_reveal — the post-rotate one-time secret reveal, the SAME reveal discipline as
+     the vend credential: rendered only as the response to a successful rotate, never persisted,
+     never re-renderable. Data: web.providerRevealView. Governing: SPEC-0017 (secrets through the
+     envelope, revealed once); scenario "Homelab sender lands on token" (standard reveal pattern). */}}
+{{define "provider_rotate_reveal"}}<div class="sb-modal sb-modal--reveal" role="dialog" aria-modal="true" aria-labelledby="sb-prreveal-title" data-sb-modal data-sb-provider-reveal tabindex="-1">
+  <div class="sb-modal__head"><h2 class="sb-modal__title" id="sb-prreveal-title">Secret rotated · {{.Name}}</h2><button type="button" class="sb-drawer__close" data-sb-close aria-label="Close">✕</button></div>
+  <p class="sb-callout sb-callout--danger">Copy the new secret now — it is shown once. The old secret is already dead; update the sender before its next delivery.</p>
+  <span class="sb-label" id="sb-prreveal-secret-label">New secret · shown once</span>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-prreveal-secret-label">{{.Secret}}</pre>
+  {{if .Path}}<p class="sb-muted">The sender presents it {{if eq .TrustMode "token"}}as a bearer token or <code>X-Webhook-Token</code> header{{else}}as its HMAC signing secret{{end}} on <code>{{.Path}}</code>.</p>{{end}}
+  <div class="sb-modal__foot"><button type="button" class="sb-btn" data-sb-close>Done</button></div>
+</div>{{end}}

@@ -1,13 +1,15 @@
 package web
 
-// DB-less handler + helper coverage for the SPEC-0013 Friends surface that runs in the `go test ./...`
-// gate: capability gating (every route 404s while friending is off, before any store access),
-// add-friend input validation, the friend-action error → generic-status mapping, and the pure
-// render-model helpers (state → group, handle → host, counts/filter/group). The end-to-end
-// approve/decline/revoke/withdraw/unblock POSTs with CSRF and the owned-agent guard live in the
-// DB-backed internal/server suite (skipped without SWITCHBOARD_TEST_DATABASE_URL).
+// DB-less handler + helper coverage for the SPEC-0015 Friends surface that runs in the `go test ./...`
+// gate: capability gating (every route — including the approve/revoke confirm pages — 404s while
+// friending is off, before any store access), add-friend input validation, the friend-action error →
+// generic-status mapping, and the pure render-model helpers (state → section, handle → host,
+// counts/grouping). The end-to-end approve/decline/revoke/withdraw/unblock POSTs with CSRF and the
+// owned-agent guard live in the DB-backed internal/server suite (skipped without
+// SWITCHBOARD_TEST_DATABASE_URL).
 //
-// Governing: SPEC-0013 REQ "Friends View", REQ "Error Handling Standards" (#110 companion story).
+// Governing: SPEC-0015 REQ "Friends View And Approval Flow"; error-handling standards inherited
+// from SPEC-0012.
 
 import (
 	"net/http"
@@ -29,20 +31,23 @@ func disabledFriendsHandler(t *testing.T) *Handler {
 }
 
 // TestFriendRoutes404WhenCapabilityDisabled proves the capability gate: with friending off, every
-// friend handler returns 404 BEFORE touching auth context or the store — hidden-not-broken. The gate
-// is the first statement in each handler, so a nil-store handler exercises it in the CI gate.
+// friend handler — the view, the confirm pages, and the mutations — returns 404 BEFORE touching
+// auth context or the store — hidden-not-broken. The gate is the first statement in each handler,
+// so a nil-store handler exercises it in the CI gate.
 func TestFriendRoutes404WhenCapabilityDisabled(t *testing.T) {
 	h := disabledFriendsHandler(t)
 	cases := map[string]http.HandlerFunc{
-		"GET /friends":         h.Friends,
-		"GET /friends/new":     h.AddFriendModal,
-		"GET /friends/resolve": h.ResolveFriendHandle,
-		"POST /friends":        h.AddFriend,
-		"approve":              h.ApproveFriend,
-		"decline":              h.DeclineFriend,
-		"revoke":               h.RevokeFriend,
-		"withdraw":             h.WithdrawFriend,
-		"unblock":              h.UnblockFriend,
+		"GET /friends":              h.Friends,
+		"GET /friends/new":          h.AddFriendModal,
+		"GET /friends/resolve":      h.ResolveFriendHandle,
+		"POST /friends":             h.AddFriend,
+		"GET /friends/{id}/approve": h.ApproveFriendPage,
+		"approve":                   h.ApproveFriend,
+		"decline":                   h.DeclineFriend,
+		"GET /friends/{id}/revoke":  h.RevokeFriendPage,
+		"revoke":                    h.RevokeFriend,
+		"withdraw":                  h.WithdrawFriend,
+		"unblock":                   h.UnblockFriend,
 	}
 	for name, fn := range cases {
 		rec := httptest.NewRecorder()
@@ -74,8 +79,8 @@ func TestAddFriendValidation(t *testing.T) {
 	}
 }
 
-// TestFailFriendActionMapsStoreErrors pins the generic error contract (SPEC-0013): each friend-edge
-// sentinel maps to a distinguishable status with no internal detail; anything else is a generic 500.
+// TestFailFriendActionMapsStoreErrors pins the generic error contract: each friend-edge sentinel
+// maps to a distinguishable status with no internal detail; anything else is a generic 500.
 func TestFailFriendActionMapsStoreErrors(t *testing.T) {
 	h := newTestHandler(t)
 	cases := []struct {
@@ -100,17 +105,17 @@ func TestFailFriendActionMapsStoreErrors(t *testing.T) {
 }
 
 func TestFriendGroupForEdge(t *testing.T) {
-	// Labels are the design canvas badge copy (DESIGN Friends FR_STATUS; #175): incoming ·
-	// awaiting · active · blocked. The blocked meta line, not the badge, distinguishes
-	// declined from revoked.
+	// Labels are the SPEC-0015 status vocabulary: incoming · awaiting · established · blocked (the
+	// scenario's word for an approved edge is "established"). The blocked meta line, not the badge,
+	// distinguishes declined from revoked.
 	cases := []struct {
 		state, direction, wantGroup, wantLabel string
 	}{
 		{"pending", "", "incoming", "incoming"},         // inbound intake (store default direction)
 		{"pending", "outbound", "incoming", "incoming"}, // inbound intake, explicit default
-		{"pending", "outgoing", "outgoing", "awaiting"}, // locally sent → Outgoing group (#174)
-		{"approved", "", "active", "active"},
-		{"approved", "outgoing", "active", "active"}, // an accepted outgoing request is just active
+		{"pending", "outgoing", "outgoing", "awaiting"}, // locally sent → awaiting-them (#174)
+		{"approved", "", "active", "established"},
+		{"approved", "outgoing", "active", "established"}, // an accepted outgoing request is just established
 		{"denied", "", "blocked", "blocked"},
 		{"denied", "outgoing", "blocked", "blocked"},
 		{"revoked", "", "blocked", "blocked"},
@@ -124,10 +129,10 @@ func TestFriendGroupForEdge(t *testing.T) {
 	}
 }
 
-// TestFriendMetaForEdge pins the footer meta line (#175 / DESIGN Friends): relative request/sent
-// ages, the active edge's last A2A activity from its vended endpoint's last-seen (there is no
-// per-edge call counter — epic #173), declined-vs-revoked preserved on blocked entries, and zero
-// times degrading to an empty meta instead of a bogus age.
+// TestFriendMetaForEdge pins the footer meta line: relative request/sent ages, the established
+// edge's last A2A activity from its vended endpoint's last-seen (there is no per-edge call counter
+// — epic #173), declined-vs-revoked preserved on blocked entries, and zero times degrading to an
+// empty meta instead of a bogus age.
 func TestFriendMetaForEdge(t *testing.T) {
 	now := time.Now()
 	seen := now.Add(-2 * time.Minute)
@@ -140,8 +145,8 @@ func TestFriendMetaForEdge(t *testing.T) {
 	}{
 		{"incoming", store.FriendEdge{State: "pending", CreatedAt: now.Add(-8 * time.Minute)}, "requested 8m ago"},
 		{"outgoing", store.FriendEdge{State: "pending", Direction: "outgoing", CreatedAt: now.Add(-1 * time.Hour)}, "sent 1h ago · awaiting them"},
-		{"active seen", store.FriendEdge{State: "approved", EndpointLastSeenAt: &seen}, "last A2A call 2m ago"},
-		{"active never", store.FriendEdge{State: "approved"}, "no A2A calls yet"},
+		{"established seen", store.FriendEdge{State: "approved", EndpointLastSeenAt: &seen}, "last A2A call 2m ago"},
+		{"established never", store.FriendEdge{State: "approved"}, "no A2A calls yet"},
 		{"declined", store.FriendEdge{State: "denied", DecidedAt: &decided}, "declined 3d ago"},
 		{"revoked", store.FriendEdge{State: "revoked", RevokedAt: &revoked}, "revoked 5d ago"},
 		{"zero-time incoming", store.FriendEdge{State: "pending"}, ""},
@@ -155,8 +160,8 @@ func TestFriendMetaForEdge(t *testing.T) {
 	}
 }
 
-// TestFriendArrowForGroup pins the direction glyphs (#174 / DESIGN Friends): → outgoing pending,
-// ← incoming pending, ↔ established (and terminal/blocked).
+// TestFriendArrowForGroup pins the direction glyphs: → outgoing pending, ← incoming pending, ↔
+// established (and terminal/blocked).
 func TestFriendArrowForGroup(t *testing.T) {
 	cases := map[string]string{"outgoing": "→", "incoming": "←", "active": "↔", "blocked": "↔"}
 	for group, want := range cases {
@@ -168,7 +173,8 @@ func TestFriendArrowForGroup(t *testing.T) {
 
 // TestFriendCardDirectionAwareIdentity proves the local/remote split follows the edge direction: an
 // inbound edge's local face is to_persona, while a locally sent (outgoing) edge's local face is
-// from_persona and the remote handle (+ parsed host) comes from to_persona (#174).
+// from_persona and the remote handle (+ parsed host) comes from to_persona (#174). Established
+// edges carry the negotiated scope (queues + verbs) — the SPEC-0015 established columns.
 func TestFriendCardDirectionAwareIdentity(t *testing.T) {
 	in := friendCardFromEdge(store.FriendEdge{
 		ID: "e-in", State: "pending", ToPersona: "b-persona", FromPersona: "alice@remote.example"})
@@ -182,6 +188,15 @@ func TestFriendCardDirectionAwareIdentity(t *testing.T) {
 	if out.Group != "outgoing" || out.Arrow != "→" || out.LocalPersona != "b-agent" ||
 		out.RemoteHandle != "zed@far.example" || out.RemoteHost != "far.example" {
 		t.Errorf("outgoing card = %+v", out)
+	}
+	est := friendCardFromEdge(store.FriendEdge{
+		ID: "e-est", State: "approved", ToPersona: "b-persona", FromPersona: "carol@peer.example",
+		RequestedVerbs: []string{"create_for", "claim"}, RequestedQueues: []string{"reviews", "deploys"},
+		GrantedVerbs: []string{"create_for"}, GrantedQueues: []string{"reviews"}})
+	if !est.Negotiated || est.StatusLabel != "established" ||
+		len(est.Intents) != 1 || est.Intents[0] != "create_for" ||
+		len(est.Queues) != 1 || est.Queues[0] != "reviews" {
+		t.Errorf("established card must carry the NEGOTIATED scope: %+v", est)
 	}
 }
 
@@ -199,35 +214,31 @@ func TestRemoteHostFromHandle(t *testing.T) {
 	}
 }
 
-func TestFriendCountsAndFilter(t *testing.T) {
+// TestFriendCountsAndGroups pins the counts helper (the rail badge reads Incoming) and the
+// SPEC-0015 section grouping: canonical order (pending-in-your-queue → awaiting-them →
+// established → blocked), empty sections dropped.
+func TestFriendCountsAndGroups(t *testing.T) {
 	cards := friendCardsFromEdges(sampleEdges())
 	c := friendCountsFrom(cards)
 	if c.All != 6 || c.Incoming != 1 || c.Active != 2 || c.Blocked != 2 || c.Outgoing != 1 {
 		t.Fatalf("counts = %+v, want All6 Incoming1 Active2 Blocked2 Outgoing1", c)
 	}
-	if got := filterFriendCards(cards, "blocked"); len(got) != 2 {
-		t.Errorf("blocked filter returned %d cards, want 2", len(got))
-	}
-	// The ledger surfaces every POPULATED group in canonical order (sample data fills all four);
-	// empty groups are dropped per the design canvas (#175).
-	groups := groupFriendCards(cards, "all")
+	groups := groupFriendCards(cards)
 	if len(groups) != 4 {
-		t.Fatalf("all-filter groups = %d, want 4", len(groups))
+		t.Fatalf("groups = %d, want 4", len(groups))
 	}
-	if got := groupFriendCards(cards[:1], "all"); len(got) != 1 || got[0].Key != "incoming" {
-		t.Errorf("sparse groups = %+v, want only the populated incoming section", got)
+	wantOrder := []struct{ key, title string }{
+		{"incoming", "Pending · in your queue"},
+		{"outgoing", "Pending · awaiting their operator"},
+		{"active", "Established"},
+		{"blocked", "Blocked"},
 	}
-	// A specific filter narrows to that one section.
-	if g := groupFriendCards(cards, "active"); len(g) != 1 || g[0].Key != "active" {
-		t.Errorf("active-filter groups = %+v, want a single active section", g)
+	for i, w := range wantOrder {
+		if groups[i].Key != w.key || groups[i].Title != w.title {
+			t.Errorf("groups[%d] = (%q, %q), want (%q, %q)", i, groups[i].Key, groups[i].Title, w.key, w.title)
+		}
 	}
-}
-
-func TestNormalizeFriendLayoutAndFilter(t *testing.T) {
-	if normalizeFriendLayout("LEDGER") != "ledger" || normalizeFriendLayout("junk") != "cards" {
-		t.Error("layout normalization wrong")
-	}
-	if normalizeFriendFilter("Blocked") != "blocked" || normalizeFriendFilter("") != "all" {
-		t.Error("filter normalization wrong")
+	if got := groupFriendCards(cards[:1]); len(got) != 1 || got[0].Key != "incoming" {
+		t.Errorf("sparse groups = %+v, want only the populated pending-in-your-queue section", got)
 	}
 }

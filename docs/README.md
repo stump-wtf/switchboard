@@ -118,7 +118,7 @@ open to confirmation and is also tracked in the relevant spec's `design.md` **Op
   `SPEC-XXXX`. `spec.md` uses RFC 2119 + `#### Scenario` WHEN/THEN; `design.md` carries the Mermaid
   architecture. Frontmatter `implements: [ADR-XXXX]` links each spec to the ADR(s) it realizes.
 - **Reference:** machine-readable contracts at `docs/reference/*.yaml`.
-- **Design:** the "Operator" design language lives at `docs/design/NN-slug.md`
+- **Design:** the charm-web design language (ADR-0018) lives at `docs/design/NN-slug.md`
   ([ADR-0016](adrs/ADR-0016-operator-design-language.md)) and renders at `/design` on the site.
 - **Rendering:** `docs-site/scripts/build-docs.mjs` auto-discovers all `ADR-*.md`, every
   `openspec/specs/*/` pair, `design/NN-*.md`, and the reference YAMLs; new files appear on the site

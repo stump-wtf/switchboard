@@ -1,0 +1,73 @@
+{{/* Personas-view fragments (SPEC-0015 REQ "Personas View And Wizard"; split per view by
+     SPEC-0015 REQ "Live Fragment Architecture"). Governing: ADR-0018. */}}
+
+{{/* persona_card — one persona: initials block, name, backing agent, published/draft chip, quoted
+     system prompt, verb subset + derived skill chips, the resolvable agent-card URL, the vended-as
+     usage row, and Edit (→ the full-page edit wizard) + Publish/Unpublish. Publish/Unpublish is a
+     CSRF-guarded form that flips only the discoverable flag (toggle_discoverable), taking effect on
+     the well-known endpoint immediately. Data: web.personaCardView. Governing: SPEC-0015 REQ
+     "Personas View And Wizard". */}}
+{{define "persona_card"}}<article id="sb-persona-{{.ID}}" class="sb-card sb-persona" role="listitem" data-sb-persona-card="{{.ID}}">
+  <div class="sb-persona__head">
+    <div class="sb-persona__ident">
+      <span class="sb-persona__avatar" aria-hidden="true">{{.Initials}}</span>
+      <div>
+        <h3 class="sb-persona__name">{{.Name}}</h3>
+        <p class="sb-persona__agent">backing agent · <span class="sb-mono">{{if .AgentName}}{{.AgentName}}{{else}}—{{end}}</span></p>
+      </div>
+    </div>
+    {{if .Discoverable}}<span class="sb-badge sb-badge--active" title="Discoverable — the agent card resolves">published</span>{{else}}<span class="sb-badge sb-badge--revoked" title="Draft — the agent card 404s until published">draft</span>{{end}}
+  </div>
+  {{if .SystemPrompt}}<blockquote class="sb-persona__prompt">{{.SystemPrompt}}</blockquote>{{end}}
+  <div class="sb-persona__skills">
+    <span class="sb-microlabel">Advertised skills · derived from vended verbs</span>
+    {{if .Skills}}<div class="sb-chips" aria-label="Advertised skills">{{range .Skills}}<span class="sb-chip sb-chip--skill" title="{{.Description}}">{{.Name}}</span>{{end}}</div>{{end}}
+    <div class="sb-chips sb-chips--verbs" aria-label="Advertised verbs">{{range .Verbs}}<span class="sb-chip sb-chip--mono">{{.}}</span>{{else}}<span class="sb-muted">no verbs advertised</span>{{end}}</div>
+  </div>
+  {{/* Vended-as usage: the ACTIVE endpoints currently vended as this persona (SPEC-0015 card
+       contract) — the persona's live footprint, or an honest "not vended". */}}
+  <div class="sb-persona__vendedas" data-sb-vended-as>
+    <span class="sb-microlabel">Vended as</span>
+    <div class="sb-chips" aria-label="Vended as">{{range .VendedAs}}<span class="sb-chip sb-chip--queue">{{.}}</span>{{else}}<span class="sb-muted">no active endpoint vends this persona</span>{{end}}</div>
+  </div>
+  <div class="sb-persona__url">
+    <span class="sb-microlabel">Agent card</span>
+    <a class="sb-mono sb-persona__urllink" href="{{.AgentCardURL}}">{{.AgentCardURL}}</a>
+  </div>
+  <div class="sb-persona__acts">
+    <a class="sb-btn sb-btn--secondary" href="/personas/{{.ID}}/edit" data-sb-persona-edit>Edit</a>
+    <form method="post" action="/personas/{{.ID}}" hx-post="/personas/{{.ID}}" hx-swap="none">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="toggle_discoverable" value="1">
+      <input type="hidden" name="discoverable" value="{{if .Discoverable}}0{{else}}1{{end}}">
+      <button type="submit" class="sb-btn sb-btn--mono">{{if .Discoverable}}Unpublish{{else}}Publish{{end}}</button>
+    </form>
+  </div>
+</article>{{end}}
+
+{{/* persona_card_preview — the live A2A Agent Card preview the wizard renders from the UNSAVED
+     draft (scope + publish steps, and the POST /personas/wizard/preview HTMX endpoint). It shows
+     the card exactly as the well-known endpoint would serve it — same personaCard projection, same
+     skill derivation (internal/persona/skills.go) — including the raw JSON bytes, so the operator
+     sees precisely what peers will discover before anything is persisted. A create draft's URL
+     carries the "{id}" placeholder (ids are minted on create; never a slug shape the endpoint
+     would not resolve). Data: web.personaPreviewView. Governing: SPEC-0015 REQ "Personas View And
+     Wizard" (scenario "Preview before publish"); SPEC-0009 REQ "Agent Card Mapping". */}}
+{{define "persona_card_preview"}}<div class="sb-cardprev" data-sb-card-preview>
+  <p class="sb-microlabel">A2A agent card · live preview · nothing saved yet</p>
+  <div class="sb-cardprev__head">
+    <span class="sb-cardprev__name">{{if .Card.Name}}{{.Card.Name}}{{else}}<span class="sb-muted">unnamed persona</span>{{end}}</span>
+    <span class="sb-chip sb-chip--mono" title="A2A protocol version">a2a {{.Card.ProtocolVersion}}</span>
+  </div>
+  {{if .Card.Description}}<p class="sb-cardprev__desc">{{.Card.Description}}</p>{{end}}
+  <div class="sb-cardprev__row"><span class="sb-microlabel">url</span> <span class="sb-mono sb-cardprev__url">{{.Card.URL}}</span></div>
+  <div class="sb-cardprev__row"><span class="sb-microlabel">provider</span> <span class="sb-mono">{{.Card.Provider.Organization}}</span></div>
+  <div class="sb-cardprev__skills" data-sb-preview-skills>
+    <span class="sb-microlabel">Advertised skills · derived from the verb subset</span>
+    <div class="sb-chips" aria-label="Previewed skills">{{range .Card.Skills}}<span class="sb-chip sb-chip--skill" data-sb-skill="{{.ID}}" title="{{.Description}}">{{.Name}}</span>{{else}}<span class="sb-muted">no skills derived — the drafted verb subset backs none</span>{{end}}</div>
+  </div>
+  {{if .JSON}}<details class="sb-cardprev__json">
+    <summary class="sb-microlabel">exactly what peers fetch · agent-card.json</summary>
+    <pre class="sb-code" id="sb-persona-preview-json" data-sb-card-json>{{.JSON}}</pre>
+  </details>{{end}}
+</div>{{end}}

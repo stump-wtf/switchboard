@@ -1,10 +1,11 @@
 package web
 
-// Operator Todos view (the durable queue) and the todo detail drawer.
+// Operator Todos view (the durable queue) and the todo detail drawer, in the charm-web language.
 //
-// Governing: SPEC-0013 REQ "Todos View — Durable Queue", REQ "Todo Detail Drawer", REQ "Error
-// Handling Standards"; SPEC-0003 owns all lifecycle transitions (this layer renders and dispatches,
-// it implements NO lifecycle rules of its own — every action delegates to a store method whose
+// Governing: SPEC-0015 REQ "Todos View And Drawer" (ADR-0018 restyle — filterable table + drawer,
+// all actions and SSE row updates preserved); SPEC-0012 REQ "Error Handling and Server-Side
+// Logging"; SPEC-0003 owns all lifecycle transitions (this layer renders and dispatches, it
+// implements NO lifecycle rules of its own — every action delegates to a store method whose
 // sentinel errors distinguish not-found from conflict).
 
 import (
@@ -26,7 +27,7 @@ import (
 // and searches to narrow). The store clamps too.
 const todoListCap = 100
 
-// todoRow is the render model for one Todos table row (fragments.html "todo_row") and the drawer
+// todoRow is the render model for one Todos table row (fragments/todos.html "todo_row") and the drawer
 // header. The lease and retry-backoff countdowns are driven by server-stamped deadlines (data
 // attributes) that sb.js animates toward — the UI never computes lifecycle, only presents it.
 type todoRow struct {
@@ -53,7 +54,7 @@ type todoRow struct {
 
 // drawerView feeds the "drawer" fragment (and the standalone "todo" page fallback): the todo detail
 // with lease/retry cards, metadata, escaped payload, lifecycle timeline, and state-appropriate
-// footer actions. Governing: SPEC-0013 REQ "Todo Detail Drawer".
+// footer actions. Governing: SPEC-0015 REQ "Todos View And Drawer" (drawer).
 type drawerView struct {
 	Row            todoRow
 	IdempotencyKey string
@@ -74,7 +75,7 @@ type panelView struct {
 	Rows   []todoRow
 }
 
-// todoFilters is the canonical ordered set of filter pills (SPEC-0013 All/Pending/Claimed/Done/Failed).
+// todoFilters is the canonical ordered set of filter chips (SPEC-0015: all/pending/claimed/done/failed).
 var todoFilters = []string{"all", "pending", "claimed", "done", "failed"}
 
 // normalizeFilter maps a query-param filter to a canonical pill key, defaulting to "all".
@@ -109,8 +110,8 @@ func isHTMX(r *http.Request) bool {
 
 // Todos renders the durable-queue view: filter pills with live counts, a text search over id/source/
 // kind, and the todo table. HTMX filter/search requests receive just the panel fragment; full
-// navigations render the whole page. Requires human. Governing: SPEC-0013 REQ "Todos View — Durable
-// Queue".
+// navigations render the whole page. Requires human. Governing: SPEC-0015 REQ "Todos View And
+// Drawer" (filterable table).
 func (h *Handler) Todos(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	filter := normalizeFilter(r.URL.Query().Get("filter"))
@@ -157,7 +158,7 @@ func (h *Handler) Todos(w http.ResponseWriter, r *http.Request) {
 
 // TodoDrawer renders one todo's detail. Requested via HTMX (from a table row) it returns the drawer
 // fragment swapped into the overlay slot; a direct navigation renders a standalone page so deep
-// links and no-JS degrade sanely. Requires human. Governing: SPEC-0013 REQ "Todo Detail Drawer".
+// links and no-JS degrade sanely. Requires human. Governing: SPEC-0015 REQ "Todos View And Drawer".
 func (h *Handler) TodoDrawer(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	id := chi.URLParam(r, "id")
@@ -190,7 +191,7 @@ func (h *Handler) TodoDrawer(w http.ResponseWriter, r *http.Request) {
 }
 
 // CompleteTodo acks a claimed todo the operator owns. POST /todos/{id}/complete.
-// Governing: SPEC-0013 endpoints table, SPEC-0003 complete.
+// Governing: SPEC-0015 REQ "Todos View And Drawer" (actions preserved), SPEC-0003 complete.
 func (h *Handler) CompleteTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	t, err := h.store.CompleteTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
@@ -212,7 +213,7 @@ func (h *Handler) RetryTodo(w http.ResponseWriter, r *http.Request) {
 }
 
 // ExtendTodo extends the visibility lease on a claimed todo the operator owns (heartbeat semantics).
-// POST /todos/{id}/extend. Governing: SPEC-0013 REQ "Todo Detail Drawer" (Extend lease), SPEC-0003
+// POST /todos/{id}/extend. Governing: SPEC-0015 REQ "Todos View And Drawer" (Extend lease), SPEC-0003
 // REQ "Visibility Window, Lease, Heartbeat".
 func (h *Handler) ExtendTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
@@ -221,7 +222,7 @@ func (h *Handler) ExtendTodo(w http.ResponseWriter, r *http.Request) {
 }
 
 // ReleaseTodo hands a claimed todo the operator owns back to the queue immediately (→ pending).
-// POST /todos/{id}/release. Governing: SPEC-0013 REQ "Todo Detail Drawer" (Release).
+// POST /todos/{id}/release. Governing: SPEC-0015 REQ "Todos View And Drawer" (Release).
 func (h *Handler) ReleaseTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	t, err := h.store.ReleaseTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID)
@@ -232,8 +233,9 @@ func (h *Handler) ReleaseTodo(w http.ResponseWriter, r *http.Request) {
 // generic status codes (409 conflict / 404 not-found) with no internal detail, other errors log and
 // 500, and success re-renders the fragment appropriate to WHERE the action was invoked from —
 // determined by the HTMX target: the drawer (overlay) gets the refreshed drawer, a table row gets
-// its refreshed row, and anything else (the Board feed's Claim) gets the feed row for back-compat.
-// Governing: SPEC-0013 REQ "Error Handling Standards".
+// its refreshed row, and anything else (the Board lane card's Claim, hx-swap="none") gets the OOB
+// lane movement. Governing: SPEC-0013 REQ "Error Handling Standards", SPEC-0015 REQ "Patch Panel
+// Board".
 func (h *Handler) respondTodoAction(w http.ResponseWriter, r *http.Request, handler string, t store.Todo, err error) {
 	switch {
 	case errors.Is(err, store.ErrConflict):
@@ -275,7 +277,11 @@ func (h *Handler) respondTodoAction(w http.ResponseWriter, r *http.Request, hand
 			return
 		}
 	default:
-		frag, err = h.renderFragment("feed_row", h.feedRowFromTodo(ctx, t, false))
+		// The Board lane card's action (hx-swap="none"): respond with the OOB lane movement so the
+		// card crosses lanes immediately even if the SSE frame is dropped — the pair is idempotent
+		// when both apply (delete no-ops, insert lands once). Governing: SPEC-0015 REQ "Patch Panel
+		// Board" (live movement), REQ "Live Fragment Architecture" (OOB removal + insertion).
+		frag, err = h.renderFragment("lane_move", h.laneMoveForTodo(ctx, t, ""))
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -359,7 +365,7 @@ func (h *Handler) buildDrawer(ctx context.Context, it store.TodoItem, csrf strin
 
 // prettyJSON indents raw JSON payload bytes for display. Non-JSON or empty payloads render as-is (or
 // a placeholder). The result is emitted through html/template's contextual escaping by the caller,
-// so any HTML/script inside the payload renders inert (SPEC-0013 "Payload is rendered safely").
+// so any HTML/script inside the payload renders inert (SPEC-0015 REQ "Todos View And Drawer" — payload renders safely).
 func prettyJSON(raw []byte) string {
 	if len(raw) == 0 {
 		return "(no payload)"

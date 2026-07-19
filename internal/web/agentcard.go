@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/joestump/switchboard/internal/persona"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -25,81 +26,19 @@ type agentSkill struct {
 	Tags        []string `json:"tags"`
 }
 
-// skillDerivation is one row of the authoritative verb→skill map: a skill is advertised on a
-// persona's card only when EVERY verb in requiredVerbs is present in the persona's verb_subset
-// (all-of semantics). This makes over-advertisement structurally impossible — a persona physically
-// cannot advertise a skill outside its vended grant.
-// Governing: SPEC-0009 REQ "Skills Derived From Vended Capability".
-type skillDerivation struct {
-	skill         agentSkill
-	requiredVerbs []string
-}
-
-// verbSkillMap is the authoritative verb→skill map maintained with the code (SPEC-0009 / ADR-0009:
-// the map is canonical in code with a covering test). Each skill lists the verbs it requires; a skill
-// whose required verbs are not all present in a persona's verb_subset MUST NOT appear on its card.
-// The map is ordered so derived skills come out deterministically. Until #58 lands a dedicated
-// derivation package, this inline map is the single source of truth; keep it in sync as verbs change.
-var verbSkillMap = []skillDerivation{
-	{
-		skill: agentSkill{
-			ID:          "process-work",
-			Name:        "Process work",
-			Description: "Drains todos from its queues: lists pending work, claims it under a lease, and reports completion.",
-			Tags:        []string{"todo", "queue", "worker"},
-		},
-		requiredVerbs: []string{"list_todos", "claim", "complete"},
-	},
-	{
-		skill: agentSkill{
-			ID:          "delegate-work",
-			Name:        "Delegate work",
-			Description: "Creates todos on behalf of other principals, routing work into their queues.",
-			Tags:        []string{"todo", "delegation"},
-		},
-		requiredVerbs: []string{"create_for"},
-	},
-	{
-		skill: agentSkill{
-			ID:          "replay-events",
-			Name:        "Replay inbound events",
-			Description: "Replays a previously verified inbound webhook event to its configured destination.",
-			Tags:        []string{"webhook", "replay"},
-		},
-		requiredVerbs: []string{"replay_webhook_event"},
-	},
-	{
-		skill: agentSkill{
-			ID:          "inspect-providers",
-			Name:        "Inspect providers",
-			Description: "Enumerates the configured inbound providers and their trust modes (never their secrets).",
-			Tags:        []string{"providers", "read-only"},
-		},
-		requiredVerbs: []string{"list_providers"},
-	},
-}
-
 // deriveSkills computes the advertised skills for a verb_subset by applying the authoritative
-// verb→skill map: a skill is included only when every one of its required verbs is present. The
-// result is a fresh slice (never nil) in map order so the card is deterministic.
-// Governing: SPEC-0009 REQ "Skills Derived From Vended Capability".
+// verb→skill map, which lives in the dedicated derivation package (internal/persona/skills.go): a
+// skill is included only when every one of its required verbs is present (all-of semantics), which
+// makes over-advertisement structurally impossible — a persona physically cannot advertise a skill
+// outside its vended grant. The result is a fresh slice (never nil) in catalog order so the card is
+// deterministic. Because the well-known endpoint AND the persona wizard's live card preview
+// (SPEC-0015) both project through this one map, the previewed skills equal the published skills by
+// construction. Governing: SPEC-0009 REQ "Skills Derived From Vended Capability".
 func deriveSkills(verbSubset []string) []agentSkill {
-	granted := make(map[string]struct{}, len(verbSubset))
-	for _, v := range verbSubset {
-		granted[v] = struct{}{}
-	}
-	out := make([]agentSkill, 0, len(verbSkillMap))
-	for _, d := range verbSkillMap {
-		allPresent := true
-		for _, rv := range d.requiredVerbs {
-			if _, ok := granted[rv]; !ok {
-				allPresent = false
-				break
-			}
-		}
-		if allPresent {
-			out = append(out, d.skill)
-		}
+	derived := persona.DeriveSkills(verbSubset)
+	out := make([]agentSkill, 0, len(derived))
+	for _, s := range derived {
+		out = append(out, agentSkill{ID: s.ID, Name: s.Name, Description: s.Description, Tags: s.Tags})
 	}
 	return out
 }

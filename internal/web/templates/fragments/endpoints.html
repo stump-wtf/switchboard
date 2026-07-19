@@ -1,0 +1,104 @@
+{{/* Endpoints-view fragments (SPEC-0015 REQ "Endpoints View And Vend Wizard"; split per view by
+     SPEC-0015 REQ "Live Fragment Architecture"). Governing: ADR-0018. */}}
+
+{{/* endpoint_seen — one endpoint's last-seen stamp (endpoint last-seen live updates). Data:
+     web.endpointSeenView. Endpoint screens render it inline (OOB false) so the sb-ep-seen-<id>
+     swap target exists before the first live frame; the endpoint_seen SSE event replaces it OOB
+     whenever that credential authenticates. */}}
+{{define "endpoint_seen"}}<span id="sb-ep-seen-{{.ID}}" class="sb-muted"{{if .OOB}} hx-swap-oob="true"{{end}}>seen {{reltime .SeenAt}}</span>{{end}}
+
+{{/* endpoint_card — one vended-endpoint card. Args via dict: C web.endpointCard, CSRF string,
+     PersonasEnabled bool. The card carries the SPEC-0015 set: principal, persona, queues, verbs,
+     the endpoint's MCP URL, the credential DISPLAY PREFIX ONLY (never a reusable credential) with
+     its hashed/last-used note, the expiry countdown chip, and Rotate/Revoke. Revoked cards are
+     dimmed and stamped with when the endpoint was killed. All dynamic strings pass through
+     html/template contextual escaping. Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard",
+     SPEC-0007 (revoke = kill; scope immutable), SPEC-0016 (countdown). */}}
+{{define "endpoint_card"}}{{$c := .C}}<article id="sb-ep-{{$c.ID}}" class="sb-epcard{{if eq $c.State "revoked"}} sb-epcard--revoked{{end}}">
+  <div class="sb-epcard__head">
+    <div class="sb-epcard__ident">
+      {{/* Two-letter initials avatar tile per the design canvas (Endpoints cards). Decorative — the
+           agent name follows as text. */}}
+      <span class="sb-epcard__avatar" aria-hidden="true">{{$c.Initials}}</span>
+      <span class="sb-epcard__agent">{{$c.AgentName}}</span>
+    </div>
+    <div class="sb-epcard__flags">
+      {{/* Vend-time credential lifetime as a countdown chip: server-rendered remaining time plus
+           machine-readable data (data-sb-expires-at, RFC 3339 UTC) for live client hydration;
+           endpoints without an expiry render no chip and stay valid until revoked. Governing:
+           SPEC-0016 REQ "Credential Lifetime" (the endpoints view shows the countdown). */}}
+      {{if $c.ExpiresAt}}<span id="sb-ep-expiry-{{$c.ID}}" class="sb-chip sb-chip--expiry" data-sb-expires-at="{{$c.ExpiresAt.UTC.Format "2006-01-02T15:04:05Z"}}" title="expires {{$c.ExpiresAt.UTC.Format "2006-01-02 15:04"}} UTC">⌛ {{countdown $c.ExpiresAt.UTC}}</span>{{end}}
+      <span class="sb-badge sb-badge--{{$c.State}}">{{if eq $c.State "active"}}● live{{else}}{{$c.State}}{{end}}</span>
+    </div>
+  </div>
+  <dl class="sb-epcard__scope">
+    {{/* The accountable principal (SPEC-0007: humans are the principals; agents never are). */}}
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Principal</dt><dd data-sb-ep-principal>{{$c.Principal}} · human</dd></div>
+    {{if and .PersonasEnabled $c.PersonaName}}<div class="sb-epcard__row"><dt class="sb-microlabel">Persona</dt><dd><span class="sb-chip sb-chip--persona">{{$c.PersonaName}}</span></dd></div>{{end}}
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Queues</dt><dd>{{range $c.Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span> {{else}}<span class="sb-muted">—</span>{{end}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Verbs</dt><dd>{{range $c.Verbs}}<span class="sb-chip sb-chip--verb">{{.}}</span> {{else}}<span class="sb-muted">—</span>{{end}}</dd></div>
+    {{/* The endpoint's address: possessing URL + credential IS the capability (SPEC-0007). */}}
+    <div class="sb-epcard__row"><dt class="sb-microlabel">URL</dt><dd><code class="sb-code" data-sb-ep-url="{{$c.URL}}">{{$c.URL}}</code></dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Credential</dt><dd><code class="sb-code">{{$c.CredPrefix}}…</code> <span class="sb-muted">hashed · shown once at vend</span></dd></div>
+  </dl>
+  <div class="sb-epcard__foot">
+    {{if eq $c.State "revoked"}}
+      {{/* Killed endpoint: dimmed, and states when it was revoked. Governing: SPEC-0007 revoke = kill. */}}
+      <span class="sb-epcard__killed">endpoint killed{{if $c.RevokedAt}} · {{reltime $c.RevokedAt.UTC}}{{end}}</span>
+      {{/* Housekeeping: a revoked endpoint may be permanently deleted to clear its dead card. The
+           credential is already dead (revoke did that); this only removes the row. Governing:
+           SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints". */}}
+      <form method="post" action="/endpoints/{{$c.ID}}/delete" class="sb-epcard__delete"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="sb-btn sb-btn--danger sb-btn--mono">Delete</button></form>
+    {{else}}
+      {{/* Server render and the endpoint_seen SSE frame share this fragment, so the OOB swap target
+           (sb-ep-seen-<id>) exists before the first live frame. */}}
+      <span class="sb-epcard__seen">{{if $c.LastSeenAt}}{{template "endpoint_seen" dict "ID" $c.ID "SeenAt" $c.LastSeenAt.UTC "OOB" false}}{{else}}<span id="sb-ep-seen-{{$c.ID}}" class="sb-muted">never seen</span>{{end}}</span>
+      <div class="sb-epcard__acts">
+        {{/* Rotate = re-vend (SPEC-0007 doctrine: scope is immutable, changing anything — including
+             the credential — is a re-vend). The link starts the vend wizard SEEDED from this
+             endpoint's scope; it mints a NEW endpoint and never touches this one, so the operator
+             switches over, then revokes the old line. Governing: SPEC-0015 (the wizard is the
+             re-vend path). */}}
+        <a class="sb-btn sb-btn--secondary sb-btn--mono" href="/endpoints/vend?from={{$c.ID}}" data-sb-ep-rotate title="Re-vend: start the vend wizard pre-filled from this endpoint's scope">Rotate</a>
+        {{/* Revoke is irreversible, so it confirms on a full page first (SPEC-0015 REQ "Wizard
+             Interaction Pattern"); the kill POST fires only from that page's explicit confirm. */}}
+        <a class="sb-btn sb-btn--danger sb-btn--mono" href="/endpoints/{{$c.ID}}/revoke" data-sb-ep-revoke>Revoke</a>
+      </div>
+    {{end}}
+  </div>
+</article>{{end}}
+
+{{/* vend_reveal — the one-time credential reveal (SPEC-0015 "one-time reveal + .mcp.json";
+     SPEC-0014 "HTTP Wiring Is the Only Wiring"). Rendered ONLY inline on the Endpoints page as the
+     response to a successful vend POST; the plaintext credential is never persisted, so no card or
+     later page can reproduce it. Offers BOTH wiring variants: bearer-credential .mcp.json, and the
+     URL-only .mcp.json an OAuth-capable client uses to discover authorization itself (SPEC-0016).
+     Data: web.revealView. */}}
+{{define "vend_reveal"}}<section class="sb-reveal" aria-labelledby="sb-reveal-title" data-sb-reveal>
+  <h2 class="sb-modal__title" id="sb-reveal-title">Endpoint vended</h2>
+  <p class="sb-muted">Endpoint vended to <strong>{{.AgentName}}</strong>.{{if .ExpiresAt}} Expires {{.ExpiresAt.UTC.Format "2006-01-02 15:04"}} UTC ({{countdown .ExpiresAt.UTC}}).{{end}}</p>
+  {{/* Warning copy per docs/design/05-voice.md ("Warnings say the consequence plainly"). */}}
+  <p class="sb-callout sb-callout--danger">Copy the credential now — it is shown once. The endpoint is the capability; revoking kills it.</p>
+  {{/* Standalone labeled fields per the design canvas minted state: the MCP endpoint URL and the
+       one-time credential each get their own label, ahead of the .mcp.json wiring below. */}}
+  <span class="sb-label" id="sb-reveal-url-label">MCP endpoint URL</span>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-url-label">{{.URL}}</pre>
+  <span class="sb-label" id="sb-reveal-cred-label">Credential · shown once</span>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-cred-label">{{.Token}}</pre>
+  <p class="sb-muted sb-mono">queues: {{range .Queues}}<code>{{.}}</code> {{end}}· verbs: {{range .Verbs}}<code>{{.}}</code> {{end}}</p>
+  {{/* Governing: SPEC-0014 — the reveal shows Streamable-HTTP wiring (type: http + /mcp/{slug} URL +
+       bearer header) only. No local binary or stdio command. */}}
+  <span class="sb-label" id="sb-reveal-wiring-label">Wire it into your MCP client</span>
+  <p class="sb-muted">Add this to your project's <code>.mcp.json</code>. Your agent connects over Streamable
+  HTTP at <code>/mcp/{{.Slug}}</code>, presenting the credential above as a bearer token.</p>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-wiring-label" data-sb-reveal-wiring>{{.MCPJSON}}</pre>
+  {{/* URL-only variant for OAuth-capable clients (SPEC-0015; SPEC-0016): no embedded credential —
+       the client hits the endpoint, gets the RFC 9728 challenge, and signs in through OAuth. */}}
+  <span class="sb-label" id="sb-reveal-urlonly-label">OAuth-capable client? URL-only wiring</span>
+  <p class="sb-muted">Clients that speak MCP OAuth need no embedded credential: they discover the
+  authorization server from the endpoint itself and sign you in. Paste this variant instead.</p>
+  <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-urlonly-label" data-sb-reveal-wiring-url-only>{{.MCPJSONURLOnly}}</pre>
+  <div class="sb-vend__foot">
+    <a class="sb-btn" href="/endpoints">Done</a>
+  </div>
+</section>{{end}}

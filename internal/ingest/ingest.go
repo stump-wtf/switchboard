@@ -9,6 +9,7 @@
 package ingest
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -77,6 +78,9 @@ type Ingest struct {
 	tolerance    time.Duration              // replay window for timestamped signatures
 	now          func() time.Time           // injectable clock for replay-window tests
 	devLogin     bool
+	// instrument observes in-flight deliveries for the board's ephemeral received lane
+	// (instrument.go). Nil = no observation. Governing: SPEC-0015 REQ "Patch Panel Board".
+	instrument Instrument
 }
 
 // Config carries the per-provider ingestion settings (secrets + target queues).
@@ -94,20 +98,36 @@ type Config struct {
 	DevLogin bool
 }
 
+// Normalized returns the config with defaults applied: queue names (github→reviews,
+// stripe→stripe, slack→slack, generic→provider name) and a non-nil Generic map. New applies it
+// internally; the server's boot seed (SPEC-0017 REQ "Environment Config Import") uses it too, so
+// the seeded registry rows carry exactly the effective queues the receivers would have used.
+func (c Config) Normalized() Config {
+	if c.GitHubQueue == "" {
+		c.GitHubQueue = "reviews"
+	}
+	if c.StripeQueue == "" {
+		c.StripeQueue = "stripe"
+	}
+	if c.SlackQueue == "" {
+		c.SlackQueue = "slack"
+	}
+	if c.Generic == nil {
+		c.Generic = map[string]GenericProvider{}
+	}
+	for name, p := range c.Generic {
+		// ParseGenericProviders already defaults the queue; re-apply for hand-built maps.
+		if p.Queue == "" {
+			p.Queue = name
+			c.Generic[name] = p
+		}
+	}
+	return c
+}
+
 // New builds an Ingest.
 func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
-	if cfg.GitHubQueue == "" {
-		cfg.GitHubQueue = "reviews"
-	}
-	if cfg.StripeQueue == "" {
-		cfg.StripeQueue = "stripe"
-	}
-	if cfg.SlackQueue == "" {
-		cfg.SlackQueue = "slack"
-	}
-	if cfg.Generic == nil {
-		cfg.Generic = map[string]GenericProvider{}
-	}
+	cfg = cfg.Normalized()
 	return &Ingest{
 		store: st, hub: hub, log: log,
 		githubSecret: cfg.GitHubSecret, githubQueue: cfg.GitHubQueue,
@@ -144,32 +164,87 @@ func (i *Ingest) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool)
 	return body, true
 }
 
+// resolveRegistry is the dispatch-path provider registry read (ADR-0020): the provider's registry
+// row plus its decrypted held secret, resolved fresh (through the store's short cache) on every
+// request so registry changes bind without a restart. A store-less Ingest — the nil-store rejection
+// tests, which prove no persist path runs — has no registry and reports ErrNotFound, exactly like a
+// missing row. Governing: SPEC-0017 REQ "Runtime Provider Registry".
+func (i *Ingest) resolveRegistry(ctx context.Context, name string) (store.Adapter, string, error) {
+	if i.store == nil {
+		return store.Adapter{}, "", store.ErrNotFound
+	}
+	return i.store.ResolveProvider(ctx, name)
+}
+
+// signedSecret resolves a signed adapter's HMAC secret registry-or-env at request time: when the
+// provider's registry row exists it is authoritative — its enabled flag gates the route, and its
+// (envelope-decrypted) secret wins over env config when one is held (SPEC-0017 REQ "Environment
+// Config Import": the registry row wins). ErrNotFound falls back to the env secret alone, which
+// after the boot seed covers only store-less test wiring and the pre-seed window; any other
+// registry failure fails CLOSED (500), never open on stale trust. On a false return the rejection
+// response has already been written. Governing: ADR-0020, SPEC-0017 REQ "Runtime Provider
+// Registry"; SPEC-0001 verification semantics themselves are untouched.
+func (i *Ingest) signedSecret(w http.ResponseWriter, r *http.Request, name, envSecret string) (string, bool) {
+	secret := envSecret
+	reg, regSecret, err := i.resolveRegistry(r.Context(), name)
+	switch {
+	case err == nil && reg.Family == "webhook" && reg.TrustMode == "signed":
+		if !reg.Enabled {
+			// Disabled stops the line; nothing is persisted (SPEC-0017 REQ "Provider Lifecycle").
+			i.log.Warn("signed webhook rejected: provider disabled", "provider", name, "remote", clientIP(r))
+			writeErr(w, http.StatusForbidden, "provider disabled")
+			return "", false
+		}
+		if regSecret != "" {
+			secret = regSecret
+		}
+	case err == nil:
+		// A registry row of some other shape (name collision with a generic/queue provider): this
+		// signed route is not what the row configures — keep the env behavior for the route.
+	case errors.Is(err, store.ErrNotFound):
+		// No registry row: env config alone decides, as before the registry existed.
+	default:
+		i.log.Error("signed provider registry lookup", "provider", name, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return "", false
+	}
+	if secret == "" {
+		// Governing: SPEC-0001 scenario "Signature secret not configured" — reject without
+		// comparing any signature.
+		writeErr(w, http.StatusServiceUnavailable, name+" adapter not configured")
+		return "", false
+	}
+	return secret, true
+}
+
 // GitHub is the signed GitHub webhook receiver: POST /webhooks/github.
 func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 	body, ok := i.readBody(w, r)
 	if !ok {
 		return
 	}
-	if i.githubSecret == "" {
-		// Governing: SPEC-0001 scenario "Signature secret not configured" — reject without
-		// comparing any signature.
-		writeErr(w, http.StatusServiceUnavailable, "github adapter not configured")
-		return
-	}
-	sig := r.Header.Get("X-Hub-Signature-256")
-	if !verifyGitHub(i.githubSecret, body, sig) {
-		// Reject without persisting; log a redacted line (never the signature value).
-		i.log.Warn("github signature rejected", "delivery", r.Header.Get("X-GitHub-Delivery"),
-			"event", r.Header.Get("X-GitHub-Event"), "remote", clientIP(r))
-		writeErr(w, http.StatusUnauthorized, "signature verification failed")
-		return
-	}
-
 	event := r.Header.Get("X-GitHub-Event")
 	// Idempotency key from the GitHub delivery GUID; body-hash fallback if the header is absent so a
 	// redelivery can never bypass dedup with a NULL key (SPEC-0001 REQ "Idempotency Key Extraction
 	// and Dedup").
 	key := idempotencyKey(r.Header.Get("X-GitHub-Delivery"), body)
+	// The line is in flight: surface it on the board's ephemeral received lane (SPEC-0015).
+	i.observeReceived("github", event, "signed", key)
+	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
+	secret, ok := i.signedSecret(w, r, "github", i.githubSecret)
+	if !ok {
+		i.observeRejected("github", event, "signed", key, "provider unavailable")
+		return
+	}
+	sig := r.Header.Get("X-Hub-Signature-256")
+	if !verifyGitHub(secret, body, sig) {
+		// Reject without persisting; log a redacted line (never the signature value).
+		i.log.Warn("github signature rejected", "delivery", r.Header.Get("X-GitHub-Delivery"),
+			"event", r.Header.Get("X-GitHub-Event"), "remote", clientIP(r))
+		i.observeRejected("github", event, "signed", key, "signature verification failed")
+		writeErr(w, http.StatusUnauthorized, "signature verification failed")
+		return
+	}
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — persist the event and enqueue its todo in a
 	// single transaction so a CreateTodo failure can never leave an orphaned event row behind.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
@@ -190,6 +265,9 @@ func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 	}
 	if created {
 		i.hub.Publish(td)
+	} else {
+		// Idempotent redelivery: resolve the in-flight card without a lane advance (SPEC-0015).
+		i.observeDeduped("github", event, "signed", key)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": td.ID, "queue": td.Queue, "verified": true})
 }

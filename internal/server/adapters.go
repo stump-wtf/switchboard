@@ -48,8 +48,13 @@ type adapterAdder interface {
 // instead — one bad row degrades that adapter, never the whole server, and unlike the generic
 // providers a skipped pull adapter fails closed (nothing is consumed, nothing is exposed).
 //
-// Governing: ADR-0014 (adapter registry; secrets via environment), SPEC-0002 REQ "Adapter Interface
-// and Trust Mode", REQ "Poll-Loop Lifecycle — Concurrency Safety".
+// The adapters table these rows live in is now the provider REGISTRY both ingestion families
+// resolve from (ADR-0020, SPEC-0017 REQ "Runtime Provider Registry"): the runner side already
+// resolves the enabled flag from it at poll time and stamps health back onto it, which is the
+// pull-family half of "registry changes take effect without restart".
+//
+// Governing: ADR-0014 (adapter registry; secrets via environment), ADR-0020, SPEC-0002 REQ
+// "Adapter Interface and Trust Mode", REQ "Poll-Loop Lifecycle — Concurrency Safety".
 func registerQueueAdapters(ctx context.Context, st queueAdapterStore, run adapterAdder, redisURL string, log *slog.Logger) (func() error, error) {
 	noop := func() error { return nil }
 	rows, err := st.ListAdaptersByFamily(ctx, adapter.Family)

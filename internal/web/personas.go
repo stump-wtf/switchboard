@@ -1,20 +1,23 @@
 package web
 
-// Operator Personas view (capability-gated): persona cards, the create/edit modal, and the
-// publish/unpublish + delete mutations.
+// Operator Personas view (capability-gated): persona cards (initials block, name, human-authored
+// prompt, verb subset, derived skills, vended-as usage) and the publish/unpublish + delete
+// mutations. Creating/editing is a full-page wizard (personawizard.go) per the SPEC-0015 wizard
+// pattern — the modal is retired.
 //
-// Governing: SPEC-0013 REQ "Personas View" (cards + modal + capability gating), ADR-0016 (Operator
-// design language). Persona records, verb-subset validation, and the well-known Agent Card endpoint
-// live in SPEC-0009 (internal/store/personas.go, internal/web/agentcard.go) — this layer is the
-// operator surface only and implements NO scoping rules of its own: every mutation delegates to a
-// store method whose sentinel errors (ErrScopeExceeded / ErrConflict / ErrNotFound) it maps to a
-// generic response.
+// Governing: SPEC-0015 REQ "Personas View And Wizard", ADR-0018 (charm-web design language).
+// Persona records, verb-subset validation, and the well-known Agent Card endpoint live in SPEC-0009
+// (internal/store/personas.go, internal/web/agentcard.go) — this layer is the operator surface only
+// and implements NO scoping rules of its own: every mutation delegates to a store method whose
+// sentinel errors (ErrScopeExceeded / ErrConflict / ErrNotFound) it maps to a generic response.
 
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 
@@ -24,19 +27,21 @@ import (
 
 // SetPersonasEnabled toggles the personas capability for this handler. The server enables it by
 // feature detection (the personas store + the well-known Agent Card route are both wired in the same
-// Run), realizing SPEC-0013's "hidden-not-broken" gating: while disabled the rail entry is hidden and
-// every /personas route 404s. Governing: SPEC-0013 REQ "Personas View" (capability-gated),
-// design.md "Capability gating for Personas and Friends".
+// Run), realizing the "hidden-not-broken" gating: while disabled the rail entry is hidden and
+// every /personas route 404s. Governing: SPEC-0015 REQ "Personas View And Wizard" (capability
+// gating carries over from SPEC-0013).
 func (h *Handler) SetPersonasEnabled(enabled bool) { h.personasEnabled = enabled }
 
-// personaCardView is the render model for one persona card (fragments.html "persona_card") and for
-// the edit-modal prefill. Skills are the derived Agent Card skills (all-of the required verbs) that
-// the card advertises; Verbs is the raw verb_subset chip list. AgentCardURL is the persona's actual
-// resolvable well-known path. Governing: SPEC-0013 REQ "Personas View".
+// personaCardView is the render model for one persona card (fragments/personas.html "persona_card"):
+// the initials block, name, backing agent, published/draft state, the human-authored prompt, the raw
+// verb subset, the derived Agent Card skills (all-of the required verbs), the resolvable agent-card
+// URL, and the endpoints currently vended as this persona. Governing: SPEC-0015 REQ "Personas View
+// And Wizard".
 type personaCardView struct {
 	ID           string
 	Name         string
 	Slug         string
+	Initials     string // two-letter avatar tile derived from the persona name (design canvas)
 	AgentID      string
 	AgentName    string
 	Discoverable bool
@@ -45,14 +50,15 @@ type personaCardView struct {
 	Queues       []string
 	Skills       []agentSkill
 	AgentCardURL string
-	CSRF         string // per-session token for the card's Publish/Unpublish form
+	VendedAs     []string // agent names of ACTIVE endpoints bound to this persona (vended-as usage)
+	CSRF         string   // per-session token for the card's Publish/Unpublish form
 }
 
-// personaAgentOption is one selectable backing agent in the create/edit modal, carrying the union of
-// the verbs/queues vended to it across its ACTIVE endpoints — the grant a persona's scope is bounded
-// to. The modal offers only these verbs/queues as selectable, so a verb the backing endpoint lacks is
-// structurally not selectable. Governing: SPEC-0013 REQ "Personas View" (scenario "Verb subset is
-// constrained").
+// personaAgentOption is one selectable backing agent in the wizard's identity step, carrying the
+// union of the verbs/queues vended to it across its ACTIVE endpoints — the grant a persona's scope
+// is bounded to. The wizard offers only these verbs/queues as selectable, so a verb the backing
+// endpoint lacks is structurally not selectable. Governing: SPEC-0015 REQ "Personas View And
+// Wizard" (verb subset), SPEC-0009 REQ "Persona Record".
 type personaAgentOption struct {
 	ID     string
 	Name   string
@@ -60,35 +66,10 @@ type personaAgentOption struct {
 	Queues []string
 }
 
-// personaModalView feeds the create/edit modal fragment. Edit distinguishes the two modes: create
-// posts to /personas with a selectable backing agent; edit posts to /personas/{id} with the backing
-// agent pinned (immutable, ADR-0008) and a Delete action. Selected is the agent whose verb/queue
-// chips are rendered server-side (the initially-checked constraint); Checked* pre-check the persona's
-// current scope. URLPreview is the agent-card URL shown under the name field: the persona's real
-// resolvable URL in edit mode, or the id-based URL shape (with an "{id}" placeholder — ids are
-// assigned on create) in create mode, so the modal never previews a URL shape the well-known
-// endpoint cannot resolve. Governing: SPEC-0013 REQ "Personas View", SPEC-0009 REQ "Well-Known Card
-// Endpoint".
-type personaModalView struct {
-	Edit          bool
-	CSRF          string
-	Persona       *personaCardView
-	Agents        []personaAgentOption
-	Selected      personaAgentOption
-	CheckedVerbs  map[string]bool
-	CheckedQueues map[string]bool
-	Discoverable  bool
-	URLPreview    string
-}
-
-// personasView is the whole-page model: the persona cards plus the create modal (and per-persona edit
-// modals) that the page embeds as hidden templates opened into the shared overlay slot.
+// personasView is the whole-page model: the persona cards plus the wizard entry point.
 type personasView struct {
-	Cards     []personaCardView
-	Agents    []personaAgentOption
-	NewModal  personaModalView
-	EditModal map[string]personaModalView // keyed by persona id
-	CSRF      string
+	Cards []personaCardView
+	CSRF  string
 }
 
 // agentCardURL builds a persona's canonical, resolvable well-known Agent Card path. It mirrors the
@@ -99,21 +80,22 @@ func agentCardURL(baseURL, personaID string) string {
 	return strings.TrimRight(baseURL, "/") + "/a/" + personaID + "/.well-known/agent-card.json"
 }
 
-// pendingCardURLID is the placeholder path segment the create modal previews in place of the persona
-// id (ids are minted by the store on create, so the real resolvable URL cannot exist yet). The edit
-// modal — and every card — shows the real AgentCardURL instead. Using the id-based shape (never a
-// name/slug-derived one) keeps the preview honest: the well-known endpoint resolves ONLY
+// pendingCardURLID is the placeholder path segment the create wizard's card preview shows in place
+// of the persona id (ids are minted by the store on create, so the real resolvable URL cannot exist
+// yet). The edit wizard — and every card — shows the real id instead. Using the id-based shape
+// (never a name/slug-derived one) keeps the preview honest: the well-known endpoint resolves ONLY
 // /a/{persona_id}/…, so a slug URL would never resolve. Governing: SPEC-0009 REQ "Well-Known Card
-// Endpoint", SPEC-0013 REQ "Personas View" (agent-card URL preview).
+// Endpoint", SPEC-0015 REQ "Personas View And Wizard" (live card preview).
 const pendingCardURLID = "{id}"
 
 // personaCardViewFrom projects a store persona plus its backing agent name into the card render model,
-// deriving the advertised skills and the resolvable agent-card URL.
+// deriving the initials tile, the advertised skills, and the resolvable agent-card URL.
 func (h *Handler) personaCardViewFrom(p store.Persona, agentName string) personaCardView {
 	return personaCardView{
 		ID:           p.ID,
 		Name:         p.Name,
 		Slug:         p.Slug,
+		Initials:     personaInitials(p.Name),
 		AgentID:      p.AgentID,
 		AgentName:    agentName,
 		Discoverable: p.Discoverable,
@@ -123,6 +105,25 @@ func (h *Handler) personaCardViewFrom(p store.Persona, agentName string) persona
 		Skills:       deriveSkills(p.VerbSubset),
 		AgentCardURL: agentCardURL(h.cfg.BaseURL, p.ID),
 	}
+}
+
+// personaInitials derives the persona card's two-letter initials tile from the persona name: the
+// first two letters/digits, upper-cased (mirroring the endpoint card's cardInitials). Names with no
+// usable characters fall back to the persona glyph "PA" so the tile never renders blank.
+func personaInitials(name string) string {
+	var out []rune
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			out = append(out, unicode.ToUpper(r))
+			if len(out) == 2 {
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return "PA"
+	}
+	return string(out)
 }
 
 // unionActiveGrant returns the sorted union of verbs and queues across an agent's ACTIVE endpoints —
@@ -157,7 +158,8 @@ func sortedKeys(m map[string]struct{}) []string {
 // personaAgentOptions lists the human's agents that have a live vended grant (at least one verb),
 // each with its verb/queue union — the backing-agent choices a persona can be a scoped face of. An
 // agent with no active endpoint is omitted: a persona must be bounded to a real grant, so there is
-// nothing to select. Governing: SPEC-0013 REQ "Personas View", ADR-0008 (registration grants nothing).
+// nothing to select. Governing: SPEC-0015 REQ "Personas View And Wizard", ADR-0008 (registration
+// grants nothing).
 func (h *Handler) personaAgentOptions(r *http.Request, humanID string) ([]personaAgentOption, error) {
 	agents, err := h.store.ListAgents(r.Context(), humanID)
 	if err != nil {
@@ -188,10 +190,11 @@ func agentOptionByID(opts []personaAgentOption, id string) (personaAgentOption, 
 	return personaAgentOption{}, false
 }
 
-// Personas renders the capability-gated Personas view: persona cards with publish/unpublish + edit,
-// and the create modal (plus a hidden per-persona edit modal) opened into the shared overlay slot.
-// While the personas capability is disabled the route 404s (hidden-not-broken). Requires human.
-// Governing: SPEC-0013 REQ "Personas View", REQ "Information Architecture and Navigation".
+// Personas renders the capability-gated Personas view: persona cards (initials, prompt, verb
+// subset, derived skills, vended-as usage) with publish/unpublish and Edit (→ the edit wizard),
+// plus the "+ New persona" entry into the create wizard. While the personas capability is disabled
+// the route 404s (hidden-not-broken). Requires human. Governing: SPEC-0015 REQ "Personas View And
+// Wizard", REQ "Application Shell And Navigation".
 func (h *Handler) Personas(w http.ResponseWriter, r *http.Request) {
 	if !h.personasEnabled {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -201,93 +204,55 @@ func (h *Handler) Personas(w http.ResponseWriter, r *http.Request) {
 	csrf := auth.CSRFFromContext(r.Context())
 	sh, _ := h.buildShell(r.Context(), "personas", &human)
 
-	var (
-		cards  []personaCardView
-		agents []personaAgentOption
-	)
+	var cards []personaCardView
 	if sh.DBConnected {
-		opts, err := h.personaAgentOptions(r, human.ID)
-		if err != nil {
-			h.log.Warn("personas agent options", "err", err)
-		}
-		agents = opts
 		personas, err := h.store.ListPersonas(r.Context(), human.ID)
 		if err != nil {
 			// Suppressed to a log so the view still renders its shell + empty state (a reload recovers).
 			h.log.Warn("personas list", "err", err)
 		}
 		names := map[string]string{}
-		for _, o := range agents {
-			names[o.ID] = o.Name
+		if agents, err := h.store.ListAgents(r.Context(), human.ID); err != nil {
+			h.log.Warn("personas agents", "err", err)
+		} else {
+			for _, ag := range agents {
+				names[ag.ID] = ag.Name
+			}
+		}
+		// Vended-as usage: the ACTIVE endpoints bound to each persona (SPEC-0015 card contract). A
+		// read failure degrades to cards without the vended-as row, never a failed page.
+		vendedAs := map[string][]string{}
+		if eps, err := h.store.ListEndpointCards(r.Context(), human.ID); err != nil {
+			h.log.Warn("personas endpoint cards", "err", err)
+		} else {
+			for _, ep := range eps {
+				if ep.PersonaID == "" || ep.State != "active" {
+					continue
+				}
+				if !slices.Contains(vendedAs[ep.PersonaID], ep.AgentName) {
+					vendedAs[ep.PersonaID] = append(vendedAs[ep.PersonaID], ep.AgentName)
+				}
+			}
 		}
 		for _, p := range personas {
 			card := h.personaCardViewFrom(p, names[p.AgentID])
+			card.VendedAs = vendedAs[p.ID]
 			card.CSRF = csrf
 			cards = append(cards, card)
 		}
 	}
 
-	pv := personasView{
-		Cards:     cards,
-		Agents:    agents,
-		CSRF:      csrf,
-		NewModal:  h.buildPersonaModal(csrf, agents, nil),
-		EditModal: map[string]personaModalView{},
-	}
-	for _, c := range cards {
-		card := c
-		pv.EditModal[c.ID] = h.buildPersonaModal(csrf, agents, &card)
-	}
-
 	h.render(w, "personas", view{
-		Title: "Personas", Human: &human, CSRF: csrf, Shell: sh, Personas: &pv,
+		Title: "Personas", Human: &human, CSRF: csrf, Shell: sh,
+		Personas: &personasView{Cards: cards, CSRF: csrf},
 	})
 }
 
-// buildPersonaModal assembles the create (card == nil) or edit modal model, selecting the backing
-// agent whose verb/queue chips render server-side (the constrained set) and pre-checking the persona's
-// current scope in edit mode.
-func (h *Handler) buildPersonaModal(csrf string, agents []personaAgentOption, card *personaCardView) personaModalView {
-	m := personaModalView{
-		Edit:          card != nil,
-		CSRF:          csrf,
-		Persona:       card,
-		Agents:        agents,
-		CheckedVerbs:  map[string]bool{},
-		CheckedQueues: map[string]bool{},
-	}
-	if card == nil {
-		if len(agents) > 0 {
-			m.Selected = agents[0]
-		}
-		// The id-based URL shape with the "{id}" placeholder — the real id (and so the real
-		// resolvable URL, shown on the card after create) does not exist until the store mints it.
-		m.URLPreview = agentCardURL(h.cfg.BaseURL, pendingCardURLID)
-		return m
-	}
-	// Edit: pin the persona's backing agent as the selected constraint and pre-check its scope.
-	if opt, ok := agentOptionByID(agents, card.AgentID); ok {
-		m.Selected = opt
-	} else {
-		// The backing agent has no live grant anymore (every endpoint revoked); still show the
-		// persona's own verbs/queues as the (now un-extendable) constraint so the edit renders.
-		m.Selected = personaAgentOption{ID: card.AgentID, Name: card.AgentName, Verbs: card.Verbs, Queues: card.Queues}
-	}
-	for _, v := range card.Verbs {
-		m.CheckedVerbs[v] = true
-	}
-	for _, q := range card.Queues {
-		m.CheckedQueues[q] = true
-	}
-	m.Discoverable = card.Discoverable
-	m.URLPreview = card.AgentCardURL
-	return m
-}
-
 // CreatePersona records a new persona (a scoped face of one backing agent) and applies its initial
-// discoverable state. The store validates the verb/queue subset against the agent's vended grant;
+// discoverable state. It is the direct single-form create path; the wizard's publish step executes
+// the same store calls. The store validates the verb/queue subset against the agent's vended grant;
 // ErrScopeExceeded (a forged out-of-grant verb) maps to 400. Requires human + CSRF.
-// Governing: SPEC-0013 endpoints table POST /personas, SPEC-0009 REQ "Persona Record".
+// Governing: SPEC-0015 REQ "Personas View And Wizard", SPEC-0009 REQ "Persona Record".
 func (h *Handler) CreatePersona(w http.ResponseWriter, r *http.Request) {
 	if !h.personasEnabled {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -313,7 +278,7 @@ func (h *Handler) CreatePersona(w http.ResponseWriter, r *http.Request) {
 		h.respondPersonaError(w, "CreatePersona", err)
 		return
 	}
-	// Discoverability is a separate owner-controlled flag (SetPersonaDiscoverable); apply the modal's
+	// Discoverability is a separate owner-controlled flag (SetPersonaDiscoverable); apply the form's
 	// toggle once the record exists so publishing takes effect on the well-known endpoint immediately.
 	if formBool(r, "discoverable") {
 		if _, err := h.store.SetPersonaDiscoverable(r.Context(), p.ID, human.ID, true); err != nil {
@@ -326,9 +291,9 @@ func (h *Handler) CreatePersona(w http.ResponseWriter, r *http.Request) {
 
 // UpdatePersona edits a persona or, when the request is a card publish/unpublish toggle
 // (toggle_discoverable), flips only its discoverable flag. A full edit re-validates the verb/queue
-// subset against the backing agent's current grant and then applies the modal's discoverable toggle,
-// so publish state changes take effect on the well-known endpoint immediately. Requires human + CSRF.
-// Governing: SPEC-0013 endpoints table POST /personas/{id} (update incl. publish toggle), SPEC-0009.
+// subset against the backing agent's current grant and then applies the discoverable toggle, so
+// publish state changes take effect on the well-known endpoint immediately. Requires human + CSRF.
+// Governing: SPEC-0015 REQ "Personas View And Wizard" (publish toggle on the card), SPEC-0009.
 func (h *Handler) UpdatePersona(w http.ResponseWriter, r *http.Request) {
 	if !h.personasEnabled {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -364,7 +329,7 @@ func (h *Handler) UpdatePersona(w http.ResponseWriter, r *http.Request) {
 		h.respondPersonaError(w, "UpdatePersona", err)
 		return
 	}
-	// Apply the modal's discoverable toggle (UpdatePersona deliberately does not touch it).
+	// Apply the discoverable toggle (UpdatePersona deliberately does not touch it).
 	if _, err := h.store.SetPersonaDiscoverable(r.Context(), id, human.ID, formBool(r, "discoverable")); err != nil {
 		h.respondPersonaError(w, "UpdatePersona.discoverable", err)
 		return
@@ -372,8 +337,8 @@ func (h *Handler) UpdatePersona(w http.ResponseWriter, r *http.Request) {
 	h.redirectPersonas(w, r)
 }
 
-// DeletePersona removes a persona (available only from the edit modal). Requires human + CSRF.
-// Governing: SPEC-0013 endpoints table POST /personas/{id}/delete.
+// DeletePersona removes a persona (reached from the edit wizard's publish step). Requires human +
+// CSRF. Governing: SPEC-0015 REQ "Personas View And Wizard".
 func (h *Handler) DeletePersona(w http.ResponseWriter, r *http.Request) {
 	if !h.personasEnabled {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -388,8 +353,8 @@ func (h *Handler) DeletePersona(w http.ResponseWriter, r *http.Request) {
 }
 
 // redirectPersonas returns the operator to the authoritative Personas list after a mutation: an
-// HX-Redirect header for HTMX (so the client re-navigates and re-renders server truth, and the open
-// overlay is discarded) or a 303 for a plain form submit.
+// HX-Redirect header for HTMX (so the client re-navigates and re-renders server truth) or a 303 for
+// a plain form submit.
 func (h *Handler) redirectPersonas(w http.ResponseWriter, r *http.Request) {
 	if isHTMX(r) {
 		w.Header().Set("HX-Redirect", "/personas")
@@ -400,9 +365,9 @@ func (h *Handler) redirectPersonas(w http.ResponseWriter, r *http.Request) {
 }
 
 // respondPersonaError maps a store persona error onto a generic HTTP response with no internal detail:
-// an out-of-grant scope is a 400 (the client constrained the chips, so this is a forged request), a
+// an out-of-grant scope is a 400 (the wizard constrained the chips, so this is a forged request), a
 // duplicate slug is 409, a cross-owner/missing id is 404, and anything else is a generic 500 (logged).
-// Governing: SPEC-0013 REQ "Error Handling Standards".
+// Governing: SPEC-0015 (SPEC-0013 error-handling standards carry over).
 func (h *Handler) respondPersonaError(w http.ResponseWriter, handler string, err error) {
 	switch {
 	case errors.Is(err, store.ErrScopeExceeded):

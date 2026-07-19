@@ -23,7 +23,8 @@ func TestDocumentDeclaresLangAndViewport(t *testing.T) {
 	pages := map[string]view{
 		"login":     {Title: "Log in"},
 		"board":     {Title: "The Board", Human: testHuman(), Shell: shell{Active: "board"}},
-		"endpoints": {Title: "Endpoints", Human: testHuman(), Shell: shell{Active: "endpoints"}, VerbOptions: vendVerbOptions()},
+		"endpoints": {Title: "Endpoints", Human: testHuman(), Shell: shell{Active: "endpoints"}},
+		"vend":      {Title: "Vend endpoint", Human: testHuman(), Shell: shell{Active: "endpoints"}, Vend: testVendStepView("persona")},
 	}
 	for page, v := range pages {
 		body := renderPage(t, h, page, v)
@@ -46,7 +47,8 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 	const payload = `"><script>alert(1)</script>`
 	h := newTestHandler(t)
 	human := &store.Human{ID: "h1", DisplayName: payload, Email: "x@example.com"}
-	card := endpointCard{ID: "e1", AgentName: payload, Initials: cardInitials(payload), PersonaName: payload,
+	card := endpointCard{ID: "e1", AgentName: payload, Initials: cardInitials(payload), Principal: payload,
+		PersonaName: payload, URL: payload,
 		CredPrefix: payload, Queues: []string{payload}, Verbs: []string{payload}, State: "active"}
 	sh := shell{Active: "endpoints", DBConnected: true, Initials: `"><i>`}
 
@@ -54,19 +56,42 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 		"board": renderPage(t, h, "board", view{Title: "The Board", Human: human, CSRF: "tok",
 			Shell: shell{Active: "board", DBConnected: true, Initials: "JS"},
 			Tiles: tilesView{Stats: store.BoardStats{TodosToday: 1}, Bars: activityBars([]int{1, 2})},
-			Rows: []feedRow{feedRowFromEvent(store.EventSummary{
-				ID: 1, Source: payload, EventType: payload, TrustMode: "signed", ReceivedAt: time.Now(),
-			}, false)},
+			// Attacker-shaped provider/event/title values flow through the lane card (webhook-born
+			// todos carry provider-controlled titles) — and through the ephemeral in-flight card,
+			// whose source/kind arrive straight from unverified request headers.
+			Lanes: lanesView{
+				Received: []laneCard{inflightCard(payload, payload, "signed", "k1", time.Now())},
+				Verified: []laneCard{laneCardFromItem(store.TodoItem{Todo: store.Todo{
+					ID: "td_1", Source: payload, Kind: payload, Title: payload, State: "pending",
+					CreatedAt: time.Now()}, TrustMode: "signed"})},
+			},
 		}),
-		// VendOpen renders the inline vend form so the queue/verb toggle-chip values (attacker-shaped
-		// queue names could arrive via webhook-created todos) flow through escaping too.
 		"endpoints": renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: human, CSRF: "tok", Shell: sh,
-			EndpointCards: []endpointCard{card}, PersonasEnabled: true, VendOpen: true,
-			VerbOptions: []vendVerbOption{{Name: payload}}, QueueOptions: []string{payload}}),
+			EndpointCards: []endpointCard{card}, PersonasEnabled: true}),
+		// Wizard step pages render attacker-shaped values in every slot: queue names arrive from the
+		// store (webhook-created todos name their queues), personas and the draft name from the
+		// operator's own state — all must flow through contextual escaping.
+		"vend-queues": func() string {
+			v := testVendStepView("queues")
+			v.QueueOptions = []vendChipOption{{Name: payload, Checked: true}}
+			v.ExtraQueues = payload
+			return renderPage(t, h, "vend", view{Title: "Vend endpoint", Human: human, CSRF: "tok", Shell: sh, Vend: v})
+		}(),
+		"vend-confirm": func() string {
+			v := testVendStepView("confirm")
+			v.Name, v.PersonaName, v.ReVendOf = payload, payload, payload
+			v.Queues, v.Verbs = []string{payload}, []string{payload}
+			v.LifetimeLabel = payload
+			return renderPage(t, h, "vend", view{Title: "Vend endpoint", Human: human, CSRF: "tok",
+				Shell: sh, PersonasEnabled: true, Vend: v})
+		}(),
+		"revoke": renderPage(t, h, "revoke", view{Title: "Revoke endpoint", Human: human, CSRF: "tok",
+			Shell: sh, PersonasEnabled: true, RevokeConfirm: &revokeConfirmView{Card: card}}),
 		"reveal": renderFrag(t, h, "vend_reveal", revealView{AgentName: payload, Slug: payload,
 			URL:   payload,
 			Token: `</pre><script>steal()</script>`, MCPJSON: `{"x":"</pre><script>steal()</script>"}`,
-			Queues: []string{payload}, Verbs: []string{payload}, CSRF: "tok"}),
+			MCPJSONURLOnly: `{"x":"</pre><script>steal()</script>"}`,
+			Queues:         []string{payload}, Verbs: []string{payload}, CSRF: "tok"}),
 	}
 	for page, body := range bodies {
 		if strings.Contains(body, "<script>alert(1)</script>") || strings.Contains(body, "<script>steal()</script>") {
