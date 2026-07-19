@@ -173,7 +173,7 @@ func openSSE(t *testing.T, ts *httptest.Server, token string) (*sseStream, func(
 				name = strings.TrimPrefix(line, "event: ")
 			case strings.HasPrefix(line, "data: "):
 				data = strings.TrimPrefix(line, "data: ")
-			// retry: and ": keep-alive" comment lines are transport framing, not frames.
+				// retry: and ": keep-alive" comment lines are transport framing, not frames.
 			}
 		}
 	}()
