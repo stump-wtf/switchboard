@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // mustHuman seeds a human principal for ownership tests.
@@ -200,6 +201,127 @@ func TestDeleteEndpointRevokedOnlyAndOwnershipGuarded(t *testing.T) {
 	if err := s.DeleteEndpoint(ctx, ep.ID, owner.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("delete of an already-gone endpoint must be ErrNotFound, got %v", err)
 	}
+}
+
+// agentExists reports whether an agent row is still present — the GC tests assert on it directly.
+func agentExists(t *testing.T, s *Store, ctx context.Context, agentID string) bool {
+	t.Helper()
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM agents WHERE id = $1`, agentID).Scan(&n); err != nil {
+		t.Fatalf("count agent: %v", err)
+	}
+	return n == 1
+}
+
+// Deleting the last endpoint of an agent that a vend minted (and that owns nothing else) garbage-
+// collects the now-orphaned agent in the same transaction, so a vend + revoke + delete leaves no
+// stranded rows behind. Governing: SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints".
+func TestDeleteEndpointGCsOrphanedAgent(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := mustHuman(t, s, ctx, "gc|owner", "Owner")
+	ag := mustAgent(t, s, ctx, owner.ID, "throwaway-bot")
+	ep := mustEndpoint(t, s, ctx, ag.ID, "gchash-1")
+
+	if err := s.RevokeEndpoint(ctx, ep.ID, owner.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := s.DeleteEndpoint(ctx, ep.ID, owner.ID); err != nil {
+		t.Fatalf("delete revoked endpoint: %v", err)
+	}
+	if agentExists(t, s, ctx, ag.ID) {
+		t.Fatal("orphaned backing agent must be GC'd once its last endpoint is deleted")
+	}
+}
+
+// The GC is guarded: an agent that still owns a claimed todo (a lease), backs a persona, backs a
+// friend edge, or has another endpoint MUST survive the delete, so todo history and authored
+// personas are never collaterally destroyed. Governing: SPEC-0007 REQ "Permanent Deletion of Revoked
+// Endpoints".
+func TestDeleteEndpointPreservesAgentWithRemainingReferences(t *testing.T) {
+	owner0 := "gc-keep|owner"
+
+	t.Run("owns a claimed todo (lease)", func(t *testing.T) {
+		s, ctx := testStore(t)
+		owner := mustHuman(t, s, ctx, owner0, "Owner")
+		ag := mustAgent(t, s, ctx, owner.ID, "worker-bot")
+		ep := mustEndpoint(t, s, ctx, ag.ID, "gckeep-todo")
+		// A todo claimed by the agent records owner = "agent:<id>" — the lease the author flagged.
+		td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "do the thing"})
+		if err != nil {
+			t.Fatalf("create todo: %v", err)
+		}
+		if _, err := s.ClaimTodo(ctx, td.ID, "agent:"+ag.ID, time.Hour); err != nil {
+			t.Fatalf("agent claim: %v", err)
+		}
+		if err := s.RevokeEndpoint(ctx, ep.ID, owner.ID); err != nil {
+			t.Fatalf("revoke: %v", err)
+		}
+		if err := s.DeleteEndpoint(ctx, ep.ID, owner.ID); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if !agentExists(t, s, ctx, ag.ID) {
+			t.Fatal("agent owning a claimed todo must survive the delete (history preserved)")
+		}
+		// And the todo itself is untouched — no history was destroyed.
+		var n int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos WHERE id = $1`, td.ID).Scan(&n); err != nil {
+			t.Fatalf("count todo: %v", err)
+		}
+		if n != 1 {
+			t.Fatal("the agent's todo must remain after the endpoint delete")
+		}
+	})
+
+	t.Run("backs a persona", func(t *testing.T) {
+		s, ctx := testStore(t)
+		owner := mustHuman(t, s, ctx, owner0, "Owner")
+		ag := mustAgent(t, s, ctx, owner.ID, "persona-bot")
+		ep := mustEndpoint(t, s, ctx, ag.ID, "gckeep-persona")
+		// The persona's slice must be within the agent's vended grant (queues {"q"}, verbs {"list_todos"}).
+		if _, err := s.CreatePersona(ctx, CreatePersonaParams{
+			OwnerHumanID: owner.ID, AgentID: ag.ID, Name: "Reviewer", Slug: "reviewer",
+			SystemPrompt: "Review carefully.", VerbSubset: []string{"list_todos"}, Queues: []string{"q"},
+		}); err != nil {
+			t.Fatalf("create persona: %v", err)
+		}
+		if err := s.RevokeEndpoint(ctx, ep.ID, owner.ID); err != nil {
+			t.Fatalf("revoke: %v", err)
+		}
+		if err := s.DeleteEndpoint(ctx, ep.ID, owner.ID); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if !agentExists(t, s, ctx, ag.ID) {
+			t.Fatal("agent backing a persona must survive the delete")
+		}
+	})
+
+	t.Run("has another endpoint", func(t *testing.T) {
+		s, ctx := testStore(t)
+		owner := mustHuman(t, s, ctx, owner0, "Owner")
+		ag := mustAgent(t, s, ctx, owner.ID, "multi-ep-bot")
+		e1 := mustEndpoint(t, s, ctx, ag.ID, "gckeep-e1")
+		e2 := mustEndpoint(t, s, ctx, ag.ID, "gckeep-e2")
+		// Delete e1: the agent still backs e2, so it must survive.
+		if err := s.RevokeEndpoint(ctx, e1.ID, owner.ID); err != nil {
+			t.Fatalf("revoke e1: %v", err)
+		}
+		if err := s.DeleteEndpoint(ctx, e1.ID, owner.ID); err != nil {
+			t.Fatalf("delete e1: %v", err)
+		}
+		if !agentExists(t, s, ctx, ag.ID) {
+			t.Fatal("agent with another endpoint must survive the first delete")
+		}
+		// Delete e2 as well: now truly orphaned, so it is GC'd.
+		if err := s.RevokeEndpoint(ctx, e2.ID, owner.ID); err != nil {
+			t.Fatalf("revoke e2: %v", err)
+		}
+		if err := s.DeleteEndpoint(ctx, e2.ID, owner.ID); err != nil {
+			t.Fatalf("delete e2: %v", err)
+		}
+		if agentExists(t, s, ctx, ag.ID) {
+			t.Fatal("agent must be GC'd once its last endpoint is deleted")
+		}
+	})
 }
 
 // Ownership is a database invariant, not just an application convention: every agent references

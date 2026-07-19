@@ -169,6 +169,32 @@ credential (revocation already did that) and MUST NOT be a substitute for revoca
 - **WHEN** a human attempts to delete a revoked endpoint they do not own
 - **THEN** switchboard MUST treat it as not found and MUST NOT remove any row
 
+### Requirement: Orphaned Backing Agent Cleanup
+
+Vending mints an agent alongside its endpoint ([Requirement: Endpoint Vending]), so deleting an
+endpoint MAY leave its backing agent with nothing left to account for. When a delete removes an
+endpoint, switchboard MUST garbage-collect the backing agent in the same transaction, but ONLY when
+the agent is fully orphaned: it has no remaining endpoints, no persona is a face of it
+([SPEC-0009](../personas/spec.md)), no friend edge is backed by it ([SPEC-0010](../friending/spec.md)),
+and it owns or is assigned no todos (a claimed lease or a pinned assignment, tracked by the
+`agent:<id>` owner convention). If any of those still reference the agent, the agent MUST be left
+intact, so authored personas and todo history are never collaterally destroyed. Agent cleanup MUST
+NOT cascade into todos: a todo an agent claimed is history and MUST survive the agent's removal.
+
+#### Scenario: Deleting the last endpoint reaps an orphaned agent
+
+- **WHEN** a human deletes the last revoked endpoint of an agent that backs no persona, no friend
+  edge, and owns no todos
+- **THEN** switchboard MUST also remove that agent row in the same transaction, leaving no stranded
+  record behind
+
+#### Scenario: An agent that still owns work is preserved
+
+- **WHEN** a human deletes a revoked endpoint whose backing agent still owns a claimed todo, backs a
+  persona, backs a friend edge, or has another endpoint
+- **THEN** switchboard MUST remove the endpoint but MUST leave the agent — and everything referencing
+  it — intact
+
 ### Requirement: Database Operation Standards
 
 All endpoint and agent persistence MUST use parameterized queries only (no string interpolation into
