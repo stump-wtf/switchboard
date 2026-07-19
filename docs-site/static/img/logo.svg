@@ -1,19 +1,18 @@
 <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Switchboard">
   <title>Switchboard</title>
-  <!-- three panel jacks -->
-  <g fill="none" stroke="#c99b4d" stroke-width="3">
-    <circle cx="16" cy="19" r="7"/>
-    <circle cx="48" cy="19" r="7"/>
-    <circle cx="32" cy="46" r="7"/>
+  <!-- patch cords: charm-purple lines from the top-left jack to the other two -->
+  <g fill="none" stroke="#7D56F4" stroke-width="3.4" stroke-linecap="round">
+    <path d="M16 19 46 30"/>
+    <path d="M16 19 33 47"/>
   </g>
-  <g fill="#241c17">
-    <circle cx="16" cy="19" r="3"/>
-    <circle cx="48" cy="19" r="3"/>
-    <circle cx="32" cy="46" r="3"/>
+  <!-- three panel jacks: charm pink, neon cyan, neon mint -->
+  <circle cx="16" cy="19" r="7" fill="#FF5FA2"/>
+  <circle cx="46" cy="30" r="7" fill="#4EE6FF"/>
+  <circle cx="33" cy="47" r="7" fill="#00F0A8"/>
+  <!-- dark plug bores -->
+  <g fill="#08080F">
+    <circle cx="16" cy="19" r="2.8"/>
+    <circle cx="46" cy="30" r="2.8"/>
+    <circle cx="33" cy="47" r="2.8"/>
   </g>
-  <!-- oxblood patch cord, left jack to bottom jack -->
-  <path d="M16 19 C 8 40, 20 44, 32 46" fill="none" stroke="#b1533f" stroke-width="4" stroke-linecap="round"/>
-  <!-- brass plug tips -->
-  <circle cx="16" cy="19" r="2.6" fill="#e3ba6a"/>
-  <circle cx="32" cy="46" r="2.6" fill="#e3ba6a"/>
 </svg>
