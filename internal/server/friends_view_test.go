@@ -336,3 +336,50 @@ func TestFriendDeclineAndRevoke(t *testing.T) {
 		t.Fatalf("revoke must kill the vended endpoint, got %+v", eps)
 	}
 }
+
+// TestApproveFriendRejectsOwnOutgoingEdge closes the self-approve hole end-to-end: a locally sent
+// (direction=outgoing) pending edge awaits the REMOTE operator, so its sender can neither render
+// the approve confirm page for it (404) nor — load-bearing, since the page guard alone would leave
+// the mutation reachable — POST the approval directly: the store refuses the transition (409),
+// nothing is minted, and the edge stays pending/withdrawable. Governing: SPEC-0010 (both operators
+// must approve; approval is the vend — a self-approved outgoing edge would mint a vended endpoint
+// no remote operator ever consented to).
+func TestApproveFriendRejectsOwnOutgoingEdge(t *testing.T) {
+	r, st, ctx := newFriendsRouter(t)
+	alice, tokenA := mintSession(t, st, ctx, "test|alice-selfappr", "Alice", "alice@example.com")
+	agent, err := st.CreateAgent(ctx, alice.ID, "alice-agent", "")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	csrf := scrapeCSRF(t, getAs(t, r, tokenA, "/friends").Body.String())
+
+	// Alice sends an outgoing request (as the add-friend flow would).
+	if rec := postFormAs(t, r, tokenA, csrf, "/friends", url.Values{
+		"agent_id": {agent.ID},
+		"handle":   {"zed@far.example"},
+		"intents":  {"create_for"},
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("POST /friends: got %d", rec.Code)
+	}
+	edges, err := st.ListFriendEdges(ctx, alice.ID, "pending")
+	if err != nil || len(edges) != 1 {
+		t.Fatalf("want one pending outgoing edge: %+v, %v", edges, err)
+	}
+	edgeID := edges[0].ID
+
+	// The approve confirm page refuses to render her own outgoing request.
+	if page := getAs(t, r, tokenA, "/friends/"+edgeID+"/approve"); page.Code != http.StatusNotFound {
+		t.Fatalf("GET approve page for own outgoing edge: got %d, want 404", page.Code)
+	}
+	// Posting the approval directly is refused with nothing minted.
+	if rec := postFormAs(t, r, tokenA, csrf, "/friends/"+edgeID+"/approve",
+		url.Values{"agent_id": {agent.ID}}); rec.Code != http.StatusConflict {
+		t.Fatalf("self-approve POST: got %d, want 409", rec.Code)
+	}
+	if eps, err := st.ListEndpoints(ctx, agent.ID); err != nil || len(eps) != 0 {
+		t.Fatalf("self-approval must mint nothing: %+v, %v", eps, err)
+	}
+	if edges, err = st.ListFriendEdges(ctx, alice.ID, "pending"); err != nil || len(edges) != 1 {
+		t.Fatalf("edge must stay pending: %+v, %v", edges, err)
+	}
+}

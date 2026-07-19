@@ -120,6 +120,40 @@ func TestFriendApprovalMintsEndpoint(t *testing.T) {
 	}
 }
 
+// TestFriendApprovalRejectsOwnOutgoingEdge pins the both-operators-approve doctrine (SPEC-0010):
+// a locally sent (direction=outgoing) pending edge awaits the REMOTE operator, so its own owner
+// cannot approve it — the transition is refused in the store (not just hidden in the web confirm
+// page) and nothing is minted; the edge stays pending/withdrawable.
+func TestFriendApprovalRejectsOwnOutgoingEdge(t *testing.T) {
+	s, ctx := testStore(t)
+	sender := mustHuman(t, s, ctx, "pocket|selfappr", "Sender")
+	agent := mustAgent(t, s, ctx, sender.ID, "sender-agent")
+
+	e := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "sender-agent", ToPersona: "zed@far.example", Direction: "outgoing",
+		ToHuman: sender.ID, RequestedVerbs: []string{"create_for"},
+	})
+
+	slug, _ := MintSlug(agent.Name)
+	if _, _, err := s.ApproveFriendRequest(ctx, ApproveFriendRequestParams{
+		EdgeID: e.ID, OwnerHumanID: sender.ID, AgentID: agent.ID,
+		CredentialHash: "selfapprhash-1", CredentialPrefix: "sbk_sa1", Slug: slug,
+	}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("self-approving an outgoing edge must be ErrInvalidTransition, got %v", err)
+	}
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM endpoints`).Scan(&n); err != nil {
+		t.Fatalf("count endpoints: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("refused self-approval must mint nothing, got %d endpoints", n)
+	}
+	edges, err := s.ListFriendEdges(ctx, sender.ID, "pending")
+	if err != nil || len(edges) != 1 || edges[0].ID != e.ID {
+		t.Fatalf("edge must stay pending: %+v, %v", edges, err)
+	}
+}
+
 // Narrow-only: the human may hand back LESS than requested (subset), but never MORE. A granted
 // scope that is not a subset of the requested scope is rejected before anything is minted.
 // Governing: SPEC-0010 REQ "Approval Is the Vend, Narrow-Only" (scenario "Granted cannot exceed requested").
