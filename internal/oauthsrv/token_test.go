@@ -332,20 +332,23 @@ func TestRefreshRotation(t *testing.T) {
 		t.Fatalf("rotation did not mint a new refresh token")
 	}
 
-	// The old refresh is dead; the new one rotates again.
+	// The old refresh is dead.
 	rec, doc = postToken(t, h, refreshForm(refresh1))
 	wantTokenError(t, rec, doc, http.StatusBadRequest, "invalid_grant")
-	if rec, _ := postToken(t, h, refreshForm(refresh2)); rec.Code != http.StatusOK {
-		t.Fatalf("second rotation: status = %d", rec.Code)
-	}
 
-	// A refresh presented by the wrong client is refused (the pair is client-bound).
+	// A LIVE refresh presented by the wrong client is refused — and not consumed: the pair is
+	// client-bound, and a foreign presentation must not burn the rightful client's token.
 	rec, doc = postToken(t, h, url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refresh2},
 		"client_id":     {"some-other-client"},
 	})
 	wantTokenError(t, rec, doc, http.StatusBadRequest, "invalid_grant")
+
+	// The new refresh still rotates for its own client.
+	if rec, _ := postToken(t, h, refreshForm(refresh2)); rec.Code != http.StatusOK {
+		t.Fatalf("second rotation: status = %d", rec.Code)
+	}
 }
 
 // TestRefreshAfterEndpointDeath is SPEC-0016's scenario verbatim: once the grant's endpoint is

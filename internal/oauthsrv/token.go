@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/joestump/switchboard/internal/cred"
@@ -48,16 +49,22 @@ type TokenStore interface {
 // MintToken mints one opaque OAuth token (access or refresh): 32 random bytes, base64url — the
 // same entropy class as internal/cred endpoint credentials — plus the SHA-256 hex the store
 // persists. No sbk_ prefix: the prefix marks static endpoint bearers, and the resource server
-// dispatches on it to pick the lookup path, so the two credential shapes stay unambiguous.
+// dispatches on it to pick the lookup path, so the two credential shapes stay unambiguous. The
+// base64url alphabet CAN spell "sbk_" by chance (~1 in 16.7M mints), which would misroute the
+// token down the static-bearer path forever, so such a draw is discarded and re-minted.
 // Governing: SPEC-0016 ("opaque access token and rotating refresh token, both high-entropy and
 // stored hashed"), design.md "Opaque tokens, hashed at rest".
 func MintToken() (token, hash string, err error) {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", "", fmt.Errorf("oauthsrv: read random: %w", err)
+	for {
+		if _, err := rand.Read(b); err != nil {
+			return "", "", fmt.Errorf("oauthsrv: read random: %w", err)
+		}
+		token = base64.RawURLEncoding.EncodeToString(b)
+		if !strings.HasPrefix(token, "sbk_") {
+			return token, cred.Hash(token), nil
+		}
 	}
-	token = base64.RawURLEncoding.EncodeToString(b)
-	return token, cred.Hash(token), nil
 }
 
 // VerifyPKCE reports whether the presented code_verifier satisfies the stored S256 challenge:
