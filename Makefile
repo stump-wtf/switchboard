@@ -16,7 +16,8 @@ vet:  ## go vet
 lint:  ## golangci-lint (install: https://golangci-lint.run)
 	golangci-lint run
 
-test:  ## Run tests
+test:  ## Run tests (the sb.js behavioral suite needs node — jsharness_test.go)
+	@command -v node >/dev/null 2>&1 || echo "WARNING: node not found in PATH — TestJSModules will SKIP: the sb.js behavioral suite (jstest/) will NOT run. Install Node.js 20+ so the JS quality gate executes." >&2
 	go test ./...
 
 tidy:  ## Sync go.mod/go.sum
