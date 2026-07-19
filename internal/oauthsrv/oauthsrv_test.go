@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -23,8 +24,11 @@ import (
 
 const testBase = "https://sb.example.com"
 
-// fakeClientStore records registrations in memory; failErr forces the persist-failure path.
+// fakeClientStore records registrations in memory; failErr forces the persist-failure path. The
+// embedded unusedTokenStore satisfies the Store interface for tests that never touch the token
+// endpoint (token-endpoint conformance uses its own functional fake in token_test.go).
 type fakeClientStore struct {
+	unusedTokenStore
 	clients []store.OAuthClient
 	failErr error
 }
@@ -36,6 +40,21 @@ func (f *fakeClientStore) CreateOAuthClient(_ context.Context, clientID, name st
 	c := store.OAuthClient{ID: "row-" + clientID, ClientID: clientID, Name: name, RedirectURIs: redirectURIs}
 	f.clients = append(f.clients, c)
 	return c, nil
+}
+
+// unusedTokenStore panics on any use: registration/metadata tests must never reach token storage.
+type unusedTokenStore struct{}
+
+func (unusedTokenStore) RedeemOAuthCode(context.Context, string) (store.OAuthCode, error) {
+	panic("token store used in a registration test")
+}
+
+func (unusedTokenStore) CreateOAuthToken(context.Context, string, string, string, string, time.Time) (store.OAuthToken, error) {
+	panic("token store used in a registration test")
+}
+
+func (unusedTokenStore) RotateOAuthToken(context.Context, string, string, string, string, time.Time) (store.OAuthToken, error) {
+	panic("token store used in a registration test")
 }
 
 func newTestHandler() (*Handler, *fakeClientStore) {

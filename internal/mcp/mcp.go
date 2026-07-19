@@ -2,7 +2,8 @@
 // /mcp/{endpoint}, using the official Go MCP SDK (ADR-0017, SPEC-0014).
 //
 // A chi middleware authenticates the bearer credential BEFORE the SDK sees the request: the token
-// is hashed (internal/cred), resolved to an ACTIVE endpoint row, checked against the {endpoint}
+// — a static sbk_ bearer or an OAuth access token (SPEC-0016), both accepted interchangeably — is
+// hashed (internal/cred), resolved to an ACTIVE endpoint row, checked against the {endpoint}
 // path slug, and the endpoint's immutable scope is injected into the request context for the tool
 // layer to enforce. Unknown/revoked credentials get 401; a valid credential presented against a
 // different endpoint's path gets 403. The URL alone grants nothing, and session cookies carry no
@@ -54,10 +55,14 @@ const (
 		`Use list_todos to see work, claim to take a todo (which sets a lease), then complete or fail it.`
 )
 
-// EndpointStore is the slice of the store the auth middleware needs: credential resolution and the
-// last-seen stamp. *store.Store satisfies it; tests substitute a fake.
+// EndpointStore is the slice of the store the auth middleware needs: resolution of BOTH credential
+// shapes — the static sbk_ bearer and the OAuth access token — plus the last-seen stamp. Both
+// lookups return the same AuthEndpoint, so everything past "resolve to endpoint ID" is identical
+// regardless of shape (SPEC-0016 REQ "Resource-Server Token Validation"). *store.Store satisfies
+// it; tests substitute a fake.
 type EndpointStore interface {
 	EndpointByCredHash(ctx context.Context, credHash string) (store.AuthEndpoint, error)
+	EndpointByOAuthToken(ctx context.Context, tokenHash string) (store.AuthEndpoint, error)
 	TouchEndpoint(ctx context.Context, endpointID string) error
 }
 
@@ -285,7 +290,20 @@ func (h *Handler) auth(next http.Handler) http.Handler {
 			h.unauthorized(w, r)
 			return
 		}
-		ep, err := h.store.EndpointByCredHash(r.Context(), cred.Hash(tok))
+		// Two credential shapes, one capability (SPEC-0016 REQ "Resource-Server Token Validation"):
+		// the sbk_ prefix marks a static endpoint bearer (internal/cred.Mint), everything else is
+		// tried as an OAuth access token (internal/oauthsrv.MintToken — deliberately unprefixed).
+		// Both resolve to the SAME AuthEndpoint shape, so scope enforcement, sessions, doorbells,
+		// and tooling downstream are byte-for-byte identical; the dispatch only picks which hash
+		// column answers. Expired/revoked tokens and dead endpoints are uniformly ErrNotFound → the
+		// RFC 9728 challenge below.
+		var ep store.AuthEndpoint
+		var err error
+		if strings.HasPrefix(tok, "sbk_") {
+			ep, err = h.store.EndpointByCredHash(r.Context(), cred.Hash(tok))
+		} else {
+			ep, err = h.store.EndpointByOAuthToken(r.Context(), cred.Hash(tok))
+		}
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				// Unknown or revoked — same answer either way, revealing nothing about the slug.

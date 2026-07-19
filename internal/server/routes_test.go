@@ -153,6 +153,10 @@ var publicRoutes = map[string]bool{
 	"GET /.well-known/oauth-authorization-server":              true,
 	"GET /.well-known/oauth-protected-resource/mcp/{endpoint}": true,
 	"POST /oauth/register":                                     true,
+	// The token endpoint is public like the rest of the AS surface: clients are public (no client
+	// secret), so the proof is PKCE possession on the code grant and the rotating refresh token on
+	// the refresh grant (SPEC-0016 REQ "Token Issuance And Refresh") — never a session.
+	"POST /oauth/token": true,
 	// A2A friend-request intake authenticates by the requesting human's OIDC-signed provenance
 	// carried IN-BAND (ADR-0010/0011; SPEC-0010), not via a session cookie or bearer header —
 	// missing/invalid provenance → 401 with no pending edge. Not "ungoverned public": it is
