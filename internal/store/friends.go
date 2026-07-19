@@ -168,6 +168,14 @@ func (s *Store) ApproveFriendRequest(ctx context.Context, p ApproveFriendRequest
 	if edge.State != "pending" {
 		return FriendEdge{}, Endpoint{}, ErrInvalidTransition
 	}
+	// A locally sent (direction=outgoing) pending edge awaits the REMOTE operator's approval; its
+	// owner may only withdraw it. Approving it here would mint a vended endpoint no remote operator
+	// ever consented to (SPEC-0010: both operators must approve; approval is the vend), so the
+	// owner-side approval of an outgoing edge is an invalid transition — enforced here, not just in
+	// the web confirm page, because this store owns every lifecycle rule.
+	if edge.Direction == "outgoing" {
+		return FriendEdge{}, Endpoint{}, ErrInvalidTransition
+	}
 
 	// Narrow-only: default to the requested scope, else validate the human's narrowing is a subset.
 	grantedQueues, grantedVerbs := p.GrantedQueues, p.GrantedVerbs

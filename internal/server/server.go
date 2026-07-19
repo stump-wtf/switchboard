@@ -424,17 +424,22 @@ func newRouter(d routerDeps) chi.Router {
 		// Endpoints"). Store constrains to state='revoked' + ownership; active endpoints must be revoked
 		// first. CSRF arrives via the layout hx-headers / hidden field; the group's RequireCSRF validates.
 		pr.Post("/endpoints/{id}/delete", d.webh.DeleteEndpoint)
-		// Friends view + approval flow (SPEC-0013 endpoints table; SPEC-0010 approval-is-vend). The
-		// handlers 404 until the friending capability is enabled (capability gating lives in the
-		// handler, so the routes stay classified session-gated for the route-table baseline). Approve
-		// mints a scoped endpoint onto a target-OWNED agent; CSRF arrives via the layout hx-headers.
+		// Friends view + approval flow (SPEC-0015 REQ "Friends View And Approval Flow"; SPEC-0010
+		// approval-is-vend). The handlers 404 until the friending capability is enabled (capability
+		// gating lives in the handler, so the routes stay classified session-gated for the route-table
+		// baseline). Approve and revoke follow the full-page confirm pattern (SPEC-0015 REQ "Wizard
+		// Interaction Pattern"): GET renders the confirm page — the approve page presents the scoped
+		// endpoint approval mints — and the POST from that page executes. Approve mints a scoped
+		// endpoint onto a target-OWNED agent; CSRF arrives via the layout hx-headers.
 		pr.Get("/friends", d.webh.Friends)
 		pr.Get("/friends/new", d.webh.AddFriendModal)
 		pr.Get("/friends/resolve", d.webh.ResolveFriendHandle)
 		pr.Post("/friends", d.webh.AddFriend)
+		pr.Get("/friends/{id}/approve", d.webh.ApproveFriendPage)
 		pr.Post("/friends/{id}/approve", d.webh.ApproveFriend)
 		pr.Post("/friends/{id}/decline", d.webh.DeclineFriend)
 		pr.Post("/friends/{id}/withdraw", d.webh.WithdrawFriend)
+		pr.Get("/friends/{id}/revoke", d.webh.RevokeFriendPage)
 		pr.Post("/friends/{id}/revoke", d.webh.RevokeFriend)
 		pr.Post("/friends/{id}/unblock", d.webh.UnblockFriend)
 		// Personas view + wizard (SPEC-0015 REQ "Personas View And Wizard", REQ "Wizard Interaction

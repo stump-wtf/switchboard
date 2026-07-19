@@ -1,10 +1,12 @@
-// End-to-end Friends view + approval-flow tests through the real router + PostgreSQL: the SPEC-0013
-// approve/decline/revoke POSTs require session + CSRF, approve mints a scoped endpoint (the vend) and
-// moves the edge active, and — the load-bearing hardening — approve only ever vends onto a
+// End-to-end Friends view + approval-flow tests through the real router + PostgreSQL: the
+// approve/decline/revoke POSTs require session + CSRF, the approve confirm page presents the vend
+// ("approving IS the vend"), approving mints a scoped endpoint, moves the edge to established, and
+// surfaces the vended result explicitly in the response (SPEC-0015 scenario "Approve mints and
+// shows the grant"), and — the load-bearing hardening — approve only ever vends onto a
 // TARGET-OWNED agent (a caller-supplied foreign agent id is refused with no mint). Skipped without
 // SWITCHBOARD_TEST_DATABASE_URL (Gitea CI runs DB-less), matching the ownership_test pattern.
-// Governing: SPEC-0013 REQ "Friends View", SPEC-0010 REQ "Approval Is the Vend, Narrow-Only",
-// wave-4 verification finding / hardening #152 (approve must resolve an owned agent).
+// Governing: SPEC-0015 REQ "Friends View And Approval Flow", SPEC-0010 REQ "Approval Is the Vend,
+// Narrow-Only", wave-4 verification finding / hardening #152 (approve must resolve an owned agent).
 package server
 
 import (
@@ -125,8 +127,10 @@ func TestFriendsViewGatedAndListsOwnEdges(t *testing.T) {
 }
 
 // TestFriendApproveOnlyAcceptsOwnedAgent is the load-bearing guard: approving with a FOREIGN agent id
-// is refused (400) and mints nothing, while approving with an OWNED agent vends a scoped endpoint and
-// moves the edge to active. Governing: SPEC-0010 REQ "Approval Is the Vend", wave-4 finding / #152.
+// is refused (400) and mints nothing, while approving with an OWNED agent vends a scoped endpoint,
+// moves the edge to established, and surfaces the vended result in the response. Governing:
+// SPEC-0010 REQ "Approval Is the Vend", SPEC-0015 scenario "Approve mints and shows the grant",
+// wave-4 finding / #152.
 func TestFriendApproveOnlyAcceptsOwnedAgent(t *testing.T) {
 	r, st, ctx := newFriendsRouter(t)
 	alice, tokenA := mintSession(t, st, ctx, "test|alice-appr", "Alice", "alice@example.com")
@@ -140,6 +144,23 @@ func TestFriendApproveOnlyAcceptsOwnedAgent(t *testing.T) {
 		t.Fatalf("create bob agent: %v", err)
 	}
 	edgeID := seedIncomingEdge(t, st, ctx, alice.ID, "peer://requester")
+
+	// The approve confirm page presents the vend before anything executes (SPEC-0015: "approving
+	// IS the vend"): the requester, the owned-agent vend target, and the narrow-only scope chips.
+	page := getAs(t, r, tokenA, "/friends/"+edgeID+"/approve")
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET approve page: got %d, want 200", page.Code)
+	}
+	for _, want := range []string{
+		"data-sb-friend-approve-confirm", "peer://requester",
+		`name="agent_id"`, "alice-agent",
+		`name="granted_queues" value="reviews" checked`,
+		`name="granted_verbs" value="create_for" checked`,
+	} {
+		if !strings.Contains(page.Body.String(), want) {
+			t.Errorf("approve page: missing %q", want)
+		}
+	}
 
 	csrf := scrapeCSRF(t, getAs(t, r, tokenA, "/friends").Body.String())
 
@@ -156,7 +177,7 @@ func TestFriendApproveOnlyAcceptsOwnedAgent(t *testing.T) {
 		t.Fatalf("refused approval must mint nothing, got %d endpoints on the owned agent", len(eps))
 	}
 
-	// Owned agent → success: edge active + endpoint minted.
+	// Owned agent → success: edge established + endpoint minted.
 	rec = postFormAs(t, r, tokenA, csrf, "/friends/"+edgeID+"/approve",
 		url.Values{"agent_id": {aliceAgent.ID}})
 	if rec.Code != http.StatusOK {
@@ -168,6 +189,24 @@ func TestFriendApproveOnlyAcceptsOwnedAgent(t *testing.T) {
 	}
 	if active[0].FromAgentID != aliceAgent.ID || active[0].EndpointID == "" {
 		t.Fatalf("approval must bind the owned agent and mint an endpoint: %+v", active[0])
+	}
+	// The response surfaces the vended result explicitly — endpoint identity + scope — and the edge
+	// renders as established on the same page (never only a toast).
+	eps, err := st.ListEndpoints(ctx, aliceAgent.ID)
+	if err != nil || len(eps) != 1 {
+		t.Fatalf("approval must mint exactly one endpoint: %+v, %v", eps, err)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"data-sb-friend-vended",
+		"/mcp/" + eps[0].Slug,
+		eps[0].CredentialPrefix,
+		"peer://requester",
+		"data-sb-friend-group=\"active\"", ">established<",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("approve response must surface the vended result: missing %q", want)
+		}
 	}
 }
 
@@ -276,6 +315,16 @@ func TestFriendDeclineAndRevoke(t *testing.T) {
 		url.Values{"agent_id": {agent.ID}}); rec.Code != http.StatusOK {
 		t.Fatalf("approve before revoke: got %d", rec.Code)
 	}
+	// Revocation is irreversible, so it confirms first: the GET page shows what dies (SPEC-0015
+	// REQ "Wizard Interaction Pattern").
+	page := getAs(t, r, tokenA, "/friends/"+revokeID+"/revoke")
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET revoke confirm page: got %d, want 200", page.Code)
+	}
+	if !strings.Contains(page.Body.String(), "data-sb-friend-revoke-confirm") ||
+		!strings.Contains(page.Body.String(), "peer://revoke-me") {
+		t.Error("revoke confirm page must present the edge being killed")
+	}
 	if rec := postFormAs(t, r, tokenA, csrf, "/friends/"+revokeID+"/revoke", nil); rec.Code != http.StatusOK {
 		t.Fatalf("revoke: got %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -285,5 +334,52 @@ func TestFriendDeclineAndRevoke(t *testing.T) {
 	}
 	if len(eps) != 1 || eps[0].State != "revoked" {
 		t.Fatalf("revoke must kill the vended endpoint, got %+v", eps)
+	}
+}
+
+// TestApproveFriendRejectsOwnOutgoingEdge closes the self-approve hole end-to-end: a locally sent
+// (direction=outgoing) pending edge awaits the REMOTE operator, so its sender can neither render
+// the approve confirm page for it (404) nor — load-bearing, since the page guard alone would leave
+// the mutation reachable — POST the approval directly: the store refuses the transition (409),
+// nothing is minted, and the edge stays pending/withdrawable. Governing: SPEC-0010 (both operators
+// must approve; approval is the vend — a self-approved outgoing edge would mint a vended endpoint
+// no remote operator ever consented to).
+func TestApproveFriendRejectsOwnOutgoingEdge(t *testing.T) {
+	r, st, ctx := newFriendsRouter(t)
+	alice, tokenA := mintSession(t, st, ctx, "test|alice-selfappr", "Alice", "alice@example.com")
+	agent, err := st.CreateAgent(ctx, alice.ID, "alice-agent", "")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	csrf := scrapeCSRF(t, getAs(t, r, tokenA, "/friends").Body.String())
+
+	// Alice sends an outgoing request (as the add-friend flow would).
+	if rec := postFormAs(t, r, tokenA, csrf, "/friends", url.Values{
+		"agent_id": {agent.ID},
+		"handle":   {"zed@far.example"},
+		"intents":  {"create_for"},
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("POST /friends: got %d", rec.Code)
+	}
+	edges, err := st.ListFriendEdges(ctx, alice.ID, "pending")
+	if err != nil || len(edges) != 1 {
+		t.Fatalf("want one pending outgoing edge: %+v, %v", edges, err)
+	}
+	edgeID := edges[0].ID
+
+	// The approve confirm page refuses to render her own outgoing request.
+	if page := getAs(t, r, tokenA, "/friends/"+edgeID+"/approve"); page.Code != http.StatusNotFound {
+		t.Fatalf("GET approve page for own outgoing edge: got %d, want 404", page.Code)
+	}
+	// Posting the approval directly is refused with nothing minted.
+	if rec := postFormAs(t, r, tokenA, csrf, "/friends/"+edgeID+"/approve",
+		url.Values{"agent_id": {agent.ID}}); rec.Code != http.StatusConflict {
+		t.Fatalf("self-approve POST: got %d, want 409", rec.Code)
+	}
+	if eps, err := st.ListEndpoints(ctx, agent.ID); err != nil || len(eps) != 0 {
+		t.Fatalf("self-approval must mint nothing: %+v, %v", eps, err)
+	}
+	if edges, err = st.ListFriendEdges(ctx, alice.ID, "pending"); err != nil || len(edges) != 1 {
+		t.Fatalf("edge must stay pending: %+v, %v", edges, err)
 	}
 }
