@@ -90,6 +90,7 @@ hide_table_of_contents: true
 ---
 
 import Link from '@docusaurus/Link';
+import useBaseUrl from '@docusaurus/useBaseUrl';
 
 <div className="sb-hero">
   <div className="sb-hero__eyebrow">MCP server · durable todo queue · local web UI</div>
@@ -158,13 +159,39 @@ import Link from '@docusaurus/Link';
   <span>— see <Link to="/decisions/ADR-0003-per-provider-ingestion-and-trust-model">ADR‑0003</Link>.</span>
 </div>
 
+<div className="sb-shots">
+  <div className="sb-shots__head">
+    <div className="sb-shots__eyebrow">The operator board · live</div>
+    <div className="sb-shots__title">See it live</div>
+    <p className="sb-shots__sub">Six views — Board, Todos, Endpoints, Personas, Friends, Providers — server‑rendered on Go + HTMX and updating over Server‑Sent Events, wearing the same trust badges the API and MCP surfaces carry.</p>
+  </div>
+  <div className="sb-shots__grid">
+    <figure className="sb-shot">
+      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf</span></div>
+      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/board.png')} alt="The Switchboard operator board: a three-lane patch panel — received, verified, patched through — with trust badges and live throughput tiles." loading="lazy" />
+      <figcaption className="sb-shot__cap"><strong>The Board</strong> — the three‑lane patch panel: received → verified → patched through, with live throughput tiles and the trust legend.</figcaption>
+    </figure>
+    <figure className="sb-shot">
+      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf/providers</span></div>
+      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/providers.png')} alt="The Providers view: connected webhook and queue providers with their enforced trust mode, plus a catalog of providers to connect." loading="lazy" />
+      <figcaption className="sb-shot__cap"><strong>Providers</strong> — every inbound line enters through a provider; each carries an enforced trust mode, connected inline from the catalog.</figcaption>
+    </figure>
+    <figure className="sb-shot">
+      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf/todos</span></div>
+      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/todos.png')} alt="The Todos view: the durable work-queue table — claim under a lease, complete with an ack, dedup by idempotency key, at-least-once delivery." loading="lazy" />
+      <figcaption className="sb-shot__cap"><strong>Todos</strong> — the durable queue: claim under a lease, complete with an ack, dedup by idempotency key, at‑least‑once.</figcaption>
+    </figure>
+  </div>
+</div>
+
 :::note Design record
 This site is the **canonical, SDD‑governed design record** for switchboard — ${adrFiles.length} architecture
 decision records and ${capDirs.length} OpenSpec capability specs (each a requirements + design pair),
 plus machine‑readable reference contracts. The MVP application code is built from these documents. The
 name is the architecture: a manual telephone exchange took many incoming lines, an operator verified
-the caller, and patched the line through — which is why these pages wear a switchboard‑era palette of
-brass, bakelite, operator‑cream, oxblood, and patch‑cable tones.
+the caller, and patched the line through — and these pages wear the same charm‑web design language as
+the app (ADR‑0018): a blue‑black void lit by ANSI neon — Charm purple and hot pink, cyan and mint —
+with a lavender‑paper day mode, monospace throughout.
 :::
 
 ## Start here
