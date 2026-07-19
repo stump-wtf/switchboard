@@ -10,6 +10,8 @@ package switchboard
 // Pattern"; ADR-0018 (keyboard-first interaction language); ADR-0001 (hand-rolled, no framework).
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -23,8 +25,13 @@ import (
 func TestJSModules(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("SKIPPED — node not found in PATH: the sb.js behavioral suite (jstest/) DID NOT RUN. " +
-			"Install Node.js 20+ so the JS quality gate executes; this skip must never be treated as a pass.")
+		// t.Skip output is invisible in non-verbose `go test` (the package still prints "ok"), so
+		// the warning ALSO goes straight to stderr — go test surfaces raw test-binary output even
+		// for passing packages, which is what makes this skip loud instead of a silent pass.
+		msg := "WARNING: SKIPPED TestJSModules — node not found in PATH: the sb.js behavioral suite (jstest/) DID NOT RUN. " +
+			"Install Node.js 20+ so the JS quality gate executes; this skip must never be treated as a pass."
+		fmt.Fprintln(os.Stderr, msg)
+		t.Skip(msg)
 	}
 	files, err := filepath.Glob("jstest/*.test.js")
 	if err != nil {

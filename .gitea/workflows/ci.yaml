@@ -36,7 +36,15 @@ jobs:
       - name: build
         run: go build ./...
       - name: test
-        run: go test ./...
+        # The sb.js behavioral suite (jstest/, via TestJSModules) needs node; without it that test
+        # SKIPS and non-verbose `go test` shows nothing — so record the JS-gate status explicitly.
+        run: |
+          if command -v node >/dev/null 2>&1; then
+            echo "JS gate active: node $(node --version) — jstest/ runs via TestJSModules"
+          else
+            echo "WARNING: node not found in PATH — TestJSModules will SKIP: the sb.js behavioral suite (jstest/) will NOT run" >&2
+          fi
+          go test ./...
       - name: test (race — queue + MCP packages)
         # The durable queue's correctness rests on concurrent claims (FOR UPDATE SKIP LOCKED) and the
         # lease reaper, so the race detector guards the queue packages in the PRIMARY gate too, not
