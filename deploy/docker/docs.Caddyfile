@@ -1,13 +1,17 @@
 # In-container static file server for the compiled Docusaurus site.
 # The front proxy (Ansible-managed) routes switchboard.stump.wtf/docs/* here with the /docs prefix
 # STRIPPED (Caddy handle_path), so this server sees paths rooted at the site root and serves the
-# flat build/ output directly. Unknown paths render the Docusaurus 404 page.
+# flat build/ output directly.
+#
+# try_files resolves clean URLs (e.g. /prfaq) directly to /prfaq/index.html WITHOUT emitting a
+# file_server canonical 308 redirect. That redirect is the reason we cannot lean on file_server's
+# implicit directory handling: because the outer proxy strips /docs, a 308 to the canonical path
+# drops the prefix and sends the client to switchboard.stump.wtf/<path>/ (the app, not the docs).
+# Resolving to index.html here means deep routes work on direct hit and refresh, not just client-side
+# nav. Unknown paths fall through to the Docusaurus 404 page.
 :80 {
 	root * /srv
 	encode gzip zstd
+	try_files {path} {path}/index.html /404.html
 	file_server
-	handle_errors {
-		rewrite * /404.html
-		file_server
-	}
 }
