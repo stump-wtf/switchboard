@@ -29,8 +29,8 @@ const REF_SRC = join(REPO, 'docs', 'reference');
 const OUT = join(SITE, 'docs-generated');
 const STATIC_REF = join(SITE, 'static', 'reference');
 
-const GITHUB = 'https://github.com/joestump/switchboard';
-const GITHUB_RAW = 'https://raw.githubusercontent.com/joestump/switchboard/main';
+const GITHUB = 'https://gitea.stump.rocks/stump.wtf/switchboard';
+const GITHUB_RAW = 'https://gitea.stump.rocks/stump.wtf/switchboard/raw/branch/main';
 
 // ---- discover sources ----
 const adrFiles = readdirSync(ADR_SRC).filter((f) => /^ADR-\d+.*\.md$/.test(f)).sort();
@@ -65,7 +65,7 @@ function sanitizeMdx(s) {
 }
 // docs/README.md (the design-index) has no page in the site; point at GitHub.
 function rewriteRepoLinks(s) {
-  return s.replace(/\]\(\.\.\/README\.md([^)]*)\)/g, `](${GITHUB}/blob/main/docs/README.md$1)`);
+  return s.replace(/\]\(\.\.\/README\.md([^)]*)\)/g, `](${GITHUB}/src/branch/main/docs/README.md$1)`);
 }
 // Rewrite links to ADR / spec / reference source files onto their rendered site routes.
 // Patterns tolerate any relative prefix (../, ../../../, docs/, etc.).
@@ -93,57 +93,82 @@ import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 
 <div className="sb-hero">
-  <div className="sb-hero__eyebrow">MCP server · durable todo queue · local web UI</div>
-  <h1 className="sb-hero__title">Switchboard</h1>
-  <p className="sb-hero__tagline"><em>Many lines come in. The operator verifies each caller, and patches it through.</em></p>
-  <p className="sb-hero__lead">Switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human‑vended MCP endpoints. One box: receive · verify · patch through.</p>
+  <div className="sb-hero__eyebrow">// MCP server · durable todo queue · local web UI</div>
+  <h1 className="sb-hero__title">many lines come in.<br/>the operator <em>verifies</em> each caller,<br/>and patches it through.</h1>
+  <p className="sb-hero__lead">Switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human‑vended MCP endpoints — served exclusively over HTTP/S. one box: receive · verify · patch through.</p>
   <div className="sb-hero__cta">
-    <Link className="button button--primary button--lg" to="/decisions">Read the decisions →</Link>
-    <Link className="button button--secondary button--lg" to="/specs">Browse the specs</Link>
-    <Link className="button button--outline button--lg" to="/prfaq">Read the PRFAQ</Link>
+    <a className="button button--primary button--lg" href="https://switchboard.stump.wtf">open the operator board →</a>
+    <Link className="button button--secondary button--lg" to="/decisions">read the decisions</Link>
+    <Link className="button button--outline button--lg" to="/prfaq">read the PRFAQ</Link>
+  </div>
+  <div className="sb-hero__meta">
+    <span><span className="on">●</span> live over SSE</span>
+    <span>MCP over HTTP/S</span>
+    <span>Go · PostgreSQL</span>
+  </div>
+</div>
+
+<div className="sb-jobs">
+  <div className="sb-job sb-job--recv">
+    <div className="sb-job__n">01</div>
+    <div className="sb-job__glyph">◆</div>
+    <div className="sb-job__name">receive</div>
+    <p className="sb-job__body">webhooks and queue messages arrive on scoped lines — GitHub, Stripe, Slack, Redis, generic token/open.</p>
+  </div>
+  <div className="sb-job sb-job--verify">
+    <div className="sb-job__n">02</div>
+    <div className="sb-job__glyph">✓</div>
+    <div className="sb-job__name">verify</div>
+    <p className="sb-job__body">every caller is checked at the boundary — HMAC signatures, shared‑secret tokens, replay windows — and stamped with a trust mode.</p>
+  </div>
+  <div className="sb-job sb-job--patch">
+    <div className="sb-job__n">03</div>
+    <div className="sb-job__glyph">→</div>
+    <div className="sb-job__name">patch through</div>
+    <p className="sb-job__body">the verified line becomes a durable todo an agent claims under a lease and completes — pushed live as a channel doorbell.</p>
   </div>
 </div>
 
 <div className="sb-tiles">
 
   <Link className="sb-tile" to="/decisions/ADR-0014-ingestion-adapters-push-pull">
-    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 13v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/><path d="M8 9l4 4 4-4"/><path d="M12 2v11"/></svg>
+    <div className="sb-tile__icon" aria-hidden="true">⇅</div>
     <div className="sb-tile__title">Push &amp; pull ingestion adapters</div>
     <p className="sb-tile__body">Push webhooks (GitHub, Stripe, Slack, Docker Hub, generic) and pull queue adapters (Redis, with SQS/NATS/AMQP to follow) normalize into the same todo — each with an enforced trust mode. Pull adapters ack the source only after the todo is durably stored, so nothing is lost at the boundary.</p>
   </Link>
 
   <Link className="sb-tile" to="/decisions/ADR-0007-todos-as-core-primitive">
-    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 5.5l1 1 2-2"/><path d="M4 11.5l1 1 2-2"/><path d="M4 17.5l1 1 2-2"/></svg>
+    <div className="sb-tile__icon" aria-hidden="true">▤</div>
     <div className="sb-tile__title">Durable todo work‑queue</div>
     <p className="sb-tile__body">Every event becomes a work‑item with a lifecycle — claimed under a lease, completed with an ack, deduped by idempotency key. A crashed worker's todo re‑surfaces; nothing is read‑once and lost.</p>
   </Link>
 
   <Link className="sb-tile" to="/decisions/ADR-0008-human-principal-vended-endpoints">
-    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="4"/><path d="M10.8 10.8L20 20"/><path d="M17 17l2-2"/><path d="M14.5 14.5l2-2"/></svg>
+    <div className="sb-tile__icon" aria-hidden="true">◈</div>
     <div className="sb-tile__title">Per‑agent vended MCP endpoints</div>
     <p className="sb-tile__body">Humans are the accountable principals; each agent is vended a scoped MCP endpoint (queues + verb allowlist). The credential is stored hashed in Postgres, short‑lived and revocable — revoke = kill the endpoint.</p>
   </Link>
 
   <Link className="sb-tile" to="/decisions/ADR-0009-personas-as-scoped-agent-cards">
-    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="7" width="13" height="10" rx="1.5"/><path d="M7.5 4.5H19a1.5 1.5 0 0 1 1.5 1.5v9"/></svg>
+    <div className="sb-tile__icon" aria-hidden="true">◫</div>
     <div className="sb-tile__title">Personas as A2A Agent Cards</div>
     <p className="sb-tile__body">One agent, many least‑privilege faces. A persona is a human‑authored prompt plus a verb subset; its advertised skills are derived from what's actually vended, published as an A2A Agent Card.</p>
   </Link>
 
   <Link className="sb-tile" to="/decisions/ADR-0010-a2a-discovery-human-vended-friending">
-    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 12h3"/><path d="M12.5 10.7l1.3 1.3 2.2-2.2"/></svg>
+    <div className="sb-tile__icon" aria-hidden="true">⇄</div>
     <div className="sb-tile__title">Human‑approved friending</div>
     <p className="sb-tile__body">Agents discover peers over A2A and send a scoped friend request. Approval lands as a todo in the target human's queue — and approving is the vend. Per‑direction, revocable, non‑transitive.</p>
   </Link>
 
   <Link className="sb-tile" to="/decisions/ADR-0013-channels-push-delivery">
-    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>
+    <div className="sb-tile__icon" aria-hidden="true">◔</div>
     <div className="sb-tile__title">Push into your live session</div>
     <p className="sb-tile__body">When a harness is attached, switchboard pushes new todos straight into the session over the open Claude Code Channels standard — a doorbell, not the ledger. Offline? The durable queue keeps the work until it's pulled.</p>
   </Link>
 
   <Link className="sb-tile" to="/decisions/ADR-0001-web-stack-go-htmx-pico">
-    <svg className="sb-tile__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 8h18"/><circle cx="5.8" cy="6" r="0.5"/><circle cx="7.8" cy="6" r="0.5"/></svg>
+    <div className="sb-tile__icon" aria-hidden="true">▦</div>
     <div className="sb-tile__title">Live operator board</div>
     <p className="sb-tile__body">A six‑view operator board — Board, Todos, Endpoints, Personas, Friends, Providers — on Go (net/http) + HTMX, wearing the charm‑web design language (day/night, monospace‑first) and updating live over Server‑Sent Events, with the same trust badges the API and MCP surfaces carry.</p>
   </Link>
@@ -359,8 +384,8 @@ for (const file of refFiles) {
   writeFileSync(
     join(OUT, 'reference', `${slug}.md`),
     `---\nsidebar_position: ${meta.pos}\ntitle: ${meta.title}\nformat: md\n---\n\n# ${meta.title}\n\n${meta.blurb}\n\n` +
-      `[⬇ Download the raw \`${file}\`](pathname:///switchboard/reference/${file}) · ` +
-      `[view on GitHub](${GITHUB}/blob/main/docs/reference/${file})\n\n` +
+      `[⬇ Download the raw \`${file}\`](pathname:///docs/reference/${file}) · ` +
+      `[view on GitHub](${GITHUB}/src/branch/main/docs/reference/${file})\n\n` +
       `\`\`\`\`yaml\n${yaml}\n\`\`\`\`\n`,
   );
 }

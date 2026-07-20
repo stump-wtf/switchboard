@@ -1,0 +1,94 @@
+# Gitea Actions: build the Docusaurus docs site and publish it as a static-server image to
+# gitea.stump.rocks/stump.wtf/switchboard-docs. The compiled site is served by the front Caddy at
+# https://switchboard.stump.wtf/docs/ (Caddy handle_path /docs/* → the switchboard-docs container).
+#
+# The site is built on the runner (npm ci + npm run build, baseUrl /docs/ via DOCS_URL), then baked
+# into a Caddy image that only COPYs the static output — no Node in the image, so the docker build
+# needs no BuildKit egress. Modeled on build.yaml; gated on the same REGISTRY_TOKEN secret (until it
+# is set, every step skips and the job stays green). StumpCloud's Ansible pulls :latest with
+# `pull: always`, so a redeploy picks up the newest docs.
+#
+# GitHub Pages was retired for this repo: stump.wtf/switchboard is a PRIVATE repo in an org on the
+# Team plan, and GitHub Pages will not serve a private org repo (deploy-pages returns 404). Serving
+# the compiled docs from the app's own domain via Caddy sidesteps that entirely.
+name: docs-build-and-push
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs-site/**'
+      - 'docs/**'
+      - 'static/tokens.css'
+      - 'deploy/docker/docs.Dockerfile'
+      - 'deploy/docker/docs.Caddyfile'
+      - '.gitea/workflows/docs.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ gitea.workflow }}-${{ gitea.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: build + push docs
+    runs-on: ubuntu-latest
+    env:
+      REG: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - if: ${{ env.REG != '' }}
+        uses: actions/checkout@v4
+
+      - if: ${{ env.REG != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docs-site/package-lock.json
+
+      - if: ${{ env.REG != '' }}
+        name: Build the docs site (baseUrl /docs/, url switchboard.stump.wtf)
+        working-directory: docs-site
+        run: npm ci --no-audit --no-fund && npm run build
+        env:
+          DOCS_URL: https://switchboard.stump.wtf
+
+      - if: ${{ env.REG != '' }}
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - if: ${{ env.REG != '' }}
+        name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: gitea.stump.rocks/stump.wtf/switchboard-docs
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+
+      - if: ${{ env.REG != '' }}
+        name: Log in to Gitea container registry
+        uses: docker/login-action@v3
+        with:
+          registry: gitea.stump.rocks
+          username: joestump-agent
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - if: ${{ env.REG != '' }}
+        name: Build and push the docs image (amd64)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/docs.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard-docs:buildcache
+          cache-to: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard-docs:buildcache,mode=max

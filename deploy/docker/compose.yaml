@@ -48,5 +48,22 @@ services:
       # the aggregate fleet. Keep the per-endpoint (post-auth) limiter as the real volumetric guard.
       - "127.0.0.1:8080:8080"
 
+
+  # Compiled Docusaurus docs, served static by Caddy on :80 and fronted at
+  # https://switchboard.stump.wtf/docs/. Built + pushed by .gitea/workflows/docs.yaml. The front
+  # reverse proxy (Ansible-managed, external to this repo) routes /docs to this container with the
+  # prefix STRIPPED, e.g. Caddy:
+  #   switchboard.stump.wtf {
+  #     handle_path /docs/* { reverse_proxy 127.0.0.1:8081 }
+  #     handle { reverse_proxy 127.0.0.1:8080 { flush_interval -1 } }   # the app (see below)
+  #   }
+  # (GitHub Pages was retired: a private org repo on the Team plan cannot serve Pages.)
+  switchboard-docs:
+    image: gitea.stump.rocks/stump.wtf/switchboard-docs:latest
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:80"
+
 volumes:
   switchboard-db:

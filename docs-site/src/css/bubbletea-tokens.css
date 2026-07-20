@@ -1,0 +1,407 @@
+/* Bubbletea TUI design system tokens — vendored from the design archive.
+   Night = :root (Docusaurus dark, the default). Day = html[data-theme='light']
+   (adapted from the design system's [data-theme="day"] scope so Docusaurus's
+   own light/dark toggle drives it). Do not hand-edit token values; they mirror
+   the design system. */
+
+/* ============================================================
+   Bubbletea TUI — Webfonts
+   ------------------------------------------------------------
+   The Charm ecosystem lives in the terminal, so the system is
+   monospace-first. We ship two mono families:
+     - JetBrains Mono  → the workhorse "terminal" typeface
+     - Space Mono      → chunky, quirky display / branding voice
+   Silkscreen provides an optional pixel-art accent for badges.
+
+   NOTE: Charm's own product surfaces use commercial faces
+   (Berkeley Mono on charm.sh). These are the closest free
+   substitutes on Google Fonts — see readme.md "Font substitution".
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;0,800;1,400&family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Silkscreen:wght@400;700&display=swap');
+
+/* ============================================================
+   Bubbletea TUI — Color System
+   ------------------------------------------------------------
+   A terminal palette: deep blue-black backgrounds lit by ANSI
+   neon. Charm's signature purple + hot pink anchor the brand;
+   cyan + mint push it toward Tron. Every hue is tuned to glow
+   on a dark surface.
+   ============================================================ */
+
+:root {
+  /* ---- Brand core (Charm signature) ---- */
+  --charm-purple:      #7D56F4;  /* THE Charm purple */
+  --charm-purple-lo:   #6642E0;
+  --charm-purple-hi:   #9B7CFF;
+  --charm-pink:        #FF5FA2;  /* hot magenta-pink */
+  --charm-pink-hi:     #FF8AC0;
+  --charm-fuchsia:     #EE6FF8;  /* bright fuchsia */
+
+  /* ---- Neon accents (the Tron end) ---- */
+  --neon-cyan:         #4EE6FF;
+  --neon-cyan-hi:      #A6F4FF;
+  --neon-mint:         #00F0A8;  /* success / go */
+  --neon-mint-lo:      #04B575;
+  --neon-gold:         #FFC64B;  /* warning / highlight */
+  --neon-coral:        #FF6E5E;  /* error / danger */
+  --neon-lilac:        #C8A2FF;
+
+  /* ---- Terminal surfaces (blue-black) ---- */
+  --bg-void:           #08080F;  /* deepest — page void */
+  --bg-terminal:       #0E0E1A;  /* terminal canvas */
+  --bg-surface:        #15152A;  /* raised panel */
+  --bg-surface-2:      #1E1E38;  /* elevated / selected row */
+  --bg-surface-3:      #2A2A4A;  /* hover / active cell */
+  --bg-inset:          #0A0A14;  /* sunken input well */
+
+  /* ---- Grid & lines ---- */
+  --line-dim:          #262645;  /* faint box-drawing */
+  --line:              #3A3A66;  /* default border */
+  --line-bright:       #55558F;  /* focused border */
+  --grid-tron:         rgba(78, 230, 255, 0.06); /* Tron floor grid */
+
+  /* ---- Text (phosphor) ---- */
+  --text-bright:       #F4F4FF;  /* headings / active */
+  --text-body:         #C9C9E8;  /* default body */
+  --text-muted:        #8888B0;  /* secondary */
+  --text-dim:          #5B5B84;  /* comments / hints */
+  --text-on-accent:    #0E0E1A;  /* text on neon fills */
+  --text-on-purple:    #FFFFFF;
+
+  /* ---- Cursor ---- */
+  --cursor:            #4EE6FF;
+  --cursor-text:       #08080F;
+
+  /* ---- Semantic ANSI roles ---- */
+  --role-primary:      var(--charm-purple);
+  --role-accent:       var(--charm-pink);
+  --role-info:         var(--neon-cyan);
+  --role-success:      var(--neon-mint);
+  --role-warning:      var(--neon-gold);
+  --role-danger:       var(--neon-coral);
+
+  /* ---- Semantic surface aliases ---- */
+  --surface-page:      var(--bg-void);
+  --surface-terminal:  var(--bg-terminal);
+  --surface-card:      var(--bg-surface);
+  --surface-raised:    var(--bg-surface-2);
+  --surface-hover:     var(--bg-surface-3);
+  --surface-input:     var(--bg-inset);
+
+  /* ---- Semantic border aliases ---- */
+  --border-default:    var(--line);
+  --border-subtle:     var(--line-dim);
+  --border-focus:      var(--neon-cyan);
+  --border-brand:      var(--charm-purple);
+
+  /* ---- Signature gradients ---- */
+  --grad-charm:        linear-gradient(90deg, #FF5FA2 0%, #7D56F4 100%); /* @kind color */
+  --grad-tron:         linear-gradient(90deg, #7D56F4 0%, #4EE6FF 100%); /* @kind color */
+  --grad-boba:         linear-gradient(135deg, #FF5FA2 0%, #EE6FF8 40%, #7D56F4 100%); /* @kind color */
+  --grad-neon-bar:     linear-gradient(90deg, #00F0A8 0%, #4EE6FF 50%, #7D56F4 100%);  /* @kind color */
+
+  /* ---- Glow shadows (neon bloom) ---- */
+  --glow-purple:       0 0 12px rgba(125, 86, 244, 0.55);
+  --glow-pink:         0 0 12px rgba(255, 95, 162, 0.55);
+  --glow-cyan:         0 0 12px rgba(78, 230, 255, 0.55);
+  --glow-mint:         0 0 12px rgba(0, 240, 168, 0.50);
+  --glow-soft:         0 0 24px rgba(125, 86, 244, 0.25);
+
+  /* ---- Elevation (terminal windows float on void) ---- */
+  --shadow-window:     0 24px 60px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(125, 86, 244, 0.15);
+  --shadow-panel:      0 8px 24px -8px rgba(0, 0, 0, 0.6);
+  --scrim:             rgba(8, 8, 15, 0.72);
+
+  /* ---- Tinted fills & focus rings (theme-aware) ---- */
+  --tint-primary:      rgba(125, 86, 244, 0.16);
+  --tint-accent:       rgba(255, 95, 162, 0.10);
+  --tint-info:         rgba(78, 230, 255, 0.10);
+  --focus-ring:        0 0 0 3px rgba(78, 230, 255, 0.25);
+  --focus-ring-soft:   0 0 0 3px rgba(78, 230, 255, 0.14);
+}
+
+/* ============================================================
+   DAY MODE — apply data-theme="day" on <html>.
+   Lavender paper instead of the void; the same brand hues,
+   deepened for contrast; glow becomes soft colored shadow.
+   ============================================================ */
+[data-theme="day"] {
+  /* brand, deepened */
+  --charm-purple:      #6C46EA;
+  --charm-purple-lo:   #5A36D6;
+  --charm-purple-hi:   #5230C9;
+  --charm-pink:        #E43A8C;
+  --charm-pink-hi:     #B92368;
+  --charm-fuchsia:     #C238CE;
+  --neon-cyan:         #0793B4;
+  --neon-cyan-hi:      #056A83;
+  --neon-mint:         #059669;
+  --neon-mint-lo:      #04785A;
+  --neon-gold:         #B4770A;
+  --neon-coral:        #DC4433;
+  --neon-lilac:        #6D4FD0;
+
+  /* surfaces — lavender paper */
+  --bg-void:           #EEEDFA;
+  --bg-terminal:       #FDFDFF;
+  --bg-surface:        #F6F5FD;
+  --bg-surface-2:      #ECEAF9;
+  --bg-surface-3:      #E0DDF4;
+  --bg-inset:          #F1F0FA;
+
+  --line-dim:          #E2DFF4;
+  --line:              #CCC7EA;
+  --line-bright:       #A79FDB;
+  --grid-tron:         rgba(108, 70, 234, 0.06);
+
+  --text-bright:       #17162B;
+  --text-body:         #333155;
+  --text-muted:        #625F92;
+  --text-dim:          #908DBA;
+  --text-on-accent:    #FFFFFF;
+  --text-on-purple:    #FFFFFF;
+
+  --cursor:            #0793B4;
+  --cursor-text:       #FFFFFF;
+
+  /* glow → soft colored shadow */
+  --glow-purple:       0 2px 10px rgba(108, 70, 234, 0.30);
+  --glow-pink:         0 2px 10px rgba(228, 58, 140, 0.30);
+  --glow-cyan:         0 2px 10px rgba(7, 147, 180, 0.30);
+  --glow-mint:         0 2px 10px rgba(5, 150, 105, 0.28);
+  --glow-soft:         0 4px 24px rgba(108, 70, 234, 0.14);
+
+  --shadow-window:     0 24px 60px -18px rgba(35, 30, 80, 0.25), 0 0 0 1px rgba(108, 70, 234, 0.10);
+  --shadow-panel:      0 8px 24px -10px rgba(35, 30, 80, 0.16);
+  --scrim:             rgba(38, 34, 74, 0.45);
+
+  --tint-primary:      rgba(108, 70, 234, 0.10);
+  --tint-accent:       rgba(228, 58, 140, 0.10);
+  --tint-info:         rgba(7, 147, 180, 0.10);
+  --focus-ring:        0 0 0 3px rgba(7, 147, 180, 0.30);
+  --focus-ring-soft:   0 0 0 3px rgba(7, 147, 180, 0.18);
+}
+
+/* ============================================================
+   Bubbletea TUI — Typography
+   ------------------------------------------------------------
+   Monospace-first. The terminal is a fixed character grid, so
+   sizing is expressed in a modest scale and line-height stays
+   close to 1 cell. Space Mono is the chunky display voice;
+   JetBrains Mono is the readable workhorse.
+   ============================================================ */
+
+:root {
+  /* ---- Families ---- */
+  --font-mono:     'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  --font-display:  'Space Mono', 'JetBrains Mono', ui-monospace, monospace;
+  --font-pixel:    'Silkscreen', 'Space Mono', monospace;
+
+  /* Everything is mono — these aliases keep intent readable */
+  --font-body:     var(--font-mono);
+  --font-ui:       var(--font-mono);
+
+  /* ---- Type scale (px) ---- */
+  --text-2xs:  11px;
+  --text-xs:   12px;
+  --text-sm:   13px;
+  --text-base: 15px;
+  --text-md:   17px;
+  --text-lg:   20px;
+  --text-xl:   26px;
+  --text-2xl:  34px;
+  --text-3xl:  46px;
+  --text-4xl:  62px;
+  --text-5xl:  84px;   /* web hero (HTML/HTMX language) */
+
+  /* ---- Weights ---- */
+  --weight-regular: 400;
+  --weight-medium:  500;
+  --weight-bold:    700;
+  --weight-black:   800;
+
+  /* ---- Line heights (cell-aware) ---- */
+  --leading-cell:  1.35;   /* body of terminal text */
+  --leading-tight: 1.15;   /* headings */
+  --leading-snug:  1.25;
+  --leading-loose: 1.6;    /* prose / help */
+
+  /* ---- Tracking ---- */
+  --tracking-tight:  -0.02em;
+  --tracking-normal: 0em;
+  --tracking-wide:   0.08em;
+  --tracking-caps:   0.18em;  /* pixel labels / eyebrows */
+
+  /* ---- Semantic roles ---- */
+  --type-display:  var(--weight-bold) var(--text-3xl)/var(--leading-tight) var(--font-display);
+  --type-title:    var(--weight-bold) var(--text-xl)/var(--leading-snug) var(--font-display);
+  --type-heading:  var(--weight-bold) var(--text-md)/var(--leading-snug) var(--font-mono);
+  --type-body:     var(--weight-regular) var(--text-base)/var(--leading-cell) var(--font-mono);
+  --type-ui:       var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-mono);
+  --type-hint:     var(--weight-regular) var(--text-xs)/var(--leading-snug) var(--font-mono);
+  --type-eyebrow:  var(--weight-bold) var(--text-2xs)/1 var(--font-pixel);
+}
+
+/* ============================================================
+   Bubbletea TUI — Spacing, Borders, Radii, Motion
+   ------------------------------------------------------------
+   The terminal grid is measured in cells. We keep a character
+   cell reference (--cell) and a matching 4px spatial scale for
+   the DOM recreations that surround the terminal.
+   ============================================================ */
+
+:root {
+  /* ---- Character cell (the atomic terminal unit) ---- */
+  --cell-w: 0.62em;   /* approx advance width of the mono */
+  --cell-h: 1.35em;   /* one text row */
+
+  /* ---- Spacing scale (4px base) ---- */
+  --space-0:  0;
+  --space-1:  2px;
+  --space-2:  4px;
+  --space-3:  8px;
+  --space-4:  12px;
+  --space-5:  16px;
+  --space-6:  20px;
+  --space-7:  24px;
+  --space-8:  32px;
+  --space-9:  40px;
+  --space-10: 48px;
+  --space-12: 64px;
+  --space-16: 96px;
+  --space-20: 128px;
+  --space-24: 160px;
+
+  /* ---- Web-scale layout (HTML/HTMX language) ----
+     Browser surfaces assume big screens: wide containers,
+     generous section padding, readable measures. */
+  --container-web:  1160px;  /* @kind other */
+  --container-text: 68ch;    /* @kind other */
+  --section-pad:    96px;
+  --gap-web:        32px;
+
+  /* ---- Radii ----
+     TUIs are square, but Lip Gloss's RoundedBorder (╭╮╰╯) is the
+     Charm signature. Our DOM chrome mirrors that soft-square feel. */
+  --radius-none: 0;
+  --radius-xs:   3px;
+  --radius-sm:   5px;
+  --radius-md:   8px;     /* default panel / button */
+  --radius-lg:   12px;    /* terminal window */
+  --radius-xl:   16px;
+  --radius-2xl:  24px;    /* browser-language cards */
+  --radius-pill: 999px;
+
+  /* ---- Border widths ---- */
+  --border-hair: 1px;
+  --border-thin: 1.5px;
+  --border-bold: 2px;
+
+  /* ---- Box-drawing glyph reference (for authors) ----
+     rounded : ╭ ╮ ╰ ╯   line : ─ │   heavy : ━ ┃
+     tee     : ├ ┤ ┬ ┴ ┼  block: █ ▓ ▒ ░  half : ▀ ▄ ▌ ▐
+     cursor  : █ ▏        arrows: ↑ ↓ ← → • ◆ ● ○ ✓ ✗ */
+
+  /* ---- Motion ----
+     Charm animations are springy (Harmonica) and quick. Cursor
+     blink is the heartbeat of every TUI.
+     RULE: never `transition: all` — list explicit properties
+     (transform, color, border-color, box-shadow, background-color);
+     `all` catches initial style application and can freeze layout. */
+  --ease-spring:  cubic-bezier(0.34, 1.56, 0.64, 1); /* @kind other */
+  --ease-out:     cubic-bezier(0.16, 1, 0.3, 1);     /* @kind other */
+  --ease-in-out:  cubic-bezier(0.65, 0, 0.35, 1);    /* @kind other */
+  --dur-fast:     120ms;  /* @kind other */
+  --dur-base:     200ms;  /* @kind other */
+  --dur-slow:     340ms;  /* @kind other */
+  --blink:        1.06s;  /* @kind other */
+
+  /* ---- Z-index ---- */
+  --z-base:    0;     /* @kind other */
+  --z-raised:  10;    /* @kind other */
+  --z-overlay: 100;   /* @kind other */
+  --z-modal:   1000;  /* @kind other */
+  --z-toast:   2000;  /* @kind other */
+}
+
+/* Cursor blink — the signature TUI heartbeat */
+@keyframes tui-blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* Braille-ish spinner rotation helper */
+@keyframes tui-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Neon flicker for headings */
+@keyframes tui-flicker {
+  0%, 100%   { opacity: 1; }
+  92%, 94%   { opacity: 0.72; }
+  93%        { opacity: 0.4; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
+}
+
+
+/* Docusaurus light toggle → day tokens */
+html[data-theme='light'] {
+  /* brand, deepened */
+  --charm-purple:      #6C46EA;
+  --charm-purple-lo:   #5A36D6;
+  --charm-purple-hi:   #5230C9;
+  --charm-pink:        #E43A8C;
+  --charm-pink-hi:     #B92368;
+  --charm-fuchsia:     #C238CE;
+  --neon-cyan:         #0793B4;
+  --neon-cyan-hi:      #056A83;
+  --neon-mint:         #059669;
+  --neon-mint-lo:      #04785A;
+  --neon-gold:         #B4770A;
+  --neon-coral:        #DC4433;
+  --neon-lilac:        #6D4FD0;
+
+  /* surfaces — lavender paper */
+  --bg-void:           #EEEDFA;
+  --bg-terminal:       #FDFDFF;
+  --bg-surface:        #F6F5FD;
+  --bg-surface-2:      #ECEAF9;
+  --bg-surface-3:      #E0DDF4;
+  --bg-inset:          #F1F0FA;
+
+  --line-dim:          #E2DFF4;
+  --line:              #CCC7EA;
+  --line-bright:       #A79FDB;
+  --grid-tron:         rgba(108, 70, 234, 0.06);
+
+  --text-bright:       #17162B;
+  --text-body:         #333155;
+  --text-muted:        #625F92;
+  --text-dim:          #908DBA;
+  --text-on-accent:    #FFFFFF;
+  --text-on-purple:    #FFFFFF;
+
+  --cursor:            #0793B4;
+  --cursor-text:       #FFFFFF;
+
+  /* glow → soft colored shadow */
+  --glow-purple:       0 2px 10px rgba(108, 70, 234, 0.30);
+  --glow-pink:         0 2px 10px rgba(228, 58, 140, 0.30);
+  --glow-cyan:         0 2px 10px rgba(7, 147, 180, 0.30);
+  --glow-mint:         0 2px 10px rgba(5, 150, 105, 0.28);
+  --glow-soft:         0 4px 24px rgba(108, 70, 234, 0.14);
+
+  --shadow-window:     0 24px 60px -18px rgba(35, 30, 80, 0.25), 0 0 0 1px rgba(108, 70, 234, 0.10);
+  --shadow-panel:      0 8px 24px -10px rgba(35, 30, 80, 0.16);
+  --scrim:             rgba(38, 34, 74, 0.45);
+
+  --tint-primary:      rgba(108, 70, 234, 0.10);
+  --tint-accent:       rgba(228, 58, 140, 0.10);
+  --tint-info:         rgba(7, 147, 180, 0.10);
+  --focus-ring:        0 0 0 3px rgba(7, 147, 180, 0.30);
+  --focus-ring-soft:   0 0 0 3px rgba(7, 147, 180, 0.18);
+}

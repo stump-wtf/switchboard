@@ -1,0 +1,13 @@
+# In-container static file server for the compiled Docusaurus site.
+# The front proxy (Ansible-managed) routes switchboard.stump.wtf/docs/* here with the /docs prefix
+# STRIPPED (Caddy handle_path), so this server sees paths rooted at the site root and serves the
+# flat build/ output directly. Unknown paths render the Docusaurus 404 page.
+:80 {
+	root * /srv
+	encode gzip zstd
+	file_server
+	handle_errors {
+		rewrite * /404.html
+		file_server
+	}
+}

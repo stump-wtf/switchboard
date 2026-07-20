@@ -1,367 +1,328 @@
-/*
- * switchboard docs — Infima theme override.
- * The charm-web design language of the app (ADR-0018): a blue-black void lit by ANSI neon —
- * Charm purple + hot pink anchor the brand, cyan + mint push it toward Tron — with a lavender-paper
- * day mode carrying the same hues deepened for contrast. Night is the default (a dim operator room).
- * Palette values mirror the app's static/tokens.css so the published design record and the live UI
- * read as one product. Monospace-first, like the terminal-native app.
+/**
+ * Switchboard docs — Bubbletea TUI design language (HTML/HTMX / browser dialect).
+ * Terminal-native: monospace everywhere, neon-on-blue-black (night default) / lavender-paper (day),
+ * a faint Tron floor grid, rounded Lip Gloss borders, and glow-not-shadow elevation. Tokens are
+ * vendored in ./bubbletea-tokens.css (night = :root, day = html[data-theme='light']). This file maps
+ * Docusaurus/Infima onto those tokens and styles the chrome. Web dialect rules: no fake terminal
+ * chrome around content, web-scale sizing, richer hover/motion.
  */
 
-/* ---- day (lavender paper) ---- */
+@import './bubbletea-tokens.css';
+
+/* ============================================================ Infima mapping */
 :root {
-  /* charm purple, deepened for AA on lavender */
-  --ifm-color-primary: #6c46ea;
-  --ifm-color-primary-dark: #5a36d6;
-  --ifm-color-primary-darker: #5230c9;
-  --ifm-color-primary-darkest: #4427a6;
-  --ifm-color-primary-light: #8262ef;
-  --ifm-color-primary-lighter: #9174f1;
-  --ifm-color-primary-lightest: #b7a3f6;
+  --ifm-font-family-base: var(--font-mono);
+  --ifm-font-family-monospace: var(--font-mono);
+  --ifm-heading-font-family: var(--font-display);
+  --ifm-font-size-base: 15px;
+  --ifm-line-height-base: 1.6;
 
-  --ifm-background-color: #eeedfa;          /* lavender paper */
-  --ifm-background-surface-color: #f6f5fd;   /* raised panel */
-  --ifm-font-color-base: #333155;            /* indigo ink */
-  --ifm-heading-color: #17162b;
-  --ifm-navbar-background-color: #ecEAF9;
-  --ifm-footer-background-color: #17162b;    /* dark footer even in day */
-  --ifm-code-background: #eceaf9;
-  --ifm-code-font-size: 92%;
+  --ifm-background-color: var(--bg-void);
+  --ifm-background-surface-color: var(--bg-surface);
+  --ifm-color-content: var(--text-body);
+  --ifm-color-content-secondary: var(--text-muted);
+  --ifm-heading-color: var(--text-bright);
 
-  /* monospace-first, like the app (JetBrains/Space Mono when present, else the system mono) */
-  --ifm-font-family-base: "JetBrains Mono", "Space Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
-  --ifm-heading-font-family: "Space Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
-  --ifm-font-family-monospace: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --ifm-color-primary: var(--charm-purple);
+  --ifm-color-primary-dark: var(--charm-purple-lo);
+  --ifm-color-primary-darker: var(--charm-purple-lo);
+  --ifm-color-primary-darkest: var(--charm-purple-lo);
+  --ifm-color-primary-light: var(--charm-purple-hi);
+  --ifm-color-primary-lighter: var(--charm-purple-hi);
+  --ifm-color-primary-lightest: var(--charm-purple-hi);
 
-  --ifm-blockquote-border-color: #6c46ea;
-  --ifm-toc-border-color: #ccc7ea;
-  --docusaurus-highlighted-code-line-bg: rgba(108, 70, 234, 0.12);
-  --ifm-menu-color-background-active: rgba(108, 70, 234, 0.1);
-  --ifm-breadcrumb-item-background-active: rgba(108, 70, 234, 0.12);
+  --ifm-link-color: var(--neon-cyan);
+  --ifm-link-hover-color: var(--neon-cyan-hi);
 
-  /* charm accent hues (day-deepened) used by hero/tiles/badges */
-  --sbd-accent: #e43a8c;   /* hot pink */
-  --sbd-cyan: #0793b4;
-  --sbd-mint: #059669;
-  --sbd-gold: #b4770a;
-  --sbd-coral: #dc4433;
-  --sbd-void: #08080f;
+  --ifm-navbar-background-color: color-mix(in oklab, var(--bg-void) 88%, transparent);
+  --ifm-navbar-link-color: var(--text-muted);
+  --ifm-navbar-link-hover-color: var(--text-bright);
+  --ifm-navbar-height: 62px;
+  --ifm-footer-background-color: var(--bg-terminal);
+  --ifm-footer-color: var(--text-muted);
+  --ifm-footer-link-color: var(--text-muted);
+  --ifm-footer-title-color: var(--text-bright);
+
+  --ifm-menu-color: var(--text-muted);
+  --ifm-menu-color-active: var(--text-bright);
+  --ifm-menu-color-background-active: var(--tint-primary);
+  --ifm-menu-color-background-hover: var(--surface-hover);
+
+  --ifm-toc-border-color: var(--line-dim);
+  --ifm-hr-background-color: var(--line-dim);
+  --ifm-table-border-color: var(--line-dim);
+  --ifm-table-stripe-background: color-mix(in oklab, var(--bg-surface) 55%, transparent);
+  --ifm-table-head-background: var(--bg-surface);
+
+  --ifm-code-font-size: 90%;
+  --ifm-code-background: var(--bg-inset);
+  --ifm-code-border-radius: var(--radius-sm);
+  --ifm-pre-background: var(--bg-inset);
+  --ifm-blockquote-color: var(--text-muted);
+  --ifm-blockquote-border-color: var(--charm-purple);
+
+  --ifm-global-radius: var(--radius-md);
+  --ifm-button-border-radius: var(--radius-md);
+  --ifm-alert-border-radius: var(--radius-md);
+  --docusaurus-highlighted-code-line-bg: var(--tint-primary);
+  --ifm-tabs-color-active: var(--neon-cyan);
+  --ifm-tabs-color-active-border: var(--neon-cyan);
 }
 
-/* ---- night (blue-black void, neon) — the default ---- */
-[data-theme='dark'] {
-  --ifm-color-primary: #9b7cff;             /* charm purple, brightened for the void */
-  --ifm-color-primary-dark: #8460fb;
-  --ifm-color-primary-darker: #7d56f4;
-  --ifm-color-primary-darkest: #6642e0;
-  --ifm-color-primary-light: #b295ff;
-  --ifm-color-primary-lighter: #c1a8ff;
-  --ifm-color-primary-lightest: #dccbff;
+html[data-theme='dark'] { color-scheme: dark; }
+html[data-theme='light'] { color-scheme: light; }
 
-  --ifm-background-color: #08080f;          /* the void */
-  --ifm-background-surface-color: #15152a;   /* raised panel */
-  --ifm-font-color-base: #c9c9e8;            /* phosphor body */
-  --ifm-heading-color: #f4f4ff;
-  --ifm-navbar-background-color: #0e0e1a;
-  --ifm-footer-background-color: #05050b;
-  --ifm-code-background: #0e0e1a;
-  --ifm-blockquote-border-color: #7d56f4;
-  --ifm-toc-border-color: #262645;
-  --ifm-color-content-secondary: #8888b0;
-  --docusaurus-highlighted-code-line-bg: rgba(125, 86, 244, 0.22);
-  --ifm-menu-color-background-active: rgba(125, 86, 244, 0.16);
-
-  --sbd-accent: #ff5fa2;   /* hot pink */
-  --sbd-cyan: #4ee6ff;
-  --sbd-mint: #00f0a8;
-  --sbd-gold: #ffc64b;
-  --sbd-coral: #ff6e5e;
-  --sbd-void: #08080f;
+/* ============================================================ Canvas: void + Tron grid + top glow */
+html, body { background: var(--bg-void); }
+body {
+  font-family: var(--font-mono);
+  color: var(--text-body);
+  -webkit-font-smoothing: antialiased;
+  position: relative;
 }
-
-/* A faint Tron floor grid on the page body, like the app canvas. */
-[data-theme='dark'] body {
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
   background-image:
-    linear-gradient(rgba(78, 230, 255, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(78, 230, 255, 0.045) 1px, transparent 1px);
-  background-size: 30px 30px;
+    linear-gradient(var(--grid-tron) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-tron) 1px, transparent 1px);
+  background-size: 30px 30px, 30px 30px;
 }
+body::after {
+  content: "";
+  position: fixed; top: 0; left: 0; right: 0; height: 640px; z-index: 0; pointer-events: none;
+  background: radial-gradient(1100px 460px at 50% -10%,
+    color-mix(in oklab, var(--charm-pink) 16%, transparent), transparent 70%);
+}
+#__docusaurus { position: relative; z-index: 1; }
 
-/* Navbar: a hairline under the panel; the wordmark tracks tight like the app. */
+/* ============================================================ Typography */
+h1, h2, h3, .markdown h1, .markdown h2, .markdown h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text-bright);
+}
+.markdown h1:first-child { font-size: var(--text-2xl); }
+article a { text-underline-offset: 3px; }
+
+/* ============================================================ Navbar */
 .navbar {
-  border-bottom: 1px solid var(--ifm-toc-border-color);
+  border-bottom: 1px solid var(--line-dim);
+  backdrop-filter: none;
   box-shadow: none;
 }
-.navbar__title {
-  letter-spacing: -0.02em;
+.navbar__title, .navbar__brand b {
+  font-family: var(--font-display);
   font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text-bright);
+}
+.navbar__link { font-size: 13px; }
+.navbar__link--active { color: var(--text-bright); }
+.navbar__link--active::after {
+  content: ""; display: block; height: 2px; margin-top: 3px;
+  background: var(--charm-pink); box-shadow: var(--glow-pink);
 }
 
-.markdown h1:first-child {
-  letter-spacing: -0.02em;
+/* ============================================================ Sidebar / menu */
+.theme-doc-sidebar-container { border-right: 1px solid var(--line-dim); }
+.menu { font-size: 13px; }
+.menu__link {
+  border-radius: var(--radius-sm);
+  transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
 }
+.menu__link--active:not(.menu__link--sublist) {
+  color: var(--text-bright);
+  background: var(--tint-primary);
+  box-shadow: inset 3px 0 0 var(--charm-pink);
+}
+.menu__link:hover { color: var(--text-bright); background: var(--surface-hover); }
+.table-of-contents__link--active { color: var(--neon-cyan); }
+.table-of-contents { font-size: 12px; }
 
-/* Trust-mode badges reused from the app (ADR-0003) so docs and UI match.
-   Usage in MDX: <span class="sb-badge sb-badge--signed">signed</span> */
-.sb-badge {
-  display: inline-block;
-  padding: 0.06rem 0.5rem;
-  border-radius: 3px;                 /* flat, cell-honest (ADR-0018) */
-  font-size: 0.75em;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  border: 1px solid color-mix(in oklab, currentColor 45%, transparent);
-  background: color-mix(in oklab, currentColor 14%, transparent);
-  white-space: nowrap;
-}
-.sb-badge--signed { color: var(--sbd-mint); }
-.sb-badge--token { color: var(--sbd-gold); }
-.sb-badge--open { color: var(--sbd-coral); }
-.sb-badge--queue { color: var(--sbd-cyan); }
-.sb-badge--rejected { color: var(--sbd-coral); }
-
-/* Status/metadata chips at the top of each ADR (status · date) */
-.sb-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin: 0 0 1.25rem;
-  font-size: 0.8rem;
-}
-.sb-chip {
-  padding: 0.1rem 0.55rem;
-  border-radius: 0.25rem;
-  border: 1px solid var(--ifm-toc-border-color);
-  background: var(--ifm-background-surface-color);
-  color: var(--ifm-color-content-secondary, #8888b0);
-}
-.sb-chip strong { color: var(--ifm-font-color-base); font-weight: 600; }
-
-/* Mermaid diagrams: a framed panel so they read as switchboard schematics */
-.docusaurus-mermaid-container {
-  border: 1px solid var(--ifm-toc-border-color);
-  border-radius: 0.5rem;
-  padding: 0.75rem;
-  background: var(--ifm-background-surface-color);
-}
-
+/* ============================================================ Cards / panels / admonitions */
 .card {
-  border: 1px solid var(--ifm-toc-border-color);
-  background: var(--ifm-background-surface-color);
+  background: var(--bg-surface);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius-md);
+  box-shadow: none;
+}
+.markdown blockquote {
+  background: color-mix(in oklab, var(--bg-surface) 60%, transparent);
+  border-left: 3px solid var(--charm-purple);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.theme-admonition {
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+.theme-admonition-note { border-left: 3px solid var(--neon-cyan); }
+.theme-admonition-tip { border-left: 3px solid var(--neon-mint); }
+.theme-admonition-warning, .theme-admonition-caution { border-left: 3px solid var(--neon-gold); }
+.theme-admonition-danger { border-left: 3px solid var(--neon-coral); }
+
+/* ============================================================ Code */
+code {
+  border: 1px solid var(--line-dim);
+  color: var(--neon-cyan-hi);
+  padding: 0.1em 0.35em;
+}
+pre code { border: none; color: inherit; padding: 0; }
+pre {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: none;
 }
 
-/* ============================================================
- * Landing page: hero + feature tiles + live screenshots (charm-web palette).
- * Rendered from the generated intro.mdx (scripts/build-docs.mjs).
- * ============================================================ */
+/* ============================================================ Buttons (web dialect: rounded, glow) */
+.button {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  transition: transform var(--dur-fast) var(--ease-spring), filter var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.button--primary {
+  background: var(--grad-charm);
+  color: #fff;
+  box-shadow: 0 0 24px color-mix(in oklab, var(--charm-pink) 26%, transparent);
+}
+.button--primary:hover { transform: translateY(-1px); filter: brightness(1.07); color: #fff; }
+.button--secondary {
+  background: transparent; color: var(--text-body); border-color: var(--line);
+}
+.button--secondary:hover { border-color: var(--neon-cyan); color: var(--text-bright); box-shadow: var(--focus-ring-soft); }
+.button--outline { background: transparent; border-color: var(--line); color: var(--text-muted); }
+.button--outline:hover { border-color: var(--line-bright); color: var(--text-bright); }
 
+/* Pagination */
+.pagination-nav__link {
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius-md);
+  transition: border-color var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+}
+.pagination-nav__link:hover { border-color: var(--line-bright); transform: translateY(-2px); }
+.pagination-nav__sublabel { color: var(--text-dim); }
+
+/* ============================================================ Home (generated intro.mdx) */
 .sb-hero {
-  text-align: center;
-  padding: 3.5rem 1rem 2.25rem;
-  margin-bottom: 2rem;
-  border-bottom: 1px solid var(--ifm-toc-border-color);
-  /* a neon brand glow rising off the top edge, like a lamp over the operator's board */
-  background: radial-gradient(
-    120% 90% at 50% -20%,
-    color-mix(in oklab, var(--sbd-accent) 20%, transparent),
-    transparent 64%
-  );
+  max-width: 960px; margin: 0 auto; padding: 88px 24px 40px;
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 24px;
 }
 .sb-hero__eyebrow {
-  text-transform: uppercase;
-  letter-spacing: 0.2em;
-  font-size: 0.72rem;
-  font-weight: 700;
-  color: var(--sbd-accent);
-  margin-bottom: 0.85rem;
+  font-family: var(--font-pixel); font-size: 11px; letter-spacing: 0.22em;
+  color: var(--charm-pink); text-transform: uppercase;
 }
 .sb-hero__title {
-  font-family: var(--ifm-heading-font-family);
-  font-size: clamp(2.4rem, 6vw, 3.6rem);
-  line-height: 1.04;
-  letter-spacing: -0.04em;
-  margin: 0 0 0.55rem;
-  color: var(--ifm-heading-color);
+  margin: 0; font-family: var(--font-display); font-weight: 700;
+  font-size: clamp(34px, 6vw, 60px); line-height: 1.08; letter-spacing: -0.045em;
+  color: var(--text-bright); text-wrap: balance;
 }
-.sb-hero__tagline {
-  font-size: 1.15rem;
-  color: var(--ifm-color-primary);
-  margin: 0 0 0.85rem;
+.sb-hero__title em, .sb-grad {
+  font-style: normal;
+  background: var(--grad-charm); -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-.sb-hero__lead {
-  max-width: 46rem;
-  margin: 0 auto 1.6rem;
-  font-size: 1.02rem;
-  color: var(--ifm-color-content-secondary, #8888b0);
+.sb-hero__tagline { margin: 0; color: var(--text-muted); font-size: 15px; }
+.sb-hero__lead { max-width: 68ch; color: var(--text-body); font-size: 15px; line-height: 1.7; }
+.sb-hero__cta { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+.sb-hero__meta {
+  display: flex; gap: 18px; flex-wrap: wrap; justify-content: center;
+  font-size: 12px; color: var(--text-dim);
 }
-.sb-hero__cta {
-  display: flex;
-  gap: 0.75rem;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-/* The primary CTA wears the signature charm gradient. */
-.sb-hero__cta .button--primary {
-  background-image: linear-gradient(90deg, var(--sbd-accent) 0%, var(--ifm-color-primary) 100%);
-  border: none;
-  color: #fff;
-  box-shadow: 0 0 22px color-mix(in oklab, var(--sbd-accent) 28%, transparent);
-}
-.sb-hero__cta .button--primary:hover {
-  filter: brightness(1.07);
-}
+.sb-hero__meta .on { color: var(--neon-mint); }
 
+/* three-jobs strip: receive · verify · patch through */
+.sb-jobs {
+  max-width: 1160px; margin: 8px auto 0; padding: 0 24px;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+}
+.sb-job {
+  position: relative; padding: 24px 22px; overflow: hidden;
+  border: 1px solid var(--line-dim); border-radius: var(--radius-xl); background: var(--bg-surface);
+}
+.sb-job::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--jc, var(--charm-pink)); }
+.sb-job__n { font-family: var(--font-pixel); font-size: 12px; letter-spacing: 0.14em; color: var(--jc); }
+.sb-job__glyph { font-size: 22px; color: var(--jc); }
+.sb-job__name { font-family: var(--font-display); font-weight: 700; font-size: 18px; color: var(--text-bright); }
+.sb-job__body { color: var(--text-muted); font-size: 13px; line-height: 1.55; }
+.sb-job--recv { --jc: var(--charm-pink); }
+.sb-job--verify { --jc: var(--neon-cyan); }
+.sb-job--patch { --jc: var(--neon-mint); }
+
+/* feature tiles */
 .sb-tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: 1rem;
-  margin: 0 0 1.75rem;
+  max-width: 1160px; margin: 40px auto 0; padding: 0 24px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px;
 }
 .sb-tile {
-  display: block;
-  padding: 1.2rem 1.25rem 1.35rem;
-  border: 1px solid var(--ifm-toc-border-color);
-  border-radius: 0.75rem;
-  background: var(--ifm-background-surface-color);
-  color: var(--ifm-font-color-base);
-  text-decoration: none;
-  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  display: flex; flex-direction: column; gap: 10px; padding: 22px;
+  border: 1px solid var(--line-dim); border-radius: var(--radius-xl);
+  background: linear-gradient(180deg, color-mix(in oklab, transparent 90%, var(--charm-purple)), transparent 60%), var(--bg-surface);
+  color: var(--text-body); text-decoration: none;
+  transition: border-color var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
 }
-.sb-tile:hover {
-  text-decoration: none;
-  color: var(--ifm-font-color-base);
-  border-color: var(--ifm-color-primary);
-  transform: translateY(-2px);
-  box-shadow: 0 10px 30px -18px color-mix(in oklab, var(--ifm-color-primary) 80%, transparent);
-}
-.sb-tile__icon {
-  width: 30px;
-  height: 30px;
-  color: var(--ifm-color-primary);
-  margin-bottom: 0.6rem;
-}
-.sb-tile__title {
-  font-weight: 700;
-  font-size: 1.05rem;
-  color: var(--ifm-heading-color);
-  margin-bottom: 0.35rem;
-}
-.sb-tile__body {
-  margin: 0;
-  font-size: 0.9rem;
-  line-height: 1.45;
-  color: var(--ifm-color-content-secondary, #8888b0);
-}
+.sb-tile:hover { border-color: var(--line-bright); transform: translateY(-2px); color: var(--text-body); text-decoration: none; }
+.sb-tile__icon { font-size: 20px; color: var(--neon-mint); line-height: 1; }
+.sb-tile__title { font-family: var(--font-display); font-weight: 700; font-size: 17px; color: var(--text-bright); }
+.sb-tile__body { color: var(--text-muted); font-size: 13px; line-height: 1.55; }
+.sb-tile__link { margin-top: auto; font-size: 12px; color: var(--text-dim); }
+.sb-tile:hover .sb-tile__link { color: var(--neon-cyan); }
 
+/* trust chips row */
 .sb-trust {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  justify-content: center;
-  margin: 0 0 2rem;
-  font-size: 0.85rem;
-  color: var(--ifm-color-content-secondary, #8888b0);
+  max-width: 1160px; margin: 24px auto 8px; padding: 14px 20px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border: 1px dashed var(--line-dim); border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--bg-surface) 60%, transparent);
+  font-size: 13px; color: var(--text-dim);
+}
+.sb-trust > span:first-child { font-family: var(--font-pixel); font-size: 10px; letter-spacing: 0.14em; color: var(--text-muted); }
+.sb-badge {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px;
+  border-radius: var(--radius-sm); font-size: 12px;
+}
+.sb-badge--signed { background: color-mix(in oklab, transparent 84%, var(--neon-mint)); color: var(--neon-mint); }
+.sb-badge--token  { background: color-mix(in oklab, transparent 84%, var(--neon-gold)); color: var(--neon-gold); }
+.sb-badge--open   { background: color-mix(in oklab, transparent 84%, var(--neon-coral)); color: var(--neon-coral); }
+.sb-badge--queue  { background: color-mix(in oklab, transparent 84%, var(--neon-cyan)); color: var(--neon-cyan); }
+
+/* ============================================================ Misc */
+.footer { border-top: 1px solid var(--line-dim); }
+.hero, .hero--primary { background: transparent; }
+::selection { background: color-mix(in oklab, var(--charm-purple) 40%, transparent); color: var(--text-bright); }
+
+@media (max-width: 900px) {
+  .sb-jobs { grid-template-columns: 1fr; }
+}
+@media print {
+  body::before, body::after { display: none; }
 }
 
-/* ---- "See it live" — app screenshots framed in browser chrome ---- */
+/* ============================================================ Screenshots section (sb-shots) */
 .sb-shots {
-  margin: 0 0 2.5rem;
+  max-width: 1160px; margin: 72px auto 8px; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 28px;
 }
-.sb-shots__head {
-  text-align: center;
-  margin: 0 0 1.5rem;
-}
-.sb-shots__eyebrow {
-  text-transform: uppercase;
-  letter-spacing: 0.2em;
-  font-size: 0.72rem;
-  font-weight: 700;
-  color: var(--sbd-accent);
-}
-.sb-shots__title {
-  font-family: var(--ifm-heading-font-family);
-  font-size: clamp(1.6rem, 4vw, 2.2rem);
-  letter-spacing: -0.03em;
-  color: var(--ifm-heading-color);
-  margin: 0.35rem 0 0.4rem;
-}
-.sb-shots__sub {
-  color: var(--ifm-color-content-secondary, #8888b0);
-  max-width: 46rem;
-  margin: 0 auto;
-}
-.sb-shots__grid {
-  display: grid;
-  gap: 1.5rem;
-}
+.sb-shots__head { display: flex; flex-direction: column; gap: 8px; align-items: center; text-align: center; }
+.sb-shots__eyebrow { font-family: var(--font-pixel); font-size: 11px; letter-spacing: 0.2em; color: var(--charm-pink); text-transform: uppercase; }
+.sb-shots__title { font-family: var(--font-display); font-weight: 700; font-size: var(--text-2xl); color: var(--text-bright); }
+.sb-shots__sub { max-width: 72ch; color: var(--text-muted); font-size: 14px; line-height: 1.6; }
+.sb-shots__grid { display: grid; grid-template-columns: 1fr; gap: 24px; }
 .sb-shot {
-  border-radius: 12px;
-  overflow: hidden;
-  border: 1px solid var(--ifm-toc-border-color);
-  background: #08080f;
-  box-shadow: 0 30px 70px -30px rgba(0, 0, 0, 0.7), 0 0 0 1px color-mix(in oklab, var(--ifm-color-primary) 12%, transparent);
+  margin: 0; border: 1px solid var(--line-dim); border-radius: var(--radius-lg); overflow: hidden;
+  background: var(--bg-surface); box-shadow: var(--shadow-window);
+  transition: border-color var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
 }
+.sb-shot:hover { border-color: var(--line-bright); transform: translateY(-2px); }
 .sb-shot__chrome {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 10px 14px;
-  background: #111121;
-  border-bottom: 1px solid #262645;
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  background: var(--bg-terminal); border-bottom: 1px solid var(--line-dim);
 }
-.sb-shot__dot {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  flex: none;
-}
-.sb-shot__url {
-  margin: 0 auto;
-  padding: 3px 14px;
-  border-radius: 4px;
-  background: #0a0a14;
-  color: #8888b0;
-  font-size: 0.75rem;
-}
-.sb-shot__img {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-.sb-shot__cap {
-  margin: 0;
-  padding: 0.7rem 1rem 0.85rem;
-  font-size: 0.85rem;
-  color: var(--ifm-color-content-secondary, #8888b0);
-  background: var(--ifm-background-surface-color);
-  border-top: 1px solid var(--ifm-toc-border-color);
-}
-.sb-shot__cap strong { color: var(--ifm-heading-color); font-weight: 700; }
-
-/* ============================================================
- * Homepage = a clean marketing page. Scoped to the landing doc via its stable
- * page class so every other docs page keeps its sidebar. Hides the docs chrome
- * (left sidebar, breadcrumb, right TOC) and lets the hero + tiles use the full width.
- * ============================================================ */
-html.docs-doc-id-intro .theme-doc-sidebar-container,
-html.docs-doc-id-intro .theme-doc-breadcrumbs,
-html.docs-doc-id-intro .theme-doc-toc-desktop,
-html.docs-doc-id-intro .theme-doc-toc-mobile {
-  display: none !important;
-}
-html.docs-doc-id-intro main {
-  max-width: none !important;
-}
-html.docs-doc-id-intro main > .container {
-  max-width: 1120px;
-}
-html.docs-doc-id-intro main .row > .col {
-  --ifm-col-width: 100% !important;
-  max-width: 100% !important;
-  flex: 0 0 100% !important;
-  margin-left: 0 !important;
-}
-/* The hero already provides its own top spacing — drop the article's default padding. */
-html.docs-doc-id-intro article {
-  padding-top: 0;
-}
+.sb-shot__dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.sb-shot__url { margin-left: 10px; font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); }
+.sb-shot__img { display: block; width: 100%; height: auto; }
+.sb-shot__cap { padding: 14px 18px; font-size: 13px; color: var(--text-muted); line-height: 1.55; }
+.sb-shot__cap strong { color: var(--text-bright); }

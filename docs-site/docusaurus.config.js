@@ -4,13 +4,14 @@
 // (docs/reference) — transformed into docs-generated/ by scripts/build-docs.mjs at build time —
 // with mermaid diagrams and the switchboard-era theme.
 //
-// Published to GitHub Pages at https://joestump.github.io/switchboard/ (baseUrl /switchboard/).
+// Served as compiled static files by the front Caddy at https://switchboard.stump.wtf/docs/
+// (baseUrl /docs/). Repo of record: gitea.stump.rocks/stump.wtf/switchboard.
 
 const { themes } = require('prism-react-renderer');
 
-const SITE_URL = process.env.DOCS_URL || 'https://joestump.github.io';
-const BASE_URL = '/switchboard/';
-const GITHUB_URL = 'https://github.com/joestump/switchboard';
+const SITE_URL = process.env.DOCS_URL || 'https://switchboard.stump.wtf';
+const BASE_URL = '/docs/';
+const GITHUB_URL = 'https://gitea.stump.rocks/stump.wtf/switchboard';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -22,7 +23,7 @@ const config = {
 
   url: SITE_URL,
   baseUrl: BASE_URL,
-  organizationName: 'joestump',
+  organizationName: 'stump-wtf',
   projectName: 'switchboard',
 
   onBrokenLinks: 'warn',

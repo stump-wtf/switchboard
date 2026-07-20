@@ -21,7 +21,7 @@ patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
 
 > [!IMPORTANT]
 > **Status: MVP working.** The design record — the **architecture decision records** (`docs/adrs/`) and
-> the **specs** (`docs/openspec/specs/`) — is published to [GitHub Pages](https://joestump.github.io/switchboard/)
+> the **specs** (`docs/openspec/specs/`) — is served as a compiled static site at [switchboard.stump.wtf/docs](https://switchboard.stump.wtf/docs/)
 > and remains the source of truth. The **MVP is implemented and verified end-to-end**: OIDC login
 > (Pocket ID RP) → register an agent → **vend a scoped MCP endpoint** → the agent connects **directly
 > over Streamable HTTP** (`type: "http"` `.mcp.json`: minted URL + bearer credential — no local
@@ -217,7 +217,7 @@ The docs site builds with Docusaurus and deploys to **GitHub Pages** via `.githu
 ## Repository hosting
 
 - **Source:** <https://github.com/joestump/switchboard>
-- **Docs:** built with Docusaurus and published to **GitHub Pages** at <https://joestump.github.io/switchboard/> via `.github/workflows/pages.yml`.
+- **Docs:** built with Docusaurus and served as a compiled static site at <https://switchboard.stump.wtf/docs/> — the front Caddy routes `/docs/*` to the `switchboard-docs` container (built + pushed by `.gitea/workflows/docs.yaml`). GitHub Pages was retired: a private org repo on the Team plan cannot serve Pages.
 
 ## License
 
