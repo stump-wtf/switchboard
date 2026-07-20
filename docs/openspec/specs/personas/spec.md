@@ -74,10 +74,15 @@ persona `name`; `description` from the persona `description` or a summary of its
 from the persona's A2A discovery endpoint; `provider`/owner from the owning human's identity chain
 ([ADR-0008](../../../adrs/ADR-0008-human-principal-vended-endpoints.md), attestable via OIDC per
 [ADR-0011](../../../adrs/ADR-0011-identity-assurance-oidc-passkey-deferred.md)); and `skills` from the
-derived set. The card's `capabilities` MUST advertise only the A2A features switchboard supports
-(discovery/announcement) and MUST NOT advertise direct task delegation. The card's `url` is a discovery
-identifier only and MUST NOT be treated as a work-intake channel — work arrives as todos per
-[ADR-0010](../../../adrs/ADR-0010-a2a-discovery-human-vended-friending.md).
+derived set. The card's `capabilities` MUST accurately reflect the A2A features switchboard actually
+implements for this persona — originally discovery/announcement only; as of
+[ADR-0021](../../../adrs/ADR-0021-a2a-task-delegation-transport.md) /
+[SPEC-0018](../a2a-tasks/spec.md), `capabilities.streaming` MUST be `true` once that capability ships.
+Advertising a capability flag is not itself a grant: actual task creation and streaming subscription still
+require a vended endpoint minted by [SPEC-0010](../friending/spec.md)'s flow. The card's public `url` MUST
+remain a discovery identifier only and MUST NOT be treated as a work-intake channel — SendMessage-style
+task intake happens at the caller's own vended endpoint URL ([ADR-0008](../../../adrs/ADR-0008-human-principal-vended-endpoints.md)),
+never at the publicly-discoverable card `url`.
 
 #### Scenario: Card provider ties to the owning human
 
@@ -85,11 +90,12 @@ identifier only and MUST NOT be treated as a work-intake channel — work arrive
 - **THEN** its `provider`/owner field MUST resolve to the owning human's identity chain, not the agent's
   self-asserted identity
 
-#### Scenario: Card does not advertise delegation intake
+#### Scenario: Card capabilities match what is actually implemented
 
 - **WHEN** any persona's Agent Card is served
-- **THEN** its `capabilities` MUST NOT claim A2A direct task delegation, and its `url` MUST NOT be
-  documented as accepting work
+- **THEN** its `capabilities` flags MUST reflect only A2A features switchboard actually implements for
+  that persona, and its public `url` MUST NOT be documented as accepting work directly (work intake
+  happens at a separately vended, credentialed endpoint per SPEC-0010, not the discovery `url`)
 
 ### Requirement: Well-Known Card Endpoint
 

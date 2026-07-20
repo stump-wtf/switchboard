@@ -36,12 +36,16 @@ reflects that.
 - Enforce narrow-only approval (`granted_scope ⊆ requested_scope`) and per-direction / revocable /
   non-transitive semantics.
 - Require verifiable OIDC-signed human provenance on every request.
-- Route cross-agent work as todos; expose no A2A direct-task intake.
+- Route cross-agent work as todos, whether created via `create_for` or (as of
+  [SPEC-0018](../a2a-tasks/spec.md)) A2A's own `SendMessage` — either way, gated by a grant this spec's
+  flow minted.
 
 ### Non-Goals
 
 - Defining personas / Agent Cards themselves — SPEC-0009.
-- Implementing A2A direct task delegation — deliberately excluded.
+- Implementing the A2A task RPC surface itself (`SendMessage`, `GetTask`, streaming, etc.) — that is
+  [SPEC-0018](../a2a-tasks/spec.md). This spec only defines how a grant is acquired, not the wire
+  protocols usable once one exists.
 - Specifying OIDC verification internals or the deferred non-passkey `amr`/`acr` step-up — that is
   [ADR-0011](../../../adrs/ADR-0011-identity-assurance-oidc-passkey-deferred.md).
 
@@ -69,16 +73,24 @@ the other, so a grant is never a surprise to either party.
 - Free-form human-authored scope at approval: could grant *more* than requested, surprising the
   requester and defeating least authority. Rejected.
 
-### Work transports as todos, not A2A tasks
+### Work transports as todos, whether via MCP or A2A
 
-**Choice**: After a grant, A hands B work via `create_for` into B's granted queue; switchboard exposes no
-A2A direct-task delegation intake.
+**Choice** *(amended 2026-07-20 by [ADR-0021](../../../adrs/ADR-0021-a2a-task-delegation-transport.md))*:
+After a grant, A hands B work via `create_for` into B's granted queue — or, once
+[SPEC-0018](../a2a-tasks/spec.md) is implemented, via A2A's own `SendMessage`, which enforces the identical
+grant check. Originally this spec exposed no A2A task intake at all; the grant check is what stayed
+constant, not the protocol count.
 **Rationale**: Cross-agent work becomes durable, owned, dedup'd, leaseable, and traceable — a first-class
-todo ([ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md)) — instead of an RPC that vanishes on
-crash. Interop with pure-A2A delegators is intentionally limited to discovery.
+todo ([ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md)) — regardless of which wire protocol
+created it, because `SendMessage` is a thin translation onto the same store path `create_for` uses, not a
+parallel intake mechanism. Real A2A interop no longer requires a client to speak switchboard's
+MCP-specific tool names.
 **Alternatives considered**:
-- Accept A2A peer tasks and persist them internally: re-implements the todo queue behind a lossy
-  transport and blurs the "A2A is discovery-only" line. Rejected.
+- Accept A2A peer tasks and persist them internally via a *separate* code path from `create_for`:
+  re-implements the todo queue behind a second transport and risks the two diverging. Rejected in favor of
+  SPEC-0018's "thin translator onto the same store call" approach.
+- Leave A2A task intake closed permanently (the original decision): forgoes real A2A interop indefinitely.
+  Superseded by ADR-0021 once the interop gap became a stated goal.
 
 ### Per-direction, revocable, non-transitive edges
 
