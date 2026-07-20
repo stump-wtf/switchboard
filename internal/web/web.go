@@ -35,7 +35,7 @@ var tmplFS embed.FS
 // Startup parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
 // "Application Shell And Navigation" (providers joins the IA).
-var pageNames = []string{"login", "board", "todos", "todo", "endpoints", "vend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "providers", "authorize", "connect"}
+var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "providers", "authorize", "connect"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -169,6 +169,7 @@ type shell struct {
 
 type view struct {
 	Title          string
+	Landing        bool // public marketing landing (GET / when logged out): render the full-bleed home template, not the app shell
 	Human          *store.Human
 	CSRF           string
 	Shell          shell
@@ -262,6 +263,29 @@ func (h *Handler) buildShell(ctx context.Context, active string, human *store.Hu
 	sh.TodoCount = stats.TotalTodos
 	sh.LiveRate = stats.EventsPerMin
 	return sh, stats
+}
+
+// Root serves GET / for everyone: an authenticated operator gets the Board (the working surface),
+// a logged-out visitor gets the public marketing Home page instead of a bare bounce to /login. The
+// route is mounted under auth.LoadHuman (injects the human when a live session is present, never
+// redirects), so the auth boundary is unchanged — every DATA route stays behind RequireHuman; only
+// the pre-auth face of / becomes a landing page rather than a redirect.
+// Governing: SPEC-0012 REQ "Screen Set and Routes" (GET / renders the Board for a human),
+// SPEC-0015 REQ "Application Shell And Navigation".
+func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
+	if _, ok := auth.FromContext(r.Context()); ok {
+		h.Board(w, r)
+		return
+	}
+	h.Home(w, r)
+}
+
+// Home renders the public marketing landing page (receive · verify · patch through) with the app's
+// own charm-web design language and day/night theme. It reads nothing from the store — it is a
+// static, unauthenticated surface — and renders the full-bleed home template (its own header/footer),
+// not the operator shell. Governing: ADR-0018 (charm-web design language).
+func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
+	h.render(w, "home", view{Landing: true, Title: "switchboard — receive · verify · patch through"})
 }
 
 // Login renders the public login page.

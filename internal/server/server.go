@@ -357,6 +357,17 @@ func newRouter(d routerDeps) chi.Router {
 		ar.With(maxBytes(64<<10)).Post("/auth/dev-login", d.authr.DevLogin)
 	})
 
+	// GET / is the one dual-mode surface. auth.LoadHuman injects the human when a live session is
+	// present but NEVER redirects, so the Root handler renders the operator Board for an
+	// authenticated human and the public marketing Home page for a logged-out visitor — the
+	// homepage, not a bare bounce to /login. Alongside /login this is the only web route reachable
+	// without a session, and it exposes nothing sensitive: the Home page is static, and an
+	// authenticated Board render still relies on the human LoadHuman just injected. Every data and
+	// mutation route stays behind RequireHuman in the group below.
+	// Governing: SPEC-0012 REQ "Screen Set and Routes", REQ "Authentication Boundary" (the human
+	// surface is session-gated; / adds a public landing face without opening any data route).
+	r.With(d.authr.LoadHuman).Get("/", d.webh.Root)
+
 	// Human web UI (requires an authenticated human; ADR-0001/008). Form bodies capped at 1 MiB;
 	// RequireCSRF guards every state-changing form with a per-session synchronizer token (SPEC-0008).
 	// Logout is a session-gated POST — never a GET — so it cannot be triggered cross-site.
@@ -371,9 +382,6 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Use(d.authr.RequireHuman)
 		pr.Use(humanRL.postMiddleware) // after RequireHuman: keyed by the authenticated human
 		pr.Use(d.authr.RequireCSRF)
-		// Governing: SPEC-0013 REQ "Information Architecture and Navigation" — GET / renders the
-		// Board; the agents screen moves to /agents (surfaced as "Endpoints" in the rail).
-		pr.Get("/", d.webh.Board)
 		// Todos view: the durable-queue table + detail drawer (SPEC-0013). GET /todos/{id} serves the
 		// drawer fragment (HTMX) or a standalone page (deep link / no-JS fallback).
 		pr.Get("/todos", d.webh.Todos)
