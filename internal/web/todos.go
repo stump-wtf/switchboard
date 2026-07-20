@@ -79,7 +79,11 @@ type panelView struct {
 // todoFilters is the canonical ordered set of filter chips (SPEC-0015: all/pending/claimed/done/failed).
 var todoFilters = []string{"all", "pending", "claimed", "done", "failed"}
 
-// normalizeFilter maps a query-param filter to a canonical pill key, defaulting to "all".
+// normalizeFilter maps a query-param filter to a canonical pill key, defaulting to "all". The four
+// A2A states (SPEC-0018) are intentionally not filter pills in story #58 — the pill set is SPEC-0015's
+// fixed all/pending/claimed/done/failed surface — so an A2A state passed here falls through to "all"
+// rather than a dedicated view; dedicated A2A-state filtering is left to the A2A feature stories.
+// Governing: SPEC-0018 REQ "Task State Machine Extension".
 func normalizeFilter(f string) string {
 	switch strings.ToLower(strings.TrimSpace(f)) {
 	case "pending":
@@ -315,6 +319,11 @@ func (h *Handler) todoRowFromItem(ctx context.Context, it store.TodoItem, oob, f
 		Flash:       flash,
 		OOB:         oob,
 	}
+	// Only an actively-`claimed` todo renders the live lease countdown. The A2A interrupt states
+	// (input-required/auth-required, SPEC-0018) retain their lease and owner but are paused waiting
+	// on the client, so a ticking "lease expires in Ns" would misrepresent them as actively worked;
+	// they render as their own state chip (row.State) with no countdown until ResumeTodo returns
+	// them to `claimed`. Governing: SPEC-0018 REQ "Task State Machine Extension".
 	if it.State == "claimed" && it.LeaseExpiresAt != nil {
 		secs := int(time.Until(*it.LeaseExpiresAt).Seconds())
 		if secs < 0 {

@@ -11,10 +11,15 @@ import (
 // Retention bounds both time and size: a single transaction prunes over-age rows and then trims
 // whatever still exceeds the row cap. Either bound alone leaves the other unbounded (design.md
 // "Hybrid age + row-cap retention"). Only the growth-prone, append-mostly tables are pruned —
-// events and terminal todos (done, or failed dead-letters with no retry window). Pending and
-// claimed todos are the live queue, and a parked retry (failed with an open next_retry_at window,
-// SPEC-0003 scheduled backoff) is live work awaiting re-queue — none of these are ever touched by
-// retention, so pruning can never lose in-flight or scheduled work.
+// events and terminal todos (done; failed dead-letters with no retry window; and the A2A terminal
+// states canceled and rejected, SPEC-0018). Pending, claimed, and the A2A interrupt states
+// (input-required/auth-required) are the live queue, and a parked retry (failed with an open
+// next_retry_at window, SPEC-0003 scheduled backoff) is live work awaiting re-queue — none of these
+// are ever touched by retention, so pruning can never lose in-flight or scheduled work.
+//
+// Governing: SPEC-0018 REQ "Task State Machine Extension" — canceled/rejected are terminal records
+// like done/failed and MUST age/cap out too, or they would accumulate unbounded; the interrupt
+// states are live and are excluded exactly like claimed.
 
 // PruneResult reports how many rows retention removed, per surface.
 type PruneResult struct {
@@ -64,7 +69,7 @@ func (s *Store) Prune(ctx context.Context) (PruneResult, error) {
 	// so it is excluded too. Live work is untouched regardless of age.
 	if res.TodosAged, err = exec(ctx, tx, `
 		DELETE FROM todos
-		WHERE state IN ('done', 'failed')
+		WHERE state IN ('done', 'failed', 'canceled', 'rejected')
 		  AND next_retry_at IS NULL
 		  AND updated_at < now() - make_interval(days => $1)`, maxAgeDays); err != nil {
 		return res, err
@@ -78,14 +83,15 @@ func (s *Store) Prune(ctx context.Context) (PruneResult, error) {
 		)`, maxRows); err != nil {
 		return res, err
 	}
-	// Cap: trim terminal todos beyond the cap. Only done/failed rows with no open retry window are
-	// eligible, so the pending/claimed queue and parked retries never count against — nor are
-	// trimmed by — the cap.
+	// Cap: trim terminal todos beyond the cap. Only done/failed/canceled/rejected rows with no open
+	// retry window are eligible, so the pending/claimed/interrupt live queue and parked retries never
+	// count against — nor are trimmed by — the cap. Governing: SPEC-0018 REQ "Task State Machine
+	// Extension".
 	if res.TodosCapped, err = exec(ctx, tx, `
 		DELETE FROM todos
 		WHERE id IN (
 			SELECT id FROM todos
-			WHERE state IN ('done', 'failed') AND next_retry_at IS NULL
+			WHERE state IN ('done', 'failed', 'canceled', 'rejected') AND next_retry_at IS NULL
 			ORDER BY updated_at DESC, id DESC OFFSET $1
 		)`, maxRows); err != nil {
 		return res, err

@@ -85,7 +85,7 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 		"id=\"sb-td-td_1\"", "id=\"sb-td-td_2\"", // stable card ids for OOB lane movement
 		"sse-connect=\"/events\"",                                                                  // one authenticated stream per page
 		"sse-swap=\"lane_received,lane_rejected,lane_deduped\"",                                    // page-local sink: ephemeral received lane
-		"sse-swap=\"todo_created,todo_claimed,todo_completed,todo_failed,todo_resurfaced,counts\"", // OOB sink
+		"sse-swap=\"todo_created,todo_claimed,todo_completed,todo_failed,todo_resurfaced,todo_canceled,todo_rejected,todo_input_required,todo_auth_required,counts\"", // OOB sink (incl. the four A2A states, SPEC-0018)
 		"hx-headers='{\"X-CSRF-Token\":\"tok\"}'",                                                  // CSRF injected into HTMX requests
 		"aria-live=\"polite\"",                                                                     // live regions present in DOM
 		"id=\"sb-overlay\"",                                                                        // overlay slot present-but-empty

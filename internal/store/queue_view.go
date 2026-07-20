@@ -21,6 +21,13 @@ import (
 
 // TodoCounts are the per-state todo counts backing the Todos view filter pills (All / Pending /
 // Claimed / Done / Failed), each rendered live from the database.
+//
+// The four A2A states (canceled/rejected/input-required/auth-required, SPEC-0018) are deliberately
+// NOT broken out here: the filter-pill set is the fixed Board surface defined by SPEC-0013, which
+// story #58 (state-machine + migration) does not extend — dedicated A2A-state UI is the province of
+// the A2A feature stories. They are still included in `All` (count(*) has no state filter), so no
+// A2A-state todo is dropped from the total; it simply has no dedicated pill yet.
+// Governing: SPEC-0018 REQ "Task State Machine Extension" (audit of every state-consuming site).
 type TodoCounts struct {
 	All     int
 	Pending int
