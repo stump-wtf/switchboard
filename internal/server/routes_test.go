@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/joestump/switchboard/internal/a2a"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/ingest"
@@ -52,6 +53,7 @@ func newTestRouter(t *testing.T) chi.Router {
 		webh:  webh,
 		ing:   ingest.New(st, hub, log, ingest.Config{}),
 		mcp:   mcph,
+		a2a:   a2a.New(st, log),
 		oauth: oauthsrv.New(st, cfg.BaseURL, log),
 		ping:  func(context.Context) error { return nil },
 		log:   log,
@@ -209,6 +211,14 @@ func TestEveryRouteClassifiedAndAnonymousRejected(t *testing.T) {
 			}
 		case strings.HasPrefix(route, "/mcp/"):
 			// Vended MCP surface (ADR-0017; SPEC-0014): bearer-credential auth, no Authorization header → 401.
+			rec := anonRequest(t, r, method, routePath(route))
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("%s: anonymous got %d, want 401", key, rec.Code)
+			}
+		case strings.HasPrefix(route, "/a2a/{endpoint}"):
+			// Native A2A task surface (ADR-0021; SPEC-0018): the SAME vended-endpoint bearer credential
+			// the MCP surface uses gates it, so an anonymous request (no Authorization header) is
+			// rejected with 401 — identically to the MCP surface and to an unauthenticated create_for.
 			rec := anonRequest(t, r, method, routePath(route))
 			if rec.Code != http.StatusUnauthorized {
 				t.Errorf("%s: anonymous got %d, want 401", key, rec.Code)
