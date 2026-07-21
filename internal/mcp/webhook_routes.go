@@ -163,7 +163,8 @@ func (h *Handler) addWebhookRouteTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[
 // list names endpoint ids that a friend consented to receive work at, so it stays inside the webhook
 // owner's tenant. Target authorization is NOT re-checked per row — a friendship revoked after the
 // fact should be visible here so the owner can see and remove the now-dead route, and the delivery
-// path (ResolveWebhookTargets → CreateEventTodos) is where a revoked endpoint stops mattering.
+// path is where it stops mattering: ResolveWebhookTargets re-evaluates endpoint liveness and the
+// friend edge on EVERY delivery, so a route whose grant has lapsed is listed but never delivered to.
 func (h *Handler) listWebhookRoutesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[listWebhookRoutesIn, listWebhookRoutesOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in listWebhookRoutesIn) (*sdk.CallToolResult, listWebhookRoutesOut, error) {
 		webhookID := strings.TrimSpace(in.WebhookID)
@@ -211,6 +212,15 @@ func (h *Handler) removeWebhookRouteTool(ep store.AuthEndpoint) sdk.ToolHandlerF
 		}
 		if _, err := h.ownedWebhook(ctx, ep, "remove_webhook_route", webhookID); err != nil {
 			return nil, removeWebhookRouteOut{}, err
+		}
+		// A malformed target id is an absent route, not a server fault. This verb deliberately skips
+		// authorizeRouteTarget (see above), which is where the isUUID guard otherwise lives, so
+		// without this check a non-uuid string reaches a uuid-typed predicate as a 22P02 and surfaces
+		// as codeInternal + an Error log line — agent-triggerable log spam on every call. Removing a
+		// route that cannot exist satisfies the verb's stated end condition, so report the same
+		// idempotent success the store's no-op DELETE reports for an unknown-but-well-formed id.
+		if !store.IsUUID(target) {
+			return nil, removeWebhookRouteOut{WebhookID: webhookID, TargetEndpointID: target, Removed: true}, nil
 		}
 		if err := h.store.RemoveWebhookRoute(ctx, webhookID, target); err != nil {
 			return nil, removeWebhookRouteOut{}, h.mapWebhookErr(ep, "remove_webhook_route", err)

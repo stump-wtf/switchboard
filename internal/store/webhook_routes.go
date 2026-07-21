@@ -79,11 +79,36 @@ func (s *Store) ListWebhookRoutes(ctx context.Context, webhookID string) ([]Webh
 }
 
 // ResolveWebhookTargets returns the distinct set of endpoint ids a webhook's deliveries fan out to:
-// the union of {ownerEndpointID} and every explicit webhook_routes target, de-duplicated. This is
-// the delivery-path read the self-managed receiver calls once per delivery to decide how many
-// todos to create. An empty slice (owner not resolvable) means no work is produced — the caller
-// SHOULD treat that as a misconfiguration and 503 rather than silently dropping the delivery.
-// Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
+// the union of {ownerEndpointID} and every explicit webhook_routes target that is STILL AUTHORIZED,
+// de-duplicated. This is the delivery-path read the self-managed receiver calls once per delivery to
+// decide how many todos to create. An empty slice (owner not resolvable) means no work is produced —
+// the caller SHOULD treat that as a misconfiguration and 503 rather than silently dropping the
+// delivery.
+//
+// Authorization is re-evaluated HERE, on every delivery, not merely at grant time. A webhook_routes
+// row is a standing grant, and the two facts it rests on are both revocable after the fact:
+//
+//   - the target endpoint may have been revoked (or expired), and
+//   - the approved friend edge that permitted a CROSS-HUMAN target may have been revoked.
+//
+// Nothing deletes the route row when either happens: RevokeFriendEdge and RevokeEndpoint only flip
+// state to 'revoked', so the ON DELETE CASCADE on target_endpoint_id never fires, and the webhook's
+// owner (the only principal who may call remove_webhook_route) is precisely the human who has no
+// incentive to. Without this re-check a friendship torn down months ago would keep minting todos,
+// carrying the sender's raw payloads, into a tenant that withdrew consent — unbounded and with no
+// off switch on the receiving side. That directly contradicts SPEC-0010's "instant, total" revocation,
+// and it is the guarantee list_webhook_routes/remove_webhook_route already cite when they skip target
+// re-authorization ("the delivery path is where a revoked endpoint stops mattering"). This is that
+// place; the claim is now true.
+//
+// A target that fails the re-check is skipped silently rather than failing the delivery: the other
+// targets' work is still valid, and a revoked friendship is a normal end state, not an error the
+// producer can act on. The owner endpoint is seeded unconditionally — a webhook's deliveries always
+// belong to the endpoint that owns it, and the receiver has already resolved that endpoint to accept
+// the request at all.
+//
+// Governing: ADR-0022, ADR-0010, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)",
+// SPEC-0010 REQ "Per-Direction, Revocable, Non-Transitive Edges".
 func (s *Store) ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error) {
 	// The owner endpoint is always a target. Explicit routes may add more. De-dup preserving the
 	// owner first so the first todo is always the owner's (stable ordering aids testing).
@@ -99,8 +124,34 @@ func (s *Store) ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpo
 		seen[ownerEndpointID] = struct{}{}
 		out = append(out, ownerEndpointID)
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT target_endpoint_id::text FROM webhook_routes WHERE webhook_id = $1`, webhookID)
+	// The route survives only while BOTH of its underlying facts still hold. Expressed as one
+	// statement so the check is atomic with the read and cannot drift from it:
+	//
+	//   - the target endpoint is live: state='active' AND not past its expiry. Expiry is checked
+	//     directly rather than trusting the state flag, because ExpireEndpoints only flips the row
+	//     on a 30s reaper tick — EndpointByCredHash already refuses a passed expiry ahead of the
+	//     reaper for exactly this reason, and delivery must not be routable in that window either.
+	//   - the target is same-human as the webhook's owner, OR an approved friend edge still runs
+	//     from the webhook owner's human TO the target's human. The direction matches
+	//     FriendEdgeAuthorizesDelivery: an approved A→B edge means "A may hand work to B".
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.target_endpoint_id::text
+		FROM webhook_routes r
+		JOIN endpoints te ON te.id = r.target_endpoint_id
+		JOIN agents    ta ON ta.id = te.agent_id
+		JOIN endpoint_webhooks w ON w.id = r.webhook_id
+		JOIN endpoints oe ON oe.id = w.endpoint_id
+		JOIN agents    oa ON oa.id = oe.agent_id
+		WHERE r.webhook_id = $1
+		  AND te.state = 'active'
+		  AND (te.expires_at IS NULL OR te.expires_at > now())
+		  AND (
+		        ta.owner_human_id = oa.owner_human_id
+		     OR EXISTS (SELECT 1 FROM friend_edges fe
+		                 WHERE fe.from_human = oa.owner_human_id
+		                   AND fe.to_human   = ta.owner_human_id
+		                   AND fe.state      = 'approved')
+		  )`, webhookID)
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve webhook targets: %w", err)
 	}
@@ -219,6 +270,12 @@ func (s *Store) FriendEdgeAuthorizesDelivery(ctx context.Context, fromHumanID, t
 	}
 	return ok, nil
 }
+
+// IsUUID is the exported form of isUUID, for callers outside this package that must reject a
+// malformed id BEFORE it reaches a uuid-typed predicate — e.g. the MCP verbs that skip the
+// store-side authorization reads where isUUID is otherwise applied. Same contract: no allocation,
+// no I/O, purely a shape check.
+func IsUUID(id string) bool { return isUUID(id) }
 
 // isUUID guards uuid-typed predicates against caller-supplied ids. Without it an empty or malformed
 // id reaches Postgres as a 22P02 cast error, which is itself a distinguishable signal (and a 500 on

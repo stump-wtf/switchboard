@@ -430,3 +430,46 @@ func TestGenericTokenRedeliveryDedup(t *testing.T) {
 		t.Fatal("distinct bodies must create distinct todos")
 	}
 }
+
+// grantFriendEdge records an APPROVED friend edge from fromHuman to toHuman, so a cross-human
+// webhook route between them is genuinely authorized.
+//
+// This exists because ResolveWebhookTargets re-evaluates authorization on EVERY delivery, not just
+// at grant time (ADR-0022, SPEC-0010 REQ "Per-Direction, Revocable, Non-Transitive Edges"): a
+// cross-human route with no approved edge is dropped from the fan-out. A fixture that wires such a
+// route with a bare AddWebhookRoute call is therefore not modelling a state the system can reach —
+// add_webhook_route refuses to create it (mcp.authorizeRouteTarget) — and any fan-out it asserted
+// would be testing a delivery that production would never make. Seeding the edge keeps these tests
+// cross-HUMAN (which is the point: the tenant boundary is between humans) while making the route
+// one the authorization layer would actually have granted.
+//
+// The edge direction is requester→target, matching FriendEdgeAuthorizesDelivery: an approved
+// fromHuman→toHuman edge means "fromHuman may hand work to toHuman", which is exactly what routing
+// fromHuman's webhook into toHuman's endpoint does.
+func grantFriendEdge(t *testing.T, st *store.Store, ctx context.Context, label, fromHuman, toHuman string) {
+	t.Helper()
+	edge, err := st.CreateFriendRequest(ctx, store.CreateFriendRequestParams{
+		FromPersona: "from@" + label, ToPersona: "to@" + label,
+		FromHuman: fromHuman, ToHuman: toHuman,
+		RequestedQueues: []string{"reviews"}, RequestedVerbs: []string{"create_for"},
+	})
+	if err != nil {
+		t.Fatalf("create friend request (%s): %v", label, err)
+	}
+	// Approval is the vend, so it needs one of the TARGET human's agents to mint onto. This agent is
+	// incidental to the fan-out under test — the route targets an endpoint seeded separately.
+	ag, err := st.CreateAgent(ctx, toHuman, "friend-agent-"+label, "")
+	if err != nil {
+		t.Fatalf("create friend vend agent (%s): %v", label, err)
+	}
+	slug, err := store.MintSlug(ag.Name)
+	if err != nil {
+		t.Fatalf("mint friend slug (%s): %v", label, err)
+	}
+	if _, _, err := st.ApproveFriendRequest(ctx, store.ApproveFriendRequestParams{
+		EdgeID: edge.ID, OwnerHumanID: toHuman, AgentID: ag.ID,
+		CredentialHash: "friendhash-" + label, CredentialPrefix: "sbk_fr", Slug: slug,
+	}); err != nil {
+		t.Fatalf("approve friend edge (%s): %v", label, err)
+	}
+}

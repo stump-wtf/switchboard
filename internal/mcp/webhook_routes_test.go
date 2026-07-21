@@ -389,16 +389,60 @@ func TestAddWebhookRouteCrossHumanRequiresApprovedFriendEdge(t *testing.T) {
 		t.Fatalf("targets after approved route = %v, want [%s %s]", got, f.epA1, f.epB)
 	}
 
-	// 4. Revoked — terminal. The existing route survives (removing it is the owner's call, and the
-	// delivery path is where a dead endpoint stops mattering), but NO NEW route may be granted.
+	// 4. Revoked — terminal, and revocation must actually STOP DELIVERY, not merely block new
+	// grants. The route ROW deliberately survives (removing it is the webhook owner's call, and B
+	// cannot reach it — remove_webhook_route requires webhook ownership, which is A's), so the row
+	// surviving is exactly why the delivery path has to re-check: if it did not, B's withdrawal of
+	// consent would be cosmetic and A's payloads would keep landing in B's tenant forever.
 	if _, err := f.st.RevokeFriendEdge(ctx, edgeID, f.humanB); err != nil {
 		t.Fatalf("revoke friend edge: %v", err)
 	}
+	if routes, err := f.st.ListWebhookRoutes(ctx, f.webhookA); err != nil || len(routes) != 1 {
+		t.Fatalf("the route row must survive revocation (it is the owner's to remove): %v, %v", routes, err)
+	}
+	// The load-bearing assertion: the surviving row is no longer a delivery target.
+	if got := mustTargets(t, ctx, f, f.webhookA); !slices.Equal(got, []string{f.epA1}) {
+		t.Fatalf("after revocation the fan-out must drop B, got %v want [%s]", got, f.epA1)
+	}
+
+	// And no NEW route may be granted either.
 	if err := f.st.RemoveWebhookRoute(ctx, f.webhookA, f.epB); err != nil {
 		t.Fatalf("remove route: %v", err)
 	}
 	callErr(t, ctx, cs, "add_webhook_route", args, "forbidden")
 	assertNoRoute(t, ctx, f, f.webhookA, f.epB)
+}
+
+// TestResolveWebhookTargetsDropsRevokedEndpoint is the other half of the delivery-path re-check:
+// a route whose FRIENDSHIP is intact but whose TARGET ENDPOINT has been revoked must also stop
+// receiving deliveries. Revocation is "instant and total" (ADR-0008/SPEC-0007), and a revoked
+// endpoint's credential no longer resolves — so continuing to mint todos into it would pile up work
+// that no principal can ever list, claim, or drain. Nothing deletes the route row on revoke (the FK
+// cascade fires only on endpoint row DELETION, and revoke merely flips state), so this can only be
+// enforced at resolve time. Governing: ADR-0022, SPEC-0007 REQ "Instant, Total Revocation".
+func TestResolveWebhookTargetsDropsRevokedEndpoint(t *testing.T) {
+	pool, ctx := routeTestPool(t)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	f := newRouteFixture(t, ctx, pool)
+
+	// A routes its own webhook to a second endpoint of its own — same human, so no friend edge is
+	// involved and this isolates endpoint liveness as the only variable.
+	if err := f.st.AddWebhookRoute(ctx, f.webhookA, f.epA2, f.humanA); err != nil {
+		t.Fatalf("seed route: %v", err)
+	}
+	// Positive control: while the endpoint is active it IS a target. Without this, a resolver that
+	// returned only the owner in every case would pass the negative assertion below vacuously.
+	if got := mustTargets(t, ctx, f, f.webhookA); !slices.Equal(got, []string{f.epA1, f.epA2}) {
+		t.Fatalf("active target must be delivered to, got %v want [%s %s]", got, f.epA1, f.epA2)
+	}
+
+	if err := f.st.RevokeEndpoint(ctx, f.epA2, f.humanA); err != nil {
+		t.Fatalf("revoke target endpoint: %v", err)
+	}
+	if got := mustTargets(t, ctx, f, f.webhookA); !slices.Equal(got, []string{f.epA1}) {
+		t.Fatalf("a revoked endpoint must not be a delivery target, got %v want [%s]", got, f.epA1)
+	}
 }
 
 // TestAddWebhookRouteWrongDirectionEdgeForbidden is the privilege-escalation guard. B asks to hand
