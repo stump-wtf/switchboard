@@ -22,10 +22,16 @@ import (
 
 // testRegistryIngest builds an Ingest whose store the test can also seed registry rows through,
 // plus the pool for row-level asserts. Same DB isolation as testIngest (ingestTestPool).
+//
+// The registry decides a provider's SECRET and QUEUE; it does not decide tenancy. An
+// operator-configured receiver still needs an owning endpoint for the todo it mints (ADR-0022;
+// todos.endpoint_id NOT NULL), so the legacy endpoint is seeded and wired here exactly as in
+// testIngest — otherwise the 202 assertions below would come back 503.
 func testRegistryIngest(t *testing.T, cfg Config) (*Ingest, *store.Store, *pgxpool.Pool, context.Context) {
 	t.Helper()
 	pool, ctx := ingestTestPool(t)
 	st := store.New(pool)
+	cfg.LegacyEndpointID = seedLegacyEndpoint(t, st, ctx)
 	ing := New(st, NewHub(), slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
 	return ing, st, pool, ctx
 }
