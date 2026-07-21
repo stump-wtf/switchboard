@@ -87,6 +87,17 @@ type ToolStore interface {
 	ListWebhooks(ctx context.Context, endpointID string) ([]store.Webhook, error)
 	RotateWebhookSecret(ctx context.Context, id, endpointID, newSecret, newIngestToken string) (store.Webhook, error)
 	DeleteWebhook(ctx context.Context, id, endpointID string) error
+	// ADR-0022 webhook route fan-out (webhook_routes.go): an agent points one of its own webhooks at
+	// additional target endpoints, and every delivery mints one endpoint-owned todo per target. The
+	// three reads below are the authorization substrate the verb layer enforces ownership with —
+	// AddWebhookRoute itself documents that its CALLER owns that check.
+	// Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)", ADR-0010.
+	AddWebhookRoute(ctx context.Context, webhookID, targetEndpointID, grantedByHumanID string) error
+	RemoveWebhookRoute(ctx context.Context, webhookID, targetEndpointID string) error
+	ListWebhookRoutes(ctx context.Context, webhookID string) ([]store.WebhookRoute, error)
+	WebhookOwnerEndpointForHuman(ctx context.Context, webhookID, ownerHumanID string) (string, error)
+	EndpointOwnerHuman(ctx context.Context, endpointID string) (string, error)
+	FriendEdgeAuthorizesDelivery(ctx context.Context, fromHumanID, toHumanID string) (bool, error)
 	// SettingString backs replay target resolution (SPEC-0005 REQ "Replay Safety"): the
 	// `replay_default_target` fallback and the `replay_allowed_targets` allowlist both read here.
 	SettingString(ctx context.Context, key, def string) (string, error)
@@ -353,6 +364,9 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	// The SPEC-0006 webhook self-management verbs (create/list/rotate/delete_webhook) share the
 	// session and the same allowlist-filtered registration (webhooks.go).
 	h.registerWebhookTools(srv, ep)
+	// The ADR-0022 routing verbs (add/list/remove_webhook_route) share the webhook verb family and
+	// the same allowlist-filtered registration (webhook_routes.go).
+	h.registerWebhookRouteTools(srv, ep)
 	h.registerEventResources(srv, ep)
 	srv.AddReceivingMiddleware(h.scopeGuard(ep))
 	return srv

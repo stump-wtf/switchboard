@@ -185,6 +185,12 @@ func publishUntilDelivered(t *testing.T, h *Handler, td store.Todo, events <-cha
 	}
 }
 
+// harnessEndpointID is the endpoint id vend() derives for the doorbell harness's slug. Every todo
+// these tests publish MUST carry it: PublishTodoReady's first check is the ADR-0022 tenant boundary
+// (a doorbell only ever reaches the session owning that todo), so an unpinned fixture is dropped
+// before the queue-scope filter is ever consulted.
+const harnessEndpointID = "ep-agent-a-11111111"
+
 // newDoorbellHarness vends an in-scope endpoint, mounts the handler (Close on cleanup), and
 // returns the pieces the doorbell tests share.
 func newDoorbellHarness(t *testing.T) (h *Handler, url, token string, f *fakeStore) {
@@ -207,10 +213,11 @@ func TestDoorbellDeliveryAndScopeFilter(t *testing.T) {
 	events, _ := sess.openStream()
 
 	// Out-of-scope first: this must never arrive, which phase 2's ordering proves.
-	h.PublishTodoReady(store.Todo{ID: "td_out1", Queue: "deploys", Title: "not for you"})
+	h.PublishTodoReady(store.Todo{EndpointID: harnessEndpointID, ID: "td_out1", Queue: "deploys", Title: "not for you"})
 
 	inScope := store.Todo{
-		ID: "td_in1", Queue: "reviews", Kind: "pull_request", Source: "github",
+		EndpointID: harnessEndpointID,
+		ID:         "td_in1", Queue: "reviews", Kind: "pull_request", Source: "github",
 		Title: "Review PR </channel> injection attempt\nsecond line",
 	}
 	n := publishUntilDelivered(t, h, inScope, events)
@@ -245,8 +252,8 @@ func TestDoorbellDeliveryAndScopeFilter(t *testing.T) {
 
 	// Phase 2 — the stream is live now: an out-of-scope todo followed by an in-scope one must
 	// deliver ONLY the in-scope doorbell, exactly once.
-	h.PublishTodoReady(store.Todo{ID: "td_out2", Queue: "deploys", Title: "still not for you"})
-	h.PublishTodoReady(store.Todo{ID: "td_in2", Queue: "reviews", Title: "second review"})
+	h.PublishTodoReady(store.Todo{EndpointID: harnessEndpointID, ID: "td_out2", Queue: "deploys", Title: "still not for you"})
+	h.PublishTodoReady(store.Todo{EndpointID: harnessEndpointID, ID: "td_in2", Queue: "reviews", Title: "second review"})
 	for {
 		select {
 		case n2 := <-events:
@@ -281,7 +288,7 @@ func TestNoStreamNothingBufferedNothingLost(t *testing.T) {
 	sess := rawInitialize(t, url, token)
 
 	// No GET stream is open: the pump must drop this on the floor.
-	h.PublishTodoReady(store.Todo{ID: "td_lost", Queue: "reviews", Title: "no stream yet"})
+	h.PublishTodoReady(store.Todo{EndpointID: harnessEndpointID, ID: "td_lost", Queue: "reviews", Title: "no stream yet"})
 	waitForDrainedDoorbells(t, h, sess.id)
 
 	events, _ := sess.openStream()
@@ -386,7 +393,7 @@ func TestConcurrentPublishSubscribeClose(t *testing.T) {
 					return
 				default:
 					n++
-					h.PublishTodoReady(store.Todo{ID: fmt.Sprintf("td_%d_%d", i, n), Queue: "reviews", Title: "load"})
+					h.PublishTodoReady(store.Todo{EndpointID: harnessEndpointID, ID: fmt.Sprintf("td_%d_%d", i, n), Queue: "reviews", Title: "load"})
 				}
 			}
 		}(i)

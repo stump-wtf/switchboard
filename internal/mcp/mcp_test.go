@@ -98,7 +98,7 @@ func (f *fakeStore) revoke(token string) {
 	delete(f.byHash, cred.Hash(token))
 }
 
-func (f *fakeStore) ListTodos(_ context.Context, queues []string, state string, limit int) ([]store.Todo, error) {
+func (f *fakeStore) ListTodos(_ context.Context, endpointID string, queues []string, state string, limit int) ([]store.Todo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
@@ -113,6 +113,9 @@ func (f *fakeStore) ListTodos(_ context.Context, queues []string, state string, 
 	}
 	var out []store.Todo
 	for _, t := range f.todos {
+		if t.EndpointID != "" && t.EndpointID != endpointID {
+			continue
+		}
 		if inQ[t.Queue] && (state == "" || t.State == state) {
 			out = append(out, t)
 		}
@@ -124,26 +127,26 @@ func (f *fakeStore) ListTodos(_ context.Context, queues []string, state string, 
 	return out, nil
 }
 
-func (f *fakeStore) GetTodo(_ context.Context, id string) (store.Todo, error) {
+func (f *fakeStore) GetTodo(_ context.Context, endpointID, id string) (store.Todo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return store.Todo{}, f.failErr
 	}
-	t, ok := f.todos[id]
+	t, ok := f.scopedTodo(endpointID, id)
 	if !ok {
 		return store.Todo{}, store.ErrNotFound
 	}
 	return t, nil
 }
 
-func (f *fakeStore) ClaimTodo(_ context.Context, id, owner string, ttl time.Duration) (store.Todo, error) {
+func (f *fakeStore) ClaimTodo(_ context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return store.Todo{}, f.failErr
 	}
-	t, ok := f.todos[id]
+	t, ok := f.scopedTodo(endpointID, id)
 	if !ok {
 		return store.Todo{}, store.ErrNotFound
 	}
@@ -162,13 +165,13 @@ func (f *fakeStore) ClaimTodo(_ context.Context, id, owner string, ttl time.Dura
 	return t, nil
 }
 
-func (f *fakeStore) HeartbeatTodo(_ context.Context, id, owner string, ttl time.Duration) (store.Todo, error) {
+func (f *fakeStore) HeartbeatTodo(_ context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return store.Todo{}, f.failErr
 	}
-	t, ok := f.todos[id]
+	t, ok := f.scopedTodo(endpointID, id)
 	if !ok {
 		return store.Todo{}, store.ErrNotFound
 	}
@@ -181,13 +184,13 @@ func (f *fakeStore) HeartbeatTodo(_ context.Context, id, owner string, ttl time.
 	return t, nil
 }
 
-func (f *fakeStore) CompleteTodo(_ context.Context, id, owner string, result []byte) (store.Todo, error) {
+func (f *fakeStore) CompleteTodo(_ context.Context, endpointID, id, owner string, result []byte) (store.Todo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return store.Todo{}, f.failErr
 	}
-	t, ok := f.todos[id]
+	t, ok := f.scopedTodo(endpointID, id)
 	if !ok {
 		return store.Todo{}, store.ErrNotFound
 	}
@@ -200,13 +203,13 @@ func (f *fakeStore) CompleteTodo(_ context.Context, id, owner string, result []b
 	return t, nil
 }
 
-func (f *fakeStore) FailTodo(_ context.Context, id, owner string, result []byte) (store.Todo, error) {
+func (f *fakeStore) FailTodo(_ context.Context, endpointID, id, owner string, result []byte) (store.Todo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return store.Todo{}, f.failErr
 	}
-	t, ok := f.todos[id]
+	t, ok := f.scopedTodo(endpointID, id)
 	if !ok {
 		return store.Todo{}, store.ErrNotFound
 	}
