@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -120,6 +121,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		SlackQueue:   os.Getenv("SWITCHBOARD_SLACK_QUEUE"),
 		Generic:      generic,
 		DevLogin:     cfg.DevLogin,
+		// INTERIM (PR 2): the operator-configured receivers and the queue adapters have no vended
+		// endpoint of their own, but every todo must name exactly one owner (ADR-0022). The
+		// operator states it once here rather than having it derived from a queue name.
+		LegacyEndpointID: os.Getenv("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID"),
 	}.Normalized()
 	ing := ingest.New(st, hub, log, icfg)
 	// Ephemeral received-lane instrumentation (SPEC-0015 REQ "Patch Panel Board"): the receivers
@@ -169,12 +174,21 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// todo_ready LISTEN loop (SPEC-0004 "In-Database Wakeups via LISTEN/NOTIFY"): the consumer
 	// for the pg_notify the store already emits on every committed enqueue. Each notification
 	// nudges the web SSE hub (count regions re-render from the database) and re-rings the MCP
-	// channel doorbell for push-eligible pending todos on that queue — so wakeups no longer
-	// depend on this process's HTTP-path store hooks alone. Context-managed like the reaper;
-	// reconnects with backoff inside (listen.go).
-	go listenTodoReady(ctx, cfg.DatabaseURL, log, func(nctx context.Context, queue string) {
+	// channel doorbell for push-eligible pending todos owned by the endpoint the notification
+	// names — so wakeups no longer depend on this process's HTTP-path store hooks alone.
+	// Context-managed like the reaper; reconnects with backoff inside (listen.go).
+	//
+	// The payload is "<endpoint_id>:<queue>" (store.TodoReadyPayload, ADR-0022). nudgeDoorbells
+	// parses it and scopes its read to that endpoint. The web SSE nudge wants only the queue name:
+	// its count regions re-render from the database under the viewing human's own session scope, so
+	// it is told WHICH queue moved, never whose todo moved.
+	go listenTodoReady(ctx, cfg.DatabaseURL, log, func(nctx context.Context, payload string) {
+		queue := payload
+		if _, after, ok := strings.Cut(payload, ":"); ok {
+			queue = after
+		}
 		webh.PublishQueueNudge(queue)
-		nudgeDoorbells(nctx, st, doorbells, mcph.PublishTodoReady, queue, log)
+		nudgeDoorbells(nctx, st, doorbells, mcph.PublishTodoReady, payload, log)
 	})
 
 	// Pull-adapter poll loops (ADR-0014; SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety"):
@@ -186,7 +200,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// live on registerQueueAdapters). closeAdapters releases the shared broker client and runs (via
 	// defer, LIFO) only after the <-runnerDone join below — no worker outlives its client.
 	adapters := runner.New(st, log, runner.Options{})
-	closeAdapters, err := registerQueueAdapters(ctx, st, adapters, cfg.RedisURL, log)
+	closeAdapters, err := registerQueueAdapters(ctx, st, adapters, cfg.RedisURL, icfg.LegacyEndpointID, log)
 	if err != nil {
 		return err
 	}

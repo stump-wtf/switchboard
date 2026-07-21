@@ -208,7 +208,7 @@ func (h *Handler) FailTodo(w http.ResponseWriter, r *http.Request) {
 
 // RetryTodo re-queues a dead-lettered (failed) todo now. POST /todos/{id}/retry.
 func (h *Handler) RetryTodo(w http.ResponseWriter, r *http.Request) {
-	t, err := h.store.RetryTodo(r.Context(), chi.URLParam(r, "id"))
+	t, err := h.store.RetryTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"))
 	h.respondTodoAction(w, r, "RetryTodo", t, err)
 }
 
@@ -225,7 +225,7 @@ func (h *Handler) ExtendTodo(w http.ResponseWriter, r *http.Request) {
 // POST /todos/{id}/release. Governing: SPEC-0015 REQ "Todos View And Drawer" (Release).
 func (h *Handler) ReleaseTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.ReleaseTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID)
+	t, err := h.store.ReleaseTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID)
 	h.respondTodoAction(w, r, "ReleaseTodo", t, err)
 }
 

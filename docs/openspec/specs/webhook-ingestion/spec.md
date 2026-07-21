@@ -187,13 +187,42 @@ that routed fan-out to N endpoints dedups per-target independently.
   queue namespace) referencing that event, the todo is published to the hub if newly created, and
   the response is HTTP 202 with the todo id and queue
 
+The 202 body MUST represent the FULL set of todos the delivery produced, since a routed
+delivery yields N:
+
+```json
+{
+  "todos": [{"id": "td_…", "endpoint_id": "…", "queue": "reviews", "created": true}],
+  "created": 1,
+  "id": "td_…", "queue": "reviews",
+  "verified": true, "trust_mode": "signed"
+}
+```
+
+`id` and `queue` MUST name the OWNING endpoint's todo, which the resolved target order puts
+first — so an unrouted webhook (the common case) returns a body byte-identical to the
+pre-fan-out shape. `created` is the count of newly-minted todos; a wholly idempotent
+redelivery reports `0` while still returning the existing todos. `endpoint_id` is included
+per todo so a fan-out is auditable: the producer already knows the webhook it posted to, and
+the response is the only place the delivery says where the work actually landed.
+
+#### Scenario: Routed delivery reports every todo it created
+
+- **WHEN** a webhook routed to endpoints A and B receives one verified delivery
+- **THEN** the 202 body's `todos` array MUST hold two entries — one per target, each naming its
+  `endpoint_id` — with `created: 2`, and `id`/`queue` MUST name the owner endpoint A's todo
+
 ### Requirement: Deterministic Route Fan-Out (Token-Free)
 
 Governing: ADR-0022. A webhook MAY be routed to N target endpoints via the `webhook_routes` table.
 When a delivery arrives, the receiver MUST resolve the webhook's target endpoints and create **one
 todo per target endpoint**, each pinned to that target, in a single transaction with the event row
 (atomic across targets: all commit or none). If no routes are configured, the target set is the
-singleton `{webhook.endpoint_id}`. Routing is deterministic and **token-free**: once a route exists,
+singleton `{webhook.endpoint_id}`. If the resolved target set is EMPTY — the owning endpoint is not
+resolvable — the receiver MUST treat the delivery as a misconfiguration and answer HTTP 503 with
+nothing persisted, so the producer retries. It MUST NOT answer 202: a delivery that produces no work
+anywhere has been dropped, and reporting success for it hides the broken webhook indefinitely.
+Routing is deterministic and **token-free**: once a route exists,
 every delivery fans out server-side without any agent spending model tokens on a `create_for` call.
 Routes are populated by human-approved actions (friending, a future routing verb) — never by a
 per-delivery agent decision.
@@ -208,6 +237,12 @@ per-delivery agent decision.
 
 - **WHEN** a webhook with no rows in `webhook_routes` receives a delivery
 - **THEN** exactly one todo is created, pinned to the webhook's owning endpoint
+
+#### Scenario: Unresolvable target set is refused, not dropped
+
+- **WHEN** a delivery passes verification but the webhook resolves to no target endpoints
+- **THEN** the response MUST be HTTP 503, no event row and no todo MUST be persisted, and the
+  condition MUST be logged with the webhook id
 
 #### Scenario: Route fan-out is token-free
 

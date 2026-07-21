@@ -83,8 +83,18 @@ func (s *Store) ListWebhookRoutes(ctx context.Context, webhookID string) ([]Webh
 func (s *Store) ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error) {
 	// The owner endpoint is always a target. Explicit routes may add more. De-dup preserving the
 	// owner first so the first todo is always the owner's (stable ordering aids testing).
-	seen := map[string]struct{}{ownerEndpointID: {}}
-	out := []string{ownerEndpointID}
+	//
+	// An UNRESOLVABLE owner (empty id) is skipped rather than seeded: seeding it would return a
+	// one-element slice holding "", which reads as a target to every caller and only fails much
+	// later, inside createTodo, as a 500 on a delivery the contract says must be a 503. The empty
+	// return this function documents has to actually be reachable for the caller's misconfiguration
+	// branch to mean anything.
+	seen := map[string]struct{}{}
+	var out []string
+	if ownerEndpointID != "" {
+		seen[ownerEndpointID] = struct{}{}
+		out = append(out, ownerEndpointID)
+	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT target_endpoint_id::text FROM webhook_routes WHERE webhook_id = $1`, webhookID)
 	if err != nil {

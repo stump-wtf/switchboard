@@ -62,6 +62,15 @@ type RegistryConfig struct {
 	// to an identity derived from the DSN's ACL username ("redis acl: {user}", or "redis connection"
 	// for the default user) — the row may override it with a more descriptive label, never a secret.
 	TrustDetail string `json:"trust_detail,omitempty"`
+	// EndpointID is the vended endpoint that owns every todo this adapter enqueues — the row's
+	// tenant. Every todo is pinned to exactly one endpoint for its whole lifecycle (ADR-0022;
+	// todos.endpoint_id is NOT NULL), and a broker connection authenticates the ADAPTER, not a
+	// principal, so there is nothing per-message to derive an owner from. Empty falls back to the
+	// server's operator-designated legacy endpoint; with neither, the adapter does not start.
+	// Non-secret topology like the rest of this struct — an endpoint id is an identifier, not a
+	// credential (the endpoint's secret lives in the endpoints table).
+	// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+	EndpointID string `json:"endpoint_id,omitempty"`
 }
 
 // Factory builds registry-configured Redis adapters over one shared client. One factory per broker

@@ -232,13 +232,35 @@ observable via structured logging.
 Governing: ADR-0022. Every todo MUST carry a non-null `endpoint_id` foreign key to the
 `endpoints` table, pinning it to exactly one vended MCP endpoint for its entire lifecycle.
 The endpoint's owning human ([ADR-0008](../../../adrs/ADR-0008-human-principal-vended-endpoints.md))
-is the todo's tenant. Every todo query — `ListTodos`, `ClaimTodo`, `GetTodo`,
-`CompleteTodo`, `FailTodo`, `Heartbeat`, `ReapExpired`, `RequeueDueRetries`,
-`PendingDoorbellTodos` — MUST predicate on `endpoint_id`, accepting it from the
-authenticated endpoint context. A query scoped to endpoint A MUST NEVER return a todo
+is the todo's tenant. Every CALLER-FACING todo query — `ListTodos`, `ClaimTodo`,
+`ClaimNext`, `GetTodo`, `CompleteTodo`, `FailTodo`, `Heartbeat`, `ReleaseTodo`,
+`RetryTodo`, `PendingDoorbellTodos` — MUST predicate on `endpoint_id`, accepting it from
+the authenticated endpoint context. A query scoped to endpoint A MUST NEVER return a todo
 owned by endpoint B, even when both endpoints share a queue name (e.g. both target
 `"github"`). Queue name is a human-readable label and a secondary intra-endpoint filter;
 it is NOT a tenant boundary.
+
+An absent or malformed `endpoint_id` MUST behave as a scope that owns nothing —
+`ErrNotFound` for single-row and mutation paths, an empty result for list paths — and MUST
+NOT surface as a database type error. Otherwise the error shape itself distinguishes a
+broken scope from an empty one on the very paths whose purpose is to make foreign and
+nonexistent indistinguishable.
+
+**Operator twins.** Each caller-facing function MAY have an explicitly named
+`*AnyEndpoint` counterpart (`GetTodoAnyEndpoint`, `ClaimTodoAnyEndpoint`,
+`ReleaseTodoAnyEndpoint`, …) for the operator Board, which is authenticated by the owning
+human's session rather than an endpoint credential and legitimately sees every tenant. The
+agent-facing path MUST NOT call an `*AnyEndpoint` variant.
+
+**Background sweeps are exempt.** `ReapExpired` and `RequeueDueRetries` MUST NOT predicate
+on `endpoint_id`. They are timer-driven, system-wide maintenance with no authenticated
+endpoint context to scope TO — no caller, no credential, no tenant. They return no todo to
+any principal and move each row only within its own lifecycle (expired lease → pending or
+dead-letter; elapsed backoff → pending), so they can neither disclose nor transfer work
+across tenants; the wakeups they emit are already scoped by each row's own `endpoint_id`.
+Requiring a scope would make crash recovery and retry depend on someone being logged in,
+and scoping by iteration would reproduce an identical result set more slowly. The tenant
+boundary is enforced where work is READ and CLAIMED, not where it ages.
 
 The channel doorbell (`PublishTodoReady`, SPEC-0011) MUST filter sessions by `endpoint_id`
 as the primary scope check: a session minted under endpoint A MUST NEVER receive a
@@ -257,6 +279,20 @@ within an endpoint's grant, preserving SPEC-0011 "Scope-Filtered Fan-Out" at a f
 - **WHEN** a todo owned by endpoint A transitions to ready and a session for endpoint B
   (same queue name) is attached
 - **THEN** endpoint B's session MUST receive no notification for that todo
+
+#### Scenario: A foreign todo id is indistinguishable from a nonexistent one
+
+- **WHEN** endpoint B calls a scoped transition (`claim`, `release`, `retry`, …) with the
+  id of a todo owned by endpoint A, and separately with an id that was never minted
+- **THEN** both MUST return `ErrNotFound` — never `ErrConflict` for the foreign id, which
+  would let B probe which ids A owns
+
+#### Scenario: Background sweep spans tenants without a scope
+
+- **WHEN** the lease reaper or retry scheduler runs while todos of several endpoints are
+  eligible
+- **THEN** every eligible todo MUST be swept regardless of endpoint, and each resulting
+  wakeup MUST name the owning endpoint of the row that moved
 
 ### Requirement: Per-Endpoint Idempotency and Dedup
 

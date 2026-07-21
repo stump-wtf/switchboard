@@ -1,7 +1,7 @@
 // LISTEN todo_ready — the in-database wakeup loop.
 //
 // Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY". The store emits
-// pg_notify('todo_ready', <queue>) after every durably committed enqueue/re-surface
+// pg_notify('todo_ready', '<endpoint_id>:<queue>') after every durably committed enqueue/re-surface
 // (store.notifyTodoReady); this loop is the consumer that turns those notifications into wakeups:
 // the web SSE hub refreshes its count regions and the MCP channel doorbell re-rings for
 // push-eligible pending todos. Without it the wakeup chain depends entirely on same-process store
@@ -13,6 +13,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,7 +23,8 @@ import (
 )
 
 const (
-	// listenChannel is the store's enqueue-wakeup NOTIFY channel; the payload is the queue name.
+	// listenChannel is the store's enqueue-wakeup NOTIFY channel; the payload is
+	// "<endpoint_id>:<queue>" (store.TodoReadyPayload).
 	listenChannel = "todo_ready"
 	// listenBackoffMin/Max bound the reconnect backoff after the LISTEN connection drops:
 	// exponential from 1s, capped at 30s, reset after any healthy (listening) connection.
@@ -39,12 +41,12 @@ const (
 	doorbellGateTTL = time.Minute
 )
 
-// listenTodoReady holds one dedicated LISTEN connection and invokes onReady(queue) for every
+// listenTodoReady holds one dedicated LISTEN connection and invokes onReady(payload) for every
 // todo_ready notification. Context-managed: it exits when ctx is cancelled (graceful shutdown,
 // mirroring the reaper/pruner) and reconnects with capped exponential backoff when the connection
 // drops, because a dead listener would silently degrade every cross-process wakeup for the life
 // of the process. Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY".
-func listenTodoReady(ctx context.Context, dsn string, log *slog.Logger, onReady func(ctx context.Context, queue string)) {
+func listenTodoReady(ctx context.Context, dsn string, log *slog.Logger, onReady func(ctx context.Context, payload string)) {
 	backoff := listenBackoffMin
 	for ctx.Err() == nil {
 		listening, err := runListen(ctx, dsn, log, onReady)
@@ -70,7 +72,7 @@ func listenTodoReady(ctx context.Context, dsn string, log *slog.Logger, onReady 
 // connection or ctx dies. The returned bool reports whether the LISTEN was established (drives
 // backoff reset). The deferred Close uses a fresh context because ctx is typically already
 // cancelled on the shutdown path.
-func runListen(ctx context.Context, dsn string, log *slog.Logger, onReady func(ctx context.Context, queue string)) (bool, error) {
+func runListen(ctx context.Context, dsn string, log *slog.Logger, onReady func(ctx context.Context, payload string)) (bool, error) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return false, err
@@ -135,22 +137,43 @@ func (g *doorbellGate) firstAt(id string, now time.Time) bool {
 // *store.Store satisfies it. Narrowed to an interface so the nudge is unit-testable without a
 // database.
 type doorbellStore interface {
+	PendingDoorbellTodos(ctx context.Context, endpointID, queue string, limit int) ([]store.Todo, error)
 	PendingDoorbellTodosByQueue(ctx context.Context, queue string, limit int) ([]store.Todo, error)
 }
 
-// nudgeDoorbells re-rings the MCP channel doorbell for push-eligible pending todos on queue, in
-// response to a todo_ready notification. The store applies the SPEC-0011 sender gate in SQL
-// (verified delivery events only); the doorbellGate drops todos this process already pushed via
-// the store hook, so in the common single-process deployment the LISTEN path adds no duplicate
-// noise, while a todo enqueued elsewhere still wakes local sessions. Errors are logged and
-// dropped — the durable queue is the ledger, so the todo stays claimable by pull.
-func nudgeDoorbells(ctx context.Context, st doorbellStore, gate *doorbellGate, publish func(store.Todo), queue string, log *slog.Logger) {
+// nudgeDoorbells re-rings the MCP channel doorbell for push-eligible pending todos named by one
+// todo_ready notification. The store applies the SPEC-0011 sender gate in SQL (verified delivery
+// events only); the doorbellGate drops todos this process already pushed via the store hook, so in
+// the common single-process deployment the LISTEN path adds no duplicate noise, while a todo
+// enqueued elsewhere still wakes local sessions. Errors are logged and dropped — the durable queue
+// is the ledger, so the todo stays claimable by pull.
+//
+// payload is "<endpoint_id>:<queue>" (store.TodoReadyPayload). The read is scoped to that ONE
+// endpoint: a queue-only read pulled every tenant's pending rows on the queue and let the
+// per-session publisher discard the rest, which held the tenant boundary but wasted the whole
+// nudgeBatch budget on todos this wakeup was not about — one busy endpoint could push every other
+// endpoint's todos past the cap and starve them of doorbells. A payload with no endpoint id is a
+// legacy/hand-issued notification (an older process mid-deploy, or psql); it falls back to the
+// cross-endpoint read so such a wakeup degrades in reach rather than being dropped.
+// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)", SPEC-0004 REQ
+// "In-Database Wakeups via LISTEN/NOTIFY".
+func nudgeDoorbells(ctx context.Context, st doorbellStore, gate *doorbellGate, publish func(store.Todo), payload string, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, nudgeTimeout)
 	defer cancel()
-	todos, err := st.PendingDoorbellTodosByQueue(ctx, queue, nudgeBatch)
+	// Split on the FIRST colon: the endpoint id is a uuid and colon-free, so everything after it is
+	// the queue name verbatim — queue names containing colons survive the round trip.
+	endpointID, queue, scoped := strings.Cut(payload, ":")
+	var todos []store.Todo
+	var err error
+	if scoped {
+		todos, err = st.PendingDoorbellTodos(ctx, endpointID, queue, nudgeBatch)
+	} else {
+		queue = payload
+		todos, err = st.PendingDoorbellTodosByQueue(ctx, queue, nudgeBatch)
+	}
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Warn("todo_ready doorbell nudge", "queue", queue, "err", err)
+			log.Warn("todo_ready doorbell nudge", "queue", queue, "endpoint", endpointID, "err", err)
 		}
 		return
 	}

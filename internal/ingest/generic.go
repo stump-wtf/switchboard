@@ -181,6 +181,14 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// INTERIM (PR 2): operator-configured receiver, no vended endpoint of its own — the todo is
+	// owned by the operator-designated legacy endpoint; unconfigured → 503, nothing persisted
+	// (legacyEndpoint). ADR-0022.
+	endpointID, ok := i.legacyEndpoint(w, name)
+	if !ok {
+		i.observeRejected(name, "webhook", trustMode, key, "receiver not configured")
+		return
+	}
 	// key (the body hash derived above) is the idempotency key: generic providers supply no
 	// delivery id (SPEC-0001 REQ "Idempotency Key Extraction and Dedup" — body-hash fallback).
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
@@ -192,7 +200,8 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 			Payload: body, SourceIP: clientIP(r),
 		},
 		store.CreateTodoParams{
-			Queue: p.Queue, Source: name, Kind: "webhook", Title: summarizeGeneric(name),
+			EndpointID: endpointID,
+			Queue:      p.Queue, Source: name, Kind: "webhook", Title: summarizeGeneric(name),
 			Payload: body, IdempotencyKey: key,
 		})
 	if err != nil {
