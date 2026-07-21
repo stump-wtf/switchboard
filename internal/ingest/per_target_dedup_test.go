@@ -42,14 +42,17 @@ func perTargetDeps(t *testing.T) (*Ingest, *Hub, *store.Store, *pgxpool.Pool, co
 }
 
 // deliveredKey is the idempotency key a self-managed delivery MUST persist on each target's todo:
-// the receiver contributes "<webhook-id>:<delivery-id-or-body-hash>" and CreateEventTodos prefixes
-// the owning endpoint, so the full layering is "<endpoint>:<webhook>:<delivery>". Asserting the
-// literal string is deliberate — a key missing the endpoint prefix is precisely the pre-ADR-0022
-// leak, and a test that only compared two keys for inequality would still pass if the prefix were
-// swapped for any other per-target discriminator.
+// "<webhook-id>:<delivery-id-or-body-hash>", the SAME string on every target of one delivery. The
+// per-endpoint dedup namespace is the (endpoint_id, idempotency_key) composite index from migration
+// 0012, NOT a prefix baked into the key — endpoint_id already separates two targets of the same
+// delivery, so prefixing would be redundant. It would also break correlation: ingest writes this
+// same string as the event's external_id, and three consumers join todo.idempotency_key =
+// event.external_id (queue_view.go's dedup_count, board.go's deduped flag, live.go's rxCardID).
+// Asserting the literal string is deliberate — it pins that the key stays join-compatible, which
+// inequality-only comparisons would not catch.
 // Governing: ADR-0022, SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
-func deliveredKey(endpointID, webhookID, deliveryID string) string {
-	return endpointID + ":" + webhookID + ":" + deliveryID
+func deliveredKey(webhookID, deliveryID string) string {
+	return webhookID + ":" + deliveryID
 }
 
 // todoByEndpoint indexes a fan-out response by owning endpoint, failing when a target is missing or
@@ -107,7 +110,10 @@ func seedRoutedWebhook(t *testing.T, st *store.Store, ctx context.Context, token
 	owner store.Endpoint, target store.Endpoint, wh store.Webhook) {
 	t.Helper()
 	h, owner, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", token, secret)
-	_, target = seedEndpoint(t, st, ctx, "pt-target-"+token, []string{"reviews"})
+	targetHuman, tgt := seedEndpoint(t, st, ctx, "pt-target-"+token, []string{"reviews"})
+	target = tgt
+	// The route is cross-human, so it only delivers while an approved edge authorizes it.
+	grantFriendEdge(t, st, ctx, "pt-"+token, h.ID, targetHuman.ID)
 	if err := st.AddWebhookRoute(ctx, wh.ID, target.ID, h.ID); err != nil {
 		t.Fatalf("add webhook route: %v", err)
 	}
@@ -174,13 +180,16 @@ func TestPerTargetDedupSameDeliveryToTwoEndpointsMintsTwoTodos(t *testing.T) {
 		t.Fatalf("events = %d, want 1 (one delivery)", n)
 	}
 
-	// The layered key, asserted literally in both namespaces (see deliveredKey).
+	// One delivery, one key: both targets persist the SAME literal key (see deliveredKey). The rows
+	// stay separate because (endpoint_id, idempotency_key) is the dedup namespace — proven by the
+	// distinct ids above and the cross-tenant read denials below, not by the keys differing.
 	tA := mustGetTodo(t, st, ctx, owner.ID, a.ID)
 	tB := mustGetTodo(t, st, ctx, target.ID, b.ID)
-	if want := deliveredKey(owner.ID, wh.ID, "guid-shared"); tA.IdempotencyKey != want {
+	want := deliveredKey(wh.ID, "guid-shared")
+	if tA.IdempotencyKey != want {
 		t.Fatalf("owner idempotency_key = %q, want %q", tA.IdempotencyKey, want)
 	}
-	if want := deliveredKey(target.ID, wh.ID, "guid-shared"); tB.IdempotencyKey != want {
+	if tB.IdempotencyKey != want {
 		t.Fatalf("target idempotency_key = %q, want %q", tB.IdempotencyKey, want)
 	}
 
@@ -340,7 +349,7 @@ func TestPerTargetDedupRedeliveryDuringRetryBackoffCollapsesOntoParkedTodo(t *te
 	if parked.State != "failed" || parked.NextRetryAt == nil {
 		t.Fatalf("parked todo mutated by redelivery: state=%s next_retry_at=%v", parked.State, parked.NextRetryAt)
 	}
-	if want := deliveredKey(owner.ID, wh.ID, "guid-backoff"); parked.IdempotencyKey != want {
+	if want := deliveredKey(wh.ID, "guid-backoff"); parked.IdempotencyKey != want {
 		t.Fatalf("parked idempotency_key = %q, want %q", parked.IdempotencyKey, want)
 	}
 }
@@ -480,13 +489,14 @@ func TestPerTargetDedupPartialDeliveryFiresHooksOnlyForNewTodos(t *testing.T) {
 	const secret = "whsec_pertarget_partial"
 	owner, target, wh := seedRoutedWebhook(t, st, ctx, "pt-partial", secret)
 
-	// Pre-mint the TARGET's todo under exactly the key the receiver will derive for it, so the
-	// delivery below is new for the owner and a redelivery for the target. Constructing the key by
-	// hand pins the layering: if the endpoint prefix were dropped this pre-mint would no longer
-	// collide, the delivery would create two todos, and the created-count assert fails loudly.
+	// Pre-mint a todo ON THE TARGET ENDPOINT under exactly the key the receiver will derive, so the
+	// delivery below is new for the owner and a redelivery for the target. The collision is what
+	// pins the design: it lands only because the pre-mint shares BOTH the endpoint_id and the key
+	// with what ingest computes. Put this same row on the owner's endpoint instead and it would not
+	// collide — which is precisely the per-endpoint namespace the composite index provides.
 	pre, preCreated, err := st.CreateTodo(ctx, store.CreateTodoParams{
 		EndpointID: target.ID, Queue: "reviews", Source: "github", Kind: "webhook",
-		Title: "pre-existing", IdempotencyKey: deliveredKey(target.ID, wh.ID, "guid-partial")})
+		Title: "pre-existing", IdempotencyKey: deliveredKey(wh.ID, "guid-partial")})
 	if err != nil || !preCreated {
 		t.Fatalf("pre-mint target todo: created=%v err=%v", preCreated, err)
 	}

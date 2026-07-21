@@ -144,7 +144,8 @@ func TestRouteFanOutTargetsAreIndependentlyClaimable(t *testing.T) {
 	st := store.New(pool)
 	const secret = "whsec_independent"
 	ownerHuman, a, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "fanout-independent", secret)
-	_, b := seedEndpoint(t, st, ctx, "independent-b", []string{"reviews"})
+	bHuman, b := seedEndpoint(t, st, ctx, "independent-b", []string{"reviews"})
+	grantFriendEdge(t, st, ctx, "independent", ownerHuman.ID, bHuman.ID)
 	if err := st.AddWebhookRoute(ctx, wh.ID, b.ID, ownerHuman.ID); err != nil {
 		t.Fatalf("add webhook route: %v", err)
 	}
@@ -248,7 +249,8 @@ func TestRouteFanOutEventAndTodosAreAtomic(t *testing.T) {
 	st := store.New(pool)
 	const secret = "whsec_atomic"
 	ownerHuman, a, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "fanout-atomic", secret)
-	_, b := seedEndpoint(t, st, ctx, "atomic-b", []string{"reviews"})
+	bHuman, b := seedEndpoint(t, st, ctx, "atomic-b", []string{"reviews"})
+	grantFriendEdge(t, st, ctx, "atomic", ownerHuman.ID, bHuman.ID)
 	if err := st.AddWebhookRoute(ctx, wh.ID, b.ID, ownerHuman.ID); err != nil {
 		t.Fatalf("add webhook route: %v", err)
 	}
@@ -334,7 +336,8 @@ func TestRouteFanOutIsTokenFreeAndUnsteerable(t *testing.T) {
 	st := store.New(pool)
 	const secret = "whsec_tokenfree"
 	ownerHuman, owner, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "fanout-tokenfree", secret)
-	_, routed := seedEndpoint(t, st, ctx, "tokenfree-routed", []string{"reviews"})
+	routedHuman, routed := seedEndpoint(t, st, ctx, "tokenfree-routed", []string{"reviews"})
+	grantFriendEdge(t, st, ctx, "tokenfree", ownerHuman.ID, routedHuman.ID)
 	// The endpoint the payload will try to name. It is real and shares the queue, so the only thing
 	// keeping it out of the fan-out is the absence of a route.
 	_, named := seedEndpoint(t, st, ctx, "tokenfree-named", []string{"reviews"})
@@ -476,6 +479,7 @@ func TestRouteFanOutSurvivesDeletedRouteTarget(t *testing.T) {
 	// The routed target belongs to a DIFFERENT human, which is the case that matters: its owner can
 	// tear it down at any time without the webhook's owner knowing.
 	targetHuman, target := seedEndpoint(t, st, ctx, "deleted-target", []string{"reviews"})
+	grantFriendEdge(t, st, ctx, "deleted", ownerHuman.ID, targetHuman.ID)
 	if err := st.AddWebhookRoute(ctx, wh.ID, target.ID, ownerHuman.ID); err != nil {
 		t.Fatalf("add webhook route: %v", err)
 	}

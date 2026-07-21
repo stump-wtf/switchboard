@@ -228,15 +228,18 @@ func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpoi
 	p.EventID = &ev.ID
 	out := make([]CreatedTodo, 0, len(targetEndpointIDs))
 	for _, epID := range targetEndpointIDs {
-		// Each target gets its own idempotency-key namespace so per-target dedup is independent
-		// (ADR-0022). An empty key stays empty (opts out of dedup per target).
-		key := p.IdempotencyKey
-		if key != "" {
-			key = epID + ":" + key
-		}
+		// Each target dedups independently WITHOUT rewriting the key: the dedup namespace is the
+		// composite index (endpoint_id, idempotency_key) (0012), so endpoint_id already separates
+		// two targets of the same delivery. Prefixing the key with the endpoint id as well would be
+		// redundant — and actively harmful, because the stored value is a correlation key, not an
+		// opaque token: the ingest layer sets the event's external_id and each todo's
+		// idempotency_key to the SAME string, and three consumers join on that equality
+		// (queue_view.go's dedup_count subquery, board.go's deduped flag, and live.go's rxCardID,
+		// which retires the Board's ephemeral "received" card). A prefixed key matches none of
+		// them, so the dedup badge silently reads 0 and the received card sticks forever.
+		// Governing: ADR-0022, SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
 		tp := p
 		tp.EndpointID = epID
-		tp.IdempotencyKey = key
 		t, wasNew, err := createTodo(ctx, tx, tp)
 		if err != nil {
 			return 0, nil, err

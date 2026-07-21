@@ -135,9 +135,10 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 
 	// Governing: SPEC-0002/0004 REQ atomic ingestion, generalized to N targets (ADR-0022) — the
 	// event and ALL of its per-target todos commit in one transaction, so a fan-out is never
-	// partial. The idempotency key layers: this receiver contributes "<webhook-id>:<delivery-or-
-	// body-hash>" (dedup scoped to this webhook), and CreateEventTodos prefixes each target's
-	// endpoint id, yielding "<endpoint-id>:<webhook-id>:<delivery-or-body-hash>" per todo. So a
+	// partial. Every target's todo carries the SAME idempotency key this receiver computed,
+	// "<webhook-id>:<delivery-or-body-hash>" — which is also the event's external_id, the equality
+	// the Board's dedup count and received-card retirement both join on. Per-target separation
+	// comes from the (endpoint_id, idempotency_key) dedup index, not from rewriting the key: a
 	// redelivery collapses independently within each target, while two targets of the SAME delivery
 	// never collapse onto each other. Governing: SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
 	_, todos, err := i.store.CreateEventTodos(r.Context(),

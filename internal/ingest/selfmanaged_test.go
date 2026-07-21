@@ -173,7 +173,8 @@ func TestSelfManagedFanOutIsPerEndpoint(t *testing.T) {
 	ownerHuman, owner, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "route-token-fanout", secret)
 	// A second, independent tenant sharing the SAME queue string — the exact collision that used to
 	// leak. It receives this webhook's deliveries ONLY because of the explicit route below.
-	_, friend := seedEndpoint(t, st, ctx, "fanout-friend", []string{"reviews"})
+	friendHuman, friend := seedEndpoint(t, st, ctx, "fanout-friend", []string{"reviews"})
+	grantFriendEdge(t, st, ctx, "fanout", ownerHuman.ID, friendHuman.ID)
 	if err := st.AddWebhookRoute(ctx, wh.ID, friend.ID, ownerHuman.ID); err != nil {
 		t.Fatalf("add webhook route: %v", err)
 	}
@@ -206,13 +207,21 @@ func TestSelfManagedFanOutIsPerEndpoint(t *testing.T) {
 		t.Fatalf("fan-out must mint a DISTINCT todo per endpoint, got the same id %q", todos[0].ID)
 	}
 
-	// Two rows, one per endpoint, with distinct endpoint-prefixed idempotency keys.
+	// Two rows, one per endpoint, sharing ONE idempotency key: the separation lives in the
+	// (endpoint_id, idempotency_key) composite index (migration 0012), not in the key text. Both
+	// halves are asserted — one key (so the row stays join-compatible with the event's external_id,
+	// which the Board's dedup count and received-card retirement depend on) across two distinct
+	// endpoint_ids (so the two tenants hold independent dedup slots).
 	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos WHERE queue='reviews'`); n != 2 {
 		t.Fatalf("todos in reviews = %d, want 2 (one per target endpoint)", n)
 	}
 	if n := countRows(t, ctx, pool,
-		`SELECT count(DISTINCT idempotency_key) FROM todos WHERE queue='reviews'`); n != 2 {
-		t.Fatalf("distinct idempotency keys = %d, want 2 (keys are per-endpoint)", n)
+		`SELECT count(DISTINCT idempotency_key) FROM todos WHERE queue='reviews'`); n != 1 {
+		t.Fatalf("distinct idempotency keys = %d, want 1 (one delivery mints one key)", n)
+	}
+	if n := countRows(t, ctx, pool,
+		`SELECT count(DISTINCT endpoint_id) FROM todos WHERE queue='reviews'`); n != 2 {
+		t.Fatalf("distinct endpoint_ids = %d, want 2 (dedup namespace is per-endpoint)", n)
 	}
 
 	// Each target's doorbell rang exactly once, for its own todo — and the unrouted stranger, who
