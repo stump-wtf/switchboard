@@ -71,12 +71,12 @@ type EndpointStore interface {
 // SPEC-0005 event-history reads (events.go).
 type ToolStore interface {
 	EndpointStore
-	ListTodos(ctx context.Context, queues []string, state string, limit int) ([]store.Todo, error)
-	GetTodo(ctx context.Context, id string) (store.Todo, error)
-	ClaimTodo(ctx context.Context, id, owner string, ttl time.Duration) (store.Todo, error)
-	HeartbeatTodo(ctx context.Context, id, owner string, ttl time.Duration) (store.Todo, error)
-	CompleteTodo(ctx context.Context, id, owner string, result []byte) (store.Todo, error)
-	FailTodo(ctx context.Context, id, owner string, result []byte) (store.Todo, error)
+	ListTodos(ctx context.Context, endpointID string, queues []string, state string, limit int) ([]store.Todo, error)
+	GetTodo(ctx context.Context, endpointID, id string) (store.Todo, error)
+	ClaimTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error)
+	HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error)
+	CompleteTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
+	FailTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
 	ListEventHistory(ctx context.Context, f store.EventHistoryFilter) ([]store.EventHistoryItem, error)
 	EventHistoryByID(ctx context.Context, id int64) (store.EventHistoryDetail, error)
 	// SPEC-0006 webhook self-management (webhooks.go): switchboard mints and HOLDS the signing

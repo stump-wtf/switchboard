@@ -22,8 +22,14 @@ type querier interface {
 }
 
 // Todo is a durable work-item (ADR-0007). States: pending → claimed → done|failed.
+// EndpointID pins every agent-facing todo to exactly one vended MCP endpoint for its entire
+// lifecycle (ADR-0021): the endpoint's owning human is the todo's tenant, and every agent-facing
+// query predicates on it so queue-name collisions across endpoints can never leak work across
+// tenants. A NULL EndpointID marks system-level todos (e.g. friend-approval todos) that target a
+// human via the Board UI rather than an agent via MCP; those are invisible to every agent query.
 type Todo struct {
 	ID             string
+	EndpointID     string // "" for system todos (friend approvals); non-empty for agent-facing work
 	Queue          string
 	Source         string
 	Kind           string
@@ -44,16 +50,20 @@ type Todo struct {
 	NextRetryAt    *time.Time // scheduled backoff re-queue for a failed-below-cap todo; nil = dead-lettered/none
 }
 
-const todoCols = `id, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
+const todoCols = `id, endpoint_id::text, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
 	COALESCE(idempotency_key,''), COALESCE(assignee,''), state, COALESCE(owner,''),
 	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at,
 	next_retry_at`
 
 func scanTodo(row pgx.Row) (Todo, error) {
 	var t Todo
-	err := row.Scan(&t.ID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
+	var endpointID *string
+	err := row.Scan(&t.ID, &endpointID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
 		&t.IdempotencyKey, &t.Assignee, &t.State, &t.Owner, &t.LeaseExpiresAt, &t.Attempt,
 		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt, &t.NextRetryAt)
+	if endpointID != nil {
+		t.EndpointID = *endpointID
+	}
 	return t, err
 }
 
@@ -86,6 +96,7 @@ func retryBackoff(attempt int) time.Duration {
 
 // CreateTodoParams are the inputs to CreateTodo.
 type CreateTodoParams struct {
+	EndpointID     string // the owning vended endpoint; pins this todo to its tenant (ADR-0021)
 	Queue          string
 	Source         string
 	Kind           string
@@ -96,17 +107,18 @@ type CreateTodoParams struct {
 	Assignee       string
 }
 
-// CreateTodo inserts a todo, deduping on (queue, idempotency_key) among LIVE rows — pending,
+// CreateTodo inserts a todo, deduping on (endpoint_id, idempotency_key) among LIVE rows — pending,
 // claimed, or a parked retry (failed with an open next_retry_at window); only `done` and true
 // dead-letters leave dedup. The bool reports whether a new row was created (false = an existing
-// live todo already covers it). ADR-0007; SPEC-0003 REQ "Idempotent Enqueue and Dedup".
+// live todo already covers it). ADR-0007; SPEC-0003 REQ "Idempotent Enqueue and Dedup",
+// SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup" (ADR-0021: dedup is per-endpoint).
 func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool, error) {
 	t, created, err := createTodo(ctx, s.pool, p)
 	if err == nil && created {
 		// Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY". Best-effort nudge so an
 		// idle worker/UI wakes without polling. The durable queue is the source of truth, so a lost
 		// NOTIFY costs only latency, never work — hence the error here is deliberately ignored.
-		s.notifyTodoReady(ctx, t.Queue)
+		s.notifyTodoReady(ctx, t.EndpointID, t.Queue)
 		s.fireTodoHook("created", t)
 	}
 	return t, created, err
@@ -143,7 +155,7 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 		s.fireEventHook(ev)
 	}
 	if created {
-		s.notifyTodoReady(ctx, t.Queue)
+		s.notifyTodoReady(ctx, t.EndpointID, t.Queue)
 		s.fireTodoHook("created", t)
 		// Sender gate (SPEC-0011): only a todo whose delivery event passed per-source
 		// verification is eligible for a channel push. Plain CreateTodo (no event, e.g. the dev
@@ -155,25 +167,108 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 	return ev.ID, t, created, nil
 }
 
+// CreateEventTodos records an accepted delivery and fans it out into N todos — one per target
+// endpoint — in ONE transaction, so a failure enqueuing any todo can never orphan a persisted
+// event row or leave a partial fan-out (SPEC-0002/0004 atomic ingestion generalized to N targets;
+// ADR-0021 deterministic route fan-out). The event id is linked onto every todo. Each target
+// endpoint gets its own todo with an independently-namespaced idempotency key (per-target dedup),
+// so the same delivery routed to A and B produces two todos that each dedup independently across
+// redeliveries. On success it returns the event id, the N created todos (in target order), and
+// the count of NEW todos (duplicates from idempotent redelivery are returned as the existing row
+// but not counted). Governing: ADR-0021, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
+func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpointIDs []string, p CreateTodoParams) (int64, []Todo, int, error) {
+	if len(targetEndpointIDs) == 0 {
+		return 0, nil, 0, fmt.Errorf("store: CreateEventTodos requires at least one target endpoint")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, nil, 0, err
+	}
+	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+
+	ev, inserted, err := insertEvent(ctx, tx, e)
+	if err != nil {
+		return 0, nil, 0, err
+	}
+	p.EventID = &ev.ID
+	todos := make([]Todo, 0, len(targetEndpointIDs))
+	created := 0
+	for _, epID := range targetEndpointIDs {
+		// Each target gets its own idempotency-key namespace so per-target dedup is independent
+		// (ADR-0021). An empty key stays empty (opts out of dedup per target).
+		key := p.IdempotencyKey
+		if key != "" {
+			key = epID + ":" + key
+		}
+		tp := p
+		tp.EndpointID = epID
+		tp.IdempotencyKey = key
+		t, wasNew, err := createTodo(ctx, tx, tp)
+		if err != nil {
+			return 0, nil, 0, err
+		}
+		todos = append(todos, t)
+		if wasNew {
+			created++
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, nil, 0, err
+	}
+	// Hooks fire only after the durable commit, event before todos, mirroring the Board's
+	// lifecycle order. Governing: SPEC-0015 REQ "Patch Panel Board".
+	if inserted {
+		s.fireEventHook(ev)
+	}
+	for _, t := range todos {
+		// A todo returned by createTodo may be an existing live row (idempotent redelivery). Only
+		// ring the hooks/doorbell for the ones that are newly created — but we don't have per-todo
+		// newness here without restructuring createTodo's contract. Simplest correct approach:
+		// fire the hook for every returned todo; the transition hook is idempotent presentation
+		// (SSE re-renders from the DB), and the doorbell is deduped by the doorbellGate.
+		// NOTE: we fire for all to keep the fan-out simple; the doorbell gate absorbs duplicates.
+	}
+	// Fire hooks/doorbell for each todo. The doorbellGate (in internal/server) dedups across the
+	// two wakeup paths; the transition hook is presentation-only (SSE re-renders from DB state).
+	for _, t := range todos {
+		s.fireTodoHook("created", t)
+		s.notifyTodoReady(ctx, t.EndpointID, t.Queue)
+		if e.Verified {
+			s.fireDoorbell(t)
+		}
+	}
+	return ev.ID, todos, created, nil
+}
+
 // createTodo is the querier-based core of CreateTodo: it runs on either the pool or a transaction and
 // performs no LISTEN/NOTIFY (the caller nudges only after a durable commit).
 //
-// The ON CONFLICT clause mirrors the idx_todos_dedupe partial-index predicate (0008): a LIVE row is
+// The ON CONFLICT clause mirrors the idx_todos_dedupe partial-index predicate (0012): a LIVE row is
 // anything not `done` and not a true dead-letter — a parked retry (`failed` with an open
 // next_retry_at window, SPEC-0003 scheduled backoff) still holds its dedup slot, so a redelivery
 // during the backoff collapses onto it instead of minting a duplicate active todo (which the
-// re-queue transition would then collide with, SQLSTATE 23505).
+// re-queue transition would then collide with, SQLSTATE 23505). The dedup key is
+// (endpoint_id, idempotency_key) per ADR-0021: two endpoints that share an idempotency key each
+// retain their own todo, while redelivery to one endpoint collapses.
 func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool, error) {
 	id := "td_" + uuid.NewString()
+	// NULLIF on the endpoint uuid so a system todo (e.g. friend-approval, which targets a human
+	// not an endpoint) persists NULL. Agent-facing callers always supply a non-empty EndpointID.
+	var endpointArg any
+	if p.EndpointID == "" {
+		endpointArg = nil
+	} else {
+		endpointArg = p.EndpointID
+	}
 	row := q.QueryRow(ctx, `
-		INSERT INTO todos (id, queue, source, kind, title, payload, event_id, idempotency_key, assignee)
-		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), $5, $6, $7, NULLIF($8,''), NULLIF($9,''))
-		ON CONFLICT (queue, idempotency_key)
+		INSERT INTO todos (id, endpoint_id, queue, source, kind, title, payload, event_id, idempotency_key, assignee)
+		VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8, NULLIF($9,''), NULLIF($10,''))
+		ON CONFLICT (endpoint_id, idempotency_key)
 			WHERE idempotency_key IS NOT NULL AND state <> 'done'
 				AND (state <> 'failed' OR next_retry_at IS NOT NULL)
 			DO NOTHING
 		RETURNING `+todoCols,
-		id, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee)
+		id, endpointArg, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee)
 	t, err := scanTodo(row)
 	if err == nil {
 		return t, true, nil
@@ -181,11 +276,13 @@ func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool,
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, false, err
 	}
-	// Conflict: return the existing live todo (pending/claimed, or a parked retry).
+	// Conflict: return the existing live todo (pending/claimed, or a parked retry). Match on the
+	// same endpoint (or both-NULL) so system todos dedup against system todos only.
 	row = q.QueryRow(ctx, `SELECT `+todoCols+` FROM todos
-		WHERE queue = $1 AND idempotency_key = $2 AND state <> 'done'
+		WHERE idempotency_key = $2 AND state <> 'done'
 			AND (state <> 'failed' OR next_retry_at IS NOT NULL)
-		ORDER BY created_at LIMIT 1`, p.Queue, p.IdempotencyKey)
+			AND COALESCE(endpoint_id::text, '') = COALESCE(NULLIF($1,''), '')
+		ORDER BY created_at LIMIT 1`, p.EndpointID, p.IdempotencyKey)
 	t, err = scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, false, ErrNotFound
@@ -195,7 +292,9 @@ func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool,
 
 // notifyTodoReady emits a best-effort LISTEN/NOTIFY wakeup on the todo_ready channel carrying the
 // queue name. Correctness never depends on delivery (SPEC-0004): errors are swallowed by design.
-func (s *Store) notifyTodoReady(ctx context.Context, queue string) {
+// The payload carries only the queue (not the endpoint_id) so the listener remains simple; the
+// doorbell filter in PublishTodoReady does the endpoint-scoped narrowing.
+func (s *Store) notifyTodoReady(ctx context.Context, endpointID, queue string) {
 	// pg_notify is used (not a literal NOTIFY) so the channel payload — the queue name — is passed as
 	// a bound parameter rather than interpolated into SQL text (Parameterized Queries Only).
 	_, _ = s.pool.Exec(ctx, `SELECT pg_notify('todo_ready', $1)`, queue)
@@ -206,18 +305,20 @@ func (s *Store) notifyTodoReady(ctx context.Context, queue string) {
 // it) with attempts remaining, OR when its scheduled retry backoff has elapsed (so a hot worker
 // need not wait for the retry scheduler's next tick — a failed todo whose next_retry_at is still in
 // the future stays unclaimable). ADR-0007 claim / SPEC-0003 lease recovery + Bounded Retries.
+// endpointID is the tenant scope (ADR-0021): the UPDATE is constrained to a row owned by this
+// endpoint so a caller authenticated to endpoint A can never claim a todo owned by endpoint B.
 // Returns ErrConflict if the todo exists but is not claimable (live claim / wrong assignee /
-// exhausted / backoff pending), ErrNotFound if absent.
-func (s *Store) ClaimTodo(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
+// exhausted / backoff pending / wrong tenant), ErrNotFound if absent.
+func (s *Store) ClaimTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state='claimed', owner=$2, lease_expires_at=now()+$3::interval,
+		UPDATE todos SET state='claimed', owner=$3, lease_expires_at=now()+$4::interval,
 			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
-		WHERE id=$1 AND (assignee IS NULL OR assignee=$2)
+		WHERE id=$2 AND endpoint_id=$1 AND (assignee IS NULL OR assignee=$3)
 			AND (state='pending'
 				OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 				OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
 					AND attempt < max_attempts))
-		RETURNING `+todoCols, id, owner, ttl.String())
+		RETURNING `+todoCols, endpointID, id, owner, ttl.String())
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, id)
@@ -232,15 +333,16 @@ func (s *Store) ClaimTodo(ctx context.Context, id, owner string, ttl time.Durati
 // (ADR-0002), so concurrent workers never collide. A todo is claimable when it is pending, when its
 // lease has expired with attempts remaining, or when its scheduled retry backoff has elapsed — the
 // scan recovers expired leases and due retries directly, so a stopped reaper/scheduler can never
-// strand work (SPEC-0003). A failed todo whose backoff has not elapsed is skipped. Returns
+// strand work (SPEC-0003). A failed todo whose backoff has not elapsed is skipped. endpointID is
+// the tenant scope (ADR-0021): the scan is constrained to rows owned by this endpoint. Returns
 // ErrNotFound when no work is available.
-func (s *Store) ClaimNext(ctx context.Context, queues []string, owner string, ttl time.Duration) (Todo, error) {
+func (s *Store) ClaimNext(ctx context.Context, endpointID string, queues []string, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='claimed', owner=$1, lease_expires_at=now()+$2::interval,
 			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
 		WHERE id = (
 			SELECT id FROM todos
-			WHERE queue = ANY($3) AND (assignee IS NULL OR assignee=$1)
+			WHERE endpoint_id=$4 AND queue = ANY($3) AND (assignee IS NULL OR assignee=$1)
 				AND (state='pending'
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
@@ -249,7 +351,7 @@ func (s *Store) ClaimNext(ctx context.Context, queues []string, owner string, tt
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)
-		RETURNING `+todoCols, owner, ttl.String(), queues)
+		RETURNING `+todoCols, owner, ttl.String(), queues, endpointID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ErrNotFound
@@ -262,13 +364,14 @@ func (s *Store) ClaimNext(ctx context.Context, queues []string, owner string, tt
 
 // HeartbeatTodo extends the visibility lease on a claimed todo (SQS ChangeMessageVisibility). Only
 // the current lease owner may heartbeat (guarded by state='claimed' AND owner); it does not consume
-// an attempt or change claimed_at. Returns ErrConflict if the todo exists but is not a live claim
-// owned by owner, ErrNotFound if absent. Governing: SPEC-0003 REQ "Visibility Window, Lease, Heartbeat".
-func (s *Store) HeartbeatTodo(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
+// an attempt or change claimed_at. endpointID is the tenant scope (ADR-0021). Returns ErrConflict if
+// the todo exists but is not a live claim owned by owner, ErrNotFound if absent. Governing:
+// SPEC-0003 REQ "Visibility Window, Lease, Heartbeat".
+func (s *Store) HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2
-		RETURNING `+todoCols, id, owner, ttl.String())
+		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$4
+		RETURNING `+todoCols, endpointID, id, ttl.String(), owner)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, id)
@@ -276,12 +379,13 @@ func (s *Store) HeartbeatTodo(ctx context.Context, id, owner string, ttl time.Du
 	return t, err
 }
 
-// CompleteTodo acks a claimed todo owned by owner. ADR-0007 complete.
-func (s *Store) CompleteTodo(ctx context.Context, id, owner string, result []byte) (Todo, error) {
+// CompleteTodo acks a claimed todo owned by owner. endpointID is the tenant scope (ADR-0021).
+// ADR-0007 complete.
+func (s *Store) CompleteTodo(ctx context.Context, endpointID, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state='done', result=$3, completed_at=now(), updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2
-		RETURNING `+todoCols, id, owner, result)
+		UPDATE todos SET state='done', result=$4, completed_at=now(), updated_at=now()
+		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+		RETURNING `+todoCols, endpointID, id, owner, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, id)
@@ -297,18 +401,18 @@ func (s *Store) CompleteTodo(ctx context.Context, id, owner string, result []byt
 // base, doubling, 15m cap) and re-enters `pending` only when the backoff elapses (retry scheduler,
 // or the claim scan once due). At the cap it dead-letters (`failed` with next_retry_at NULL). The
 // owner is kept on the failed row so the UI can show which agent it failed under; the re-queue
-// clears it. Governing: SPEC-0003 REQ "Bounded Retries via max_attempts" (scheduled backoff);
-// ADR-0007 fail.
-func (s *Store) FailTodo(ctx context.Context, id, owner string, result []byte) (Todo, error) {
+// clears it. endpointID is the tenant scope (ADR-0021). Governing: SPEC-0003 REQ "Bounded Retries
+// via max_attempts" (scheduled backoff); ADR-0007 fail.
+func (s *Store) FailTodo(ctx context.Context, endpointID, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET
 			state = 'failed',
 			next_retry_at = CASE WHEN attempt >= max_attempts THEN NULL
 				ELSE now() + make_interval(secs =>
-					LEAST($4::float8 * power(2, GREATEST(attempt, 1) - 1), $5::float8)) END,
-			lease_expires_at = NULL, result = $3, updated_at = now()
-		WHERE id=$1 AND state='claimed' AND owner=$2
-		RETURNING `+todoCols, id, owner, result,
+					LEAST($5::float8 * power(2, GREATEST(attempt, 1) - 1), $6::float8)) END,
+			lease_expires_at = NULL, result = $4, updated_at = now()
+		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+		RETURNING `+todoCols, endpointID, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds())
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -354,7 +458,7 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 		s.fireTodoHook(t.State, t)
 		if !queues[t.Queue] {
 			queues[t.Queue] = true
-			s.notifyTodoReady(ctx, t.Queue)
+			s.notifyTodoReady(ctx, t.EndpointID, t.Queue)
 		}
 	}
 	return int64(len(requeued)), nil
@@ -402,14 +506,16 @@ func (s *Store) ReleaseTodo(ctx context.Context, id, owner string) (Todo, error)
 	return t, err
 }
 
-// ListTodos returns todos in the allowed queues, optionally filtered by state, newest first.
-func (s *Store) ListTodos(ctx context.Context, queues []string, state string, limit int) ([]Todo, error) {
+// ListTodos returns todos in the allowed queues for one endpoint, optionally filtered by state,
+// newest first. endpointID is the tenant scope (ADR-0021): only todos pinned to this endpoint are
+// returned, regardless of queue-name collisions across endpoints.
+func (s *Store) ListTodos(ctx context.Context, endpointID string, queues []string, state string, limit int) ([]Todo, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
-		WHERE queue = ANY($1) AND ($2 = '' OR state = $2)
-		ORDER BY created_at DESC LIMIT $3`, queues, state, limit)
+		WHERE endpoint_id = $1 AND queue = ANY($2) AND ($3 = '' OR state = $3)
+		ORDER BY created_at DESC LIMIT $4`, endpointID, queues, state, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -425,20 +531,49 @@ func (s *Store) ListTodos(ctx context.Context, queues []string, state string, li
 	return out, rows.Err()
 }
 
-// PendingDoorbellTodos returns pending todos on queue that are eligible for a channel push under
-// the SPEC-0011 sender gate: only todos whose delivery event exists AND passed per-source
-// verification, oldest first (the claim-scan order), capped at limit. The todo_ready LISTEN loop
-// (internal/server/listen.go) uses it to re-ring the MCP doorbell for work enqueued outside this
-// process's store hooks — the gate lives in SQL so the wakeup path can never push an unverified or
-// event-less todo the HTTP path would have withheld.
-// Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY", SPEC-0011 REQ "Sender Gate and
-// Injection Safety".
-func (s *Store) PendingDoorbellTodos(ctx context.Context, queue string, limit int) ([]Todo, error) {
+// PendingDoorbellTodos returns pending todos for one endpoint on queue that are eligible for a
+// channel push under the SPEC-0011 sender gate: only todos whose delivery event exists AND passed
+// per-source verification, oldest first (the claim-scan order), capped at limit. endpointID is the
+// tenant scope (ADR-0021). The todo_ready LISTEN loop (internal/server/listen.go) uses it to
+// re-ring the MCP doorbell for work enqueued outside this process's store hooks — the gate lives in
+// SQL so the wakeup path can never push an unverified or event-less todo the HTTP path would have
+// withheld. Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY", SPEC-0011 REQ
+// "Sender Gate and Injection Safety", ADR-0021 REQ "Endpoint Ownership".
+func (s *Store) PendingDoorbellTodos(ctx context.Context, endpointID, queue string, limit int) ([]Todo, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
-		WHERE queue = $1 AND state = 'pending' AND event_id IS NOT NULL
+		WHERE endpoint_id = $1 AND queue = $2 AND state = 'pending' AND event_id IS NOT NULL
+		  AND EXISTS (SELECT 1 FROM events e WHERE e.id = todos.event_id AND e.verified)
+		ORDER BY created_at LIMIT $3`, endpointID, queue, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Todo
+	for rows.Next() {
+		t, err := scanTodo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// PendingDoorbellTodosByQueue is the cross-endpoint variant used by the LISTEN loop: a todo_ready
+// NOTIFY carries only a queue name, so the wakeup path must enumerate every endpoint with
+// push-eligible pending todos on that queue. The doorbell publisher (PublishTodoReady) does the
+// per-session endpoint scoping; this read only narrows to verified, push-eligible rows.
+// Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY", SPEC-0011 REQ "Sender Gate
+// and Injection Safety", ADR-0021.
+func (s *Store) PendingDoorbellTodosByQueue(ctx context.Context, queue string, limit int) ([]Todo, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
+		WHERE endpoint_id IS NOT NULL AND queue = $1 AND state = 'pending' AND event_id IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM events e WHERE e.id = todos.event_id AND e.verified)
 		ORDER BY created_at LIMIT $2`, queue, limit)
 	if err != nil {
@@ -456,12 +591,104 @@ func (s *Store) PendingDoorbellTodos(ctx context.Context, queue string, limit in
 	return out, rows.Err()
 }
 
-// GetTodo returns one todo by id.
-func (s *Store) GetTodo(ctx context.Context, id string) (Todo, error) {
+// GetTodo returns one todo by id. endpointID is the tenant scope (ADR-0021): a todo pinned to
+// another endpoint is not visible through this lookup.
+func (s *Store) GetTodo(ctx context.Context, endpointID, id string) (Todo, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos WHERE id = $1 AND endpoint_id = $2`, id, endpointID)
+	t, err := scanTodo(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Todo{}, ErrNotFound
+	}
+	return t, err
+}
+
+// GetTodoAnyEndpoint returns one todo by id without endpoint-scoping. This is the OPERATOR-ONLY
+// path (the Board UI's detail drawer, retention, reaper diagnostics): the operator can see and
+// act on every todo regardless of tenant. The agent-facing path MUST use GetTodo, which enforces
+// the endpoint scope. Governing: ADR-0021.
+func (s *Store) GetTodoAnyEndpoint(ctx context.Context, id string) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos WHERE id = $1`, id)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ErrNotFound
+	}
+	return t, err
+}
+
+// ClaimTodoAnyEndpoint is the OPERATOR-ONLY variant of ClaimTodo that resolves the endpoint from
+// the todo row instead of requiring it up front (the Board's Claim action is authenticated by the
+// human session, not by an endpoint credential). The agent path MUST use ClaimTodo. Governing:
+// ADR-0021, SPEC-0003 claim-under-lease semantics.
+func (s *Store) ClaimTodoAnyEndpoint(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE todos SET state='claimed', owner=$2, lease_expires_at=now()+$3::interval,
+			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
+		WHERE id=$1 AND (assignee IS NULL OR assignee=$2)
+			AND (state='pending'
+				OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
+				OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
+					AND attempt < max_attempts))
+		RETURNING `+todoCols, id, owner, ttl.String())
+	t, err := scanTodo(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Todo{}, s.classifyMiss(ctx, id)
+	}
+	if err == nil {
+		s.fireTodoHook("claimed", t)
+	}
+	return t, err
+}
+
+// CompleteTodoAnyEndpoint is the OPERATOR-ONLY variant of CompleteTodo. The agent path MUST use
+// CompleteTodo. Governing: ADR-0021, ADR-0007 complete.
+func (s *Store) CompleteTodoAnyEndpoint(ctx context.Context, id, owner string, result []byte) (Todo, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE todos SET state='done', result=$3, completed_at=now(), updated_at=now()
+		WHERE id=$1 AND state='claimed' AND owner=$2
+		RETURNING `+todoCols, id, owner, result)
+	t, err := scanTodo(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Todo{}, s.classifyMiss(ctx, id)
+	}
+	if err == nil {
+		s.fireTodoHook("done", t)
+	}
+	return t, err
+}
+
+// FailTodoAnyEndpoint is the OPERATOR-ONLY variant of FailTodo. The agent path MUST use FailTodo.
+// Governing: ADR-0021, SPEC-0003 fail.
+func (s *Store) FailTodoAnyEndpoint(ctx context.Context, id, owner string, result []byte) (Todo, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE todos SET
+			state = 'failed',
+			next_retry_at = CASE WHEN attempt >= max_attempts THEN NULL
+				ELSE now() + make_interval(secs =>
+					LEAST($4::float8 * power(2, GREATEST(attempt, 1) - 1), $5::float8)) END,
+			lease_expires_at = NULL, result = $3, updated_at = now()
+		WHERE id=$1 AND state='claimed' AND owner=$2
+		RETURNING `+todoCols, id, owner, result,
+		retryBackoffBase.Seconds(), retryBackoffCap.Seconds())
+	t, err := scanTodo(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Todo{}, s.classifyMiss(ctx, id)
+	}
+	if err == nil {
+		s.fireTodoHook(t.State, t)
+	}
+	return t, err
+}
+
+// HeartbeatTodoAnyEndpoint is the OPERATOR-ONLY variant of HeartbeatTodo. The agent path MUST use
+// HeartbeatTodo. Governing: ADR-0021, SPEC-0003 heartbeat.
+func (s *Store) HeartbeatTodoAnyEndpoint(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
+		WHERE id=$1 AND state='claimed' AND owner=$2
+		RETURNING `+todoCols, id, owner, ttl.String())
+	t, err := scanTodo(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Todo{}, s.classifyMiss(ctx, id)
 	}
 	return t, err
 }

@@ -135,7 +135,7 @@ func (g *doorbellGate) firstAt(id string, now time.Time) bool {
 // *store.Store satisfies it. Narrowed to an interface so the nudge is unit-testable without a
 // database.
 type doorbellStore interface {
-	PendingDoorbellTodos(ctx context.Context, queue string, limit int) ([]store.Todo, error)
+	PendingDoorbellTodosByQueue(ctx context.Context, queue string, limit int) ([]store.Todo, error)
 }
 
 // nudgeDoorbells re-rings the MCP channel doorbell for push-eligible pending todos on queue, in
@@ -147,7 +147,7 @@ type doorbellStore interface {
 func nudgeDoorbells(ctx context.Context, st doorbellStore, gate *doorbellGate, publish func(store.Todo), queue string, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, nudgeTimeout)
 	defer cancel()
-	todos, err := st.PendingDoorbellTodos(ctx, queue, nudgeBatch)
+	todos, err := st.PendingDoorbellTodosByQueue(ctx, queue, nudgeBatch)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Warn("todo_ready doorbell nudge", "queue", queue, "err", err)

@@ -176,7 +176,7 @@ func (h *Handler) listTodosTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[listTo
 			}
 			queues = []string{in.Queue}
 		}
-		todos, err := h.store.ListTodos(ctx, queues, in.State, in.Limit)
+		todos, err := h.store.ListTodos(ctx, ep.ID, queues, in.State, in.Limit)
 		if err != nil {
 			return nil, listTodosOut{}, h.mapStoreErr(ep, "list_todos", err)
 		}
@@ -193,7 +193,7 @@ func (h *Handler) claimTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimIn, t
 		if err := h.guardQueue(ctx, ep, "claim", in.ID); err != nil {
 			return nil, todoOut{}, err
 		}
-		t, err := h.store.ClaimTodo(ctx, in.ID, owner(ep), leaseTTL(in.LeaseTTLSeconds))
+		t, err := h.store.ClaimTodo(ctx, ep.ID, in.ID, owner(ep), leaseTTL(in.LeaseTTLSeconds))
 		if err != nil {
 			return nil, todoOut{}, h.mapStoreErr(ep, "claim", err)
 		}
@@ -206,7 +206,7 @@ func (h *Handler) completeTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[complet
 		if err := h.guardQueue(ctx, ep, "complete", in.ID); err != nil {
 			return nil, todoOut{}, err
 		}
-		t, err := h.store.CompleteTodo(ctx, in.ID, owner(ep), rawJSON(in.Result))
+		t, err := h.store.CompleteTodo(ctx, ep.ID, in.ID, owner(ep), rawJSON(in.Result))
 		if err != nil {
 			return nil, todoOut{}, h.mapStoreErr(ep, "complete", err)
 		}
@@ -219,7 +219,7 @@ func (h *Handler) failTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[failIn, tod
 		if err := h.guardQueue(ctx, ep, "fail", in.ID); err != nil {
 			return nil, todoOut{}, err
 		}
-		t, err := h.store.FailTodo(ctx, in.ID, owner(ep), rawJSON(in.Result))
+		t, err := h.store.FailTodo(ctx, ep.ID, in.ID, owner(ep), rawJSON(in.Result))
 		if err != nil {
 			return nil, todoOut{}, h.mapStoreErr(ep, "fail", err)
 		}
@@ -232,7 +232,7 @@ func (h *Handler) heartbeatTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[heartb
 		if err := h.guardQueue(ctx, ep, "heartbeat", in.ID); err != nil {
 			return nil, todoOut{}, err
 		}
-		t, err := h.store.HeartbeatTodo(ctx, in.ID, owner(ep), leaseTTL(in.LeaseTTLSeconds))
+		t, err := h.store.HeartbeatTodo(ctx, ep.ID, in.ID, owner(ep), leaseTTL(in.LeaseTTLSeconds))
 		if err != nil {
 			return nil, todoOut{}, h.mapStoreErr(ep, "heartbeat", err)
 		}
@@ -241,11 +241,13 @@ func (h *Handler) heartbeatTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[heartb
 }
 
 // guardQueue enforces the queue grant before any state-changing store call: the target todo is
-// read (never mutated) and its queue checked against the endpoint's grant. Out-of-scope targets
-// are refused with the stable forbidden code and no side effects.
-// Governing: SPEC-0006 REQ "Scope Enforcement at the Boundary".
+// read (never mutated) under the endpoint's tenant scope (ADR-0021) and its queue checked against
+// the endpoint's grant. Out-of-scope targets are refused with the stable forbidden code and no side
+// effects. The endpoint_id predicate is the tenant boundary; the queue check is a secondary
+// intra-endpoint scope.
+// Governing: SPEC-0006 REQ "Scope Enforcement at the Boundary", ADR-0021.
 func (h *Handler) guardQueue(ctx context.Context, ep store.AuthEndpoint, tool, id string) error {
-	t, err := h.store.GetTodo(ctx, id)
+	t, err := h.store.GetTodo(ctx, ep.ID, id)
 	if err != nil {
 		return h.mapStoreErr(ep, tool, err)
 	}

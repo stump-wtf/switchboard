@@ -354,7 +354,7 @@ const boardLaneQuery = 60
 // (the UI implements no lifecycle rules of its own).
 func (h *Handler) ClaimTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.ClaimTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
+	t, err := h.store.ClaimTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
 	// respondTodoAction picks the fragment by HTMX target: the Board card's Claim (default) gets
 	// the OOB lane movement, while the Todos table and drawer get their own refreshed fragments.
 	// On a lost race the SSE stage update tells the operator who won; no internal detail leaks.

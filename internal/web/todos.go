@@ -194,7 +194,7 @@ func (h *Handler) TodoDrawer(w http.ResponseWriter, r *http.Request) {
 // Governing: SPEC-0015 REQ "Todos View And Drawer" (actions preserved), SPEC-0003 complete.
 func (h *Handler) CompleteTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.CompleteTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
+	t, err := h.store.CompleteTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
 	h.respondTodoAction(w, r, "CompleteTodo", t, err)
 }
 
@@ -202,7 +202,7 @@ func (h *Handler) CompleteTodo(w http.ResponseWriter, r *http.Request) {
 // POST /todos/{id}/fail.
 func (h *Handler) FailTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.FailTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
+	t, err := h.store.FailTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
 	h.respondTodoAction(w, r, "FailTodo", t, err)
 }
 
@@ -217,7 +217,7 @@ func (h *Handler) RetryTodo(w http.ResponseWriter, r *http.Request) {
 // REQ "Visibility Window, Lease, Heartbeat".
 func (h *Handler) ExtendTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.HeartbeatTodo(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
+	t, err := h.store.HeartbeatTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
 	h.respondTodoAction(w, r, "ExtendTodo", t, err)
 }
 
