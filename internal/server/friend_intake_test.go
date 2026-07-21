@@ -43,7 +43,6 @@ type fakeFriendStore struct {
 
 	personaCalled bool
 	created       *store.CreateFriendRequestParams // non-nil once CreateFriendRequest is called
-	approvalTodo  *store.ApprovalTodoParams        // non-nil once CreateApprovalTodo is called
 }
 
 func (f *fakeFriendStore) PublishedPersonaByID(_ context.Context, _ string) (store.Persona, error) {
@@ -63,12 +62,6 @@ func (f *fakeFriendStore) CreateFriendRequest(_ context.Context, p store.CreateF
 	cp := p
 	f.created = &cp
 	return f.createEdge, f.createErr
-}
-
-func (f *fakeFriendStore) CreateApprovalTodo(_ context.Context, p store.ApprovalTodoParams) (store.Todo, bool, error) {
-	cp := p
-	f.approvalTodo = &cp
-	return store.Todo{}, true, nil
 }
 
 type fakeVerifier struct {
@@ -160,14 +153,20 @@ func TestFriendIntakeValidProvenanceRecordsEdge(t *testing.T) {
 	if fs.created.ToPersona != "11111111-1111-1111-1111-111111111111" {
 		t.Errorf("to_persona = %q, want the resolved persona id", fs.created.ToPersona)
 	}
-	// The pending edge also surfaces as a durable approval todo carrying the legible who/why for the
-	// target human (SPEC-0010 "Approval Delivered as a Todo", #63).
-	if fs.approvalTodo == nil {
-		t.Fatal("expected an approval todo to be filed for the target human")
+	// The edge row IS the approval surface — no companion todo is minted (SPEC-0010 REQ "Approval
+	// Surfaced from the Friend Edge"). So the legible who/why the target human decides on must be
+	// carried by THIS row: requested scope and reason, alongside the principals asserted above.
+	if got := fs.created.RequestedQueues; len(got) != 1 || got[0] != "reviews" {
+		t.Errorf("requested_queues = %v, want the requested scope carried on the edge", got)
 	}
-	if fs.approvalTodo.EdgeID != "edge-1" || fs.approvalTodo.ToHuman != "owner-1" ||
-		fs.approvalTodo.FromHuman != "req-human-1" || !fs.approvalTodo.ProvenanceVerified {
-		t.Errorf("approval todo lost request context: %+v", fs.approvalTodo)
+	if got := fs.created.RequestedVerbs; len(got) != 1 || got[0] != "create_for" {
+		t.Errorf("requested_verbs = %v, want the requested scope carried on the edge", got)
+	}
+	if fs.created.Reason != "hand you PR reviews" {
+		t.Errorf("reason = %q, want the requester's why carried on the edge", fs.created.Reason)
+	}
+	if fs.created.FromPersona != "peer://a" {
+		t.Errorf("from_persona = %q, want the requesting persona carried on the edge", fs.created.FromPersona)
 	}
 	// Response envelope.
 	var resp struct {

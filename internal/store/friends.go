@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -15,7 +14,9 @@ import (
 // Lifecycle", REQ "Approval Is the Vend, Narrow-Only", REQ "Per-Direction, Revocable, Non-Transitive
 // Edges", REQ "Work Flows as Todos, Not A2A Tasks". This file owns the friend-edge state machine and
 // the cross-agent work-handoff (create_for) flow that turns an accepted intent invocation into a
-// durable todo. The A2A intake route (#62) and the approval-todo/web UI (#63) are out of scope.
+// durable todo. A pending request is surfaced to the target human straight from its friend_edges
+// row, never as a todo (SPEC-0010 REQ "Approval Surfaced from the Friend Edge"); see the note above
+// RemoveFriendEdge. The A2A intake route (#62) and the Friends web UI (#63) are out of scope.
 
 // ErrInvalidTransition is returned when a friend-edge lifecycle transition is not legal from the
 // edge's current state (e.g. approving an edge that is not pending, revoking one that is not
@@ -86,7 +87,8 @@ func scanFriendEdge(row pgx.Row) (FriendEdge, error) {
 
 // CreateFriendRequestParams are the inputs to CreateFriendRequest — a pending edge that grants
 // nothing. ToHuman (the owning/target human) is required; FromHuman is the OIDC-attested requester
-// carried for the legible approval todo. The requesting agent is bound later, at approval time.
+// carried so the pending row itself is the legible who/why the target human decides on. The
+// requesting agent is bound later, at approval time.
 type CreateFriendRequestParams struct {
 	FromPersona        string
 	ToPersona          string
@@ -347,76 +349,26 @@ func (s *Store) CountLiveFriendRequestsFrom(ctx context.Context, fromHuman strin
 	return n, nil
 }
 
-// approvalQueue is the durable queue a target human's friend-approval todos land in. The operator
-// drains it from the Friends view (approve is the vend, SPEC-0010) exactly like any other todo.
-const approvalQueue = "friend-approvals"
-
-// approvalTodoKind is the kind stamped on a friend-approval todo so the queue view and the Friends
-// surface can recognize it.
-const approvalTodoKind = "friend.request"
-
-// approvalKey is the idempotency key of the approval todo for one edge — a stable derivation so the
-// "create the approval todo if not already" contract dedups a re-delivered intake onto one todo.
-func approvalKey(edgeID string) string { return "friend-approval:" + edgeID }
-
-// ApprovalTodoParams carries the legible who/why a friend request surfaces to the target human as a
-// durable approval todo. Fields mirror the edge that provoked it. Governing: SPEC-0010 REQ "Approval
-// Delivered as a Todo".
-type ApprovalTodoParams struct {
-	EdgeID             string
-	FromHuman          string
-	FromPersona        string
-	ToPersona          string
-	ToHuman            string // the owning/target human — routed via the todo assignee
-	RequestedQueues    []string
-	RequestedVerbs     []string
-	Reason             string
-	ProvenanceVerified bool
-}
-
-// CreateApprovalTodo records the durable approval todo for a pending friend edge: it lands in the
-// target human's approvals queue carrying request_id, from_human, from_persona, to_persona,
-// requested_scope, reason, and provenance_verified so the human can decide with full context. It is
-// idempotent on the edge id (a re-delivered intake collapses onto the same todo — "if not already").
-// Governing: SPEC-0010 REQ "Approval Delivered as a Todo".
-func (s *Store) CreateApprovalTodo(ctx context.Context, p ApprovalTodoParams) (Todo, bool, error) {
-	payload, err := json.Marshal(map[string]any{
-		"request_id":          p.EdgeID,
-		"from_human":          p.FromHuman,
-		"from_persona":        p.FromPersona,
-		"to_persona":          p.ToPersona,
-		"requested_queues":    nonNilStrings(p.RequestedQueues),
-		"requested_verbs":     nonNilStrings(p.RequestedVerbs),
-		"reason":              p.Reason,
-		"provenance_verified": p.ProvenanceVerified,
-	})
-	if err != nil {
-		return Todo{}, false, fmt.Errorf("store: marshal approval todo payload: %w", err)
-	}
-	return s.CreateTodo(ctx, CreateTodoParams{
-		Queue:          approvalQueue,
-		Source:         p.FromPersona,
-		Kind:           approvalTodoKind,
-		Title:          "Friend request · " + p.FromPersona + " → " + p.ToPersona,
-		Payload:        payload,
-		Assignee:       p.ToHuman,
-		IdempotencyKey: approvalKey(p.EdgeID),
-	})
-}
-
-// ResolveApprovalTodo marks the approval todo for edgeID done (best-effort) once its friend edge is
-// decided (approved or declined) from the Friends view, so the durable queue entry clears rather
-// than lingering. A missing todo is a no-op. Governing: SPEC-0010 REQ "Approval Delivered as a Todo".
-func (s *Store) ResolveApprovalTodo(ctx context.Context, edgeID string) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE todos SET state = 'done', completed_at = now(), updated_at = now()
-		 WHERE queue = $1 AND idempotency_key = $2 AND state NOT IN ('done', 'failed')`,
-		approvalQueue, approvalKey(edgeID))
-	if err != nil {
-		return fmt.Errorf("store: resolve approval todo: %w", err)
-	}
-	return nil
-}
+// A pending friend request is NOT a todo. It is surfaced to the target human directly from its
+// friend_edges row — the row already carries the full legible who/why (from_human, from_persona,
+// to_persona, requested_queues, requested_verbs, reason, provenance_verified, created_at), so a
+// parallel todo was pure duplication of a durable record the Friends view already reads via
+// ListFriendEdges (owner-scoped on to_human). It could not survive ADR-0022 either: an approval todo
+// is HUMAN work with no owning endpoint, and todos.endpoint_id is NOT NULL.
+//
+// Duplicate suppression, which the approval todo nominally provided via its idempotency key, lives
+// where it belongs — the partial unique index idx_friend_edges_live on
+// (from_persona, to_persona, direction) WHERE state IN ('pending','approved') (migration 0005). All
+// three indexed columns are NOT NULL, so there is no NULLS-distinct escape hatch: a re-delivered
+// intake collides in CreateFriendRequest and surfaces as ErrConflict rather than double-listing.
+// (The old approval-todo key never actually deduped — it hung off a null endpoint_id, so its
+// ON CONFLICT arm never fired.)
+//
+// Delegating approval to an agent later WILL mint a normal endpoint-owned todo pinned to the
+// delegate's endpoint; the tenant-isolation rules in SPEC-0003 already govern that case.
+//
+// Governing: ADR-0022, SPEC-0010 REQ "Approval Surfaced from the Friend Edge",
+// SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
 
 // RemoveFriendEdge deletes an owner-scoped edge whose current state is one of fromStates, returning
 // the edge as it was before deletion. It backs the Friends view "Withdraw" (a pending request) and
@@ -530,7 +482,17 @@ func (s *Store) CreateForFriend(ctx context.Context, p CreateForFriendParams) (T
 	// The work is just a todo: durable, owned, dedup'd, leaseable. Attribute it to the requesting
 	// persona (who handed the work) and record the intent as the kind. CreateTodo rings the
 	// LISTEN/NOTIFY doorbell so a worker on the granted queue wakes without polling.
+	//
+	// The owning endpoint is the friendship's own vended endpoint (edge.endpoint_id, which the query
+	// above already proved equals p.EndpointID and is live). That is the correct tenant: approval
+	// minted this endpoint onto a TARGET-owned agent, so the handed-off work lands in the target's
+	// isolated surface and only the target's agent can list or claim it. It is NOT the requesting
+	// friend's endpoint — a friend hands work over, it does not retain visibility into it. Note this
+	// makes the queue string non-load-bearing for isolation: two friendships granted the same queue
+	// name are separated by endpoint_id, which is exactly the leak ADR-0022 closes.
+	// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
 	return s.CreateTodo(ctx, CreateTodoParams{
+		EndpointID:     p.EndpointID,
 		Queue:          p.Queue,
 		Source:         edge.FromPersona,
 		Kind:           p.Intent,

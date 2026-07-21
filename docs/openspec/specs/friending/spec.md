@@ -1,8 +1,9 @@
 ---
-status: implemented
-date: 2026-07-06
-implements: [ADR-0010]
-requires: [SPEC-0009]
+status: amended
+date: 2026-07-21
+amends: [ADR-0010]
+implements: [ADR-0010, ADR-0022]
+requires: [SPEC-0009, SPEC-0003]
 ---
 
 # SPEC-0010: A2A Discovery + Human-Vended Friending
@@ -79,7 +80,7 @@ endpoint's scope MUST equal `requested_scope ∩ human-narrowing`.
 A friend request MUST carry verifiable, OIDC-signed provenance of the requesting **human**
 ([ADR-0011](../../../adrs/ADR-0011-identity-assurance-oidc-passkey-deferred.md)), not the agent's
 self-assertion of who owns it. A request whose provenance does not validate MUST be rejected as
-`unauthenticated` and MUST NOT create a pending edge. The approval todo MUST carry a
+`unauthenticated` and MUST NOT create a pending edge. The pending edge MUST carry a
 `provenance_verified` flag that is `true` only when provenance validated.
 
 #### Scenario: Missing or invalid provenance is rejected
@@ -89,23 +90,66 @@ self-assertion of who owns it. A request whose provenance does not validate MUST
 
 #### Scenario: Approver sees an attested counterparty
 
-- **WHEN** the approval todo is generated for a validly-attested request
+- **WHEN** a pending edge is recorded for a validly-attested request
 - **THEN** its `from_human` field MUST be the OIDC subject of the requesting human (attested, not
   self-asserted) and `provenance_verified` MUST be `true`
 
-### Requirement: Approval Delivered as a Todo
+### Requirement: Approval Surfaced from the Friend Edge
 
-The approval request MUST be delivered as a **todo in the target human's own queue**, dogfooding the
-todo primitive ([ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md)). The approval todo MUST
-carry a legible **who / why / requested-scope** summary — `request_id`, `from_human`, `from_persona`,
-`to_persona`, `requested_scope`, `reason`, and `provenance_verified` — so the human decides with full
-context rather than a raw blob.
+*Amended 2026-07-21 (was "Approval Delivered as a Todo") per
+[ADR-0022](../../../adrs/ADR-0022-endpoint-scoped-todo-ownership.md).*
 
-#### Scenario: Approval lands as a legible todo
+A pending friend request MUST be surfaced to the target human directly from its **`friend_edges`
+row** — it MUST NOT be mirrored into the todo queue. The pending row is already the durable record,
+and it MUST carry the legible **who / why / requested-scope** summary — the edge id (`request_id`),
+`from_human`, `from_persona`, `to_persona`, `requested_queues`, `requested_verbs`, `reason`, and
+`provenance_verified` — so the human decides with full context rather than a raw blob.
 
-- **WHEN** a valid friend request is accepted
-- **THEN** a todo MUST be created in the target human's queue carrying the who/why/requested-scope
-  summary and the `provenance_verified` flag
+The approval view MUST be owner-scoped on `to_human`: a pending request MUST be visible to the
+targeted human and MUST NOT be visible to any other human. Because the view renders the edge's own
+`state`, deciding the edge is what clears it — approval, denial, and revocation MUST each remove the
+request from the pending view by the same write that transitions the edge, with no second record to
+reconcile. A duplicate request for a directional pair that already holds a live (`pending` or
+`approved`) edge MUST collide rather than produce a second listing.
+
+Rationale: a friend approval is **human** work with no owning endpoint, and under ADR-0022 every todo
+is endpoint-owned (`todos.endpoint_id` is NOT NULL), so an approval todo cannot exist. The mirror was
+also redundant — it duplicated a `friend_edges` row that the Friends view already reads — and its
+idempotency key never actually deduped, because the ON CONFLICT arm it relied on hung off a null
+`endpoint_id`. Duplicate suppression now rests solely on the partial unique index
+`idx_friend_edges_live (from_persona, to_persona, direction) WHERE state IN ('pending','approved')`,
+whose three indexed columns are all NOT NULL, so no NULLS-distinct escape hatch exists.
+
+**Forward-looking:** DELEGATING an approval decision to an agent (rather than a human deciding it in
+the Friends view) is a different case and is out of scope here. When it lands it WILL mint a normal
+endpoint-owned todo pinned to the **delegate's** endpoint; the tenant-isolation rules in
+[SPEC-0003](../todo-queue/spec.md) REQ "Endpoint Ownership (Tenant Isolation)" already govern that
+todo, and this requirement's no-mirroring rule is unaffected.
+
+#### Scenario: Pending request is visible to the targeted human
+
+- **WHEN** a valid friend request is accepted for a persona owned by human B
+- **THEN** the pending edge MUST appear in B's pending approvals carrying the
+  who/why/requested-scope summary and the `provenance_verified` flag, and no todo MUST be created for
+  it
+
+#### Scenario: A request is not visible to another human
+
+- **WHEN** a friend request targeting human B's persona is pending
+- **THEN** it MUST NOT appear in any other human's pending approvals
+
+#### Scenario: Deciding the edge clears the pending view
+
+- **WHEN** the target human approves, denies, or revokes the edge
+- **THEN** the request MUST no longer appear in the pending approvals view, because the view reads
+  the edge's own `state` and no companion record exists
+
+#### Scenario: A duplicate request collides rather than double-listing
+
+- **WHEN** a second friend request arrives for a `(from_persona, to_persona, direction)` that already
+  holds a `pending` or `approved` edge
+- **THEN** it MUST be refused as a conflict, no second edge MUST be created, and the target human's
+  pending approvals MUST still show exactly one request for that pair
 
 ### Requirement: Per-Direction, Revocable, Non-Transitive Edges
 
@@ -148,8 +192,8 @@ direct-task delegation intake; A2A's role MUST be limited to discovery/announcem
 
 Discovery MUST be limited to a bounded set of known directories, not the open internet, so an agent
 cannot be friend-requested by an arbitrary unknown party at will. Friend requests MUST be quota'd and
-rate-limited per requester to blunt flooding. Every approval todo MUST present a legible who/why/scope
-summary.
+rate-limited per requester to blunt flooding. Every pending request MUST present a legible
+who/why/scope summary.
 
 #### Scenario: Requests over quota are refused
 
@@ -170,7 +214,7 @@ session; work handoff is authenticated by the vended MCP endpoint credential
 | Endpoint | Auth | Justification |
 |----------|------|---------------|
 | `send_friend_request` (A2A intake) | Required | Must carry verifiable OIDC-signed human provenance; invalid → `unauthenticated`, no edge. |
-| `list_pending_approvals` | Required | Authenticated target human only; lists their own pending approval todos. |
+| `list_pending_approvals` | Required | Authenticated target human only; lists their own pending friend edges (`to_human` scoped). |
 | `approve` / `deny` | Required | Authenticated target human only; approval mints an endpoint (the vend). |
 | `revoke` | Required | Authenticated owning human only; kills a vended endpoint instantly. |
 | `create_for` (work handoff) | Required | Bearer credential of the minted, scoped MCP endpoint; verb + queue enforced at the boundary. |

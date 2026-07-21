@@ -45,11 +45,10 @@ type friendIntakeStore interface {
 	UpsertHuman(ctx context.Context, subject, displayName, email string) (store.Human, error)
 	CountLiveFriendRequestsFrom(ctx context.Context, fromHuman string) (int, error)
 	CreateFriendRequest(ctx context.Context, p store.CreateFriendRequestParams) (store.FriendEdge, error)
-	CreateApprovalTodo(ctx context.Context, p store.ApprovalTodoParams) (store.Todo, bool, error)
 }
 
 // provenanceVerifier verifies a friend request's OIDC-signed human provenance and returns the
-// attested subject (plus display name/email for the legible approval todo). *auth.Authenticator
+// attested subject (plus display name/email for the legible pending-request row). *auth.Authenticator
 // satisfies it; a fake satisfies it in tests. A non-nil error MUST be surfaced as unauthenticated.
 type provenanceVerifier interface {
 	VerifyProvenance(ctx context.Context, rawToken string) (subject, name, email string, err error)
@@ -73,10 +72,10 @@ func newFriendIntake(st friendIntakeStore, v provenanceVerifier, log *slog.Logge
 // persona. Field names are snake_case to match the JSON surface elsewhere.
 type friendRequestBody struct {
 	ToPersona       string   `json:"to_persona"`       // target: a LOCAL published persona id (the card being friended)
-	FromPersona     string   `json:"from_persona"`     // requesting persona handle/URL (opaque; carried for the todo)
+	FromPersona     string   `json:"from_persona"`     // requesting persona handle/URL (opaque; carried on the edge)
 	RequestedQueues []string `json:"requested_queues"` // ceiling the requester asks for; approval narrows
 	RequestedVerbs  []string `json:"requested_verbs"`  // ceiling the requester asks for; approval narrows
-	Reason          string   `json:"reason"`           // legible who/why context for the approval todo
+	Reason          string   `json:"reason"`           // legible who/why, persisted on the friend edge
 	Provenance      string   `json:"provenance"`       // OIDC-signed ID token attesting the requesting human
 }
 
@@ -191,25 +190,13 @@ func (h *friendIntake) Intake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The pending edge also surfaces to the target human as a DURABLE approval todo carrying the
-	// legible who/why (SPEC-0010 "Approval Delivered as a Todo"). It is idempotent on the edge id, so a
-	// re-delivered intake never double-files. A failure here is logged but does not fail the accepted
-	// request: the edge is already durably recorded and the human can still decide from the Friends
-	// view (the todo is the notification, not the source of truth).
-	if _, _, err := h.store.CreateApprovalTodo(r.Context(), store.ApprovalTodoParams{
-		EdgeID:             edge.ID,
-		FromHuman:          requester.ID,
-		FromPersona:        body.FromPersona,
-		ToPersona:          persona.ID,
-		ToHuman:            persona.OwnerHumanID,
-		RequestedQueues:    body.RequestedQueues,
-		RequestedVerbs:     body.RequestedVerbs,
-		Reason:             body.Reason,
-		ProvenanceVerified: true,
-	}); err != nil {
-		h.log.Error("friend intake: create approval todo", "request_id", edge.ID, "err", err)
-	}
-
+	// The pending edge IS the approval surface — no companion todo is minted. The row persisted
+	// above already carries the legible who/why (from_human, from_persona, to_persona,
+	// requested_queues, requested_verbs, reason, provenance_verified) that the target human's Friends
+	// view renders straight out of friend_edges. Duplicate suppression is the idx_friend_edges_live
+	// partial unique index, whose collision surfaced as the ErrConflict branch above — so a
+	// re-delivered intake cannot double-list. Governing: SPEC-0010 REQ "Approval Surfaced from the
+	// Friend Edge", ADR-0022 (todos are endpoint-owned; a human approval has no owning endpoint).
 	h.log.Info("friend request accepted", "request_id", edge.ID, "to_persona", persona.ID,
 		"from_human", requester.ID, "provenance_verified", edge.ProvenanceVerified)
 	writeIntakeJSON(w, http.StatusAccepted, map[string]any{
