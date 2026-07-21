@@ -54,6 +54,7 @@ services:
   # reverse proxy (Ansible-managed, external to this repo) routes /docs to this container with the
   # prefix STRIPPED, e.g. Caddy:
   #   switchboard.stump.wtf {
+  #     redir /docs /docs/ 308            # bare /docs -> /docs/ (handle_path /docs/* excludes it)
   #     handle_path /docs/* { reverse_proxy 127.0.0.1:8081 }
   #     handle { reverse_proxy 127.0.0.1:8080 { flush_interval -1 } }   # the app (see below)
   #   }
