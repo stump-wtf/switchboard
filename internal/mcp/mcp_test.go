@@ -113,7 +113,12 @@ func (f *fakeStore) ListTodos(_ context.Context, endpointID string, queues []str
 	}
 	var out []store.Todo
 	for _, t := range f.todos {
-		if t.EndpointID != "" && t.EndpointID != endpointID {
+		// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)". The match is
+		// unconditional — there is deliberately no "unowned todo is visible to everyone" escape
+		// hatch, because todos.endpoint_id is NOT NULL in the schema. Exempting the empty id would
+		// reintroduce exactly the global-queue visibility this ADR removed, and would let a fixture
+		// that forgot to pin an owner leak across every endpoint sharing the queue name.
+		if t.EndpointID != endpointID {
 			continue
 		}
 		if inQ[t.Queue] && (state == "" || t.State == state) {
@@ -350,6 +355,19 @@ func itoa(n int) string {
 	return string(b[i:])
 }
 
+// endpointIDFor is the single definition of the endpoint id vend derives from a slug. Tests that
+// mint todos MUST pin them to this id: under ADR-0022 todos.endpoint_id is NOT NULL and every
+// read/fan-out path filters on it, so a fixture carrying the wrong id (or none) is silently
+// invisible and its test passes by asserting nothing. Deriving the id here rather than
+// hand-copying the literal keeps fixtures from drifting away from vend.
+func endpointIDFor(slug string) string { return "ep-" + slug }
+
+// defaultTestSlug is the slug the single-endpoint helpers (session, newDoorbellHarness) vend, and
+// defaultTestEndpointID is the endpoint that therefore owns their todos.
+const defaultTestSlug = "agent-a-11111111"
+
+var defaultTestEndpointID = endpointIDFor(defaultTestSlug)
+
 // vend mints a real credential (like the web vend path) and registers it in the fake store.
 func vend(t *testing.T, f *fakeStore, slug string, queues, verbs []string) (token string) {
 	t.Helper()
@@ -358,7 +376,7 @@ func vend(t *testing.T, f *fakeStore, slug string, queues, verbs []string) (toke
 		t.Fatalf("mint credential: %v", err)
 	}
 	f.byHash[hash] = store.AuthEndpoint{
-		ID: "ep-" + slug, AgentID: "ag-1", AgentName: "test-agent", OwnerHumanID: "h-1",
+		ID: endpointIDFor(slug), AgentID: "ag-1", AgentName: "test-agent", OwnerHumanID: "h-1",
 		Slug: slug, ScopeQueues: queues, ScopeVerbs: verbs,
 	}
 	return token

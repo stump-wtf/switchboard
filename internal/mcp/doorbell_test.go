@@ -188,8 +188,9 @@ func publishUntilDelivered(t *testing.T, h *Handler, td store.Todo, events <-cha
 // harnessEndpointID is the endpoint id vend() derives for the doorbell harness's slug. Every todo
 // these tests publish MUST carry it: PublishTodoReady's first check is the ADR-0022 tenant boundary
 // (a doorbell only ever reaches the session owning that todo), so an unpinned fixture is dropped
-// before the queue-scope filter is ever consulted.
-const harnessEndpointID = "ep-agent-a-11111111"
+// before the queue-scope filter is ever consulted. Derived from the shared helper rather than
+// written out, so it cannot drift away from vend and turn these tests into silent no-ops.
+var harnessEndpointID = defaultTestEndpointID
 
 // newDoorbellHarness vends an in-scope endpoint, mounts the handler (Close on cleanup), and
 // returns the pieces the doorbell tests share.
@@ -426,4 +427,68 @@ func TestConcurrentPublishSubscribeClose(t *testing.T) {
 	close(stop)
 	pubWG.Wait()
 	h.Close() // idempotent with the cleanup Close; joins every pump/reaper goroutine
+}
+
+// TestDoorbellNeverCrossesEndpointsOnASharedQueue is the regression test for the cross-tenant leak
+// ADR-0022 closes: two endpoints holding the SAME queue name — the common case, where both agents
+// scope to "reviews" or "github" — must never see each other's work. Before endpoint ownership, a
+// todo was matched by its free-form queue string alone, so agent A's webhook delivery rang agent
+// B's doorbell, across humans.
+//
+// The delivery to A is not incidental: it is the control that proves the fixture is wired to a
+// session that CAN receive, so B's silence is a real tenant filter rather than a todo that never
+// matched anything. Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)",
+// SPEC-0011 REQ "Scope-Filtered Fan-Out".
+func TestDoorbellNeverCrossesEndpointsOnASharedQueue(t *testing.T) {
+	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	const slugA, slugB = "agent-a-11111111", "agent-b-22222222"
+	tokenA := vend(t, f, slugA, []string{"reviews"}, []string{"list_todos", "claim"})
+	tokenB := vend(t, f, slugB, []string{"reviews"}, []string{"list_todos", "claim"})
+	ts, h := newTestServerHandler(t, f)
+
+	sessA := rawInitialize(t, ts.URL+"/mcp/"+slugA, tokenA)
+	eventsA, _ := sessA.openStream()
+	sessB := rawInitialize(t, ts.URL+"/mcp/"+slugB, tokenB)
+	eventsB, _ := sessB.openStream()
+
+	// Owned by A, on the queue BOTH sessions hold. Queue scope alone cannot tell these apart.
+	owned := store.Todo{
+		EndpointID: endpointIDFor(slugA),
+		ID:         "td_a_only", Queue: "reviews", Kind: "pull_request", Source: "github",
+		Title: "A's private work",
+	}
+	publishUntilDelivered(t, h, owned, eventsA)
+
+	// B shares the queue and has an open stream, so anything it receives here is a tenant breach.
+	select {
+	case n := <-eventsB:
+		t.Fatalf("cross-tenant doorbell leak: endpoint %s received a todo owned by %s: %+v",
+			endpointIDFor(slugB), owned.EndpointID, n)
+	case <-time.After(time.Second):
+	}
+}
+
+// TestSystemTodoIsNeverPushedToAgentSessions: a todo with no owning endpoint is operator/Board-only
+// and must never ring an agent's doorbell. The ordering is the proof — the system todo is published
+// first, so if the behavior were unprotected it would arrive before the owned todo that follows it.
+//
+// This asserts the contract, not one line: PublishTodoReady's empty-EndpointID early return is
+// redundant defense-in-depth, because a session's endpointID is never empty and the tenant check
+// below it already drops these. Deleting either guard alone still passes; deleting both fails here.
+// The redundancy is worth keeping — it documents the intent and survives a future refactor that
+// loosens the tenant comparison. Governing: ADR-0022.
+func TestSystemTodoIsNeverPushedToAgentSessions(t *testing.T) {
+	h, url, token, _ := newDoorbellHarness(t)
+
+	sess := rawInitialize(t, url, token)
+	events, _ := sess.openStream()
+
+	// No EndpointID: a system row. On the session's own queue, so only the guard can stop it.
+	h.PublishTodoReady(store.Todo{ID: "td_system", Queue: "reviews", Title: "operator-only"})
+
+	owned := store.Todo{EndpointID: harnessEndpointID, ID: "td_owned", Queue: "reviews", Title: "real work"}
+	n := publishUntilDelivered(t, h, owned, events)
+	if got := n.Params.Meta["todo_id"]; got != "td_owned" {
+		t.Fatalf("system todo was pushed to an agent session: first doorbell was %q, want td_owned", got)
+	}
 }

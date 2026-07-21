@@ -68,15 +68,19 @@ func (f *fakeStore) FriendEdgeAuthorizesDelivery(_ context.Context, _, _ string)
 	return false, nil
 }
 
-// scopedTodo is the fake's tenant lookup: a todo whose EndpointID is pinned (ADR-0022) is visible
-// only to that endpoint. Fixtures that leave EndpointID empty pre-date the pin and pass through, so
-// this adds isolation where a test asks for it without silently rewriting tests that do not.
+// scopedTodo is the fake's tenant lookup: a todo is visible only to the endpoint that owns it.
+//
+// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)". The comparison is
+// unconditional. An earlier revision exempted the empty EndpointID so unpinned fixtures would still
+// resolve; that made the fake strictly more permissive than the schema (endpoint_id is NOT NULL)
+// and reproduced the cross-tenant visibility this ADR exists to remove — a get/claim test could
+// pass against a todo no real endpoint could have reached. Fixtures pin their owner instead.
 func (f *fakeStore) scopedTodo(endpointID, id string) (store.Todo, bool) {
 	t, ok := f.todos[id]
 	if !ok {
 		return store.Todo{}, false
 	}
-	if t.EndpointID != "" && t.EndpointID != endpointID {
+	if t.EndpointID != endpointID {
 		return store.Todo{}, false
 	}
 	return t, true
