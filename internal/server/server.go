@@ -5,6 +5,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -126,6 +128,20 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		// operator states it once here rather than having it derived from a queue name.
 		LegacyEndpointID: os.Getenv("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID"),
 	}.Normalized()
+	// Fail LOUDLY at boot on a misconfigured legacy endpoint rather than quietly at every delivery.
+	// legacyEndpoint() guards only the EMPTY case (→ 503, retriable, nothing persisted). A value
+	// that is non-empty but wrong sails past that guard and dies at the INSERT: a non-uuid string
+	// is a 22P02, and a well-formed uuid naming no endpoint is a 23503 FK violation — both surface
+	// as a 500 on EVERY delivery to /webhooks/{github,stripe,slack,generic/*}, forever. That is the
+	// far more likely operator error (pasting an endpoint slug instead of its uuid), and it defeats
+	// the whole point of the 503 design: providers retry a 503, but GitHub disables a webhook after
+	// repeated 5xx and Stripe retries then drops. The same value backs every queue adapter that
+	// states no EndpointID of its own, where the failure mode is worse still — un-acked messages
+	// redelivered by the broker forever (see adapter.NewStoreSink).
+	// Governing: ADR-0022, SPEC-0001 REQ "Error Handling Standards".
+	if err := validateLegacyEndpointID(ctx, st, icfg.LegacyEndpointID); err != nil {
+		return err
+	}
 	ing := ingest.New(st, hub, log, icfg)
 	// Ephemeral received-lane instrumentation (SPEC-0015 REQ "Patch Panel Board"): the receivers
 	// report in-flight deliveries — arrival, redacted rejection, dedup collapse — so the board's
@@ -657,4 +673,34 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 			}
 		}
 	}
+}
+
+// validateLegacyEndpointID checks the operator-designated legacy receiver endpoint at BOOT, so a
+// typo is a refused startup with an actionable message instead of a permanent 500 on every legacy
+// delivery. Unset is valid and stays valid: the receivers then answer 503 ("receiver not
+// configured"), which is the documented interim behaviour until PR 2 retires them.
+//
+// The probe is EndpointOwnerHuman, which resolves only ACTIVE endpoints. That deliberately rejects a
+// revoked or expired endpoint too: it is well-formed and really exists, but every todo minted onto
+// it would be undrainable, which is a configuration error worth catching at boot rather than
+// discovering as a silently growing pile of unreachable work.
+//
+// INTERIM, REMOVED IN PR 2 alongside Config.LegacyEndpointID and the receivers it serves.
+// Governing: ADR-0022, SPEC-0001 REQ "Error Handling Standards".
+func validateLegacyEndpointID(ctx context.Context, st *store.Store, id string) error {
+	if id == "" {
+		return nil // unset is a supported configuration; the receivers answer 503.
+	}
+	if !store.IsUUID(id) {
+		return fmt.Errorf("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID=%q is not a uuid "+
+			"(it must be an endpoint's id, not its slug or name)", id)
+	}
+	if _, err := st.EndpointOwnerHuman(ctx, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID=%s names no active endpoint "+
+				"(unknown, revoked, or expired); todos minted onto it would be undrainable", id)
+		}
+		return fmt.Errorf("validating SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID: %w", err)
+	}
+	return nil
 }
