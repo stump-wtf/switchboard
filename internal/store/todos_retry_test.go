@@ -13,15 +13,17 @@ import (
 func TestFailSchedulesBackoffRetry(t *testing.T) {
 	s, ctx := testStore(t)
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "flaky", IdempotencyKey: "rb1"})
+	ep := seedEndpoint(t, s, ctx, "fail-schedules-backoff-retry")
+
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "flaky", IdempotencyKey: "rb1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	before := time.Now()
-	ft, err := s.FailTodo(ctx, td.ID, "w", []byte(`{"reason":"boom"}`))
+	ft, err := s.FailTodo(ctx, ep, td.ID, "w", []byte(`{"reason":"boom"}`))
 	if err != nil {
 		t.Fatalf("fail: %v", err)
 	}
@@ -40,10 +42,10 @@ func TestFailSchedulesBackoffRetry(t *testing.T) {
 	}
 
 	// The open window blocks both the direct claim and the pool scan.
-	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
 		t.Fatalf("claim during open retry window = %v, want ErrConflict", err)
 	}
-	if _, err := s.ClaimNext(ctx, []string{"q"}, "w", time.Hour); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ClaimNext(ctx, ep, []string{"q"}, "w", time.Hour); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ClaimNext during open retry window = %v, want ErrNotFound (nothing claimable)", err)
 	}
 
@@ -65,7 +67,7 @@ func TestFailSchedulesBackoffRetry(t *testing.T) {
 	if len(verbs) != 1 || verbs[0] != "pending" {
 		t.Fatalf("hook verbs after requeue = %v, want [pending]", verbs)
 	}
-	rq, err := s.GetTodo(ctx, td.ID)
+	rq, err := s.GetTodo(ctx, ep, td.ID)
 	if err != nil {
 		t.Fatalf("get after requeue: %v", err)
 	}
@@ -85,21 +87,23 @@ func TestFailSchedulesBackoffRetry(t *testing.T) {
 func TestDueRetryIsClaimableDirectly(t *testing.T) {
 	s, ctx := testStore(t)
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "qdirect", Title: "flaky", IdempotencyKey: "rb2"})
+	ep := seedEndpoint(t, s, ctx, "due-retry-is-claimable-directly")
+
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "qdirect", Title: "flaky", IdempotencyKey: "rb2"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := s.FailTodo(ctx, td.ID, "w", nil); err != nil {
+	if _, err := s.FailTodo(ctx, ep, td.ID, "w", nil); err != nil {
 		t.Fatalf("fail: %v", err)
 	}
 	if _, err := s.pool.Exec(ctx, `UPDATE todos SET next_retry_at = now() - interval '1 second' WHERE id=$1`, td.ID); err != nil {
 		t.Fatalf("rewind retry window: %v", err)
 	}
 	// The pool scan picks the due retry up without any scheduler run, clearing the window.
-	c, err := s.ClaimNext(ctx, []string{"qdirect"}, "w2", time.Hour)
+	c, err := s.ClaimNext(ctx, ep, []string{"qdirect"}, "w2", time.Hour)
 	if err != nil {
 		t.Fatalf("ClaimNext of due retry: %v", err)
 	}
@@ -114,17 +118,19 @@ func TestDueRetryIsClaimableDirectly(t *testing.T) {
 func TestDeadLetterHasNoRetryWindowAndManualRetryOverrides(t *testing.T) {
 	s, ctx := testStore(t)
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "qdl", Title: "doomed", IdempotencyKey: "rb3"})
+	ep := seedEndpoint(t, s, ctx, "dead-letter-has-no-retry-window-and-manual-retry-overrides")
+
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "qdl", Title: "doomed", IdempotencyKey: "rb3"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if _, err := s.pool.Exec(ctx, `UPDATE todos SET max_attempts=1 WHERE id=$1`, td.ID); err != nil {
 		t.Fatalf("cap attempts: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	dl, err := s.FailTodo(ctx, td.ID, "w", nil)
+	dl, err := s.FailTodo(ctx, ep, td.ID, "w", nil)
 	if err != nil {
 		t.Fatalf("fail: %v", err)
 	}
@@ -138,17 +144,17 @@ func TestDeadLetterHasNoRetryWindowAndManualRetryOverrides(t *testing.T) {
 
 	// Manual retry ("Retry now") is also the override of an open window: re-fail a fresh todo below
 	// the cap, then retry it immediately without waiting out the backoff.
-	td2, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "qdl", Title: "impatient", IdempotencyKey: "rb4"})
+	td2, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "qdl", Title: "impatient", IdempotencyKey: "rb4"})
 	if err != nil {
 		t.Fatalf("create 2: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td2.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td2.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim 2: %v", err)
 	}
-	if _, err := s.FailTodo(ctx, td2.ID, "w", nil); err != nil {
+	if _, err := s.FailTodo(ctx, ep, td2.ID, "w", nil); err != nil {
 		t.Fatalf("fail 2: %v", err)
 	}
-	rt, err := s.RetryTodo(ctx, td2.ID)
+	rt, err := s.RetryTodo(ctx, ep, td2.ID)
 	if err != nil {
 		t.Fatalf("manual retry during open window: %v", err)
 	}
@@ -170,21 +176,23 @@ func TestDeadLetterHasNoRetryWindowAndManualRetryOverrides(t *testing.T) {
 func TestRedeliveryDuringBackoffWindowDedupes(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "redelivery-during-backoff-window-dedupes")
+
 	const key = "rb-redeliver"
-	td, created, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "qrd", Title: "flaky", IdempotencyKey: key})
+	td, created, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "qrd", Title: "flaky", IdempotencyKey: key})
 	if err != nil || !created {
 		t.Fatalf("create: created=%v err=%v", created, err)
 	}
-	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	ft, err := s.FailTodo(ctx, td.ID, "w", nil)
+	ft, err := s.FailTodo(ctx, ep, td.ID, "w", nil)
 	if err != nil || ft.NextRetryAt == nil {
 		t.Fatalf("fail: retry=%v err=%v, want a scheduled window", ft.NextRetryAt, err)
 	}
 
 	// Redelivery while the backoff window is open MUST collapse onto the parked retry — no new row.
-	dup, created2, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "qrd", Title: "flaky again", IdempotencyKey: key})
+	dup, created2, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "qrd", Title: "flaky again", IdempotencyKey: key})
 	if err != nil {
 		t.Fatalf("redeliver during window: %v", err)
 	}
@@ -210,7 +218,7 @@ func TestRedeliveryDuringBackoffWindowDedupes(t *testing.T) {
 	if rows != 1 {
 		t.Fatalf("todos carrying the key = %d, want exactly 1 (dedup held through the window)", rows)
 	}
-	c, err := s.ClaimNext(ctx, []string{"qrd"}, "w2", time.Hour)
+	c, err := s.ClaimNext(ctx, ep, []string{"qrd"}, "w2", time.Hour)
 	if err != nil || c.ID != td.ID {
 		t.Fatalf("ClaimNext after requeue = id:%s err:%v, want the re-queued todo claimable", c.ID, err)
 	}
@@ -220,11 +228,11 @@ func TestRedeliveryDuringBackoffWindowDedupes(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE todos SET attempt=max_attempts WHERE id=$1`, td.ID); err != nil {
 		t.Fatalf("exhaust attempts: %v", err)
 	}
-	dl, err := s.FailTodo(ctx, td.ID, "w2", nil)
+	dl, err := s.FailTodo(ctx, ep, td.ID, "w2", nil)
 	if err != nil || dl.NextRetryAt != nil {
 		t.Fatalf("dead-letter: retry=%v err=%v, want failed with no window", dl.NextRetryAt, err)
 	}
-	fresh, created3, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "qrd", Title: "third time", IdempotencyKey: key})
+	fresh, created3, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "qrd", Title: "third time", IdempotencyKey: key})
 	if err != nil || !created3 || fresh.ID == td.ID {
 		t.Fatalf("redeliver after dead-letter: created=%v id=%s err=%v, want a NEW todo", created3, fresh.ID, err)
 	}

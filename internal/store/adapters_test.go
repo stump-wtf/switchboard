@@ -326,6 +326,8 @@ func TestRotateProviderSecret(t *testing.T) {
 func TestRemoveProviderKeepsEventsAndTodos(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "remove-provider", "doomed")
+
 	if _, err := s.SeedProvider(ctx, ProviderSeed{
 		Name: "doomed", Family: "webhook", Kind: "generic", TrustMode: "token", Secret: "tok",
 	}); err != nil {
@@ -334,7 +336,7 @@ func TestRemoveProviderKeepsEventsAndTodos(t *testing.T) {
 	_, td, created, err := s.CreateEventTodo(ctx,
 		EventInput{Source: "doomed", Family: "webhook", ExternalID: "d1", TrustMode: "token",
 			Verified: false, Payload: []byte(`{}`)},
-		CreateTodoParams{Queue: "doomed", Source: "doomed", Kind: "webhook", Title: "webhook doomed delivery",
+		CreateTodoParams{EndpointID: ep, Queue: "doomed", Source: "doomed", Kind: "webhook", Title: "webhook doomed delivery",
 			Payload: []byte(`{}`), IdempotencyKey: "d1"})
 	if err != nil || !created {
 		t.Fatalf("ingest fixture: created=%v err=%v", created, err)
@@ -364,7 +366,7 @@ func TestRemoveProviderKeepsEventsAndTodos(t *testing.T) {
 	if !found {
 		t.Fatal("removal must NOT delete previously ingested events")
 	}
-	got, err := s.GetTodo(ctx, td.ID)
+	got, err := s.GetTodo(ctx, ep, td.ID)
 	if err != nil || got.Queue != "doomed" {
 		t.Fatalf("removal must NOT delete todos: %+v err=%v", got, err)
 	}
@@ -379,10 +381,12 @@ func TestRemoveProviderKeepsEventsAndTodos(t *testing.T) {
 func TestProviderHealthBySource(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "provider-health", "hb")
+
 	if _, _, _, err := s.CreateEventTodo(ctx,
 		EventInput{Source: "hb", Family: "webhook", ExternalID: "h1", TrustMode: "token",
 			Verified: false, Payload: []byte(`{}`)},
-		CreateTodoParams{Queue: "hb", Source: "hb", Kind: "webhook", Title: "t",
+		CreateTodoParams{EndpointID: ep, Queue: "hb", Source: "hb", Kind: "webhook", Title: "t",
 			Payload: []byte(`{}`), IdempotencyKey: "h1"}); err != nil {
 		t.Fatalf("ingest fixture: %v", err)
 	}

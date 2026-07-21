@@ -246,11 +246,11 @@ func TestDeleteEndpointPreservesAgentWithRemainingReferences(t *testing.T) {
 		ag := mustAgent(t, s, ctx, owner.ID, "worker-bot")
 		ep := mustEndpoint(t, s, ctx, ag.ID, "gckeep-todo")
 		// A todo claimed by the agent records owner = "agent:<id>" — the lease the author flagged.
-		td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "do the thing"})
+		td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep.ID, Queue: "q", Title: "do the thing"})
 		if err != nil {
 			t.Fatalf("create todo: %v", err)
 		}
-		if _, err := s.ClaimTodo(ctx, td.ID, "agent:"+ag.ID, time.Hour); err != nil {
+		if _, err := s.ClaimTodo(ctx, ep.ID, td.ID, "agent:"+ag.ID, time.Hour); err != nil {
 			t.Fatalf("agent claim: %v", err)
 		}
 		if err := s.RevokeEndpoint(ctx, ep.ID, owner.ID); err != nil {
@@ -580,12 +580,13 @@ func TestKnownQueuesEnumeratesTodoAndScopeQueues(t *testing.T) {
 	s, ctx := testStore(t)
 	h := mustHuman(t, s, ctx, "pocket|queues", "Queues Owner")
 	ag := mustAgent(t, s, ctx, h.ID, "queues-bot")
+	todoEP := seedEndpoint(t, s, ctx, "known-queues", "reviews")
 
-	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "t1", IdempotencyKey: "kq1"}); err != nil {
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: todoEP, Queue: "reviews", Title: "t1", IdempotencyKey: "kq1"}); err != nil {
 		t.Fatalf("create todo: %v", err)
 	}
 	// A second todo on the same queue must not duplicate the name.
-	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "t2", IdempotencyKey: "kq2"}); err != nil {
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: todoEP, Queue: "reviews", Title: "t2", IdempotencyKey: "kq2"}); err != nil {
 		t.Fatalf("create todo: %v", err)
 	}
 	slug, err := MintSlug("queues-bot")

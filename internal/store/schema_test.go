@@ -51,10 +51,12 @@ func TestSchemaHotPathIndexes(t *testing.T) {
 func TestHotClaimScanUsesPartialIndex(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "hot-claim-scan-uses-partial-index")
+
 	// Seed skew: terminal todos plus a few pending. The partial index holds only the pending rows,
 	// so serving the claim scan through it physically cannot touch the terminal backlog.
 	mkTodo := func(title string) string {
-		td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: title})
+		td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: title})
 		if err != nil {
 			t.Fatalf("create todo: %v", err)
 		}
@@ -62,10 +64,10 @@ func TestHotClaimScanUsesPartialIndex(t *testing.T) {
 	}
 	for i := 0; i < 50; i++ {
 		id := mkTodo("term")
-		if _, err := s.ClaimTodo(ctx, id, "w", 0); err != nil {
+		if _, err := s.ClaimTodo(ctx, ep, id, "w", 0); err != nil {
 			t.Fatalf("claim: %v", err)
 		}
-		if _, err := s.CompleteTodo(ctx, id, "w", nil); err != nil {
+		if _, err := s.CompleteTodo(ctx, ep, id, "w", nil); err != nil {
 			t.Fatalf("complete: %v", err)
 		}
 	}

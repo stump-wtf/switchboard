@@ -14,10 +14,13 @@ import (
 func TestConcurrentClaimsAreDistinct(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "concurrent-claims-are-distinct")
+
 	const n = 12
 	for i := 0; i < n; i++ {
 		if _, _, err := s.CreateTodo(ctx, CreateTodoParams{
-			Queue: "race", Title: fmt.Sprintf("t%d", i), IdempotencyKey: fmt.Sprintf("rk%d", i),
+			EndpointID: ep,
+			Queue:      "race", Title: fmt.Sprintf("t%d", i), IdempotencyKey: fmt.Sprintf("rk%d", i),
 		}); err != nil {
 			t.Fatalf("seed %d: %v", i, err)
 		}
@@ -33,7 +36,7 @@ func TestConcurrentClaimsAreDistinct(t *testing.T) {
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
-			td, err := s.ClaimNext(ctx, []string{"race"}, fmt.Sprintf("w%d", worker), time.Minute)
+			td, err := s.ClaimNext(ctx, ep, []string{"race"}, fmt.Sprintf("w%d", worker), time.Minute)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -64,13 +67,15 @@ func TestConcurrentClaimsAreDistinct(t *testing.T) {
 func TestZeroRowUpdatesAreClassified(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "zero-row-updates-are-classified")
+
 	// Absent id → ErrNotFound for every conditional transition, and the returned todo is the zero value.
 	for name, call := range map[string]func() (Todo, error){
-		"ClaimTodo": func() (Todo, error) { return s.ClaimTodo(ctx, "td_absent", "w", time.Minute) },
-		"Complete":  func() (Todo, error) { return s.CompleteTodo(ctx, "td_absent", "w", nil) },
-		"Fail":      func() (Todo, error) { return s.FailTodo(ctx, "td_absent", "w", nil) },
-		"Heartbeat": func() (Todo, error) { return s.HeartbeatTodo(ctx, "td_absent", "w", time.Minute) },
-		"Retry":     func() (Todo, error) { return s.RetryTodo(ctx, "td_absent") },
+		"ClaimTodo": func() (Todo, error) { return s.ClaimTodo(ctx, ep, "td_absent", "w", time.Minute) },
+		"Complete":  func() (Todo, error) { return s.CompleteTodo(ctx, ep, "td_absent", "w", nil) },
+		"Fail":      func() (Todo, error) { return s.FailTodo(ctx, ep, "td_absent", "w", nil) },
+		"Heartbeat": func() (Todo, error) { return s.HeartbeatTodo(ctx, ep, "td_absent", "w", time.Minute) },
+		"Retry":     func() (Todo, error) { return s.RetryTodo(ctx, ep, "td_absent") },
 	} {
 		td, err := call()
 		if !errors.Is(err, ErrNotFound) {
@@ -82,15 +87,15 @@ func TestZeroRowUpdatesAreClassified(t *testing.T) {
 	}
 
 	// Existing but wrong-state (pending, never claimed) → ErrConflict, never a silent success.
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "cls"})
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "cls"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	for name, call := range map[string]func() (Todo, error){
-		"Complete":  func() (Todo, error) { return s.CompleteTodo(ctx, td.ID, "w", nil) },
-		"Fail":      func() (Todo, error) { return s.FailTodo(ctx, td.ID, "w", nil) },
-		"Heartbeat": func() (Todo, error) { return s.HeartbeatTodo(ctx, td.ID, "w", time.Minute) },
-		"Retry":     func() (Todo, error) { return s.RetryTodo(ctx, td.ID) },
+		"Complete":  func() (Todo, error) { return s.CompleteTodo(ctx, ep, td.ID, "w", nil) },
+		"Fail":      func() (Todo, error) { return s.FailTodo(ctx, ep, td.ID, "w", nil) },
+		"Heartbeat": func() (Todo, error) { return s.HeartbeatTodo(ctx, ep, td.ID, "w", time.Minute) },
+		"Retry":     func() (Todo, error) { return s.RetryTodo(ctx, ep, td.ID) },
 	} {
 		if _, err := call(); !errors.Is(err, ErrConflict) {
 			t.Fatalf("%s(pending) = %v, want ErrConflict", name, err)

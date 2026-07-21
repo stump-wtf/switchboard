@@ -43,15 +43,16 @@ func TestBoardStats(t *testing.T) {
 			t.Fatalf("seed event %s: %v", key, err)
 		}
 	}
+	ep := seedEndpoint(t, s, ctx, "board-stats", "reviews")
 	var claimID string
 	for i := 0; i < 3; i++ {
-		td, created, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "todo"})
+		td, created, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "reviews", Title: "todo"})
 		if err != nil || !created {
 			t.Fatalf("seed todo %d: created=%v err=%v", i, created, err)
 		}
 		claimID = td.ID
 	}
-	if _, err := s.ClaimTodo(ctx, claimID, "worker-1", time.Minute); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, claimID, "worker-1", time.Minute); err != nil {
 		t.Fatalf("claim seed todo: %v", err)
 	}
 
