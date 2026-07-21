@@ -241,11 +241,11 @@ func (h *Handler) heartbeatTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[heartb
 }
 
 // guardQueue enforces the queue grant before any state-changing store call: the target todo is
-// read (never mutated) under the endpoint's tenant scope (ADR-0021) and its queue checked against
+// read (never mutated) under the endpoint's tenant scope (ADR-0022) and its queue checked against
 // the endpoint's grant. Out-of-scope targets are refused with the stable forbidden code and no side
 // effects. The endpoint_id predicate is the tenant boundary; the queue check is a secondary
 // intra-endpoint scope.
-// Governing: SPEC-0006 REQ "Scope Enforcement at the Boundary", ADR-0021.
+// Governing: SPEC-0006 REQ "Scope Enforcement at the Boundary", ADR-0022.
 func (h *Handler) guardQueue(ctx context.Context, ep store.AuthEndpoint, tool, id string) error {
 	t, err := h.store.GetTodo(ctx, ep.ID, id)
 	if err != nil {

@@ -2,7 +2,7 @@
 status: amended
 date: 2026-07-21
 amends: [ADR-0007]
-implements: [ADR-0007, ADR-0021]
+implements: [ADR-0007, ADR-0022]
 requires: [SPEC-0004]
 ---
 
@@ -229,7 +229,7 @@ observable via structured logging.
 
 ### Requirement: Endpoint Ownership (Tenant Isolation)
 
-Governing: ADR-0021. Every todo MUST carry a non-null `endpoint_id` foreign key to the
+Governing: ADR-0022. Every todo MUST carry a non-null `endpoint_id` foreign key to the
 `endpoints` table, pinning it to exactly one vended MCP endpoint for its entire lifecycle.
 The endpoint's owning human ([ADR-0008](../../../adrs/ADR-0008-human-principal-vended-endpoints.md))
 is the todo's tenant. Every todo query — `ListTodos`, `ClaimTodo`, `GetTodo`,
@@ -260,7 +260,7 @@ within an endpoint's grant, preserving SPEC-0011 "Scope-Filtered Fan-Out" at a f
 
 ### Requirement: Per-Endpoint Idempotency and Dedup
 
-Governing: ADR-0021. Creating a todo MUST be idempotent on `(endpoint_id, idempotency_key)`
+Governing: ADR-0022. Creating a todo MUST be idempotent on `(endpoint_id, idempotency_key)`
 among LIVE rows — `state <> 'done' AND (state <> 'failed' OR next_retry_at IS NOT NULL)`.
 The dedup namespace is per-endpoint, not global, so two endpoints that happen to share an
 idempotency key (e.g. the same GitHub delivery id routed to two endpoints) each retain

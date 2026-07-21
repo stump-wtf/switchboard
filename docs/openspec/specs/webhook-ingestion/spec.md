@@ -2,7 +2,7 @@
 status: amended
 date: 2026-07-21
 amends: [ADR-0003, ADR-0014]
-implements: [ADR-0003, ADR-0014, ADR-0021]
+implements: [ADR-0003, ADR-0014, ADR-0022]
 ---
 
 # SPEC-0001: Webhook Ingestion (Push Adapters)
@@ -24,7 +24,7 @@ modes are honest and ordered — `signed` (HMAC verified, `verified=true`) is st
 than `open` (no check, `verified=false`, off by default). The trust mode is stored on every event and
 surfaced everywhere so a human never has to guess whether a delivery was authenticated.
 
-**As of ADR-0021, all webhook ingestion flows through agent self-managed webhooks**
+**As of ADR-0022, all webhook ingestion flows through agent self-managed webhooks**
 ([ADR-0012](../../../adrs/ADR-0012-agents-self-manage-webhooks.md)) served at
 `POST /webhooks/w/{ingest_token}` (`internal/ingest/selfmanaged.go`). Every webhook is owned by
 exactly one vended MCP endpoint, and every todo produced by a delivery is pinned to that endpoint
@@ -171,7 +171,7 @@ placeholder. Full signatures, tokens, and secrets MUST NOT be logged or persiste
 
 ### Requirement: Enqueue Accepted Delivery as Endpoint-Owned Todo
 
-Governing: ADR-0021, ADR-0007. An accepted delivery MUST normalize to the common todo shape and
+Governing: ADR-0022, ADR-0007. An accepted delivery MUST normalize to the common todo shape and
 create a durable todo **pinned to the webhook's owning endpoint** (`endpoint_id` from
 `endpoint_webhooks.endpoint_id`), via the shared back-half contract. The todo MUST reference the
 persisted event, carry a human-legible title, and be published to the live hub so any attached agent
@@ -189,7 +189,7 @@ that routed fan-out to N endpoints dedups per-target independently.
 
 ### Requirement: Deterministic Route Fan-Out (Token-Free)
 
-Governing: ADR-0021. A webhook MAY be routed to N target endpoints via the `webhook_routes` table.
+Governing: ADR-0022. A webhook MAY be routed to N target endpoints via the `webhook_routes` table.
 When a delivery arrives, the receiver MUST resolve the webhook's target endpoints and create **one
 todo per target endpoint**, each pinned to that target, in a single transaction with the event row
 (atomic across targets: all commit or none). If no routes are configured, the target set is the
@@ -235,7 +235,7 @@ internal detail, and MUST be logged with structured context.
 ### Authentication
 
 All ingestion endpoints authenticate the *delivery*, not a Switchboard human/agent session. As of
-ADR-0021, the only ingestion endpoint is the self-managed webhook receiver; the operator-configured
+ADR-0022, the only ingestion endpoint is the self-managed webhook receiver; the operator-configured
 signed/token/open receivers are retired (they carried no endpoint owner).
 
 | Endpoint | Auth | Justification |

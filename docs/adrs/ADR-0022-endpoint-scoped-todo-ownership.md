@@ -5,7 +5,7 @@ decision-makers: Joe Stump
 related: [ADR-0007, ADR-0008, ADR-0010, ADR-0012, ADR-0013]
 ---
 
-# ADR-0021: Endpoint-Scoped Todo Ownership and Webhook Route Fan-Out
+# ADR-0022: Endpoint-Scoped Todo Ownership and Webhook Route Fan-Out
 
 ## Context and Problem Statement
 
@@ -30,9 +30,9 @@ Separately, the intended product direction (per Joe) is that a single webhook sh
 resulting work reaches Agent B (Deployer) and Agent C (Reviewer) as well as A. That routing
 must be **deterministic and token-free** once configured — it cannot require the agent to
 spend model tokens invoking `create_for` on every delivery. The existing
-[ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md) A2A task model covers the
-ad-hoc case (one agent handing one todo to another); it does not cover deterministic
-delivery fan-out from a webhook.
+[ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md) cross-agent model covers the
+ad-hoc case (one agent handing one todo to another via `create_for`); it does not cover
+deterministic delivery fan-out from a webhook.
 
 ## Decision Drivers
 
@@ -200,8 +200,15 @@ flowchart TB
 
 * Todos as the durable core primitive: [ADR-0007](ADR-0007-todos-as-core-primitive.md).
 * Human-principal vended endpoints: [ADR-0008](ADR-0008-human-principal-vended-endpoints.md).
-* A2A discovery and friending (the future route-population path):
-  [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md).
+* A2A discovery and human-vended friending — the future route-population path is the
+  friend edge, not A2A transport: [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md).
+  Note that ADR-0021 (A2A as a first-class task-delegation transport) supersedes ADR-0010,
+  but it supersedes only ADR-0010's *transport* stance (that cross-agent work may land
+  solely as a todo via `create_for`). ADR-0010's **friending flow** — discover, request,
+  human approval, vend — is explicitly carried forward unchanged by ADR-0021, and it is
+  that flow, not the superseded transport stance, that this ADR depends on. Routing a
+  webhook to another agent's endpoint requires an approved `friend_edges` row regardless of
+  which transport ADR is in force.
 * Agent self-managed webhooks (the owner-carries-endpoint invariant):
   [ADR-0012](ADR-0012-agents-self-manage-webhooks.md).
 * Channels push delivery (the doorbell that leaked): [ADR-0013](ADR-0013-channels-push-delivery.md).

@@ -1,13 +1,13 @@
 package store
 
 // Webhook route fan-out: maps a webhook to N target endpoints for deterministic, token-free
-// delivery routing (ADR-0021). At ingest time the self-managed receiver resolves a webhook's
+// delivery routing (ADR-0022). At ingest time the self-managed receiver resolves a webhook's
 // target endpoints via this table and creates one todo per target, each pinned to that target.
 // When no rows exist for a webhook the target set is the singleton {webhook.endpoint_id}.
 // Routes are populated by human-approved actions (friending, a future routing verb) — never by a
 // per-delivery agent decision.
 //
-// Governing: ADR-0021, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
+// Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
 
 import (
 	"context"
@@ -27,7 +27,7 @@ type WebhookRoute struct {
 // on (webhook_id, target_endpoint_id) — re-adding an existing route is a no-op. The route MUST be
 // granted by a human who owns the webhook (the caller enforces ownership); the webhook's owning
 // endpoint is implicitly always a target, so a route targeting the owner endpoint is redundant but
-// harmless. Governing: ADR-0021.
+// harmless. Governing: ADR-0022.
 func (s *Store) AddWebhookRoute(ctx context.Context, webhookID, targetEndpointID, grantedByHumanID string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO webhook_routes (webhook_id, target_endpoint_id, granted_by_human_id)
@@ -79,7 +79,7 @@ func (s *Store) ListWebhookRoutes(ctx context.Context, webhookID string) ([]Webh
 // the delivery-path read the self-managed receiver calls once per delivery to decide how many
 // todos to create. An empty slice (owner not resolvable) means no work is produced — the caller
 // SHOULD treat that as a misconfiguration and 503 rather than silently dropping the delivery.
-// Governing: ADR-0021, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
+// Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
 func (s *Store) ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error) {
 	// The owner endpoint is always a target. Explicit routes may add more. De-dup preserving the
 	// owner first so the first todo is always the owner's (stable ordering aids testing).
