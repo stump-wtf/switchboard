@@ -46,11 +46,14 @@ func getHX(t *testing.T, r chi.Router, token, path string) *httptest.ResponseRec
 func TestTodosViewAndDrawerFlow(t *testing.T) {
 	r, st, ctx := newDBRouter(t)
 	h, token := mintSession(t, st, ctx, "todos-op", "Op", "op@example.com")
+	// Every todo names its owning endpoint (ADR-0022; todos.endpoint_id is NOT NULL), so the view
+	// tests seed a real tenant rather than a bare queue string.
+	ep := seedEndpoint(t, st, ctx, h.ID, "todos-view-agent", "hash-todos", "sbk_todos0")
 
 	// A webhook-born todo lands in the durable queue.
 	_, td, created, err := st.CreateEventTodo(ctx,
 		store.EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "d-flow", TrustMode: "signed", Verified: true, Payload: []byte(`{"action":"opened"}`)},
-		store.CreateTodoParams{Queue: "reviews", Source: "github", Kind: "push", Title: "review", Payload: []byte(`{"action":"opened"}`), IdempotencyKey: "d-flow"})
+		store.CreateTodoParams{EndpointID: ep.ID, Queue: "reviews", Source: "github", Kind: "push", Title: "review", Payload: []byte(`{"action":"opened"}`), IdempotencyKey: "d-flow"})
 	if err != nil || !created {
 		t.Fatalf("seed todo: created=%v err=%v", created, err)
 	}
@@ -106,7 +109,10 @@ func TestTodosViewAndDrawerFlow(t *testing.T) {
 	if !strings.Contains(claim.Body.String(), "sb-lease") || !strings.Contains(claim.Body.String(), "/release") {
 		t.Errorf("claim response should be the drawer with a lease card: %.300s", claim.Body.String())
 	}
-	got, _ := st.GetTodo(ctx, td.ID)
+	// Read back through the ENDPOINT SCOPE: this asserts the operator's action drove the real store
+	// transition and that the todo is still pinned to the endpoint that owned it — an operator
+	// claim moves state, never tenancy.
+	got, _ := st.GetTodo(ctx, ep.ID, td.ID)
 	if got.State != "claimed" || got.Owner != "op:"+h.ID {
 		t.Fatalf("todo after claim = %+v, want claimed by op:%s", got, h.ID)
 	}
@@ -116,7 +122,7 @@ func TestTodosViewAndDrawerFlow(t *testing.T) {
 	if complete.Code != http.StatusOK {
 		t.Fatalf("POST complete: %d body=%s", complete.Code, complete.Body.String())
 	}
-	done, _ := st.GetTodo(ctx, td.ID)
+	done, _ := st.GetTodo(ctx, ep.ID, td.ID)
 	if done.State != "done" {
 		t.Fatalf("todo after complete = %q, want done", done.State)
 	}
@@ -133,9 +139,10 @@ func TestTodosViewAndDrawerFlow(t *testing.T) {
 // A table-row action (HX-Target sb-tr-<id>) returns the refreshed row, not the drawer.
 func TestTodoRowActionReturnsRow(t *testing.T) {
 	r, st, ctx := newDBRouter(t)
-	_, token := mintSession(t, st, ctx, "row-op", "Op", "row@example.com")
+	h, token := mintSession(t, st, ctx, "row-op", "Op", "row@example.com")
+	ep := seedEndpoint(t, st, ctx, h.ID, "row-view-agent", "hash-row", "sbk_row000")
 
-	td, _, err := st.CreateTodo(ctx, store.CreateTodoParams{Queue: "reviews", Source: "github", Kind: "push", Title: "t", IdempotencyKey: "row-key"})
+	td, _, err := st.CreateTodo(ctx, store.CreateTodoParams{EndpointID: ep.ID, Queue: "reviews", Source: "github", Kind: "push", Title: "t", IdempotencyKey: "row-key"})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}

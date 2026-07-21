@@ -58,22 +58,45 @@ func TestDoorbellGatePrunesExpiredEntries(t *testing.T) {
 	}
 }
 
-// fakeDoorbellStore returns a canned pending set (or error) for nudgeDoorbells.
+// fakeDoorbellStore returns a canned pending set (or error) for nudgeDoorbells, recording WHICH of
+// the two reads the nudge chose and with what scope. Which read runs is the whole point: the
+// endpoint-scoped one spends the batch budget on the tenant the wakeup was actually about, the
+// cross-endpoint one is the legacy-payload fallback.
 type fakeDoorbellStore struct {
 	todos []store.Todo
 	err   error
-	queue string
+
+	scopedCalls  int    // PendingDoorbellTodos (endpoint-scoped) invocations
+	byQueueCalls int    // PendingDoorbellTodosByQueue (cross-endpoint fallback) invocations
+	endpointID   string // scope the nudge read with
+	queue        string
 }
 
-func (f *fakeDoorbellStore) PendingDoorbellTodos(_ context.Context, queue string, _ int) ([]store.Todo, error) {
+func (f *fakeDoorbellStore) PendingDoorbellTodos(_ context.Context, endpointID, queue string, _ int) ([]store.Todo, error) {
+	f.scopedCalls++
+	f.endpointID, f.queue = endpointID, queue
+	return f.todos, f.err
+}
+
+func (f *fakeDoorbellStore) PendingDoorbellTodosByQueue(_ context.Context, queue string, _ int) ([]store.Todo, error) {
+	f.byQueueCalls++
 	f.queue = queue
 	return f.todos, f.err
 }
 
-func TestNudgeDoorbellsPublishesOnlyUngatedTodos(t *testing.T) {
+const doorbellEndpointID = "6f0b6e5c-6f4a-4f0e-9b0e-2c1d3e4f5a6b"
+
+// A todo_ready payload is "<endpoint_id>:<queue>" (store.TodoReadyPayload), and the nudge must read
+// through the ENDPOINT-SCOPED query with that exact endpoint. Reading by queue alone would pull
+// every tenant's pending rows on a shared queue name and burn the batch cap on todos this wakeup
+// was not about — the boundary would still hold at the publisher, but one busy endpoint could
+// starve every other endpoint on "reviews" of doorbells entirely.
+// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)", SPEC-0004 REQ
+// "In-Database Wakeups via LISTEN/NOTIFY".
+func TestNudgeDoorbellsReadsScopedToTheNotifiedEndpoint(t *testing.T) {
 	st := &fakeDoorbellStore{todos: []store.Todo{
-		{ID: "td_hooked", Queue: "ci"},
-		{ID: "td_foreign", Queue: "ci"},
+		{ID: "td_hooked", EndpointID: doorbellEndpointID, Queue: "ci"},
+		{ID: "td_foreign", EndpointID: doorbellEndpointID, Queue: "ci"},
 	}}
 	gate := newDoorbellGate(time.Minute)
 	// td_hooked was already pushed by the same-process store hook.
@@ -82,26 +105,79 @@ func TestNudgeDoorbellsPublishesOnlyUngatedTodos(t *testing.T) {
 	var published []string
 	nudgeDoorbells(context.Background(), st, gate, func(t store.Todo) {
 		published = append(published, t.ID)
-	}, "ci", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, doorbellEndpointID+":ci", slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	if st.queue != "ci" {
-		t.Fatalf("nudge queried queue %q, want ci", st.queue)
+	if st.scopedCalls != 1 || st.byQueueCalls != 0 {
+		t.Fatalf("scoped=%d byQueue=%d, want exactly one endpoint-scoped read (a queue-only read "+
+			"spends the batch budget across tenants)", st.scopedCalls, st.byQueueCalls)
+	}
+	if st.endpointID != doorbellEndpointID || st.queue != "ci" {
+		t.Fatalf("nudge read endpoint=%q queue=%q, want %q/ci", st.endpointID, st.queue, doorbellEndpointID)
 	}
 	if len(published) != 1 || published[0] != "td_foreign" {
 		t.Fatalf("published %v, want exactly [td_foreign] (hooked todo deduped)", published)
 	}
 }
 
-func TestNudgeDoorbellsSwallowsStoreErrors(t *testing.T) {
-	st := &fakeDoorbellStore{err: errors.New("db down")}
-	nudgeDoorbells(context.Background(), st, newDoorbellGate(time.Minute), func(store.Todo) {
-		t.Fatal("nothing may publish on a store error")
-	}, "ci", slog.New(slog.NewTextHandler(io.Discard, nil)))
+// The endpoint id is a uuid and therefore colon-free, so the payload splits on the FIRST colon and
+// everything after it is the queue name verbatim — a queue whose name contains colons survives the
+// round trip instead of being silently truncated to its first segment.
+func TestNudgeDoorbellsSplitsPayloadOnTheFirstColonOnly(t *testing.T) {
+	st := &fakeDoorbellStore{}
+	nudgeDoorbells(context.Background(), st, newDoorbellGate(time.Minute), func(store.Todo) {},
+		doorbellEndpointID+":ci:deploy:eu", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if st.endpointID != doorbellEndpointID {
+		t.Fatalf("endpoint scope = %q, want %q", st.endpointID, doorbellEndpointID)
+	}
+	if st.queue != "ci:deploy:eu" {
+		t.Fatalf("queue = %q, want ci:deploy:eu (only the first colon delimits)", st.queue)
+	}
 }
 
-// End-to-end: a pg_notify('todo_ready', queue) reaches the listener's onReady callback, and
-// cancelling the context shuts the loop down. Requires a real database (LISTEN needs a live
-// connection; no schema is touched).
+// A bare-queue payload has no endpoint id: an older process mid-deploy, or a hand-issued
+// pg_notify from psql. It degrades to the cross-endpoint read rather than being dropped — the
+// per-session publisher still applies the tenant boundary, so reach is what is lost, not isolation.
+func TestNudgeDoorbellsFallsBackForLegacyBareQueuePayload(t *testing.T) {
+	st := &fakeDoorbellStore{todos: []store.Todo{{ID: "td_legacy", Queue: "ci"}}}
+
+	var published []string
+	nudgeDoorbells(context.Background(), st, newDoorbellGate(time.Minute), func(t store.Todo) {
+		published = append(published, t.ID)
+	}, "ci", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if st.byQueueCalls != 1 || st.scopedCalls != 0 {
+		t.Fatalf("scoped=%d byQueue=%d, want exactly one cross-endpoint fallback read",
+			st.scopedCalls, st.byQueueCalls)
+	}
+	if st.queue != "ci" {
+		t.Fatalf("fallback queried queue %q, want ci", st.queue)
+	}
+	if len(published) != 1 || published[0] != "td_legacy" {
+		t.Fatalf("published %v, want [td_legacy] (a legacy wakeup still rings)", published)
+	}
+}
+
+func TestNudgeDoorbellsSwallowsStoreErrors(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// Both reads: a store failure is logged and dropped on either path — the durable queue is the
+	// ledger, so a failed nudge costs latency, never work.
+	for name, payload := range map[string]string{
+		"endpoint-scoped": doorbellEndpointID + ":ci",
+		"legacy queue":    "ci",
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := &fakeDoorbellStore{err: errors.New("db down")}
+			nudgeDoorbells(context.Background(), st, newDoorbellGate(time.Minute), func(store.Todo) {
+				t.Fatal("nothing may publish on a store error")
+			}, payload, log)
+		})
+	}
+}
+
+// End-to-end: a pg_notify('todo_ready', '<endpoint_id>:<queue>') reaches the listener's onReady
+// callback with its payload intact, and cancelling the context shuts the loop down. Requires a real
+// database (LISTEN needs a live connection; no schema is touched).
 func TestListenTodoReadyDeliversNotification(t *testing.T) {
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -110,14 +186,18 @@ func TestListenTodoReadyDeliversNotification(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// The wire payload the store actually emits (store.TodoReadyPayload), not a bare queue name:
+	// the listener must carry the endpoint scope through untouched for the nudge to read one tenant.
+	const payload = doorbellEndpointID + ":alerts"
+
 	got := make(chan string, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		listenTodoReady(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)),
-			func(_ context.Context, queue string) {
+			func(_ context.Context, p string) {
 				select {
-				case got <- queue:
+				case got <- p:
 				default:
 				}
 			})
@@ -131,13 +211,13 @@ func TestListenTodoReadyDeliversNotification(t *testing.T) {
 	// The listener dials + LISTENs asynchronously; retry the notify until it lands or times out.
 	deadline := time.After(8 * time.Second)
 	for {
-		if _, err := conn.Exec(ctx, `SELECT pg_notify('todo_ready', $1)`, "alerts"); err != nil {
+		if _, err := conn.Exec(ctx, `SELECT pg_notify('todo_ready', $1)`, payload); err != nil {
 			t.Fatalf("pg_notify: %v", err)
 		}
 		select {
-		case q := <-got:
-			if q != "alerts" {
-				t.Fatalf("notification payload = %q, want alerts", q)
+		case p := <-got:
+			if p != payload {
+				t.Fatalf("notification payload = %q, want %q", p, payload)
 			}
 			cancel() // graceful shutdown: the loop must exit, not linger
 			select {

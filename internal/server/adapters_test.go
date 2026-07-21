@@ -59,6 +59,12 @@ func queueRow(name, config string) store.Adapter {
 	return store.Adapter{Name: name, Family: "queue", TrustMode: "queue", Enabled: true, Config: []byte(config)}
 }
 
+// testLegacyEndpointID stands in for the operator's SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID: the
+// fallback tenant for a registry row that names no endpoint of its own. A registry row carries an
+// endpoint id as opaque non-secret topology and the sink only requires it to be non-empty, so a
+// fixed uuid is enough here — no endpoints row is read on the wiring path.
+const testLegacyEndpointID = "9f1d2e3a-4b5c-6d7e-8f90-a1b2c3d4e5f6"
+
 // SPEC-0002 REQ "Adapter Interface and Trust Mode": startup reads the queue-family registry and
 // attaches one runner worker per valid Redis row — bad rows fail soft (skipped, adapter stays
 // dark), rows for other families or unimplemented transports are not attached, and DISABLED rows
@@ -75,7 +81,7 @@ func TestRegisterQueueAdaptersAttachesRegistryRows(t *testing.T) {
 	}}
 	run := &fakeAdder{}
 
-	closeFn, err := registerQueueAdapters(context.Background(), st, run, "redis://deploy-bot:pw@127.0.0.1:6379/0", discardLogger())
+	closeFn, err := registerQueueAdapters(context.Background(), st, run, "redis://deploy-bot:pw@127.0.0.1:6379/0", testLegacyEndpointID, discardLogger())
 	if err != nil {
 		t.Fatalf("registerQueueAdapters: %v", err)
 	}
@@ -90,7 +96,7 @@ func TestRegisterQueueAdaptersAttachesRegistryRows(t *testing.T) {
 // without pull ingestion never needs SWITCHBOARD_REDIS_URL.
 func TestRegisterQueueAdaptersNoRows(t *testing.T) {
 	run := &fakeAdder{}
-	closeFn, err := registerQueueAdapters(context.Background(), &fakeQueueAdapterStore{}, run, "", discardLogger())
+	closeFn, err := registerQueueAdapters(context.Background(), &fakeQueueAdapterStore{}, run, "", testLegacyEndpointID, discardLogger())
 	if err != nil {
 		t.Fatalf("registerQueueAdapters: %v", err)
 	}
@@ -109,7 +115,7 @@ func TestRegisterQueueAdaptersNoDSN(t *testing.T) {
 		queueRow("deploys", `{"transport":"redis","mode":"stream","stream":"deploys"}`),
 	}}
 	run := &fakeAdder{}
-	closeFn, err := registerQueueAdapters(context.Background(), st, run, "", discardLogger())
+	closeFn, err := registerQueueAdapters(context.Background(), st, run, "", testLegacyEndpointID, discardLogger())
 	if err != nil {
 		t.Fatalf("registerQueueAdapters: %v", err)
 	}
@@ -127,7 +133,7 @@ func TestRegisterQueueAdaptersBadDSNFailsStartup(t *testing.T) {
 	}}
 	const secret = "hunter2"
 	_, err := registerQueueAdapters(context.Background(), st, &fakeAdder{},
-		"http://user:"+secret+"@example.com", discardLogger())
+		"http://user:"+secret+"@example.com", testLegacyEndpointID, discardLogger())
 	if err == nil {
 		t.Fatal("malformed DSN must fail startup")
 	}
@@ -136,11 +142,50 @@ func TestRegisterQueueAdaptersBadDSNFailsStartup(t *testing.T) {
 	}
 }
 
+// ADR-0022: every todo an adapter enqueues is owned by exactly one endpoint, and a broker
+// connection authenticates the ADAPTER rather than a principal, so ownership must be STATED — the
+// row's own endpoint_id, else the operator's legacy fallback. With neither, the sink cannot be
+// built and the adapter stays dark rather than failing on every insert: no endpoint, no consuming.
+// This is the wiring-level expression of "todos.endpoint_id is NOT NULL with no sentinel" — the
+// alternative (deriving an owner from the target queue) is precisely the shared-queue-string
+// collision ADR-0022 exists to remove.
+// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+func TestRegisterQueueAdaptersRequireAnOwningEndpoint(t *testing.T) {
+	const dsn = "redis://127.0.0.1:6379/0"
+	owned := queueRow("owned", `{"transport":"redis","mode":"stream","stream":"owned","endpoint_id":"`+testLegacyEndpointID+`"}`)
+	orphan := queueRow("orphan", `{"transport":"redis","mode":"stream","stream":"orphan"}`)
+
+	// No legacy fallback configured: the row stating its own tenant starts, the one that states
+	// none stays dark — fail-soft, not a startup failure and not an unowned todo.
+	run := &fakeAdder{}
+	closeFn, err := registerQueueAdapters(context.Background(),
+		&fakeQueueAdapterStore{rows: []store.Adapter{owned, orphan}}, run, dsn, "", discardLogger())
+	if err != nil {
+		t.Fatalf("a row without an owner must fail soft, got %v", err)
+	}
+	t.Cleanup(func() { _ = closeFn() })
+	if got := strings.Join(run.added, ","); got != "owned" {
+		t.Fatalf("attached = %q, want only owned (an adapter with no endpoint must not consume)", got)
+	}
+
+	// With the operator's fallback configured, the same orphan row inherits that tenant and starts.
+	run = &fakeAdder{}
+	closeFn2, err := registerQueueAdapters(context.Background(),
+		&fakeQueueAdapterStore{rows: []store.Adapter{orphan}}, run, dsn, testLegacyEndpointID, discardLogger())
+	if err != nil {
+		t.Fatalf("registerQueueAdapters: %v", err)
+	}
+	t.Cleanup(func() { _ = closeFn2() })
+	if got := strings.Join(run.added, ","); got != "orphan" {
+		t.Fatalf("attached = %q, want orphan (the legacy endpoint is the stated fallback owner)", got)
+	}
+}
+
 // A registry listing failure is a real startup error (the database just migrated, so it should
 // never happen silently), and a runner Add failure fails soft per row like a config error.
 func TestRegisterQueueAdaptersErrors(t *testing.T) {
 	if _, err := registerQueueAdapters(context.Background(),
-		&fakeQueueAdapterStore{listErr: errors.New("db down")}, &fakeAdder{}, "", discardLogger()); err == nil {
+		&fakeQueueAdapterStore{listErr: errors.New("db down")}, &fakeAdder{}, "", testLegacyEndpointID, discardLogger()); err == nil {
 		t.Fatal("list failure must surface")
 	}
 
@@ -148,7 +193,7 @@ func TestRegisterQueueAdaptersErrors(t *testing.T) {
 		queueRow("deploys", `{"transport":"redis","mode":"stream","stream":"deploys"}`),
 	}}
 	run := &fakeAdder{addErr: errors.New("duplicate")}
-	closeFn, err := registerQueueAdapters(context.Background(), st, run, "redis://127.0.0.1:6379/0", discardLogger())
+	closeFn, err := registerQueueAdapters(context.Background(), st, run, "redis://127.0.0.1:6379/0", testLegacyEndpointID, discardLogger())
 	if err != nil {
 		t.Fatalf("Add failure must fail soft, got %v", err)
 	}

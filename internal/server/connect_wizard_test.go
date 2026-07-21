@@ -29,7 +29,7 @@ var connectTokenRe = regexp.MustCompile(`data-sb-connect-token>([0-9a-f]{64})<`)
 // exactly once — then proves the line is live on the very next request, visible on the view, and
 // that the plaintext token is unrecoverable afterwards.
 func TestConnectWizardHomelabTokenDefaults(t *testing.T) {
-	r, st, ctx := newDBRouter(t)
+	r, st, ctx, _ := newReceiverDBRouter(t)
 	_, session := mintSession(t, st, ctx, "test|connie", "Connie Ops", "connie@example.com")
 	c := newWizClient(t, r, session)
 
@@ -126,7 +126,7 @@ func TestConnectWizardHomelabTokenDefaults(t *testing.T) {
 // secret step — open holds none by design) and the resulting line accepts unverified deliveries.
 // Governing: SPEC-0017 scenario "Open requires intent"; SPEC-0001 REQ "Explicit Open Trust Mode".
 func TestConnectWizardOpenRequiresAck(t *testing.T) {
-	r, st, ctx := newDBRouter(t)
+	r, st, ctx, _ := newReceiverDBRouter(t)
 	_, session := mintSession(t, st, ctx, "test|otto", "Otto Open", "otto@example.com")
 	c := newWizClient(t, r, session)
 

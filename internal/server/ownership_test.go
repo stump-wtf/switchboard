@@ -41,6 +41,30 @@ const sessionCookieName = "sb_session"
 // carving out a separate database keeps these end-to-end tests (and theirs) deterministic.
 func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 	t.Helper()
+	r, st, ctx, _ := newDBRouterOpts(t, false)
+	return r, st, ctx
+}
+
+// newReceiverDBRouter is newDBRouter for tests that drive an OPERATOR-CONFIGURED receiver
+// (/webhooks/github, /webhooks/generic/{name}, …). Those receivers are not vended to an agent, so
+// nothing in their configuration names a tenant — yet todos.endpoint_id is NOT NULL with no
+// sentinel, so their owner has to be stated once by the operator. Unset, every such delivery
+// answers 503 ("receiver not configured") instead of minting a todo, which would silently hollow
+// out any test that posts one. This harness vends that owning endpoint exactly as an operator would
+// set SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID, and returns it so the test can assert ownership.
+//
+// It is a SEPARATE harness on purpose: seeding an endpoint is not free. Vending one puts an agent,
+// an endpoint and a queue in the store, and surfaces that read the store's queue vocabulary (the
+// vend wizard's queues step) render differently against a non-empty store. Only the tests that need
+// a configured receiver pay that cost. INTERIM: dies with those receivers in PR 2.
+// Governing: ADR-0022, SPEC-0001 REQ "Enqueue Accepted Delivery as Endpoint-Owned Todo".
+func newReceiverDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context, store.Endpoint) {
+	t.Helper()
+	return newDBRouterOpts(t, true)
+}
+
+func newDBRouterOpts(t *testing.T, withReceiverEndpoint bool) (chi.Router, *store.Store, context.Context, store.Endpoint) {
+	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set SWITCHBOARD_TEST_DATABASE_URL to run ownership-scoping tests")
@@ -88,16 +112,26 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 	// The personas capability has landed (store + well-known route wired), so the DB-backed router
 	// enables it exactly as Run does — the Personas view and its routes are live for these tests.
 	webh.SetPersonasEnabled(true)
+	// See newReceiverDBRouter: only receiver-driving tests vend the operator's owning endpoint.
+	var legacyEP store.Endpoint
+	if withReceiverEndpoint {
+		receiverOwner, err := st.UpsertHuman(ctx, "legacy-receiver-owner", "Receiver Owner", "receiver@example.com")
+		if err != nil {
+			t.Fatalf("upsert receiver-owner human: %v", err)
+		}
+		legacyEP = seedEndpoint(t, st, ctx, receiverOwner.ID, "legacy-receiver", "hash-legacy", "sbk_legacy")
+	}
+
 	hub := ingest.NewHub()
 	r := newRouter(routerDeps{
 		st:    st,
 		authr: authr,
 		webh:  webh,
-		ing:   ingest.New(st, hub, log, ingest.Config{}),
+		ing:   ingest.New(st, hub, log, ingest.Config{LegacyEndpointID: legacyEP.ID}),
 		ping:  pool.Ping,
 		log:   log,
 	})
-	return r, st, ctx
+	return r, st, ctx, legacyEP
 }
 
 // mintSession creates a human plus a live server-side session and returns the plaintext cookie
@@ -143,6 +177,21 @@ func scrapeCSRF(t *testing.T, body string) string {
 // Endpoints-view scoping tests. The credential material is a fixed non-secret stand-in.
 func vendFixture(t *testing.T, st *store.Store, ctx context.Context, ownerHumanID, agentName, hash, prefix string) {
 	t.Helper()
+	seedEndpoint(t, st, ctx, ownerHumanID, agentName, hash, prefix, "reviews")
+}
+
+// seedEndpoint vends an agent + endpoint and returns the endpoint, which is the TENANT every todo
+// the test seeds must name: todos.endpoint_id is NOT NULL with no sentinel, so a todo cannot exist
+// without a real endpoint row to own it, and two endpoints sharing a queue name are two distinct
+// tenants rather than one shared pool. Server-side tests therefore start by minting an endpoint the
+// way an operator vends one, then hand its id to CreateTodo/CreateEventTodo (or to
+// ingest.Config.LegacyEndpointID for the operator-configured receivers).
+// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+func seedEndpoint(t *testing.T, st *store.Store, ctx context.Context, ownerHumanID, agentName, hash, prefix string, queues ...string) store.Endpoint {
+	t.Helper()
+	if len(queues) == 0 {
+		queues = []string{"reviews"}
+	}
 	ag, err := st.CreateAgent(ctx, ownerHumanID, agentName, "")
 	if err != nil {
 		t.Fatalf("create agent %s: %v", agentName, err)
@@ -151,9 +200,11 @@ func vendFixture(t *testing.T, st *store.Store, ctx context.Context, ownerHumanI
 	if err != nil {
 		t.Fatalf("mint slug: %v", err)
 	}
-	if _, err := st.CreateEndpoint(ctx, ag.ID, hash, prefix, slug, []string{"reviews"}, []string{"claim"}); err != nil {
+	ep, err := st.CreateEndpoint(ctx, ag.ID, hash, prefix, slug, queues, []string{"claim"})
+	if err != nil {
 		t.Fatalf("vend endpoint for %s: %v", agentName, err)
 	}
+	return ep
 }
 
 // TestEndpointsListsOnlySessionHumansEndpoints: two humans, one vended endpoint each; each session
