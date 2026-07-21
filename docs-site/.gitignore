@@ -6,3 +6,6 @@
 # Generated at build time from ../docs (do not edit; do not commit)
 /docs-generated/
 /static/reference/
+
+# Generated at build time from ../docs/reference/openapi.yaml by `docusaurus gen-api-docs`
+/api-docs/
