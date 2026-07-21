@@ -4,7 +4,8 @@
   "private": true,
   "description": "Documentation site for switchboard (ADRs + specs), themed for the switchboard era.",
   "scripts": {
-    "build-content": "node scripts/build-docs.mjs",
+    "build-content": "node scripts/build-docs.mjs && npm run gen-api",
+    "gen-api": "node scripts/api-docs.mjs pre && docusaurus gen-api-docs switchboard --plugin-id openapi && node scripts/api-docs.mjs post",
     "prestart": "npm run build-content",
     "start": "docusaurus start",
     "prebuild": "npm run build-content",
@@ -18,9 +19,13 @@
     "@docusaurus/preset-classic": "3.10.1",
     "@docusaurus/theme-mermaid": "3.10.1",
     "clsx": "^2.1.1",
+    "docusaurus-plugin-openapi-docs": "^5.1.2",
+    "docusaurus-plugin-sass": "^0.2.6",
+    "docusaurus-theme-openapi-docs": "^5.1.2",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "sass": "^1.101.3"
   },
   "overrides": {
     "webpack": "5.105.2"
