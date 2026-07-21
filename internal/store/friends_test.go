@@ -851,3 +851,59 @@ func assertNoTodos(t *testing.T, s *Store, ctx context.Context, when string) {
 		t.Fatalf("%s minted %d todo(s); the approval lane must mint none", when, n)
 	}
 }
+
+// TestCreateForFriendHandoffReachability pins WHO can actually reach a friend handoff after
+// ADR-0022 made todo visibility endpoint-scoped rather than queue-scoped. Before ADR-0022 any of
+// the target's agents listening on the granted queue would see the work; now visibility follows
+// endpoint_id, which changes the answer. The change is easy to make silently and impossible to
+// notice from the create path alone — TestCreateForFriendLandsAsTodo asserts queue/source/kind/
+// dedup and would pass under either behaviour — so the reachability is asserted explicitly here.
+//
+// This test documents current behaviour rather than blessing it: whether a handoff SHOULD remain
+// visible to the sender, and whether it SHOULD be drainable from the target's other endpoints, are
+// SPEC-0010 design questions. Pinning them means any future answer has to change this test on
+// purpose. Governing: ADR-0010, ADR-0022, SPEC-0010 REQ "Work Flows as Todos, Not A2A Tasks",
+// SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+func TestCreateForFriendHandoffReachability(t *testing.T) {
+	s, ctx := testStore(t)
+	target := mustHuman(t, s, ctx, "pocket|cff-reach", "Target")
+	vendAgent := mustAgent(t, s, ctx, target.ID, "b-handler")
+	_, friendEP := mustApprovedFriend(t, s, ctx, target, vendAgent,
+		[]string{"reviews"}, []string{"create_for", "list_todos"})
+
+	td, created, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: friendEP.ID, Queue: "reviews", Intent: "create_for",
+		Title: "Review PR #7", IdempotencyKey: "reach-1",
+	})
+	if err != nil || !created {
+		t.Fatalf("create_for friend: created=%v err=%v", created, err)
+	}
+
+	// The row is pinned to the friendship's vended endpoint — the tenancy anchor.
+	if td.EndpointID != friendEP.ID {
+		t.Fatalf("handoff todo endpoint_id=%s, want the friendship's vended endpoint %s",
+			td.EndpointID, friendEP.ID)
+	}
+
+	// Reachable through the friendship endpoint. This is the positive control: it proves the
+	// negative assertion below is about SCOPE, not about the todo failing to be written at all.
+	viaFriendship, err := s.ListTodos(ctx, friendEP.ID, []string{"reviews"}, "", 50)
+	if err != nil {
+		t.Fatalf("list via friendship endpoint: %v", err)
+	}
+	if len(viaFriendship) != 1 || viaFriendship[0].ID != td.ID {
+		t.Fatalf("the friendship endpoint must reach the handoff, got %d rows", len(viaFriendship))
+	}
+
+	// NOT reachable through another endpoint of the target's — even the SAME agent, even the same
+	// granted queue. Queue name is no longer a visibility channel.
+	otherEP := mustEndpointScoped(t, s, ctx, vendAgent.ID, "cff-reach-other",
+		[]string{"reviews"}, []string{"list_todos"})
+	viaOther, err := s.ListTodos(ctx, otherEP.ID, []string{"reviews"}, "", 50)
+	if err != nil {
+		t.Fatalf("list via the target's other endpoint: %v", err)
+	}
+	if len(viaOther) != 0 {
+		t.Fatalf("a sibling endpoint on the same queue must not see the handoff, got %d rows", len(viaOther))
+	}
+}

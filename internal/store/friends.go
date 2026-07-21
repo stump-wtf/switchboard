@@ -484,13 +484,29 @@ func (s *Store) CreateForFriend(ctx context.Context, p CreateForFriendParams) (T
 	// LISTEN/NOTIFY doorbell so a worker on the granted queue wakes without polling.
 	//
 	// The owning endpoint is the friendship's own vended endpoint (edge.endpoint_id, which the query
-	// above already proved equals p.EndpointID and is live). That is the correct tenant: approval
-	// minted this endpoint onto a TARGET-owned agent, so the handed-off work lands in the target's
-	// isolated surface and only the target's agent can list or claim it. It is NOT the requesting
-	// friend's endpoint — a friend hands work over, it does not retain visibility into it. Note this
-	// makes the queue string non-load-bearing for isolation: two friendships granted the same queue
-	// name are separated by endpoint_id, which is exactly the leak ADR-0022 closes.
-	// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+	// above already proved equals p.EndpointID and is live). That endpoint belongs to the TARGET's
+	// tenant — approval minted it onto an agent the target CHOSE (ApproveFriendRequest's p.AgentID),
+	// so the handed-off work lands under an agent the target designated to handle this friendship,
+	// and it is separated from every other friendship by endpoint_id rather than by queue string.
+	// That is exactly the leak ADR-0022 closes: two friendships granted the same queue name no
+	// longer share a visibility surface.
+	//
+	// Be precise about what this does NOT give you, because the endpoint's OWNERSHIP and its
+	// CREDENTIAL diverge here and only ownership is a tenancy boundary:
+	//
+	//   - The requesting friend RETAINS access to work it hands over. ADR-0010 delivers this
+	//     endpoint's plaintext credential to the remote agent (see internal/web/friends.go), so the
+	//     requester authenticates AS this endpoint and its list_todos/claim reach these rows —
+	//     subject to the verbs the target granted. Handing work over is not a transfer of custody.
+	//   - The target's OTHER endpoints cannot see this work. Visibility is per-endpoint, so the
+	//     target drains a friendship through the agent it designated at approval, not through an
+	//     unrelated endpoint that merely shares the queue name.
+	//
+	// Both properties are pinned by TestCreateForFriendHandoffReachability. Whether they are the
+	// desired shape of a handoff is a SPEC-0010 question, not something this function may decide
+	// unilaterally — it is recorded here so the next reader inherits the fact, not an assumption.
+	// Governing: ADR-0022, ADR-0010, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)",
+	// SPEC-0010 REQ "Work Flows as Todos, Not A2A Tasks".
 	return s.CreateTodo(ctx, CreateTodoParams{
 		EndpointID:     p.EndpointID,
 		Queue:          p.Queue,
