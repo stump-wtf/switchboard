@@ -108,3 +108,42 @@ jobs:
             VERSION=${{ gitea.sha }}
           cache-from: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache
           cache-to: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache,mode=max
+
+  # On-merge deploy to cloud01 via Ansible. Governing: ADR-0045 (on-merge CI deploy for owned
+  # services). Runs only after the image is pushed :latest (needs: [image]) and is gated off
+  # (vars.DEPLOY_ON_MERGE) until cloud01 is onboarded to Ansible and playbooks/services/switchboard.yaml
+  # targets it. The deploy job checks out stumpcloud/ansible for the playbooks + gva.yaml inventory,
+  # then ansible-runner recreates the switchboard service on cloud01 (pulls :latest).
+  deploy:
+    name: deploy to cloud01 (ansible)
+    needs: [image]
+    if: ${{ vars.DEPLOY_ON_MERGE == 'true' && gitea.event_name == 'push' && gitea.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    env:
+      ANSIBLE_FORCE_COLOR: 'true'
+      DOCKER_TIMEOUT: 600
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+    steps:
+      - name: Checkout stumpcloud/ansible (playbooks + inventory)
+        uses: actions/checkout@v4
+        with:
+          repository: stumpcloud/ansible
+          ref: main
+          token: ${{ secrets.GIT_AUTH_TOKEN }}
+      - name: Set up SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Log in to Gitea (pull the ansible-runner action image)
+        uses: docker/login-action@v3
+        with:
+          registry: gitea.stump.rocks
+          username: joestump-agent
+          password: ${{ secrets.GIT_AUTH_TOKEN }}
+      - name: Deploy Switchboard to cloud01
+        uses: https://gitea.stump.rocks/stumpcloud/ansible-runner@v1
+        with:
+          playbook: playbooks/services/switchboard.yaml
+          inventory: gva.yaml
+          ssh_hosts: cloud01.stump.rocks
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
