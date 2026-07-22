@@ -8,9 +8,11 @@ package web
 // approval mints (vend target agent + narrow-only granted scope), and a successful approval
 // surfaces the vended result explicitly on the page — never only a toast. SPEC-0010 REQ "Approval
 // Is the Vend, Narrow-Only" (approve mints the scoped endpoint), REQ "Per-Direction, Revocable,
-// Non-Transitive Edges" (revoke kills one direction), REQ "Approval Delivered as a Todo" (the
-// durable approval todo). The web layer renders and dispatches; the store owns every lifecycle
-// transition and its sentinel errors (this layer implements no friend-edge rules of its own).
+// Non-Transitive Edges" (revoke kills one direction), REQ "Approval Surfaced from the Friend Edge"
+// (the pending lane renders straight out of friend_edges — there is no companion approval todo, so
+// approve/deny/revoke clear the lane by the same state write that decides the edge). The web layer
+// renders and dispatches; the store owns every lifecycle transition and its sentinel errors (this
+// layer implements no friend-edge rules of its own).
 //
 // The approve and revoke confirm pages follow the full-page confirm pattern of the vend/revoke
 // flows (SPEC-0015 REQ "Wizard Interaction Pattern": destructive and irreversible steps confirm
@@ -576,13 +578,14 @@ func (h *Handler) ApproveFriend(w http.ResponseWriter, r *http.Request) {
 		h.failFriendAction(w, "ApproveFriend", edgeID, err)
 		return
 	}
-	// Clear the durable approval todo. The state change is deliberately NOT broadcast over the
-	// shared SSE hub: that hub fans out to every connected session regardless of human, so
-	// publishing one owner's friend state there would leak it cross-tenant. Other sessions
-	// reconcile on reload (SSE is best-effort; the DB is authoritative).
-	if err := h.store.ResolveApprovalTodo(r.Context(), edgeID); err != nil {
-		h.log.Warn("resolve approval todo", "edge", edgeID, "err", err)
-	}
+	// Nothing to clear: the pending request was never a todo. ApproveFriendRequest moved the edge to
+	// `approved`, and the pending lane reads friend_edges state directly, so the request leaves the
+	// view by virtue of the same write that granted it (SPEC-0010 REQ "Approval Surfaced from the
+	// Friend Edge"). The state change is deliberately NOT broadcast over the shared SSE hub: that hub
+	// fans out to every connected session regardless of human, so publishing one owner's friend state
+	// there would leak it cross-tenant. Other sessions reconcile on reload (SSE is best-effort; the
+	// DB is authoritative).
+	//
 	// Surface the vended result explicitly: the full page re-renders with the minted endpoint's
 	// identity and scope inline, and the edge now sits in the Established section.
 	peer := friendCardFromEdge(edge)
@@ -609,9 +612,9 @@ func (h *Handler) DeclineFriend(w http.ResponseWriter, r *http.Request) {
 		h.failFriendAction(w, "DeclineFriend", edgeID, err)
 		return
 	}
-	if err := h.store.ResolveApprovalTodo(r.Context(), edgeID); err != nil {
-		h.log.Warn("resolve approval todo", "edge", edgeID, "err", err)
-	}
+	// DenyFriendRequest moved the edge to `denied`; the pending lane reads friend_edges state
+	// directly, so the request clears from the view with no companion record to reconcile
+	// (SPEC-0010 REQ "Approval Surfaced from the Friend Edge").
 	h.respondFriendAction(w, r, human, "friend request declined", false)
 }
 

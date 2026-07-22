@@ -37,6 +37,18 @@ type StoreSinkConfig struct {
 	TrustDetail string
 	// Timeout bounds each Deliver's database transaction. Defaults to DefaultDeliverTimeout.
 	Timeout time.Duration
+	// EndpointID is the vended endpoint that owns every todo this sink creates. Required: every
+	// todo is pinned to exactly one endpoint for its whole lifecycle (ADR-0022; todos.endpoint_id
+	// is NOT NULL with no sentinel), and a queue adapter has no per-message tenant to derive one
+	// from — the broker connection authenticates the ADAPTER, not a principal.
+	//
+	// INTERIM, REVISITED IN PR 2 alongside the operator-configured webhook receivers: it is
+	// supplied per adapter registry row (`endpoint_id` in the row config), falling back to the
+	// server's operator-designated legacy endpoint. Deriving it from the target queue name instead
+	// would reinstate the cross-tenant queue-string collision ADR-0022 exists to remove, so it is
+	// stated explicitly or the adapter does not start.
+	// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+	EndpointID string
 }
 
 // todoKind is the todo kind stamped on every queue-ingested todo — the pull analogue of the generic
@@ -71,6 +83,12 @@ func NewStoreSink(st EventTodoCreator, log *slog.Logger, cfg StoreSinkConfig) (*
 	}
 	if cfg.TrustDetail == "" {
 		return nil, errors.New("adapter: store sink requires a trust detail (broker/ACL identity)")
+	}
+	// Fail at construction, not at the first message: an endpoint-less sink would 23502 on every
+	// insert, leaving every consumed message un-acked and redelivered forever. The caller treats
+	// this as fail-soft-per-row — the adapter stays dark and loudly logged (ADR-0022).
+	if cfg.EndpointID == "" {
+		return nil, errors.New("adapter: store sink requires an owning endpoint id")
 	}
 	if log == nil {
 		log = slog.Default()
@@ -114,7 +132,7 @@ func (s *StoreSink) Deliver(ctx context.Context, env Envelope) error {
 	defer cancel()
 	_, td, created, err := s.store.CreateEventTodo(dctx,
 		env.EventInput(s.cfg.TrustDetail),
-		env.TodoParams(queue, todoKind, summarizeEnvelope(env)))
+		s.owned(env.TodoParams(queue, todoKind, summarizeEnvelope(env))))
 	if err != nil {
 		// Wrapped and surfaced: the transport logs it and leaves the message un-acked, so the broker
 		// redelivers (scenario "Store failure leaves message for redelivery"). A partial failure
@@ -134,6 +152,14 @@ func (s *StoreSink) Deliver(ctx context.Context, env Envelope) error {
 			"todo", td.ID, "idempotency_key", td.IdempotencyKey)
 	}
 	return nil
+}
+
+// owned pins the derived todo params to this sink's owning endpoint. Envelope.TodoParams knows
+// only the message, never the tenant, so ownership is stamped here — the single place a queue
+// adapter's tenancy is decided. Governing: ADR-0022.
+func (s *StoreSink) owned(p store.CreateTodoParams) store.CreateTodoParams {
+	p.EndpointID = s.cfg.EndpointID
+	return p
 }
 
 // summarizeEnvelope builds a one-line, legible todo title for a queue-ingested message — the pull

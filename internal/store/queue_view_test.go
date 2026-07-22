@@ -13,8 +13,10 @@ import (
 func TestTodoCountsByState(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "todo-counts", "q")
+
 	mk := func(key string) Todo {
-		td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Source: "github", Kind: "push", Title: "t", IdempotencyKey: key})
+		td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Source: "github", Kind: "push", Title: "t", IdempotencyKey: key})
 		if err != nil {
 			t.Fatalf("create %s: %v", key, err)
 		}
@@ -26,19 +28,19 @@ func TestTodoCountsByState(t *testing.T) {
 	failed := mk("c-failed")
 	_ = pend
 
-	if _, err := s.ClaimTodo(ctx, claimed.ID, "op:h", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, claimed.ID, "op:h", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	dc, _ := s.ClaimTodo(ctx, done.ID, "op:h", time.Hour)
-	if _, err := s.CompleteTodo(ctx, dc.ID, "op:h", []byte(`{}`)); err != nil {
+	dc, _ := s.ClaimTodo(ctx, ep, done.ID, "op:h", time.Hour)
+	if _, err := s.CompleteTodo(ctx, ep, dc.ID, "op:h", []byte(`{}`)); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	// Drive `failed` to the terminal failed state by exhausting its single attempt.
 	if _, err := s.pool.Exec(ctx, `UPDATE todos SET max_attempts=1 WHERE id=$1`, failed.ID); err != nil {
 		t.Fatalf("cap attempts: %v", err)
 	}
-	fc, _ := s.ClaimTodo(ctx, failed.ID, "op:h", time.Hour)
-	if _, err := s.FailTodo(ctx, fc.ID, "op:h", []byte(`{}`)); err != nil {
+	fc, _ := s.ClaimTodo(ctx, ep, failed.ID, "op:h", time.Hour)
+	if _, err := s.FailTodo(ctx, ep, fc.ID, "op:h", []byte(`{}`)); err != nil {
 		t.Fatalf("fail: %v", err)
 	}
 
@@ -54,10 +56,12 @@ func TestTodoCountsByState(t *testing.T) {
 func TestListTodoItemsFilterAndSearch(t *testing.T) {
 	s, ctx := testStore(t)
 
-	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Source: "github", Kind: "push", Title: "t", IdempotencyKey: "gh1"}); err != nil {
+	ep := seedEndpoint(t, s, ctx, "list-todo-items", "q")
+
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Source: "github", Kind: "push", Title: "t", IdempotencyKey: "gh1"}); err != nil {
 		t.Fatalf("create gh: %v", err)
 	}
-	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Source: "stripe", Kind: "invoice.paid", Title: "t", IdempotencyKey: "st1"}); err != nil {
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Source: "stripe", Kind: "invoice.paid", Title: "t", IdempotencyKey: "st1"}); err != nil {
 		t.Fatalf("create stripe: %v", err)
 	}
 
@@ -77,7 +81,7 @@ func TestListTodoItemsFilterAndSearch(t *testing.T) {
 		t.Fatalf("search kind: %+v", byKind)
 	}
 	// Filter by state (claim one → it drops out of a pending listing).
-	if _, err := s.ClaimTodo(ctx, hits[0].ID, "op:h", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, hits[0].ID, "op:h", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	pending, _ := s.ListTodoItems(ctx, "pending", "", 50)
@@ -94,16 +98,18 @@ func TestListTodoItemsFilterAndSearch(t *testing.T) {
 func TestTodoItemTrustModeAndDedupCount(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "trust-mode-dedup", "q", "q2")
+
 	// Two DISTINCT deliveries (different sources) collapse onto the same idempotency key and queue:
 	// the first creates the todo, the second inserts a new event but dedups the todo — so the todo's
 	// dedup count is 2 and the second event is orphaned (RecentEvents flags it deduped).
 	in1 := EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "shared-key", TrustMode: "signed", Verified: true, Payload: []byte(`{}`)}
-	_, td, created, err := s.CreateEventTodo(ctx, in1, CreateTodoParams{Queue: "q", Source: "github", Kind: "push", Title: "t", IdempotencyKey: "shared-key"})
+	_, td, created, err := s.CreateEventTodo(ctx, in1, CreateTodoParams{EndpointID: ep, Queue: "q", Source: "github", Kind: "push", Title: "t", IdempotencyKey: "shared-key"})
 	if err != nil || !created {
 		t.Fatalf("first delivery: created=%v err=%v", created, err)
 	}
 	in2 := EventInput{Source: "gitea", Family: "webhook", EventType: "push", ExternalID: "shared-key", TrustMode: "signed", Verified: true, Payload: []byte(`{}`)}
-	_, _, created2, err := s.CreateEventTodo(ctx, in2, CreateTodoParams{Queue: "q", Source: "gitea", Kind: "push", Title: "t", IdempotencyKey: "shared-key"})
+	_, _, created2, err := s.CreateEventTodo(ctx, in2, CreateTodoParams{EndpointID: ep, Queue: "q", Source: "gitea", Kind: "push", Title: "t", IdempotencyKey: "shared-key"})
 	if err != nil {
 		t.Fatalf("second delivery: %v", err)
 	}
@@ -141,7 +147,7 @@ func TestTodoItemTrustModeAndDedupCount(t *testing.T) {
 	}
 
 	// An event-less todo reads as the queue trust mode.
-	plain, _, _ := s.CreateTodo(ctx, CreateTodoParams{Queue: "q2", Source: "cron", Title: "t", IdempotencyKey: "plain"})
+	plain, _, _ := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q2", Source: "cron", Title: "t", IdempotencyKey: "plain"})
 	pit, _ := s.GetTodoItem(ctx, plain.ID)
 	if pit.TrustMode != "queue" {
 		t.Fatalf("event-less trust mode = %q, want queue", pit.TrustMode)
@@ -151,11 +157,13 @@ func TestTodoItemTrustModeAndDedupCount(t *testing.T) {
 func TestReleaseTodoReturnsToPending(t *testing.T) {
 	s, ctx := testStore(t)
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "rel"})
+	ep := seedEndpoint(t, s, ctx, "release-todo", "q")
+
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "rel"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	claimed, err := s.ClaimTodo(ctx, td.ID, "op:h", time.Hour)
+	claimed, err := s.ClaimTodo(ctx, ep, td.ID, "op:h", time.Hour)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -163,7 +171,7 @@ func TestReleaseTodoReturnsToPending(t *testing.T) {
 		t.Fatalf("attempt after claim = %d, want 1", claimed.Attempt)
 	}
 
-	released, err := s.ReleaseTodo(ctx, td.ID, "op:h")
+	released, err := s.ReleaseTodo(ctx, ep, td.ID, "op:h")
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}
@@ -176,10 +184,10 @@ func TestReleaseTodoReturnsToPending(t *testing.T) {
 	}
 
 	// Only the current owner may release; a non-owner (or non-claimed) is a conflict, absent is not-found.
-	if _, err := s.ReleaseTodo(ctx, td.ID, "op:other"); err != ErrConflict {
+	if _, err := s.ReleaseTodo(ctx, ep, td.ID, "op:other"); err != ErrConflict {
 		t.Fatalf("release by non-owner err = %v, want ErrConflict", err)
 	}
-	if _, err := s.ReleaseTodo(ctx, "td_missing", "op:h"); err != ErrNotFound {
+	if _, err := s.ReleaseTodo(ctx, ep, "td_missing", "op:h"); err != ErrNotFound {
 		t.Fatalf("release missing err = %v, want ErrNotFound", err)
 	}
 }

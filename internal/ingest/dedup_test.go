@@ -106,14 +106,75 @@ func ingestTestPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 	return pool, ctx
 }
 
+// seedEndpoint mints a real human → agent → endpoint chain and returns the human and the endpoint.
+//
+// Every todo is now owned by exactly one endpoint (ADR-0022; todos.endpoint_id is NOT NULL and
+// references endpoints), so any test that expects a delivery to BECOME a todo must have a genuine
+// endpoint row for it to be pinned to. An invented uuid would fail the foreign key and an empty one
+// the not-null, so there is no shortcut: the fixture has to be real. label makes the human subject,
+// agent name and slug unique so a single test can seed two distinct tenants and assert they do not
+// see each other's work.
+// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+func seedEndpoint(t *testing.T, st *store.Store, ctx context.Context, label string, queues []string) (store.Human, store.Endpoint) {
+	t.Helper()
+	h, err := st.UpsertHuman(ctx, "pocket|"+label, "Joe "+label, "")
+	if err != nil {
+		t.Fatalf("upsert human (%s): %v", label, err)
+	}
+	ag, err := st.CreateAgent(ctx, h.ID, "bot-"+label, "")
+	if err != nil {
+		t.Fatalf("create agent (%s): %v", label, err)
+	}
+	slug, err := store.MintSlug(ag.Name)
+	if err != nil {
+		t.Fatalf("mint slug (%s): %v", label, err)
+	}
+	ep, err := st.CreateEndpoint(ctx, ag.ID, "credhash-"+label, "sbk_"+label, slug, queues,
+		[]string{"list_todos", "claim", "create_webhook"})
+	if err != nil {
+		t.Fatalf("vend endpoint (%s): %v", label, err)
+	}
+	return h, ep
+}
+
+// legacyReceiverQueues are the queues the operator-configured receivers target across this package's
+// accept-path tests. The seeded legacy endpoint is scoped to all of them so one fixture serves every
+// receiver.
+var legacyReceiverQueues = []string{"reviews", "stripe", "slack", "builds", "wizq", "regq", "lan", "dockerhub", "homelab", "wizard"}
+
+// seedLegacyEndpoint mints the operator-designated endpoint that owns todos minted by the
+// OPERATOR-CONFIGURED receivers (/webhooks/github, /webhooks/stripe, /webhooks/slack,
+// /webhooks/generic/{name}), and returns its id for Config.LegacyEndpointID.
+//
+// Those receivers are configured by an operator rather than vended to an agent, so nothing in their
+// configuration names a tenant — Ingest.legacyEndpoint answers 503 and persists NOTHING when the id
+// is unset. Without this fixture every accept-path test below would get a 503 instead of a 202, so
+// the seed is what keeps them testing ingestion rather than testing the misconfiguration branch.
+// INTERIM alongside Config.LegacyEndpointID itself; both die with those receivers in PR 2.
+// Governing: ADR-0022.
+func seedLegacyEndpoint(t *testing.T, st *store.Store, ctx context.Context) string {
+	t.Helper()
+	_, ep := seedEndpoint(t, st, ctx, "legacy", legacyReceiverQueues)
+	return ep.ID
+}
+
 // testIngestDeps builds an Ingest against the real store, with a hub whose publishes the test can
-// observe and the pool for row-count asserts.
-func testIngestDeps(t *testing.T, cfg Config) (*Ingest, *Hub, *pgxpool.Pool, context.Context) {
+// observe, the pool for row-count asserts, and the id of the seeded legacy endpoint that owns every
+// todo the operator-configured receivers mint.
+//
+// The endpoint id is returned, not hidden, because hub fan-out is now endpoint-scoped: Hub.Subscribe
+// takes the owning endpoint and a subscription with the wrong (or empty) endpoint matches NOTHING.
+// A test that subscribed without it would drain zero todos and pass vacuously while asserting
+// nothing at all. Governing: ADR-0022, SPEC-0011 REQ "Scope-Filtered Fan-Out".
+func testIngestDeps(t *testing.T, cfg Config) (*Ingest, *Hub, *pgxpool.Pool, context.Context, string) {
 	t.Helper()
 	pool, ctx := ingestTestPool(t)
+	st := store.New(pool)
 	hub := NewHub()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(store.New(pool), hub, log, cfg), hub, pool, ctx
+	endpointID := seedLegacyEndpoint(t, st, ctx)
+	cfg.LegacyEndpointID = endpointID
+	return New(st, hub, log, cfg), hub, pool, ctx, endpointID
 }
 
 // post drives a handler with the given raw body and headers, returning the recorder.
@@ -128,15 +189,39 @@ func post(t *testing.T, handler http.HandlerFunc, target, body string, headers m
 	return rec
 }
 
-// accepted202 decodes the 202 response contract: {id, queue, verified}.
+// acceptedTodo is one entry of the 202 body's `todos` array: where a delivery actually landed.
+// endpoint_id is part of the contract because a fan-out is only auditable if the response says which
+// tenant each todo was minted for. Governing: SPEC-0001 REQ "Deterministic Route Fan-Out
+// (Token-Free)".
+type acceptedTodo struct {
+	ID         string `json:"id"`
+	EndpointID string `json:"endpoint_id"`
+	Queue      string `json:"queue"`
+	Created    bool   `json:"created"`
+}
+
+// accepted202 decodes the 202 accept contract and returns the OWNER endpoint's todo id and queue.
+//
+// Fan-out changed this body's shape (ADR-0022): one delivery now mints one todo PER TARGET endpoint,
+// so the self-managed receiver's payload carries a `todos` array and a `created` count alongside the
+// top-level `id`/`queue`. Those top-level fields still name the OWNER's todo — ResolveWebhookTargets
+// returns the owner first — so the operator-configured receivers, which mint exactly one todo and
+// emit no array at all, stay byte-identical to the pre-fan-out contract and this helper still reads
+// them unchanged.
+//
+// Where the array IS present the helper asserts the two views agree, so a future change that lets
+// the compatibility `id` drift away from todos[0] fails loudly here instead of silently misreporting
+// which tenant the work landed in.
+// Governing: SPEC-0001 REQ "Enqueue Accepted Delivery as Endpoint-Owned Todo".
 func accepted202(t *testing.T, rec *httptest.ResponseRecorder) (id, queue string) {
 	t.Helper()
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("got %d, want 202 (body: %s)", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		ID    string `json:"id"`
-		Queue string `json:"queue"`
+		ID    string         `json:"id"`
+		Queue string         `json:"queue"`
+		Todos []acceptedTodo `json:"todos"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode 202 body: %v (%s)", err, rec.Body.String())
@@ -144,7 +229,40 @@ func accepted202(t *testing.T, rec *httptest.ResponseRecorder) (id, queue string
 	if resp.ID == "" || resp.Queue == "" {
 		t.Fatalf("202 must carry the todo id and queue: %s", rec.Body.String())
 	}
+	if len(resp.Todos) > 0 {
+		owner := resp.Todos[0]
+		if owner.ID != resp.ID || owner.Queue != resp.Queue {
+			t.Fatalf("202 top-level id/queue (%s/%s) must name the OWNER todo todos[0] (%s/%s): %s",
+				resp.ID, resp.Queue, owner.ID, owner.Queue, rec.Body.String())
+		}
+		if owner.EndpointID == "" {
+			t.Fatalf("202 fan-out entries must name their owning endpoint: %s", rec.Body.String())
+		}
+	}
 	return resp.ID, resp.Queue
+}
+
+// fanOut202 decodes the full fan-out view of a 202: every target's todo plus the count of newly
+// minted rows. Tests that assert WHERE a delivery landed (and that a redelivery collapsed
+// per-target) use this rather than accepted202's owner-only view.
+// Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)",
+// SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
+func fanOut202(t *testing.T, rec *httptest.ResponseRecorder) (todos []acceptedTodo, created int) {
+	t.Helper()
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("got %d, want 202 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Todos   []acceptedTodo `json:"todos"`
+		Created int            `json:"created"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode 202 body: %v (%s)", err, rec.Body.String())
+	}
+	if len(resp.Todos) == 0 {
+		t.Fatalf("202 must report the todos the delivery fanned out to: %s", rec.Body.String())
+	}
+	return resp.Todos, resp.Created
 }
 
 // countRows returns the row count of a fixed, test-owned query.
@@ -177,8 +295,11 @@ func drainHub(ch <-chan store.Todo) int {
 // scenario "Distinct deliveries create distinct todos", REQ "Enqueue Accepted Delivery as Todo".
 func TestGitHubRedeliveryDedup(t *testing.T) {
 	const secret = "s3cr3t"
-	ing, hub, pool, ctx := testIngestDeps(t, Config{GitHubSecret: secret})
-	ch, cancel := hub.Subscribe([]string{"reviews"})
+	ing, hub, pool, ctx, endpointID := testIngestDeps(t, Config{GitHubSecret: secret})
+	// Subscribe as the endpoint that OWNS these todos. Passing the real id is load-bearing: the hub
+	// filters on owning endpoint before queue (ADR-0022), so a subscription with the wrong or empty
+	// id would match nothing and every drainHub assertion below would read 0 and pass vacuously.
+	ch, cancel := hub.Subscribe(endpointID, []string{"reviews"})
 	defer cancel()
 
 	body := `{"action":"opened","pull_request":{"number":1,"title":"One"},"repository":{"full_name":"joestump/switchboard"}}`
@@ -237,7 +358,7 @@ func TestGitHubRedeliveryDedup(t *testing.T) {
 // fallback where the provider supplies no delivery id).
 func TestGitHubMissingDeliveryIDFallsBackToBodyHash(t *testing.T) {
 	const secret = "s3cr3t"
-	ing, _, pool, ctx := testIngestDeps(t, Config{GitHubSecret: secret})
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{GitHubSecret: secret})
 
 	body := `{"action":"opened"}`
 	headers := map[string]string{
@@ -267,12 +388,14 @@ func TestGitHubMissingDeliveryIDFallsBackToBodyHash(t *testing.T) {
 // regressing verification. Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup",
 // REQ "Enqueue Accepted Delivery as Todo" (queue selection per provider config).
 func TestGenericTokenRedeliveryDedup(t *testing.T) {
-	ing, hub, pool, ctx := testIngestDeps(t, Config{
+	ing, hub, pool, ctx, endpointID := testIngestDeps(t, Config{
 		Generic: map[string]GenericProvider{
 			"dockerhub": {Mode: "token", Token: "tok", Queue: "builds"},
 		},
 	})
-	ch, cancel := hub.Subscribe([]string{"builds"})
+	// Endpoint-scoped subscription (see TestGitHubRedeliveryDedup): the owning endpoint is what makes
+	// the drainHub counts below mean anything.
+	ch, cancel := hub.Subscribe(endpointID, []string{"builds"})
 	defer cancel()
 
 	body := `{"push_data":{"tag":"latest"}}`
@@ -305,5 +428,48 @@ func TestGenericTokenRedeliveryDedup(t *testing.T) {
 	id3, _ := accepted202(t, deliver(`{"push_data":{"tag":"v2"}}`))
 	if id3 == id1 {
 		t.Fatal("distinct bodies must create distinct todos")
+	}
+}
+
+// grantFriendEdge records an APPROVED friend edge from fromHuman to toHuman, so a cross-human
+// webhook route between them is genuinely authorized.
+//
+// This exists because ResolveWebhookTargets re-evaluates authorization on EVERY delivery, not just
+// at grant time (ADR-0022, SPEC-0010 REQ "Per-Direction, Revocable, Non-Transitive Edges"): a
+// cross-human route with no approved edge is dropped from the fan-out. A fixture that wires such a
+// route with a bare AddWebhookRoute call is therefore not modelling a state the system can reach —
+// add_webhook_route refuses to create it (mcp.authorizeRouteTarget) — and any fan-out it asserted
+// would be testing a delivery that production would never make. Seeding the edge keeps these tests
+// cross-HUMAN (which is the point: the tenant boundary is between humans) while making the route
+// one the authorization layer would actually have granted.
+//
+// The edge direction is requester→target, matching FriendEdgeAuthorizesDelivery: an approved
+// fromHuman→toHuman edge means "fromHuman may hand work to toHuman", which is exactly what routing
+// fromHuman's webhook into toHuman's endpoint does.
+func grantFriendEdge(t *testing.T, st *store.Store, ctx context.Context, label, fromHuman, toHuman string) {
+	t.Helper()
+	edge, err := st.CreateFriendRequest(ctx, store.CreateFriendRequestParams{
+		FromPersona: "from@" + label, ToPersona: "to@" + label,
+		FromHuman: fromHuman, ToHuman: toHuman,
+		RequestedQueues: []string{"reviews"}, RequestedVerbs: []string{"create_for"},
+	})
+	if err != nil {
+		t.Fatalf("create friend request (%s): %v", label, err)
+	}
+	// Approval is the vend, so it needs one of the TARGET human's agents to mint onto. This agent is
+	// incidental to the fan-out under test — the route targets an endpoint seeded separately.
+	ag, err := st.CreateAgent(ctx, toHuman, "friend-agent-"+label, "")
+	if err != nil {
+		t.Fatalf("create friend vend agent (%s): %v", label, err)
+	}
+	slug, err := store.MintSlug(ag.Name)
+	if err != nil {
+		t.Fatalf("mint friend slug (%s): %v", label, err)
+	}
+	if _, _, err := st.ApproveFriendRequest(ctx, store.ApproveFriendRequestParams{
+		EdgeID: edge.ID, OwnerHumanID: toHuman, AgentID: ag.ID,
+		CredentialHash: "friendhash-" + label, CredentialPrefix: "sbk_fr", Slug: slug,
+	}); err != nil {
+		t.Fatalf("approve friend edge (%s): %v", label, err)
 	}
 }

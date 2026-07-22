@@ -378,14 +378,28 @@ func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID str
 //
 // A vend mints an agent alongside its endpoint (VendAgentEndpoint), so deleting the last endpoint
 // would otherwise strand that agent forever. The agent is therefore GC'd in the same transaction —
-// but ONLY when nothing still accounts to it: no remaining endpoints, no persona is a face of it, no
-// friend edge is backed by it, and it owns/holds no todos (a claimed lease or a pinned assignment,
-// tracked by the "agent:<id>" owner convention — SPEC-0006/0014). If any of those still reference it,
-// the agent is left intact, so authored personas and todo history are never collaterally destroyed.
-// The persona and friend-edge guards also mean this can never trigger the agents→personas /
-// agents→friend_edges ON DELETE side effects. Both writes are ownership-scoped in the same statement.
-// Governing: SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints", REQ "Database Operation
-// Standards"; SPEC-0013 REQ "Endpoints View and Vend Modal".
+// but ONLY when nothing still accounts to it: no remaining endpoints, no persona is a face of it,
+// and no friend edge is backed by it. If any of those still reference it, the agent is left intact,
+// so authored personas are never collaterally destroyed. The persona and friend-edge guards also mean
+// this can never trigger the agents→personas / agents→friend_edges ON DELETE side effects. Both
+// writes are ownership-scoped in the same statement.
+//
+// The endpoint's todos go with it. Under ADR-0022 todos.endpoint_id is NOT NULL with no sentinel and
+// no nullable escape hatch, so a todo has nowhere to live once its owning endpoint is gone: the FK's
+// ON DELETE CASCADE is not a policy choice layered on top of the schema, it is the only behaviour the
+// schema admits. That makes the endpoint the unit of tenancy AND of erasure — deleting one erases the
+// work that belonged to it, which is what SPEC-0007 asks for ("MUST remove its row and any records
+// that belong to it"). Operators who need the audit trail must keep the revoked endpoint rather than
+// delete it; deletion is explicitly a housekeeping action, never a required step.
+//
+// This is also why there is NO todo-ownership guard on the GC below, though the shape of the other
+// three guards invites one. It would be dead code: an agent-owned todo carries owner "agent:<id>"
+// (mcp.owner), and the same call pins it to that agent's own endpoint, so every todo owned by this
+// agent lives on one of this agent's endpoints. By the time the `endpoints` guard passes there are
+// none left, and the cascade has already removed every such row. A guard that can never fire reads as
+// protection that does not exist.
+// Governing: ADR-0022, SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints", REQ "Database
+// Operation Standards"; SPEC-0013 REQ "Endpoints View and Vend Modal".
 func (s *Store) DeleteEndpoint(ctx context.Context, endpointID, ownerHumanID string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -409,16 +423,15 @@ func (s *Store) DeleteEndpoint(ctx context.Context, endpointID, ownerHumanID str
 	}
 
 	// GC the now-possibly-orphaned backing agent. Every NOT EXISTS guard must hold, so an agent that
-	// still owns a claimed/assigned todo, backs a persona, backs a friend edge, or has another
-	// endpoint survives untouched — the delete only reaps agents with nothing left to account for.
+	// backs a persona, backs a friend edge, or has another endpoint survives untouched — the delete
+	// only reaps agents with nothing left to account for. See the doc comment for why todo ownership
+	// is deliberately not among the guards.
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM agents AS a
 		WHERE a.id = $1 AND a.owner_human_id = $2
 		  AND NOT EXISTS (SELECT 1 FROM endpoints    e WHERE e.agent_id = a.id)
 		  AND NOT EXISTS (SELECT 1 FROM personas     p WHERE p.agent_id = a.id)
-		  AND NOT EXISTS (SELECT 1 FROM friend_edges f WHERE f.from_agent_id = a.id)
-		  AND NOT EXISTS (SELECT 1 FROM todos        t WHERE t.owner    = 'agent:' || a.id::text
-		                                                OR   t.assignee = 'agent:' || a.id::text)`,
+		  AND NOT EXISTS (SELECT 1 FROM friend_edges f WHERE f.from_agent_id = a.id)`,
 		agentID, ownerHumanID,
 	); err != nil {
 		return fmt.Errorf("store: gc orphan agent: %w", err)

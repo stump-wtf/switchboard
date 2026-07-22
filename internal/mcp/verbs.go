@@ -15,9 +15,17 @@ func DrainVerbs() []string {
 	return []string{"list_todos", "claim", "complete", "fail", "heartbeat"}
 }
 
-// WebhookVerbs returns the SPEC-0006 webhook self-management surface in display order.
+// WebhookVerbs returns the SPEC-0006 webhook self-management surface in display order: the four
+// lifecycle verbs an agent uses on its OWN webhooks, then the three ADR-0022 routing verbs that
+// decide which endpoints a webhook's deliveries fan out to. Routing lives in this family because it
+// is webhook self-management — the routing verbs are gated by webhook ownership, and grouping them
+// here means the vend wizard and the OAuth consent screen (internal/web) enumerate them for free
+// rather than carrying a copy that could drift.
 func WebhookVerbs() []string {
-	return []string{"create_webhook", "list_webhooks", "rotate_webhook", "delete_webhook"}
+	return []string{
+		"create_webhook", "list_webhooks", "rotate_webhook", "delete_webhook",
+		"add_webhook_route", "list_webhook_routes", "remove_webhook_route",
+	}
 }
 
 // EventVerbs returns the SPEC-0005 event-history surface in display order.

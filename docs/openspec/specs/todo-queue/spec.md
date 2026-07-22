@@ -1,7 +1,8 @@
 ---
-status: implemented
-date: 2026-07-06
-implements: [ADR-0007]
+status: amended
+date: 2026-07-21
+amends: [ADR-0007]
+implements: [ADR-0007, ADR-0022]
 requires: [SPEC-0004]
 ---
 
@@ -162,7 +163,9 @@ re-queuing immediately.
 
 ### Requirement: Idempotent Enqueue and Dedup
 
-Creating a todo MUST be idempotent on `(queue, idempotency_key)` among LIVE rows. A row is live
+Creating a todo MUST be idempotent on `(endpoint_id, idempotency_key)` among LIVE rows (see
+"Per-Endpoint Idempotency and Dedup" for the full per-endpoint semantics; this requirement
+retains the original lifecycle definition of a LIVE row). A row is live
 when it is not `done` and not a true dead-letter — i.e. `state <> 'done' AND (state <> 'failed' OR
 next_retry_at IS NOT NULL)`: a parked retry (failed with an open backoff window) keeps its dedup
 slot, so a redelivery during the window collapses onto it rather than minting a duplicate active
@@ -223,6 +226,96 @@ observable via structured logging.
 - **WHEN** a claim/complete/fail conditional update affects no rows
 - **THEN** the store MUST look up whether the todo exists and return `ErrConflict` if it does or
   `ErrNotFound` if it does not — never a nil error with an empty todo
+
+### Requirement: Endpoint Ownership (Tenant Isolation)
+
+Governing: ADR-0022. Every todo MUST carry a non-null `endpoint_id` foreign key to the
+`endpoints` table, pinning it to exactly one vended MCP endpoint for its entire lifecycle.
+The endpoint's owning human ([ADR-0008](../../../adrs/ADR-0008-human-principal-vended-endpoints.md))
+is the todo's tenant. Every CALLER-FACING todo query — `ListTodos`, `ClaimTodo`,
+`ClaimNext`, `GetTodo`, `CompleteTodo`, `FailTodo`, `Heartbeat`, `ReleaseTodo`,
+`RetryTodo`, `PendingDoorbellTodos` — MUST predicate on `endpoint_id`, accepting it from
+the authenticated endpoint context. A query scoped to endpoint A MUST NEVER return a todo
+owned by endpoint B, even when both endpoints share a queue name (e.g. both target
+`"github"`). Queue name is a human-readable label and a secondary intra-endpoint filter;
+it is NOT a tenant boundary.
+
+An absent or malformed `endpoint_id` MUST behave as a scope that owns nothing —
+`ErrNotFound` for single-row and mutation paths, an empty result for list paths — and MUST
+NOT surface as a database type error. Otherwise the error shape itself distinguishes a
+broken scope from an empty one on the very paths whose purpose is to make foreign and
+nonexistent indistinguishable.
+
+**Operator twins.** Each caller-facing function MAY have an explicitly named
+`*AnyEndpoint` counterpart (`GetTodoAnyEndpoint`, `ClaimTodoAnyEndpoint`,
+`ReleaseTodoAnyEndpoint`, …) for the operator Board, which is authenticated by the owning
+human's session rather than an endpoint credential and legitimately sees every tenant. The
+agent-facing path MUST NOT call an `*AnyEndpoint` variant.
+
+**Background sweeps are exempt.** `ReapExpired` and `RequeueDueRetries` MUST NOT predicate
+on `endpoint_id`. They are timer-driven, system-wide maintenance with no authenticated
+endpoint context to scope TO — no caller, no credential, no tenant. They return no todo to
+any principal and move each row only within its own lifecycle (expired lease → pending or
+dead-letter; elapsed backoff → pending), so they can neither disclose nor transfer work
+across tenants; the wakeups they emit are already scoped by each row's own `endpoint_id`.
+Requiring a scope would make crash recovery and retry depend on someone being logged in,
+and scoping by iteration would reproduce an identical result set more slowly. The tenant
+boundary is enforced where work is READ and CLAIMED, not where it ages.
+
+The channel doorbell (`PublishTodoReady`, SPEC-0011) MUST filter sessions by `endpoint_id`
+as the primary scope check: a session minted under endpoint A MUST NEVER receive a
+doorbell for a todo owned by endpoint B. Queue membership remains as a secondary filter
+within an endpoint's grant, preserving SPEC-0011 "Scope-Filtered Fan-Out" at a finer grain.
+
+#### Scenario: Cross-endpoint queue collision is isolated
+
+- **WHEN** human A's endpoint and human B's endpoint are both scoped to queue `"reviews"`
+  and a delivery creates a todo pinned to human A's endpoint
+- **THEN** human B's endpoint's `list_todos` MUST NOT return that todo, human B's agent
+  MUST NOT be able to `claim` it, and no doorbell for it MUST reach human B's session
+
+#### Scenario: Doorbell never crosses endpoints
+
+- **WHEN** a todo owned by endpoint A transitions to ready and a session for endpoint B
+  (same queue name) is attached
+- **THEN** endpoint B's session MUST receive no notification for that todo
+
+#### Scenario: A foreign todo id is indistinguishable from a nonexistent one
+
+- **WHEN** endpoint B calls a scoped transition (`claim`, `release`, `retry`, …) with the
+  id of a todo owned by endpoint A, and separately with an id that was never minted
+- **THEN** both MUST return `ErrNotFound` — never `ErrConflict` for the foreign id, which
+  would let B probe which ids A owns
+
+#### Scenario: Background sweep spans tenants without a scope
+
+- **WHEN** the lease reaper or retry scheduler runs while todos of several endpoints are
+  eligible
+- **THEN** every eligible todo MUST be swept regardless of endpoint, and each resulting
+  wakeup MUST name the owning endpoint of the row that moved
+
+### Requirement: Per-Endpoint Idempotency and Dedup
+
+Governing: ADR-0022. Creating a todo MUST be idempotent on `(endpoint_id, idempotency_key)`
+among LIVE rows — `state <> 'done' AND (state <> 'failed' OR next_retry_at IS NOT NULL)`.
+The dedup namespace is per-endpoint, not global, so two endpoints that happen to share an
+idempotency key (e.g. the same GitHub delivery id routed to two endpoints) each retain
+their own todo without collapsing onto each other. Within one endpoint, a redelivery
+during a backoff window still collapses onto the parked retry, preserving the existing
+contract. A null `idempotency_key` MUST NOT participate in dedup.
+
+#### Scenario: Same delivery routed to two endpoints yields two todos
+
+- **WHEN** a single webhook delivery fans out to endpoints A and B with the same
+  idempotency key
+- **THEN** exactly two todos are created (one pinned to A, one pinned to B), each
+  independently deduped on its own `(endpoint_id, idempotency_key)` namespace
+
+#### Scenario: Redelivery to one target dedups only within that target
+
+- **WHEN** a webhook with routes to A and B receives the same delivery id twice
+- **THEN** A and B each still hold exactly one todo (two total, not four); the second
+  delivery collapses per-target onto the existing live row
 
 ### Requirement: Database Operation Standards
 

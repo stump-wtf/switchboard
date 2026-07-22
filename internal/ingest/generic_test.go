@@ -201,10 +201,16 @@ func decode(t *testing.T, b []byte, v any) {
 // testIngest builds a full Ingest for accept-path tests against the ingest-owned test database
 // (see ingestTestPool in dedup_test.go). Skips cleanly without SWITCHBOARD_TEST_DATABASE_URL
 // (Gitea CI is the gate).
+//
+// The legacy receiver endpoint is seeded and wired here for the same reason as in testIngestDeps:
+// the operator-configured receivers exercised below now refuse a delivery with 503 unless an owning
+// endpoint is configured, so without the seed every accept assertion in this file would be testing
+// the misconfiguration branch instead of ingestion. Governing: ADR-0022.
 func testIngest(t *testing.T, cfg Config) (*Ingest, *store.Store, context.Context, func(string) (trustMode string, verified bool, verifyDetail string)) {
 	t.Helper()
 	pool, ctx := ingestTestPool(t)
 	st := store.New(pool)
+	cfg.LegacyEndpointID = seedLegacyEndpoint(t, st, ctx)
 	ing := New(st, NewHub(), slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
 	eventRow := func(source string) (string, bool, string) {
 		var mode, detail string

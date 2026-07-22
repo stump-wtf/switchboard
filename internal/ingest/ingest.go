@@ -75,9 +75,12 @@ type Ingest struct {
 	slackSecret  string
 	slackQueue   string
 	generic      map[string]GenericProvider // token/open providers by name (generic.go)
-	tolerance    time.Duration              // replay window for timestamped signatures
-	now          func() time.Time           // injectable clock for replay-window tests
-	devLogin     bool
+	// legacyEndpointID owns todos minted by the operator-configured receivers. INTERIM — see
+	// Config.LegacyEndpointID; removed with those receivers in PR 2.
+	legacyEndpointID string
+	tolerance        time.Duration    // replay window for timestamped signatures
+	now              func() time.Time // injectable clock for replay-window tests
+	devLogin         bool
 	// instrument observes in-flight deliveries for the board's ephemeral received lane
 	// (instrument.go). Nil = no observation. Governing: SPEC-0015 REQ "Patch Panel Board".
 	instrument Instrument
@@ -96,6 +99,24 @@ type Config struct {
 	// an explicit, validated trust mode. Governing: SPEC-0001 REQ "Explicit Open Trust Mode".
 	Generic  map[string]GenericProvider
 	DevLogin bool
+	// LegacyEndpointID is the operator-designated endpoint that owns every todo minted by the
+	// OPERATOR-CONFIGURED receivers — /webhooks/github, /webhooks/stripe, /webhooks/slack,
+	// /webhooks/generic/{name} — and by the dev helper when it names no endpoint of its own.
+	//
+	// INTERIM, REMOVED IN PR 2. Those receivers predate ADR-0022: they are configured by an
+	// operator via environment/registry, not vended to an agent, so nothing in their configuration
+	// names a tenant. todos.endpoint_id is now NOT NULL with no sentinel (ADR-0022 decision 1), so
+	// they have to name one, and there is no honest way to DERIVE it: resolving an endpoint from
+	// the target queue would reinstate exactly the shared-queue-string collision this whole change
+	// exists to remove. So the operator states it explicitly, once
+	// (SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID), and every legacy delivery lands in that one
+	// operator-owned tenant. Unset means those receivers are not configured for endpoint-scoped
+	// todos and answer 503 rather than 500-ing on a not-null violation — see legacyEndpoint.
+	//
+	// PR 2 retires these receivers in favour of the self-managed, endpoint-vended path
+	// (/webhooks/w/{token}), which carries its own owner, and resolves the ADR-0020 provider-
+	// registry question. This field dies with them.
+	LegacyEndpointID string
 }
 
 // Normalized returns the config with defaults applied: queue names (github→reviews,
@@ -135,8 +156,34 @@ func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 		slackSecret: cfg.SlackSecret, slackQueue: cfg.SlackQueue,
 		generic:   cfg.Generic,
 		tolerance: defaultReplayTolerance, now: time.Now,
-		devLogin: cfg.DevLogin,
+		devLogin:         cfg.DevLogin,
+		legacyEndpointID: cfg.LegacyEndpointID,
 	}
+}
+
+// legacyEndpoint resolves the owning endpoint for an OPERATOR-CONFIGURED receiver, writing the
+// rejection itself and returning false when none is configured.
+//
+// INTERIM, REMOVED IN PR 2 (see Config.LegacyEndpointID). Every todo is now owned by exactly one
+// endpoint (ADR-0022; todos.endpoint_id NOT NULL), but the operator-configured receivers carry no
+// vended endpoint of their own. Rather than derive an owner — which would mean picking an endpoint
+// by queue name and re-introducing the very cross-tenant collision ADR-0022 removes — an
+// unconfigured receiver refuses the delivery.
+//
+// 503, not 500: this is a server-side configuration gap, the delivery is well-formed, and 503 is
+// what every other "receiver exists but is not configured to persist" case in this package already
+// answers (signedSecret's missing-secret path, the self-managed missing-secret path, the empty
+// route-target set). Providers retry a 503, so a delivery is deferred rather than lost, and
+// NOTHING is persisted — the same fail-closed posture as a rejected signature.
+// Governing: ADR-0022, SPEC-0001 REQ "Error Handling Standards".
+func (i *Ingest) legacyEndpoint(w http.ResponseWriter, provider string) (string, bool) {
+	if i.legacyEndpointID == "" {
+		i.log.Error("operator-configured receiver has no owning endpoint; refusing delivery",
+			"provider", provider, "hint", "set SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID")
+		writeErr(w, http.StatusServiceUnavailable, "receiver not configured")
+		return "", false
+	}
+	return i.legacyEndpointID, true
 }
 
 // readBody drains the raw request body under the 5 MiB cap, writing the rejection itself on
@@ -245,6 +292,14 @@ func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
+	// INTERIM (PR 2): this operator-configured receiver has no vended endpoint of its own, so the
+	// todo is owned by the operator-designated legacy endpoint. Unconfigured → 503, nothing
+	// persisted (legacyEndpoint). ADR-0022.
+	endpointID, ok := i.legacyEndpoint(w, "github")
+	if !ok {
+		i.observeRejected("github", event, "signed", key, "receiver not configured")
+		return
+	}
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — persist the event and enqueue its todo in a
 	// single transaction so a CreateTodo failure can never leave an orphaned event row behind.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
@@ -255,7 +310,8 @@ func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
 			Payload: body, SourceIP: clientIP(r),
 		},
 		store.CreateTodoParams{
-			Queue: i.githubQueue, Source: "github", Kind: event, Title: summarizeGitHub(event, body),
+			EndpointID: endpointID,
+			Queue:      i.githubQueue, Source: "github", Kind: event, Title: summarizeGitHub(event, body),
 			Payload: body, IdempotencyKey: key,
 		})
 	if err != nil {
@@ -290,17 +346,32 @@ func (i *Ingest) DevCreateTodo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Queue   string          `json:"queue"`
-		Title   string          `json:"title"`
-		Kind    string          `json:"kind"`
-		Payload json.RawMessage `json:"payload"`
+		Queue      string          `json:"queue"`
+		Title      string          `json:"title"`
+		Kind       string          `json:"kind"`
+		Payload    json.RawMessage `json:"payload"`
+		EndpointID string          `json:"endpoint_id"`
 	}
 	if err := json.Unmarshal(body, &in); err != nil || in.Queue == "" || in.Title == "" {
 		writeErr(w, http.StatusBadRequest, "queue and title are required")
 		return
 	}
+	// Every todo is owned by exactly one endpoint (ADR-0022). The dev helper exists to exercise the
+	// vend → agent drain loop, so the caller has just vended an endpoint and can name it: an
+	// explicit endpoint_id in the body wins. It falls back to the operator-designated legacy
+	// endpoint so an existing dev flow that names none keeps working. INTERIM on the fallback only
+	// — PR 2 removes Config.LegacyEndpointID and endpoint_id becomes required here.
+	endpointID := in.EndpointID
+	if endpointID == "" {
+		endpointID = i.legacyEndpointID
+	}
+	if endpointID == "" {
+		writeErr(w, http.StatusBadRequest, "endpoint_id is required")
+		return
+	}
 	td, created, err := i.store.CreateTodo(r.Context(), store.CreateTodoParams{
-		Queue: in.Queue, Source: "dev", Kind: in.Kind, Title: in.Title, Payload: in.Payload,
+		EndpointID: endpointID,
+		Queue:      in.Queue, Source: "dev", Kind: in.Kind, Title: in.Title, Payload: in.Payload,
 	})
 	if err != nil {
 		// Governing: SPEC-0001 REQ "Error Handling Standards" — 500 is generic to the client,

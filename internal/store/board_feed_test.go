@@ -13,12 +13,14 @@ import (
 func TestEventHookFiresOnNewEventsOnly(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "event-hook", "q")
+
 	var got []EventSummary
 	s.SetEventHook(func(e EventSummary) { got = append(got, e) })
 	defer s.SetEventHook(nil)
 
 	in := EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "d1", TrustMode: "signed", Verified: true, Payload: []byte(`{}`)}
-	evID, td, created, err := s.CreateEventTodo(ctx, in, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "k1"})
+	evID, td, created, err := s.CreateEventTodo(ctx, in, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "k1"})
 	if err != nil || !created {
 		t.Fatalf("create event todo: %v created=%v", err, created)
 	}
@@ -33,7 +35,7 @@ func TestEventHookFiresOnNewEventsOnly(t *testing.T) {
 	}
 
 	// Duplicate delivery (same source+external id): event dedups → hook must NOT fire again.
-	if _, _, _, err := s.CreateEventTodo(ctx, in, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "k1"}); err != nil {
+	if _, _, _, err := s.CreateEventTodo(ctx, in, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "k1"}); err != nil {
 		t.Fatalf("duplicate delivery: %v", err)
 	}
 	if len(got) != 1 {
@@ -52,12 +54,14 @@ func TestEventHookFiresOnNewEventsOnly(t *testing.T) {
 func TestRecentEventsJoinTodoLifecycle(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "recent-events-join", "q")
+
 	in := EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "r1", TrustMode: "signed", Verified: true, Payload: []byte(`{}`)}
-	_, td, _, err := s.CreateEventTodo(ctx, in, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "rk1"})
+	_, td, _, err := s.CreateEventTodo(ctx, in, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "rk1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td.ID, "op:h1", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "op:h1", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 
@@ -112,11 +116,13 @@ func TestEventBuckets(t *testing.T) {
 func TestReapExpiredFiresTransitionHook(t *testing.T) {
 	s, ctx := testStore(t)
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "reap-hook"})
+	ep := seedEndpoint(t, s, ctx, "reap-hook", "q")
+
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "reap-hook"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td.ID, "agent:a1", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "agent:a1", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if _, err := s.pool.Exec(ctx, `UPDATE todos SET lease_expires_at = now() - interval '1 minute' WHERE id=$1`, td.ID); err != nil {

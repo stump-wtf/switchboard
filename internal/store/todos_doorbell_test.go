@@ -9,6 +9,8 @@ import "testing"
 func TestTodoDoorbellHookSenderGate(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "doorbell-gate", "reviews")
+
 	var rang []string
 	s.SetTodoDoorbellHook(func(td Todo) { rang = append(rang, td.ID) })
 	defer s.SetTodoDoorbellHook(nil)
@@ -17,7 +19,7 @@ func TestTodoDoorbellHookSenderGate(t *testing.T) {
 	_, td, created, err := s.CreateEventTodo(ctx,
 		EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "db-1",
 			TrustMode: "signed", Verified: true, Payload: []byte("raw")},
-		CreateTodoParams{Queue: "reviews", Source: "github", Kind: "push", Title: "verified",
+		CreateTodoParams{EndpointID: ep, Queue: "reviews", Source: "github", Kind: "push", Title: "verified",
 			Payload: []byte(`{}`), IdempotencyKey: "db-1"})
 	if err != nil || !created {
 		t.Fatalf("verified create: created=%v err=%v", created, err)
@@ -30,7 +32,7 @@ func TestTodoDoorbellHookSenderGate(t *testing.T) {
 	if _, _, created, err = s.CreateEventTodo(ctx,
 		EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "db-1",
 			TrustMode: "signed", Verified: true, Payload: []byte("raw")},
-		CreateTodoParams{Queue: "reviews", Source: "github", Kind: "push", Title: "verified",
+		CreateTodoParams{EndpointID: ep, Queue: "reviews", Source: "github", Kind: "push", Title: "verified",
 			Payload: []byte(`{}`), IdempotencyKey: "db-1"}); err != nil || created {
 		t.Fatalf("duplicate delivery: created=%v err=%v", created, err)
 	}
@@ -42,12 +44,12 @@ func TestTodoDoorbellHookSenderGate(t *testing.T) {
 	if _, _, created, err = s.CreateEventTodo(ctx,
 		EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "db-2",
 			TrustMode: "open", Verified: false, Payload: []byte("raw")},
-		CreateTodoParams{Queue: "reviews", Source: "github", Title: "unverified",
+		CreateTodoParams{EndpointID: ep, Queue: "reviews", Source: "github", Title: "unverified",
 			Payload: []byte(`{}`), IdempotencyKey: "db-2"}); err != nil || !created {
 		t.Fatalf("unverified create: created=%v err=%v", created, err)
 	}
 	// Plain create (no delivery event, e.g. the dev helper) → no verified sender, no push.
-	if _, _, err = s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "plain", IdempotencyKey: "db-3"}); err != nil {
+	if _, _, err = s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "reviews", Title: "plain", IdempotencyKey: "db-3"}); err != nil {
 		t.Fatalf("plain create: %v", err)
 	}
 	if len(rang) != 1 {

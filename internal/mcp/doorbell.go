@@ -36,10 +36,24 @@ const (
 // the sender gate: only verified, human-attributed todos reach this point. Delivery is lossy and
 // non-blocking by design: no session, no open stream, or a full buffer all degrade to pull, where
 // list_todos returns the todo unchanged.
+//
+// Governing: ADR-0022 — the PRIMARY filter is endpoint ownership. A session minted under endpoint
+// A MUST NEVER receive a doorbell for a todo owned by endpoint B, even when both share a queue
+// name. Queue membership (s.queues) remains as a secondary intra-endpoint scope (SPEC-0011
+// "Scope-Filtered Fan-Out" at a finer grain). System todos (empty EndpointID, e.g. friend
+// approvals) are never pushed — they are operator-Board-only.
 func (h *Handler) PublishTodoReady(t store.Todo) {
+	if t.EndpointID == "" {
+		return // system todo: never push to agent sessions
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, s := range h.sessions {
+		// Tenant boundary (ADR-0022): a session only ever receives doorbells for todos pinned to
+		// its own endpoint. This is the cross-tenant isolation check; it runs first.
+		if s.endpointID != t.EndpointID {
+			continue
+		}
 		// Governing: SPEC-0011 REQ "Scope-Filtered Fan-Out" — sessions never receive doorbells
 		// for queues outside their endpoint's grant.
 		if !s.queues[t.Queue] {

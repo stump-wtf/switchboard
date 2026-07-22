@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,6 +60,46 @@ func testStore(t *testing.T) (*Store, context.Context) {
 		t.Fatalf("truncate: %v", err)
 	}
 	return New(pool), ctx
+}
+
+// seedEndpointCounter keeps the per-call credential hash and OIDC subject distinct across every
+// seedEndpoint in the package: humans are unique on oidc_subject and endpoints on credential_hash,
+// so two fixtures built from the same label would otherwise collide inside one test database.
+var seedEndpointCounter atomic.Int64
+
+// seedEndpoint provisions the full ownership chain a todo now requires — human → agent → vended
+// endpoint — and returns the endpoint id that the calling test's todos are pinned to.
+// todos.endpoint_id is NOT NULL and every agent-facing query predicates on it, so a test that
+// enqueues work must name a real endpoint to own it: there is no sentinel scope and no system-todo
+// escape hatch. Each call mints a distinct human, agent, and credential, so a test can seed two
+// endpoints and assert that neither can see the other's work even when their queue names collide.
+// Governing: ADR-0022, ADR-0008, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+func seedEndpoint(t *testing.T, s *Store, ctx context.Context, label string, queues ...string) string {
+	t.Helper()
+	if len(queues) == 0 {
+		queues = []string{"q"}
+	}
+	n := seedEndpointCounter.Add(1)
+	uniq := fmt.Sprintf("%s-%d", label, n)
+
+	h, err := s.UpsertHuman(ctx, "pocket|"+uniq, label, uniq+"@example.com")
+	if err != nil {
+		t.Fatalf("seed human (%s): %v", label, err)
+	}
+	ag, err := s.CreateAgent(ctx, h.ID, label, "")
+	if err != nil {
+		t.Fatalf("seed agent (%s): %v", label, err)
+	}
+	slug, err := MintSlug(ag.Name)
+	if err != nil {
+		t.Fatalf("seed slug (%s): %v", label, err)
+	}
+	ep, err := s.CreateEndpoint(ctx, ag.ID, "credhash-"+uniq, "sbk_"+uniq, slug, queues,
+		[]string{"list_todos", "claim", "complete", "fail", "heartbeat", "release", "retry"})
+	if err != nil {
+		t.Fatalf("seed endpoint (%s): %v", label, err)
+	}
+	return ep.ID
 }
 
 func TestHumanAgentVend(t *testing.T) {
@@ -190,8 +232,11 @@ func TestSessionLifecycle(t *testing.T) {
 func TestTodoQueueLifecycle(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "lifecycle", "reviews")
+
 	td, created, err := s.CreateTodo(ctx, CreateTodoParams{
-		Queue: "reviews", Source: "github", Kind: "pull_request", Title: "PR #482 opened",
+		EndpointID: ep,
+		Queue:      "reviews", Source: "github", Kind: "pull_request", Title: "PR #482 opened",
 		IdempotencyKey: "gh-482",
 	})
 	if err != nil || !created {
@@ -202,13 +247,26 @@ func TestTodoQueueLifecycle(t *testing.T) {
 	}
 
 	// Dedup: same idempotency key returns the existing todo, no new row.
-	dup, created2, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "dup", IdempotencyKey: "gh-482"})
+	dup, created2, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "reviews", Title: "dup", IdempotencyKey: "gh-482"})
 	if err != nil || created2 || dup.ID != td.ID {
 		t.Fatalf("dedup failed: created=%v id=%s want %s err=%v", created2, dup.ID, td.ID, err)
 	}
 
+	// Dedup is per-endpoint: a second endpoint reusing the same key on the same queue name gets its
+	// OWN row, not a handle on this tenant's todo. Governing: ADR-0022, SPEC-0003 REQ
+	// "Per-Endpoint Idempotency and Dedup".
+	other := seedEndpoint(t, s, ctx, "lifecycle-other", "reviews")
+	otherTd, createdOther, err := s.CreateTodo(ctx, CreateTodoParams{
+		EndpointID: other, Queue: "reviews", Title: "same key, other tenant", IdempotencyKey: "gh-482"})
+	if err != nil || !createdOther {
+		t.Fatalf("cross-endpoint same idempotency key must mint a new row: created=%v err=%v", createdOther, err)
+	}
+	if otherTd.ID == td.ID {
+		t.Fatalf("cross-endpoint dedup collided onto %s — keys must be scoped per endpoint", td.ID)
+	}
+
 	// Claim.
-	claimed, err := s.ClaimTodo(ctx, td.ID, "worker-1", 30*time.Second)
+	claimed, err := s.ClaimTodo(ctx, ep, td.ID, "worker-1", 30*time.Second)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -217,12 +275,18 @@ func TestTodoQueueLifecycle(t *testing.T) {
 	}
 
 	// Second claim loses the race → conflict.
-	if _, err := s.ClaimTodo(ctx, td.ID, "worker-2", 30*time.Second); !errors.Is(err, ErrConflict) {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "worker-2", 30*time.Second); !errors.Is(err, ErrConflict) {
 		t.Fatalf("double claim should conflict, got %v", err)
 	}
 
+	// Another endpoint cannot claim this tenant's todo at all — it is not merely a lease conflict,
+	// the row is invisible outside its owning scope. Governing: ADR-0022.
+	if _, err := s.ClaimTodo(ctx, other, td.ID, "intruder", 30*time.Second); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-endpoint claim should be ErrNotFound, got %v", err)
+	}
+
 	// Complete by owner.
-	done, err := s.CompleteTodo(ctx, td.ID, "worker-1", []byte(`{"ok":true}`))
+	done, err := s.CompleteTodo(ctx, ep, td.ID, "worker-1", []byte(`{"ok":true}`))
 	if err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -231,25 +295,32 @@ func TestTodoQueueLifecycle(t *testing.T) {
 	}
 
 	// Completing again → conflict (no longer claimed).
-	if _, err := s.CompleteTodo(ctx, td.ID, "worker-1", nil); !errors.Is(err, ErrConflict) {
+	if _, err := s.CompleteTodo(ctx, ep, td.ID, "worker-1", nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("re-complete should conflict, got %v", err)
 	}
 	// Unknown id → not found.
-	if _, err := s.ClaimTodo(ctx, "td_nope", "w", time.Second); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ClaimTodo(ctx, ep, "td_nope", "w", time.Second); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("claim unknown should be ErrNotFound, got %v", err)
 	}
 }
 
 func TestClaimNextSkipLocked(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "skiplocked", "q")
 	for i := 0; i < 3; i++ {
-		if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t"}); err != nil {
+		if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t"}); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
+	// A second endpoint on the SAME queue name seeds work this scan must never reach: the drain
+	// below must stop at exactly 3. Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership".
+	noise := seedEndpoint(t, s, ctx, "skiplocked-noise", "q")
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: noise, Queue: "q", Title: "not yours"}); err != nil {
+		t.Fatalf("seed noise: %v", err)
+	}
 	got := 0
 	for {
-		td, err := s.ClaimNext(ctx, []string{"q"}, "w", time.Minute)
+		td, err := s.ClaimNext(ctx, ep, []string{"q"}, "w", time.Minute)
 		if errors.Is(err, ErrNotFound) {
 			break
 		}

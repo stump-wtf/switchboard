@@ -5,10 +5,13 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -120,7 +123,25 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		SlackQueue:   os.Getenv("SWITCHBOARD_SLACK_QUEUE"),
 		Generic:      generic,
 		DevLogin:     cfg.DevLogin,
+		// INTERIM (PR 2): the operator-configured receivers and the queue adapters have no vended
+		// endpoint of their own, but every todo must name exactly one owner (ADR-0022). The
+		// operator states it once here rather than having it derived from a queue name.
+		LegacyEndpointID: os.Getenv("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID"),
 	}.Normalized()
+	// Fail LOUDLY at boot on a misconfigured legacy endpoint rather than quietly at every delivery.
+	// legacyEndpoint() guards only the EMPTY case (→ 503, retriable, nothing persisted). A value
+	// that is non-empty but wrong sails past that guard and dies at the INSERT: a non-uuid string
+	// is a 22P02, and a well-formed uuid naming no endpoint is a 23503 FK violation — both surface
+	// as a 500 on EVERY delivery to /webhooks/{github,stripe,slack,generic/*}, forever. That is the
+	// far more likely operator error (pasting an endpoint slug instead of its uuid), and it defeats
+	// the whole point of the 503 design: providers retry a 503, but GitHub disables a webhook after
+	// repeated 5xx and Stripe retries then drops. The same value backs every queue adapter that
+	// states no EndpointID of its own, where the failure mode is worse still — un-acked messages
+	// redelivered by the broker forever (see adapter.NewStoreSink).
+	// Governing: ADR-0022, SPEC-0001 REQ "Error Handling Standards".
+	if err := validateLegacyEndpointID(ctx, st, icfg.LegacyEndpointID); err != nil {
+		return err
+	}
 	ing := ingest.New(st, hub, log, icfg)
 	// Ephemeral received-lane instrumentation (SPEC-0015 REQ "Patch Panel Board"): the receivers
 	// report in-flight deliveries — arrival, redacted rejection, dedup collapse — so the board's
@@ -169,12 +190,21 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// todo_ready LISTEN loop (SPEC-0004 "In-Database Wakeups via LISTEN/NOTIFY"): the consumer
 	// for the pg_notify the store already emits on every committed enqueue. Each notification
 	// nudges the web SSE hub (count regions re-render from the database) and re-rings the MCP
-	// channel doorbell for push-eligible pending todos on that queue — so wakeups no longer
-	// depend on this process's HTTP-path store hooks alone. Context-managed like the reaper;
-	// reconnects with backoff inside (listen.go).
-	go listenTodoReady(ctx, cfg.DatabaseURL, log, func(nctx context.Context, queue string) {
+	// channel doorbell for push-eligible pending todos owned by the endpoint the notification
+	// names — so wakeups no longer depend on this process's HTTP-path store hooks alone.
+	// Context-managed like the reaper; reconnects with backoff inside (listen.go).
+	//
+	// The payload is "<endpoint_id>:<queue>" (store.TodoReadyPayload, ADR-0022). nudgeDoorbells
+	// parses it and scopes its read to that endpoint. The web SSE nudge wants only the queue name:
+	// its count regions re-render from the database under the viewing human's own session scope, so
+	// it is told WHICH queue moved, never whose todo moved.
+	go listenTodoReady(ctx, cfg.DatabaseURL, log, func(nctx context.Context, payload string) {
+		queue := payload
+		if _, after, ok := strings.Cut(payload, ":"); ok {
+			queue = after
+		}
 		webh.PublishQueueNudge(queue)
-		nudgeDoorbells(nctx, st, doorbells, mcph.PublishTodoReady, queue, log)
+		nudgeDoorbells(nctx, st, doorbells, mcph.PublishTodoReady, payload, log)
 	})
 
 	// Pull-adapter poll loops (ADR-0014; SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety"):
@@ -186,7 +216,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// live on registerQueueAdapters). closeAdapters releases the shared broker client and runs (via
 	// defer, LIFO) only after the <-runnerDone join below — no worker outlives its client.
 	adapters := runner.New(st, log, runner.Options{})
-	closeAdapters, err := registerQueueAdapters(ctx, st, adapters, cfg.RedisURL, log)
+	closeAdapters, err := registerQueueAdapters(ctx, st, adapters, cfg.RedisURL, icfg.LegacyEndpointID, log)
 	if err != nil {
 		return err
 	}
@@ -643,4 +673,34 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 			}
 		}
 	}
+}
+
+// validateLegacyEndpointID checks the operator-designated legacy receiver endpoint at BOOT, so a
+// typo is a refused startup with an actionable message instead of a permanent 500 on every legacy
+// delivery. Unset is valid and stays valid: the receivers then answer 503 ("receiver not
+// configured"), which is the documented interim behaviour until PR 2 retires them.
+//
+// The probe is EndpointOwnerHuman, which resolves only ACTIVE endpoints. That deliberately rejects a
+// revoked or expired endpoint too: it is well-formed and really exists, but every todo minted onto
+// it would be undrainable, which is a configuration error worth catching at boot rather than
+// discovering as a silently growing pile of unreachable work.
+//
+// INTERIM, REMOVED IN PR 2 alongside Config.LegacyEndpointID and the receivers it serves.
+// Governing: ADR-0022, SPEC-0001 REQ "Error Handling Standards".
+func validateLegacyEndpointID(ctx context.Context, st *store.Store, id string) error {
+	if id == "" {
+		return nil // unset is a supported configuration; the receivers answer 503.
+	}
+	if !store.IsUUID(id) {
+		return fmt.Errorf("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID=%q is not a uuid "+
+			"(it must be an endpoint's id, not its slug or name)", id)
+	}
+	if _, err := st.EndpointOwnerHuman(ctx, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID=%s names no active endpoint "+
+				"(unknown, revoked, or expired); todos minted onto it would be undrainable", id)
+		}
+		return fmt.Errorf("validating SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID: %w", err)
+	}
+	return nil
 }

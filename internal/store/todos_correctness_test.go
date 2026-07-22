@@ -10,11 +10,13 @@ import (
 func TestCreateEventTodoAtomicity(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "create-event-todo-atomicity")
+
 	// Success: one delivery persists an event AND its linked todo together.
 	eventID, td, created, err := s.CreateEventTodo(ctx,
 		EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "d-ok",
 			TrustMode: "signed", Verified: true, Payload: []byte("raw-bytes-are-fine")},
-		CreateTodoParams{Queue: "reviews", Source: "github", Kind: "push", Title: "push to main",
+		CreateTodoParams{EndpointID: ep, Queue: "reviews", Source: "github", Kind: "push", Title: "push to main",
 			Payload: []byte(`{"ref":"main"}`), IdempotencyKey: "d-ok"})
 	if err != nil || !created || eventID == 0 {
 		t.Fatalf("happy path: eventID=%d created=%v err=%v", eventID, created, err)
@@ -32,7 +34,7 @@ func TestCreateEventTodoAtomicity(t *testing.T) {
 	_, _, _, err = s.CreateEventTodo(ctx,
 		EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "d-orphan",
 			TrustMode: "signed", Verified: true, Payload: []byte("raw")},
-		CreateTodoParams{Queue: "reviews", Title: "bad", Payload: []byte("this is not json"),
+		CreateTodoParams{EndpointID: ep, Queue: "reviews", Title: "bad", Payload: []byte("this is not json"),
 			IdempotencyKey: "d-orphan"})
 	if err == nil {
 		t.Fatal("invalid jsonb todo payload should fail CreateEventTodo")
@@ -52,16 +54,18 @@ func TestCreateEventTodoAtomicity(t *testing.T) {
 func TestClaimReclaimsExpiredLeaseWithoutReaper(t *testing.T) {
 	s, ctx := testStore(t)
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "work", IdempotencyKey: "k1"})
+	ep := seedEndpoint(t, s, ctx, "claim-reclaims-expired-lease-without-reaper")
+
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "reviews", Title: "work", IdempotencyKey: "k1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
 	// Claim with a live lease. While the lease is valid the todo is NOT reclaimable by anyone else.
-	if _, err := s.ClaimTodo(ctx, td.ID, "worker-1", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "worker-1", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := s.ClaimNext(ctx, []string{"reviews"}, "worker-2", time.Minute); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ClaimNext(ctx, ep, []string{"reviews"}, "worker-2", time.Minute); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("live-leased todo must not be claimable, got %v", err)
 	}
 
@@ -72,7 +76,7 @@ func TestClaimReclaimsExpiredLeaseWithoutReaper(t *testing.T) {
 	}
 
 	// The claim scan recovers it directly: new owner, attempt incremented, fresh lease.
-	reclaimed, err := s.ClaimNext(ctx, []string{"reviews"}, "worker-2", time.Minute)
+	reclaimed, err := s.ClaimNext(ctx, ep, []string{"reviews"}, "worker-2", time.Minute)
 	if err != nil {
 		t.Fatalf("expired lease should be reclaimable by the scan, got %v", err)
 	}
@@ -87,7 +91,7 @@ func TestClaimReclaimsExpiredLeaseWithoutReaper(t *testing.T) {
 		td.ID); err != nil {
 		t.Fatalf("exhaust attempts: %v", err)
 	}
-	if _, err := s.ClaimNext(ctx, []string{"reviews"}, "worker-3", time.Minute); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ClaimNext(ctx, ep, []string{"reviews"}, "worker-3", time.Minute); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("exhausted expired lease must not be reclaimed by the scan, got %v", err)
 	}
 }

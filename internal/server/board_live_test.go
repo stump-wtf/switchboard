@@ -48,7 +48,14 @@ const liveGitHubSecret = "live-board-test-secret"
 // hook set Run wires — so webhook deliveries and lifecycle transitions publish their typed SSE
 // frames end-to-end. Shares the package-dedicated test database (tests in this package run
 // serially; each harness truncates).
-func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
+// The returned endpoint is the operator-designated owner of every todo the operator-configured
+// /webhooks/github receiver mints (ingest.Config.LegacyEndpointID). Those receivers predate
+// ADR-0022 — they are configured by an operator, not vended to an agent, so nothing in their
+// configuration names a tenant — and todos.endpoint_id is NOT NULL with no sentinel, so the owner
+// must be STATED. Without it the receiver answers 503 rather than minting an unowned todo, and
+// this whole board flow would never produce a card. Governing: ADR-0022, SPEC-0001 REQ "Enqueue
+// Accepted Delivery as Endpoint-Owned Todo".
+func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context, store.Endpoint) {
 	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -86,6 +93,14 @@ func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context
 		t.Fatalf("truncate: %v", err)
 	}
 	st := store.New(pool)
+	// Vend the receiver's owning tenant before the board hooks are attached, so the fixture's own
+	// setup writes cannot be mistaken for board traffic on the SSE wire.
+	operator, err := st.UpsertHuman(ctx, "board-live-operator", "Board Operator", "board-op@example.com")
+	if err != nil {
+		t.Fatalf("upsert receiver-owner human: %v", err)
+	}
+	legacyEP := seedEndpoint(t, st, ctx, operator.ID, "board-live-receiver", "hash-board", "sbk_board0")
+
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{BaseURL: "https://sb.example.com"}
 	authr, err := auth.New(ctx, cfg, st, log)
@@ -103,6 +118,7 @@ func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context
 	st.SetEndpointSeenHook(webh.PublishEndpointSeen)
 	ing := ingest.New(st, ingest.NewHub(), log, ingest.Config{
 		GitHubSecret: liveGitHubSecret, GitHubQueue: "reviews",
+		LegacyEndpointID: legacyEP.ID,
 	})
 	ing.SetInstrument(webh)
 	r := newRouter(routerDeps{
@@ -113,7 +129,7 @@ func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context
 		ping:  pool.Ping,
 		log:   log,
 	})
-	return r, st, ctx
+	return r, st, ctx, legacyEP
 }
 
 // sseFrame is one named frame captured off the live stream.
@@ -274,7 +290,7 @@ func scrapeHXCSRF(t *testing.T, body string) string {
 // (todo_claimed), and completion updates it in place (todo_completed). Sequential awaits pin the
 // wire order; the taxonomy check pins that nothing untyped rode along.
 func TestSignedWebhookCrossesTheBoardOverSSE(t *testing.T) {
-	r, st, ctx := newLiveBoardRouter(t)
+	r, st, ctx, legacyEP := newLiveBoardRouter(t)
 	_, token := mintSession(t, st, ctx, "board-live-op", "Op", "op@example.com")
 	ts := httptest.NewServer(r)
 	t.Cleanup(ts.Close)
@@ -407,9 +423,15 @@ func TestSignedWebhookCrossesTheBoardOverSSE(t *testing.T) {
 		}
 	}
 
-	// Database truth behind the frames: the todo really is done.
-	if got, err := st.GetTodo(ctx, accepted.ID); err != nil || got.State != "done" {
-		t.Fatalf("todo after flow = %+v err=%v, want state done", got, err)
+	// Database truth behind the frames: the todo really is done. The read goes THROUGH the
+	// receiver's owning endpoint, which makes the lookup itself the ownership assertion — GetTodo
+	// predicates on endpoint_id, so a todo that landed in any other tenant (or in no tenant at all)
+	// is ErrNotFound here, not a wrong-looking field. That is the whole point of the scope: a todo
+	// is reachable from exactly one endpoint, never from whoever happens to share its queue name.
+	// Governing: ADR-0022, SPEC-0001 REQ "Enqueue Accepted Delivery as Endpoint-Owned Todo".
+	got, err := st.GetTodo(ctx, legacyEP.ID, accepted.ID)
+	if err != nil || got.State != "done" {
+		t.Fatalf("todo after flow = %+v err=%v, want state done owned by endpoint %s", got, err, legacyEP.ID)
 	}
 	stream.assertTaxonomy()
 }
@@ -420,7 +442,7 @@ func TestSignedWebhookCrossesTheBoardOverSSE(t *testing.T) {
 // template-side by lanes_render_test.go), while NOTHING is persisted (SPEC-0001 unchanged) and no
 // durable frame follows.
 func TestRejectedCallerTransientCardOverSSE(t *testing.T) {
-	r, st, ctx := newLiveBoardRouter(t)
+	r, st, ctx, _ := newLiveBoardRouter(t)
 	_, token := mintSession(t, st, ctx, "board-rej-op", "Op", "op@example.com")
 	ts := httptest.NewServer(r)
 	t.Cleanup(ts.Close)

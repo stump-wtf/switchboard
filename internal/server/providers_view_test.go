@@ -37,7 +37,7 @@ func postWebhook(t *testing.T, r chi.Router, path, token, body string) *httptest
 var revealSecretRe = regexp.MustCompile(`aria-labelledby="sb-prreveal-secret-label">([0-9a-f]{64})<`)
 
 func TestProvidersLifecycleFlow(t *testing.T) {
-	r, st, ctx := newDBRouter(t)
+	r, st, ctx, _ := newReceiverDBRouter(t)
 	_, token := mintSession(t, st, ctx, "prov-op", "Prov Op", "prov@example.com")
 
 	// A token provider with a known held secret, as the boot env import would seed it.

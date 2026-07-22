@@ -55,7 +55,11 @@ type adapterAdder interface {
 //
 // Governing: ADR-0014 (adapter registry; secrets via environment), ADR-0020, SPEC-0002 REQ
 // "Adapter Interface and Trust Mode", REQ "Poll-Loop Lifecycle — Concurrency Safety".
-func registerQueueAdapters(ctx context.Context, st queueAdapterStore, run adapterAdder, redisURL string, log *slog.Logger) (func() error, error) {
+// legacyEndpointID is the operator-designated endpoint that owns todos minted by adapters whose
+// registry row names none of its own — the pull-side twin of ingest.Config.LegacyEndpointID and,
+// like it, INTERIM and revisited in PR 2. An adapter with neither its own nor a fallback endpoint
+// fails soft: it stays dark and loudly logged, never consuming (ADR-0022).
+func registerQueueAdapters(ctx context.Context, st queueAdapterStore, run adapterAdder, redisURL, legacyEndpointID string, log *slog.Logger) (func() error, error) {
 	noop := func() error { return nil }
 	rows, err := st.ListAdaptersByFamily(ctx, adapter.Family)
 	if err != nil {
@@ -91,9 +95,17 @@ func registerQueueAdapters(ctx context.Context, st queueAdapterStore, run adapte
 			log.Error("queue adapter config invalid; adapter not started", "adapter", row.Name, "err", err)
 			continue
 		}
+		// Ownership is per registry row where the row states it, falling back to the operator's
+		// designated legacy endpoint. NewStoreSink rejects an empty id, so a row that states
+		// neither leaves the adapter dark rather than failing on every insert (ADR-0022).
+		endpointID := cfg.EndpointID
+		if endpointID == "" {
+			endpointID = legacyEndpointID
+		}
 		sink, err := adapter.NewStoreSink(st, log, adapter.StoreSinkConfig{
 			Queue:       cfg.Queue,
 			TrustDetail: a.TrustDetail(),
+			EndpointID:  endpointID,
 		})
 		if err != nil {
 			log.Error("queue adapter sink construction failed; adapter not started", "adapter", row.Name, "err", err)

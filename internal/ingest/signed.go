@@ -53,6 +53,14 @@ func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
+	// INTERIM (PR 2): operator-configured receiver, no vended endpoint of its own — the todo is
+	// owned by the operator-designated legacy endpoint; unconfigured → 503, nothing persisted
+	// (legacyEndpoint). ADR-0022.
+	endpointID, ok := i.legacyEndpoint(w, "stripe")
+	if !ok {
+		i.observeRejected("stripe", p.Type, "signed", key, "receiver not configured")
+		return
+	}
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
 		store.EventInput{
@@ -62,7 +70,8 @@ func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
 			Payload: body, SourceIP: clientIP(r),
 		},
 		store.CreateTodoParams{
-			Queue: i.stripeQueue, Source: "stripe", Kind: p.Type, Title: summarizeStripe(p.Type),
+			EndpointID: endpointID,
+			Queue:      i.stripeQueue, Source: "stripe", Kind: p.Type, Title: summarizeStripe(p.Type),
 			Payload: body, IdempotencyKey: key,
 		})
 	if err != nil {
@@ -120,6 +129,14 @@ func (i *Ingest) Slack(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
+	// INTERIM (PR 2): operator-configured receiver, no vended endpoint of its own — the todo is
+	// owned by the operator-designated legacy endpoint; unconfigured → 503, nothing persisted
+	// (legacyEndpoint). ADR-0022.
+	endpointID, ok := i.legacyEndpoint(w, "slack")
+	if !ok {
+		i.observeRejected("slack", eventType, "signed", key, "receiver not configured")
+		return
+	}
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
 		store.EventInput{
@@ -129,7 +146,8 @@ func (i *Ingest) Slack(w http.ResponseWriter, r *http.Request) {
 			Payload: body, SourceIP: clientIP(r),
 		},
 		store.CreateTodoParams{
-			Queue: i.slackQueue, Source: "slack", Kind: eventType, Title: summarizeSlack(eventType),
+			EndpointID: endpointID,
+			Queue:      i.slackQueue, Source: "slack", Kind: eventType, Title: summarizeSlack(eventType),
 			Payload: body, IdempotencyKey: key,
 		})
 	if err != nil {

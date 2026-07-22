@@ -13,10 +13,21 @@ import (
 	"github.com/joestump/switchboard/internal/store"
 )
 
+// testEndpointID is the owning endpoint every sink in this file is pinned to. A queue adapter has no
+// per-message tenant to derive one from, so StoreSinkConfig.EndpointID states it explicitly and
+// NewStoreSink refuses to build without it (ADR-0022; todos.endpoint_id is NOT NULL with no
+// sentinel). It is an opaque id here — the fake store never resolves it — but it must be non-empty
+// and it must reach the store, which testStoreSinkStampsOwningEndpoint asserts.
+const testEndpointID = "ep_00000000-0000-0000-0000-0000000000aa"
+
 // fakeEventTodoStore is an in-memory EventTodoCreator that mirrors the real store's dedup contract:
-// events dedup on (source, external_id), todos dedup on (queue, idempotency_key) among non-terminal
-// rows, and the pair commits atomically (a configured failure persists nothing). It records every
-// call and an ops log so tests can assert ordering against a transport's ack.
+// events dedup on (source, external_id), todos dedup on (endpoint_id, idempotency_key) among
+// non-terminal rows, and the pair commits atomically (a configured failure persists nothing). It
+// records every call and an ops log so tests can assert ordering against a transport's ack.
+//
+// The todo dedup key is scoped by ENDPOINT, not by queue: that is the whole of ADR-0022. Keying on
+// queue — as this fake did before — models the bug the change removes, where two endpoints sharing a
+// queue string collapsed onto one another's rows.
 type fakeEventTodoStore struct {
 	mu       sync.Mutex
 	failures int // fail this many leading calls with err
@@ -26,7 +37,7 @@ type fakeEventTodoStore struct {
 	hadDeadline bool // whether the last ctx carried a deadline (bounded-timeout standard)
 	lastEvent   store.EventInput
 	lastParams  store.CreateTodoParams
-	todos       map[string]store.Todo // (queue, idempotency_key) → todo
+	todos       map[string]store.Todo // (endpoint_id, idempotency_key) → todo
 	ops         []string              // "store <key>" entries, interleaved with transport acks
 	nextID      int64
 }
@@ -45,16 +56,18 @@ func (f *fakeEventTodoStore) CreateEventTodo(ctx context.Context, e store.EventI
 		f.failures--
 		return 0, store.Todo{}, false, f.err // atomic: nothing persisted on failure
 	}
-	key := p.Queue + "\x00" + p.IdempotencyKey
+	// Mirror the real dedup scope: (endpoint_id, idempotency_key). Governing: ADR-0022,
+	// SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
+	key := p.EndpointID + "\x00" + p.IdempotencyKey
 	if td, ok := f.todos[key]; ok {
 		return *td.EventID, td, false, nil // redelivery collapses onto the existing row
 	}
 	f.nextID++
 	ev := f.nextID
 	td := store.Todo{
-		ID: "td_" + p.IdempotencyKey, Queue: p.Queue, Source: p.Source, Kind: p.Kind,
-		Title: p.Title, Payload: p.Payload, EventID: &ev, IdempotencyKey: p.IdempotencyKey,
-		State: "pending",
+		ID: "td_" + p.IdempotencyKey, EndpointID: p.EndpointID, Queue: p.Queue, Source: p.Source,
+		Kind: p.Kind, Title: p.Title, Payload: p.Payload, EventID: &ev,
+		IdempotencyKey: p.IdempotencyKey, State: "pending",
 	}
 	f.todos[key] = td
 	f.ops = append(f.ops, "store "+p.IdempotencyKey)
@@ -74,6 +87,11 @@ func newTestSink(t *testing.T, st EventTodoCreator, cfg StoreSinkConfig) *StoreS
 	if cfg.TrustDetail == "" {
 		cfg.TrustDetail = "redis acl: deploy-bot"
 	}
+	// Every todo is owned by exactly one endpoint (ADR-0022), so a sink cannot be built without one.
+	// Defaulted here so each test states only the field it is actually about.
+	if cfg.EndpointID == "" {
+		cfg.EndpointID = testEndpointID
+	}
 	s, err := NewStoreSink(st, testLogger(), cfg)
 	if err != nil {
 		t.Fatalf("NewStoreSink: %v", err)
@@ -82,13 +100,58 @@ func newTestSink(t *testing.T, st EventTodoCreator, cfg StoreSinkConfig) *StoreS
 }
 
 func TestNewStoreSinkRequiredFields(t *testing.T) {
-	if _, err := NewStoreSink(nil, testLogger(), StoreSinkConfig{TrustDetail: "x"}); err == nil {
+	if _, err := NewStoreSink(nil, testLogger(), StoreSinkConfig{TrustDetail: "x", EndpointID: testEndpointID}); err == nil {
 		t.Error("NewStoreSink(nil store) = nil error, want error")
 	}
 	// SPEC-0002 REQ "Adapter Interface and Trust Mode": every pull-ingested event MUST carry a
 	// verify_detail naming the broker/ACL identity, so a sink with no trust detail must not build.
-	if _, err := NewStoreSink(newFakeEventTodoStore(), testLogger(), StoreSinkConfig{}); err == nil {
+	if _, err := NewStoreSink(newFakeEventTodoStore(), testLogger(), StoreSinkConfig{EndpointID: testEndpointID}); err == nil {
 		t.Error("NewStoreSink(no trust detail) = nil error, want error")
+	}
+	// ADR-0022: todos.endpoint_id is NOT NULL with no sentinel, and a broker connection authenticates
+	// the ADAPTER rather than a principal, so the owning endpoint has to be stated. Failing at
+	// CONSTRUCTION rather than on the first message is the point: an endpoint-less sink would violate
+	// the not-null on every insert, leaving every consumed message un-acked and redelivered forever.
+	if _, err := NewStoreSink(newFakeEventTodoStore(), testLogger(), StoreSinkConfig{TrustDetail: "x"}); err == nil {
+		t.Error("NewStoreSink(no endpoint id) = nil error, want error")
+	}
+}
+
+// Every todo a queue adapter mints is pinned to the sink's configured endpoint. Envelope.TodoParams
+// knows only the message and never the tenant, so StoreSink.owned is the single place a queue
+// adapter's tenancy is decided — if it stopped stamping, the params would reach the store with an
+// empty EndpointID and (against the real store) fail the not-null on every message.
+// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+func TestStoreSinkStampsOwningEndpoint(t *testing.T) {
+	st := newFakeEventTodoStore()
+	sink := newTestSink(t, st, StoreSinkConfig{Queue: "deploys", EndpointID: "ep_owner"})
+	if err := sink.Deliver(context.Background(), validEnvelope()); err != nil {
+		t.Fatalf("Deliver() = %v, want nil", err)
+	}
+	if got := st.lastParams.EndpointID; got != "ep_owner" {
+		t.Fatalf("todo EndpointID = %q, want the sink's configured owner %q", got, "ep_owner")
+	}
+}
+
+// Two sinks on the SAME queue with the same source message derive the same idempotency key but
+// belong to different tenants, so they MUST mint two separate todos. Before ADR-0022 the dedup scope
+// was the queue string, and this exact shape — two endpoints sharing a queue name — silently
+// collapsed one tenant's work onto the other's row.
+// Governing: ADR-0022, SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
+func TestStoreSinkDedupIsPerEndpointNotPerQueue(t *testing.T) {
+	st := newFakeEventTodoStore()
+	env := validEnvelope()
+
+	a := newTestSink(t, st, StoreSinkConfig{Queue: "deploys", EndpointID: "ep_a"})
+	b := newTestSink(t, st, StoreSinkConfig{Queue: "deploys", EndpointID: "ep_b"})
+	if err := a.Deliver(context.Background(), env); err != nil {
+		t.Fatalf("Deliver(a) = %v, want nil", err)
+	}
+	if err := b.Deliver(context.Background(), env); err != nil {
+		t.Fatalf("Deliver(b) = %v, want nil", err)
+	}
+	if got := len(st.todos); got != 2 {
+		t.Fatalf("todos stored = %d, want 2 — a shared queue string must not collapse two tenants", got)
 	}
 }
 
@@ -294,12 +357,16 @@ func TestEndToEndFakeAdapterStoreThenAck(t *testing.T) {
 	if got := len(st.todos); got != 2 {
 		t.Fatalf("todos stored = %d, want 2 (redelivery dedups)", got)
 	}
-	td, ok := st.todos["deploys\x00redis:deploys:1-0"]
+	// Keyed by (endpoint_id, idempotency_key) — the post-ADR-0022 dedup scope.
+	td, ok := st.todos[testEndpointID+"\x00redis:deploys:1-0"]
 	if !ok {
 		t.Fatalf("todo for key redis:deploys:1-0 missing; have %v", st.ops)
 	}
 	if td.Source != "redis" || td.Queue != "deploys" || td.State != "pending" {
 		t.Errorf("todo Source/Queue/State = %q/%q/%q, want redis/deploys/pending", td.Source, td.Queue, td.State)
+	}
+	if td.EndpointID != testEndpointID {
+		t.Errorf("todo EndpointID = %q, want the sink's owner %q", td.EndpointID, testEndpointID)
 	}
 	if td.EventID == nil {
 		t.Error("todo EventID = nil, want linked event row (atomic event+todo)")

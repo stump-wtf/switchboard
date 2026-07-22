@@ -35,6 +35,7 @@ func TestPruneAgeDropsOldKeepsRecentAndLiveWork(t *testing.T) {
 	s, ctx := testStore(t)
 	setSetting(t, s, ctx, "retention_max_age_days", "7")
 	setSetting(t, s, ctx, "retention_max_rows", "1000000") // cap out of the way; test age only
+	ep := seedEndpoint(t, s, ctx, "prune-age")
 
 	// Two events: one old, one fresh.
 	oldEv, err := s.InsertEvent(ctx, EventInput{Source: "github", Family: "webhook", ExternalID: "old", TrustMode: "signed", Verified: true})
@@ -47,10 +48,10 @@ func TestPruneAgeDropsOldKeepsRecentAndLiveWork(t *testing.T) {
 	backdate(t, s, ctx, "events", "received_at", "external_id = 'old'", 30*24*time.Hour)
 
 	// A terminal (done) todo that is old, plus a pending and a claimed todo that are also old but live.
-	doneTodo := seedTerminal(t, s, ctx, "q", "done-old", "done")
-	pendingID := seedPending(t, s, ctx, "q", "pending-old")
-	claimedID := seedPending(t, s, ctx, "q", "claimed-old")
-	if _, err := s.ClaimTodo(ctx, claimedID, "w", time.Hour); err != nil {
+	doneTodo := seedTerminal(t, s, ctx, ep, "q", "done-old", "done")
+	pendingID := seedPending(t, s, ctx, ep, "q", "pending-old")
+	claimedID := seedPending(t, s, ctx, ep, "q", "claimed-old")
+	if _, err := s.ClaimTodo(ctx, ep, claimedID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	// Age all three past the bound. Pending/claimed must survive regardless.
@@ -111,10 +112,15 @@ func TestPruneRowCapTrimsBeyondCap(t *testing.T) {
 	}
 }
 
-// Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY" — a pending CreateTodo emits a
-// todo_ready notification carrying the queue name.
+// Governing: SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY", ADR-0022 — a pending CreateTodo
+// emits a todo_ready notification carrying the OWNING ENDPOINT ID as well as the queue name. The
+// payload used to be the bare queue name, which is precisely what made the wakeup path leak: every
+// listener on a queue called "alerts" woke for every tenant's work. The listener now scopes the
+// re-scan to one endpoint, so the endpoint id must be on the wire.
 func TestCreateTodoNotifiesTodoReady(t *testing.T) {
 	s, ctx := testStore(t)
+
+	ep := seedEndpoint(t, s, ctx, "notify-todo-ready", "alerts")
 
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
@@ -125,7 +131,7 @@ func TestCreateTodoNotifiesTodoReady(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 
-	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "alerts", Title: "ping"}); err != nil {
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "alerts", Title: "ping"}); err != nil {
 		t.Fatalf("create todo: %v", err)
 	}
 
@@ -135,8 +141,14 @@ func TestCreateTodoNotifiesTodoReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected todo_ready notification: %v", err)
 	}
-	if n.Channel != "todo_ready" || n.Payload != "alerts" {
-		t.Fatalf("notification channel=%q payload=%q want todo_ready/alerts", n.Channel, n.Payload)
+	want := TodoReadyPayload(ep, "alerts")
+	if n.Channel != "todo_ready" || n.Payload != want {
+		t.Fatalf("notification channel=%q payload=%q, want todo_ready/%q", n.Channel, n.Payload, want)
+	}
+	// Guard the shape explicitly: a regression back to the bare queue name would silently restore
+	// the cross-tenant wakeup, and a payload equal to just "alerts" must fail loudly.
+	if n.Payload == "alerts" {
+		t.Fatal("todo_ready payload is the bare queue name — the endpoint scope was dropped (ADR-0022)")
 	}
 }
 
@@ -151,9 +163,9 @@ func setSetting(t *testing.T, s *Store, ctx context.Context, key, val string) {
 	}
 }
 
-func seedPending(t *testing.T, s *Store, ctx context.Context, queue, title string) string {
+func seedPending(t *testing.T, s *Store, ctx context.Context, ep, queue, title string) string {
 	t.Helper()
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: queue, Title: title})
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: queue, Title: title})
 	if err != nil {
 		t.Fatalf("seed pending: %v", err)
 	}
@@ -161,15 +173,15 @@ func seedPending(t *testing.T, s *Store, ctx context.Context, queue, title strin
 }
 
 // seedTerminal creates a todo and drives it to a terminal state (done|failed) via the store API.
-func seedTerminal(t *testing.T, s *Store, ctx context.Context, queue, title, state string) string {
+func seedTerminal(t *testing.T, s *Store, ctx context.Context, ep, queue, title, state string) string {
 	t.Helper()
-	id := seedPending(t, s, ctx, queue, title)
-	if _, err := s.ClaimTodo(ctx, id, "w", time.Hour); err != nil {
+	id := seedPending(t, s, ctx, ep, queue, title)
+	if _, err := s.ClaimTodo(ctx, ep, id, "w", time.Hour); err != nil {
 		t.Fatalf("seed claim: %v", err)
 	}
 	switch state {
 	case "done":
-		if _, err := s.CompleteTodo(ctx, id, "w", nil); err != nil {
+		if _, err := s.CompleteTodo(ctx, ep, id, "w", nil); err != nil {
 			t.Fatalf("seed complete: %v", err)
 		}
 	case "failed":
@@ -177,7 +189,7 @@ func seedTerminal(t *testing.T, s *Store, ctx context.Context, queue, title, sta
 		if _, err := s.pool.Exec(ctx, `UPDATE todos SET attempt = max_attempts WHERE id = $1`, id); err != nil {
 			t.Fatalf("seed bump attempt: %v", err)
 		}
-		if _, err := s.FailTodo(ctx, id, "w", nil); err != nil {
+		if _, err := s.FailTodo(ctx, ep, id, "w", nil); err != nil {
 			t.Fatalf("seed fail: %v", err)
 		}
 	}
@@ -191,20 +203,21 @@ func TestPruneNeverDeletesParkedRetries(t *testing.T) {
 	s, ctx := testStore(t)
 	setSetting(t, s, ctx, "retention_max_age_days", "7")
 	setSetting(t, s, ctx, "retention_max_rows", "0") // maximally aggressive cap: everything eligible is trimmed
+	ep := seedEndpoint(t, s, ctx, "prune-parked-retries")
 
 	// A parked retry: fail below the cap so FailTodo stamps a window, then backdate it far past
 	// the age bound (and keep the window open) — retention must still skip it.
-	parked := seedPending(t, s, ctx, "qret", "parked")
-	if _, err := s.ClaimTodo(ctx, parked, "w", time.Hour); err != nil {
+	parked := seedPending(t, s, ctx, ep, "qret", "parked")
+	if _, err := s.ClaimTodo(ctx, ep, parked, "w", time.Hour); err != nil {
 		t.Fatalf("claim parked: %v", err)
 	}
-	if _, err := s.FailTodo(ctx, parked, "w", nil); err != nil {
+	if _, err := s.FailTodo(ctx, ep, parked, "w", nil); err != nil {
 		t.Fatalf("fail parked: %v", err)
 	}
 	backdate(t, s, ctx, "todos", "updated_at", "id = '"+parked+"'", 30*24*time.Hour)
 
 	// A true dead-letter, equally old — this one IS prunable.
-	dead := seedTerminal(t, s, ctx, "qret", "dead", "failed")
+	dead := seedTerminal(t, s, ctx, ep, "qret", "dead", "failed")
 	backdate(t, s, ctx, "todos", "updated_at", "id = '"+dead+"'", 30*24*time.Hour)
 
 	if _, err := s.Prune(ctx); err != nil {

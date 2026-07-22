@@ -90,8 +90,8 @@ func TestToolsCallScopeViolation(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	f.putTodo(store.Todo{ID: "td_1", Queue: "reviews", Title: "review PR", State: "claimed",
-		Owner: "agent:ag-1", Attempt: 1})
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_1", Queue: "reviews",
+		Title: "review PR", State: "claimed", Owner: "agent:ag-1", Attempt: 1})
 	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos", "claim"})
 
 	// complete is a real SPEC-0006 verb, just not granted here: scope error, todo untouched.
@@ -113,9 +113,10 @@ func TestListTodosScoped(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	f.putTodo(store.Todo{ID: "td_r", Queue: "reviews", Title: "in scope", State: "pending",
-		Payload: []byte(`{"pr":7}`)})
-	f.putTodo(store.Todo{ID: "td_d", Queue: "deploys", Title: "out of scope", State: "pending"})
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_r", Queue: "reviews",
+		Title: "in scope", State: "pending", Payload: []byte(`{"pr":7}`)})
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_d", Queue: "deploys",
+		Title: "out of scope", State: "pending"})
 	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	var out struct {
@@ -150,7 +151,8 @@ func TestClaimCompleteLifecycle(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	f.putTodo(store.Todo{ID: "td_1", Queue: "reviews", Title: "review PR", State: "pending"})
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_1", Queue: "reviews",
+		Title: "review PR", State: "pending"})
 	cs := session(t, ctx, f, []string{"reviews"},
 		[]string{"list_todos", "claim", "complete", "fail", "heartbeat"})
 
@@ -198,7 +200,8 @@ func TestFailRetriesThenDeadLetters(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	f.putTodo(store.Todo{ID: "td_1", Queue: "reviews", Title: "flaky", State: "pending", MaxAttempts: 2})
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_1", Queue: "reviews",
+		Title: "flaky", State: "pending", MaxAttempts: 2})
 	cs := session(t, ctx, f, []string{"reviews"}, []string{"claim", "fail"})
 
 	var out struct {
@@ -235,7 +238,8 @@ func TestQueueScopeEnforcedBeforeMutation(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	f.putTodo(store.Todo{ID: "td_d", Queue: "deploys", Title: "not yours", State: "pending"})
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_d", Queue: "deploys",
+		Title: "not yours", State: "pending"})
 	cs := session(t, ctx, f, []string{"reviews"}, []string{"claim"})
 
 	callErr(t, ctx, cs, "claim", map[string]any{"id": "td_d"}, "forbidden")
@@ -250,8 +254,8 @@ func TestNotFoundAndConflictCodes(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	f.putTodo(store.Todo{ID: "td_1", Queue: "reviews", Title: "held elsewhere", State: "claimed",
-		Owner: "agent:other", Attempt: 1})
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_1", Queue: "reviews",
+		Title: "held elsewhere", State: "claimed", Owner: "agent:other", Attempt: 1})
 	cs := session(t, ctx, f, []string{"reviews"}, []string{"claim", "heartbeat"})
 
 	callErr(t, ctx, cs, "claim", map[string]any{"id": "td_missing"}, "not_found")
@@ -329,5 +333,70 @@ func TestChunkedOversizedBodyGets413(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("chunked oversized body status = %d, want 413", resp.StatusCode)
+	}
+}
+
+// TestPullPathNeverCrossesEndpointsOnASharedQueue is the pull-side regression test for the
+// cross-tenant leak ADR-0022 closes. The doorbell tests cover the push path; this covers the other
+// half, which leaked independently: even with no notification stream open, agent B could once
+// enumerate and CLAIM agent A's todos simply by holding the same free-form queue string.
+//
+// Both endpoints scope to "reviews" — the common case — so queue scope alone cannot separate them,
+// and only endpoint ownership can. A's own successful read is the control: it proves the fixture is
+// reachable, so B's empty list is a real tenant filter and not a todo that never existed.
+//
+// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+func TestPullPathNeverCrossesEndpointsOnASharedQueue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	const slugA, slugB = "agent-a-11111111", "agent-b-22222222"
+	verbs := []string{"list_todos", "claim"}
+	tokenA := vend(t, f, slugA, []string{"reviews"}, verbs)
+	tokenB := vend(t, f, slugB, []string{"reviews"}, verbs)
+	ts := newTestServer(t, f)
+
+	// Owned by A, on the queue both endpoints hold.
+	f.putTodo(store.Todo{EndpointID: endpointIDFor(slugA), ID: "td_a_only", Queue: "reviews",
+		Title: "A's private work", State: "pending"})
+
+	csA, err := connect(t, ctx, ts.URL+"/mcp/"+slugA, tokenA)
+	if err != nil {
+		t.Fatalf("initialize A: %v", err)
+	}
+	defer func() { _ = csA.Close() }()
+	csB, err := connect(t, ctx, ts.URL+"/mcp/"+slugB, tokenB)
+	if err != nil {
+		t.Fatalf("initialize B: %v", err)
+	}
+	defer func() { _ = csB.Close() }()
+
+	type todoList struct {
+		Todos []struct {
+			ID string `json:"id"`
+		} `json:"todos"`
+	}
+
+	// Control: the owner can see its own todo.
+	var seenByA todoList
+	callOK(t, ctx, csA, "list_todos", map[string]any{"queue": "reviews"}, &seenByA)
+	if len(seenByA.Todos) != 1 || seenByA.Todos[0].ID != "td_a_only" {
+		t.Fatalf("owner cannot see its own todo (fixture unreachable, test would prove nothing): %+v", seenByA.Todos)
+	}
+
+	// B shares the queue name and the verb grant, and must still see nothing.
+	var seenByB todoList
+	callOK(t, ctx, csB, "list_todos", map[string]any{"queue": "reviews"}, &seenByB)
+	if len(seenByB.Todos) != 0 {
+		t.Fatalf("cross-tenant list_todos leak: endpoint %s enumerated %s's todos: %+v",
+			endpointIDFor(slugB), endpointIDFor(slugA), seenByB.Todos)
+	}
+
+	// Claiming by a directly-guessed id is the sharper leak: another endpoint's todo must be
+	// indistinguishable from one that does not exist, so the error can never confirm it is there.
+	callErr(t, ctx, csB, "claim", map[string]any{"id": "td_a_only"}, "not_found")
+	if got := f.todoState("td_a_only"); got != "pending" {
+		t.Fatalf("cross-tenant claim mutated another endpoint's todo: state = %q, want pending", got)
 	}
 }

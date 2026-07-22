@@ -14,8 +14,10 @@ Switchboard vends a scoped MCP/HTTP endpoint to each agent
 [ADR-0005](../../../adrs/ADR-0005-mcp-tool-and-resource-contract.md)). This capability defines the
 agent-facing *work* surface exposed on that endpoint — the verbs an agent actually uses to do its
 job: draining the durable todo queue (`list_todos`, `claim`, `complete`, `fail`, plus lease
-`heartbeat`), and self-managing its own ingestion sources within a human-vended ceiling
-(`create_webhook`, `list_webhooks`, `rotate_webhook`, `delete_webhook`).
+`heartbeat`), self-managing its own ingestion sources within a human-vended ceiling
+(`create_webhook`, `list_webhooks`, `rotate_webhook`, `delete_webhook`), and deciding which
+endpoints those sources deliver to (`add_webhook_route`, `list_webhook_routes`,
+`remove_webhook_route`).
 
 Every request is authenticated by a bearer credential that resolves to an endpoint and its immutable
 scope (`internal/agentapi/agentapi.go`). Scope is enforced at the boundary: a verb outside the
@@ -140,6 +142,82 @@ MUST tear down the webhook.
 - **WHEN** an endpoint whose ceiling allows only `github`/`generic` calls `create_webhook` with
   source type `stripe`
 - **THEN** the server MUST respond `forbidden_source_type` and MUST NOT create a webhook
+
+### Requirement: Webhook Route Fan-Out Under Ownership and Friendship
+
+A webhook's deliveries always mint a todo owned by the webhook's **owning endpoint**; a *route* adds
+further target endpoints, and the receiver mints one endpoint-owned todo per target
+([ADR-0022](../../../adrs/ADR-0022-endpoint-scoped-todo-ownership.md),
+[SPEC-0001](../webhook-ingestion/spec.md) REQ "Deterministic Route Fan-Out (Token-Free)"). The
+surface MUST expose `add_webhook_route`, `list_webhook_routes`, and `remove_webhook_route` to manage
+that target set. Routing MUST name an explicit target **endpoint id** — never a queue name — so two
+tenants sharing a queue string can never acquire visibility into each other's work.
+
+All three verbs MUST require that the caller **owns the webhook**: the webhook's owning endpoint MUST
+belong to the calling endpoint's human (`agents.owner_human_id`). A webhook id that is unknown,
+malformed, or owned by another human MUST be refused with `not_found`, and the refusals MUST be
+indistinguishable from one another, so a routing verb cannot confirm the existence of another human's
+webhook.
+
+`add_webhook_route` MUST additionally authorize the **target**:
+
+- A target endpoint owned by the **caller's own human** MUST be allowed with no further condition.
+- A target endpoint owned by **another human** MUST require an approved friend edge in the
+  **delivering direction** — `friend_edges` with `from_human` = the caller's human, `to_human` = the
+  target's human, and `state = 'approved'`
+  ([ADR-0010](../../../adrs/ADR-0010-a2a-discovery-human-vended-friending.md),
+  [SPEC-0010](../friending/spec.md) REQ "Per-Direction, Revocable, Non-Transitive Edges"). This is
+  the same direction `create_for` relies on: the target human's approval is what consents to
+  receiving the requester's work. An edge that is absent, `pending`, `denied`, `revoked`, or
+  recorded only in the **opposite** direction MUST NOT authorize the route; honoring the opposite
+  direction would be a privilege escalation.
+- A target endpoint that is unknown, malformed, or revoked MUST be refused.
+
+Every target-authorization failure — unknown id, revoked endpoint, or an unfriended human — MUST
+return the **same** `forbidden` code and message, so the verb cannot be used to enumerate which
+endpoint ids exist or which humans the caller is friends with.
+
+`add_webhook_route` and `remove_webhook_route` MUST be idempotent: they state an end condition, so a
+repeat call MUST succeed rather than return `conflict`, and MUST leave exactly one (or zero) route.
+The webhook's owning endpoint is an implicit, unremovable target — `remove_webhook_route` against it
+MUST be a no-op, and `list_webhook_routes` MUST report it alongside the explicit routes so the
+reported fan-out set matches where deliveries actually land. `list_webhook_routes` and
+`remove_webhook_route` MUST require webhook ownership **only**, not target authorization, so a route
+whose friendship was later revoked remains visible and removable by the webhook's owner.
+
+#### Scenario: Agent routes its own webhook to its own second endpoint
+
+- **WHEN** an agent calls `add_webhook_route` naming a webhook its human owns and a target endpoint
+  the same human owns
+- **THEN** the route MUST be recorded with no friend edge required, `list_webhook_routes` MUST report
+  it alongside the owning endpoint, and a subsequent delivery MUST mint one todo per target, each
+  pinned to its own endpoint
+
+#### Scenario: Routing to another human's endpoint without an approved edge is refused
+
+- **WHEN** an agent calls `add_webhook_route` targeting an endpoint owned by another human, and no
+  `approved` friend edge runs from the caller's human to that human
+- **THEN** the server MUST respond `forbidden` and MUST NOT record a route — whether the edge is
+  absent, `pending`, `denied`, or `revoked`
+
+#### Scenario: A friend edge in the opposite direction does not authorize delivery
+
+- **WHEN** human B holds an `approved` edge authorizing B to hand work to human A, and A calls
+  `add_webhook_route` targeting an endpoint owned by B
+- **THEN** the server MUST respond `forbidden` and MUST NOT record a route; only an edge from A to B
+  authorizes A's deliveries into B
+
+#### Scenario: Routing a webhook the caller does not own leaks nothing
+
+- **WHEN** an agent calls any routing verb naming a webhook owned by another human, and separately
+  names a webhook id that does not exist
+- **THEN** both MUST be refused with an identical `not_found` response, and no route MUST be recorded
+
+#### Scenario: Adding the same route twice is idempotent
+
+- **WHEN** `add_webhook_route` is called twice with the same webhook and target
+- **THEN** both calls MUST succeed and exactly one route MUST exist; the resolved target set MUST
+  contain the target once
 
 ### Requirement: Switchboard Owns Secrets, Verification, and Idempotency
 

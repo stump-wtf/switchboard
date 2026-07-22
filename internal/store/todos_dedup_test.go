@@ -9,12 +9,14 @@ import (
 func TestIdempotentEnqueue(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "idempotent-enqueue")
+
 	// A null (empty) idempotency key never participates in dedup — each enqueue is a distinct row.
-	a, createdA, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "no-key-1"})
+	a, createdA, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "no-key-1"})
 	if err != nil || !createdA {
 		t.Fatalf("create a: created=%v err=%v", createdA, err)
 	}
-	b, createdB, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "no-key-2"})
+	b, createdB, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "no-key-2"})
 	if err != nil || !createdB {
 		t.Fatalf("create b: created=%v err=%v", createdB, err)
 	}
@@ -23,11 +25,11 @@ func TestIdempotentEnqueue(t *testing.T) {
 	}
 
 	// A keyed enqueue dedups against the live non-terminal row.
-	k1, created1, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "keyed", IdempotencyKey: "dk"})
+	k1, created1, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "keyed", IdempotencyKey: "dk"})
 	if err != nil || !created1 {
 		t.Fatalf("create k1: %v", err)
 	}
-	dup, createdDup, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "keyed-again", IdempotencyKey: "dk"})
+	dup, createdDup, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "keyed-again", IdempotencyKey: "dk"})
 	if err != nil {
 		t.Fatalf("dedup enqueue: %v", err)
 	}
@@ -37,13 +39,13 @@ func TestIdempotentEnqueue(t *testing.T) {
 
 	// Once the keyed todo reaches a terminal state, the same key may enqueue a NEW pending todo — the
 	// partial unique index only covers non-terminal rows.
-	if _, err := s.ClaimTodo(ctx, k1.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, k1.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim k1: %v", err)
 	}
-	if _, err := s.CompleteTodo(ctx, k1.ID, "w", nil); err != nil {
+	if _, err := s.CompleteTodo(ctx, ep, k1.ID, "w", nil); err != nil {
 		t.Fatalf("complete k1: %v", err)
 	}
-	k2, created2, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "keyed-after-done", IdempotencyKey: "dk"})
+	k2, created2, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "keyed-after-done", IdempotencyKey: "dk"})
 	if err != nil || !created2 {
 		t.Fatalf("re-enqueue after terminal: created=%v err=%v", created2, err)
 	}
@@ -56,7 +58,9 @@ func TestIdempotentEnqueue(t *testing.T) {
 func TestBoundedRetries(t *testing.T) {
 	s, ctx := testStore(t)
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "retryme", IdempotencyKey: "br"})
+	ep := seedEndpoint(t, s, ctx, "bounded-retries")
+
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "retryme", IdempotencyKey: "br"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -69,14 +73,14 @@ func TestBoundedRetries(t *testing.T) {
 	// after max_attempts failures the state is terminal 'failed' with no retry window.
 	var last Todo
 	for i := 1; i <= td.MaxAttempts; i++ {
-		c, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour)
+		c, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour)
 		if err != nil {
 			t.Fatalf("claim #%d: %v", i, err)
 		}
 		if c.Attempt != i {
 			t.Fatalf("attempt after claim #%d = %d, want %d", i, c.Attempt, i)
 		}
-		last, err = s.FailTodo(ctx, td.ID, "w", nil)
+		last, err = s.FailTodo(ctx, ep, td.ID, "w", nil)
 		if err != nil {
 			t.Fatalf("fail #%d: %v", i, err)
 		}

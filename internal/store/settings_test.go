@@ -31,18 +31,20 @@ func TestSettingInt(t *testing.T) {
 func TestTodoTransitionHookFires(t *testing.T) {
 	s, ctx := testStore(t)
 
+	ep := seedEndpoint(t, s, ctx, "todo-transition-hook-fires")
+
 	var verbs []string
 	s.SetTodoTransitionHook(func(verb string, td Todo) { verbs = append(verbs, verb) })
 	defer s.SetTodoTransitionHook(nil)
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "hooked", IdempotencyKey: "hk1"})
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "hooked", IdempotencyKey: "hk1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := s.FailTodo(ctx, td.ID, "w", nil); err != nil {
+	if _, err := s.FailTodo(ctx, ep, td.ID, "w", nil); err != nil {
 		t.Fatalf("fail: %v", err)
 	}
 	// A below-cap fail parks in 'failed' with a scheduled retry window (SPEC-0003 scheduled
@@ -50,10 +52,10 @@ func TestTodoTransitionHookFires(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE todos SET next_retry_at = now() - interval '1 second' WHERE id=$1`, td.ID); err != nil {
 		t.Fatalf("rewind retry window: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour); err != nil {
 		t.Fatalf("re-claim: %v", err)
 	}
-	if _, err := s.CompleteTodo(ctx, td.ID, "w", nil); err != nil {
+	if _, err := s.CompleteTodo(ctx, ep, td.ID, "w", nil); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 

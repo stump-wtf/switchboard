@@ -1,0 +1,27 @@
+# gitleaks configuration for switchboard.
+#
+# Extends the default gitleaks ruleset (so every real rule still runs) and adds a
+# NARROW allowlist for two synthetic TEST FIXTURES the `generic-api-key` heuristic
+# false-positives on. Neither is a secret:
+#
+#   - "gh-delivery-<N>"  — synthetic GitHub `X-GitHub-Delivery` ids used as
+#     idempotency-key fixtures in the web/ingest tests
+#     (e.g. internal/web/live_test.go, internal/web/todos_test.go).
+#   - "RS256-signed"     — plain English inside a doc comment describing the fake
+#     IdP the OIDC test stands up (internal/auth/oidc_test.go:4).
+#
+# The allowlist matches on the captured SECRET value only (regexTarget defaults to
+# "secret"), and only these two exact fixture shapes — so a real credential
+# committed anywhere, including a test file, is still caught by the default rules.
+
+title = "switchboard gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic test fixtures the generic-api-key heuristic false-positives on (not secrets)"
+regexes = [
+    '''gh-delivery-\d+''',
+    '''RS256-signed''',
+]

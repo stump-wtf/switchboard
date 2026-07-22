@@ -110,14 +110,44 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		verifyDetail = "hmac-sha256 ok"
 	}
 
-	// Governing: SPEC-0002/0004 REQ atomic ingestion — event and todo commit in one transaction.
-	_, td, created, err := i.store.CreateEventTodo(r.Context(),
+	// Resolve the delivery's target endpoints: {owning endpoint} ∪ every explicit webhook_routes
+	// target, de-duplicated, owner first. This is the token-free fan-out — routes are populated by
+	// human-approved actions (friending, the MCP routing verbs), never by a per-delivery decision in
+	// the payload, so a producer cannot steer a delivery at an endpoint it was not granted.
+	// Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
+	targets, err := i.store.ResolveWebhookTargets(r.Context(), wh.ID, wh.EndpointID)
+	if err != nil {
+		i.log.Error("self-managed webhook resolve targets", "webhook", wh.ID, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if len(targets) == 0 {
+		// Per the ResolveWebhookTargets contract an empty target set means the owner endpoint is not
+		// resolvable, so this delivery would produce NO work. That is a misconfiguration, not a
+		// no-op: 503 (nothing persisted) so the producer retries once the webhook is coherent again,
+		// rather than a 202 that silently drops the delivery on the floor.
+		i.log.Error("self-managed webhook has no target endpoints; refusing delivery",
+			"webhook", wh.ID, "endpoint", wh.EndpointID)
+		i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "webhook not configured")
+		writeErr(w, http.StatusServiceUnavailable, "webhook not configured")
+		return
+	}
+
+	// Governing: SPEC-0002/0004 REQ atomic ingestion, generalized to N targets (ADR-0022) — the
+	// event and ALL of its per-target todos commit in one transaction, so a fan-out is never
+	// partial. Every target's todo carries the SAME idempotency key this receiver computed,
+	// "<webhook-id>:<delivery-or-body-hash>" — which is also the event's external_id, the equality
+	// the Board's dedup count and received-card retirement both join on. Per-target separation
+	// comes from the (endpoint_id, idempotency_key) dedup index, not from rewriting the key: a
+	// redelivery collapses independently within each target, while two targets of the SAME delivery
+	// never collapse onto each other. Governing: SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
+	_, todos, err := i.store.CreateEventTodos(r.Context(),
 		store.EventInput{
 			Source: wh.SourceType, Family: "webhook", ExternalID: key,
 			TrustMode: wh.TrustMode, Verified: verified, VerifyDetail: verifyDetail,
 			ContentType: r.Header.Get("Content-Type"), Headers: sanitizeHeaders(r.Header),
 			Payload: body, SourceIP: clientIP(r),
-		},
+		}, targets,
 		store.CreateTodoParams{
 			Queue: wh.TargetQueue, Source: wh.SourceType, Kind: "webhook",
 			Title: summarizeSelfManaged(wh.SourceType), Payload: body, IdempotencyKey: key,
@@ -127,14 +157,45 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if created {
-		i.hub.Publish(td)
-	} else {
-		// Idempotent redelivery: resolve the in-flight card without a lane advance (SPEC-0015).
+
+	// Response body (SPEC-0001): a delivery now yields N todos, so the payload reports the set.
+	//
+	//	{"todos": [{"id":…, "endpoint_id":…, "queue":…, "created": true|false}, …],
+	//	 "created": <count of newly-minted todos>,
+	//	 "id": …, "queue": …,            // the OWNER's todo — retained for compatibility
+	//	 "verified": …, "trust_mode": …}
+	//
+	// `id`/`queue` still name the owner endpoint's todo because ResolveWebhookTargets returns the
+	// owner first, so a single-target webhook — every webhook with no routes, which is the common
+	// case — sees byte-identical fields to the pre-fan-out response. `created` changes shape from
+	// nothing to a count; it was never in the old body, so no existing reader loses a field.
+	// endpoint_id is deliberately included: the producer already knows the webhook it posted to,
+	// and the fan-out is only auditable if the response says where the work actually landed.
+	newTodos := 0
+	items := make([]map[string]any, 0, len(todos))
+	for _, ct := range todos {
+		if ct.New {
+			newTodos++
+			// Hub fan-out is endpoint-scoped (ADR-0022); publishing per-todo hands each target's
+			// subscribers only their own row. Redeliveries are skipped: an already-live todo is not
+			// news, and ringing again would double-count on the board.
+			i.hub.Publish(ct.Todo)
+		}
+		items = append(items, map[string]any{
+			"id": ct.Todo.ID, "endpoint_id": ct.Todo.EndpointID,
+			"queue": ct.Todo.Queue, "created": ct.New,
+		})
+	}
+	if newTodos == 0 {
+		// Every target collapsed onto an existing live todo: a wholly idempotent redelivery.
+		// Resolve the in-flight card without a lane advance (SPEC-0015).
 		i.observeDeduped(wh.SourceType, "webhook", wh.TrustMode, key)
 	}
+	owner := todos[0].Todo // ResolveWebhookTargets puts the owning endpoint first.
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"id": td.ID, "queue": td.Queue, "verified": verified, "trust_mode": wh.TrustMode,
+		"todos": items, "created": newTodos,
+		"id": owner.ID, "queue": owner.Queue,
+		"verified": verified, "trust_mode": wh.TrustMode,
 	})
 }
 

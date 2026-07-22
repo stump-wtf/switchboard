@@ -240,35 +240,37 @@ func TestDeleteEndpointGCsOrphanedAgent(t *testing.T) {
 func TestDeleteEndpointPreservesAgentWithRemainingReferences(t *testing.T) {
 	owner0 := "gc-keep|owner"
 
-	t.Run("owns a claimed todo (lease)", func(t *testing.T) {
+	t.Run("owns a claimed todo on ANOTHER endpoint", func(t *testing.T) {
 		s, ctx := testStore(t)
 		owner := mustHuman(t, s, ctx, owner0, "Owner")
 		ag := mustAgent(t, s, ctx, owner.ID, "worker-bot")
-		ep := mustEndpoint(t, s, ctx, ag.ID, "gckeep-todo")
-		// A todo claimed by the agent records owner = "agent:<id>" — the lease the author flagged.
-		td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "do the thing"})
+		doomed := mustEndpoint(t, s, ctx, ag.ID, "gckeep-todo-doomed")
+		keep := mustEndpoint(t, s, ctx, ag.ID, "gckeep-todo-keep")
+		// A todo claimed by the agent records owner = "agent:<id>". It is pinned to `keep`, so the
+		// delete of `doomed` must not touch it — this is the positive control for the cascade test
+		// below: work is destroyed only when ITS OWN endpoint goes, never a sibling's.
+		td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: keep.ID, Queue: "q", Title: "do the thing"})
 		if err != nil {
 			t.Fatalf("create todo: %v", err)
 		}
-		if _, err := s.ClaimTodo(ctx, td.ID, "agent:"+ag.ID, time.Hour); err != nil {
+		if _, err := s.ClaimTodo(ctx, keep.ID, td.ID, "agent:"+ag.ID, time.Hour); err != nil {
 			t.Fatalf("agent claim: %v", err)
 		}
-		if err := s.RevokeEndpoint(ctx, ep.ID, owner.ID); err != nil {
+		if err := s.RevokeEndpoint(ctx, doomed.ID, owner.ID); err != nil {
 			t.Fatalf("revoke: %v", err)
 		}
-		if err := s.DeleteEndpoint(ctx, ep.ID, owner.ID); err != nil {
+		if err := s.DeleteEndpoint(ctx, doomed.ID, owner.ID); err != nil {
 			t.Fatalf("delete: %v", err)
 		}
 		if !agentExists(t, s, ctx, ag.ID) {
-			t.Fatal("agent owning a claimed todo must survive the delete (history preserved)")
+			t.Fatal("agent with a surviving endpoint must survive the delete")
 		}
-		// And the todo itself is untouched — no history was destroyed.
 		var n int
 		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos WHERE id = $1`, td.ID).Scan(&n); err != nil {
 			t.Fatalf("count todo: %v", err)
 		}
 		if n != 1 {
-			t.Fatal("the agent's todo must remain after the endpoint delete")
+			t.Fatal("a todo pinned to a DIFFERENT endpoint must survive that endpoint's sibling being deleted")
 		}
 	})
 
@@ -580,12 +582,13 @@ func TestKnownQueuesEnumeratesTodoAndScopeQueues(t *testing.T) {
 	s, ctx := testStore(t)
 	h := mustHuman(t, s, ctx, "pocket|queues", "Queues Owner")
 	ag := mustAgent(t, s, ctx, h.ID, "queues-bot")
+	todoEP := seedEndpoint(t, s, ctx, "known-queues", "reviews")
 
-	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "t1", IdempotencyKey: "kq1"}); err != nil {
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: todoEP, Queue: "reviews", Title: "t1", IdempotencyKey: "kq1"}); err != nil {
 		t.Fatalf("create todo: %v", err)
 	}
 	// A second todo on the same queue must not duplicate the name.
-	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "t2", IdempotencyKey: "kq2"}); err != nil {
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: todoEP, Queue: "reviews", Title: "t2", IdempotencyKey: "kq2"}); err != nil {
 		t.Fatalf("create todo: %v", err)
 	}
 	slug, err := MintSlug("queues-bot")
@@ -616,4 +619,71 @@ func TestKnownQueuesEnumeratesTodoAndScopeQueues(t *testing.T) {
 			break
 		}
 	}
+}
+
+// Deleting an endpoint erases the todos pinned to it, and the backing agent is then GC'd. This is
+// the direct consequence of ADR-0022 decision 1: todos.endpoint_id is NOT NULL with no sentinel, so
+// a todo has nowhere to live once its endpoint is gone and the FK cascade is the only behaviour the
+// schema admits. The erasure is deliberate and total — it covers TERMINAL rows too, so an operator
+// who wants the audit trail must keep the revoked endpoint rather than delete it.
+//
+// This test exists because the cascade is easy to introduce by accident and impossible to notice:
+// nothing errors, the rows simply stop being there. Pinning it means a future change to the FK (to
+// RESTRICT, or to a nullable column with a sentinel) fails here loudly instead of silently altering
+// what deletion means. Governing: ADR-0022, SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints".
+func TestDeleteEndpointCascadesItsTodos(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := mustHuman(t, s, ctx, "gc-cascade|owner", "Owner")
+	ag := mustAgent(t, s, ctx, owner.ID, "cascade-bot")
+	ep := mustEndpoint(t, s, ctx, ag.ID, "gccascade-1")
+
+	// One live (claimed) row and one TERMINAL row: terminal rows are the audit records, and they
+	// are erased too. Asserting only on a pending row would leave that half untested.
+	live, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep.ID, Queue: "q", Title: "live"})
+	if err != nil {
+		t.Fatalf("create live todo: %v", err)
+	}
+	if _, err := s.ClaimTodo(ctx, ep.ID, live.ID, "agent:"+ag.ID, time.Hour); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	done, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep.ID, Queue: "q", Title: "done"})
+	if err != nil {
+		t.Fatalf("create terminal todo: %v", err)
+	}
+	if _, err := s.ClaimTodo(ctx, ep.ID, done.ID, "agent:"+ag.ID, time.Hour); err != nil {
+		t.Fatalf("claim terminal: %v", err)
+	}
+	if _, err := s.CompleteTodo(ctx, ep.ID, done.ID, "agent:"+ag.ID, nil); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// Positive control: both rows are really there before the delete, so a zero count afterwards
+	// cannot be an artifact of them never having been written.
+	if got := countTodos(t, s, ctx, live.ID, done.ID); got != 2 {
+		t.Fatalf("expected both todos present before delete, got %d", got)
+	}
+
+	if err := s.RevokeEndpoint(ctx, ep.ID, owner.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := s.DeleteEndpoint(ctx, ep.ID, owner.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	if got := countTodos(t, s, ctx, live.ID, done.ID); got != 0 {
+		t.Fatalf("deleting an endpoint must erase its todos (live and terminal alike), %d survived", got)
+	}
+	if agentExists(t, s, ctx, ag.ID) {
+		t.Fatal("the backing agent must be GC'd once its last endpoint and that endpoint's work are gone")
+	}
+}
+
+// countTodos reports how many of the given todo ids still exist.
+func countTodos(t *testing.T, s *Store, ctx context.Context, ids ...string) int {
+	t.Helper()
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos WHERE id = ANY($1)`, ids).Scan(&n); err != nil {
+		t.Fatalf("count todos: %v", err)
+	}
+	return n
 }

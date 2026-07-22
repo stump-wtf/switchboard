@@ -60,30 +60,24 @@ func TestSelfManagedRejectsOversizedBody(t *testing.T) {
 	}
 }
 
-// seedWebhook creates a human → agent → endpoint → webhook and returns nothing; the caller drives
-// deliveries by the ingest token. secret is the minted signing secret switchboard holds (for a signed
-// webhook the receiver recomputes the HMAC against it).
-func seedWebhook(t *testing.T, st *store.Store, ctx context.Context, sourceType, trustMode, queue, token, secret string) {
+// seedWebhook creates a human → agent → endpoint → webhook and returns all three principals; the
+// caller drives deliveries by the ingest token. secret is the minted signing secret switchboard holds
+// (for a signed webhook the receiver recomputes the HMAC against it).
+//
+// It returns the human, the OWNING endpoint and the webhook — it previously returned nothing, which
+// was sufficient only while a delivery could mint exactly one todo. Under ADR-0022 a delivery fans
+// out to {owner} ∪ webhook_routes, and a route is (webhook id, target endpoint id, granting human),
+// so a test cannot express a second target without holding the webhook's id, the granting human's
+// id, and a second endpoint to point at.
+// Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
+func seedWebhook(t *testing.T, st *store.Store, ctx context.Context, sourceType, trustMode, queue, token, secret string) (store.Human, store.Endpoint, store.Webhook) {
 	t.Helper()
-	h, err := st.UpsertHuman(ctx, "pocket|"+token, "Joe", "")
+	h, ep := seedEndpoint(t, st, ctx, "hook-"+token, []string{queue})
+	wh, err := st.CreateWebhook(ctx, ep.ID, sourceType, queue, trustMode, token, secret, 3)
 	if err != nil {
-		t.Fatalf("upsert human: %v", err)
-	}
-	ag, err := st.CreateAgent(ctx, h.ID, "hook-bot-"+token, "")
-	if err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	slug, err := store.MintSlug(ag.Name)
-	if err != nil {
-		t.Fatalf("mint slug: %v", err)
-	}
-	ep, err := st.CreateEndpoint(ctx, ag.ID, "credhash-"+token, "sbk_seed01", slug, []string{queue}, []string{"create_webhook"})
-	if err != nil {
-		t.Fatalf("vend endpoint: %v", err)
-	}
-	if _, err := st.CreateWebhook(ctx, ep.ID, sourceType, queue, trustMode, token, secret, 3); err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
+	return h, ep, wh
 }
 
 // The signed happy path: switchboard holds the minted secret, so a delivery signed with that secret
@@ -92,10 +86,14 @@ func seedWebhook(t *testing.T, st *store.Store, ctx context.Context, sourceType,
 // delivery id dedups to the SAME todo. Governing: SPEC-0006 REQ "Switchboard Owns Secrets,
 // Verification, and Idempotency"; SPEC-0003 (per-provider HMAC).
 func TestSelfManagedSignedVerifiedRoundTrip(t *testing.T) {
-	ing, _, pool, ctx := testIngestDeps(t, Config{})
+	ing, hub, pool, ctx, _ := testIngestDeps(t, Config{})
 	st := store.New(pool)
 	const secret = "whsec_roundtripsecret"
-	seedWebhook(t, st, ctx, "github", "signed", "reviews", "route-token-signed", secret)
+	_, owner, _ := seedWebhook(t, st, ctx, "github", "signed", "reviews", "route-token-signed", secret)
+	// Subscribe as the webhook's OWNING endpoint so the doorbell assertions below observe a real
+	// match rather than a filtered-out miss (ADR-0022).
+	ch, cancel := hub.Subscribe(owner.ID, []string{"reviews"})
+	defer cancel()
 
 	body := `{"action":"opened","number":7}`
 	rec := postSelfManaged(ing, "route-token-signed", body,
@@ -127,6 +125,11 @@ func TestSelfManagedSignedVerifiedRoundTrip(t *testing.T) {
 		t.Fatalf("event = (mode=%q verified=%v detail=%q), want signed/true/hmac", mode, verified, detail)
 	}
 
+	// The owning endpoint's doorbell rang exactly once for the newly-minted todo.
+	if n := drainHub(ch); n != 1 {
+		t.Fatalf("owner doorbell = %d, want 1 (publish only when newly created)", n)
+	}
+
 	// Redelivery of the same GitHub delivery id dedups to the same todo — exactly one row.
 	id2, _ := accepted202(t, postSelfManaged(ing, "route-token-signed", body,
 		map[string]string{"X-GitHub-Delivery": "guid-1", "X-Hub-Signature-256": githubSig(secret, body)}))
@@ -136,13 +139,122 @@ func TestSelfManagedSignedVerifiedRoundTrip(t *testing.T) {
 	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos WHERE queue='reviews'`); n != 1 {
 		t.Fatalf("todos in reviews = %d, want 1 (dedup)", n)
 	}
+	// A redelivery is not news: an already-live todo must NOT ring the doorbell again.
+	if n := drainHub(ch); n != 0 {
+		t.Fatalf("redelivery doorbell = %d, want 0", n)
+	}
+	// The persisted todo is pinned to the webhook's owning endpoint — never a null or foreign tenant.
+	// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+	var gotEndpoint string
+	if err := pool.QueryRow(ctx,
+		`SELECT endpoint_id::text FROM todos WHERE queue='reviews'`).Scan(&gotEndpoint); err != nil {
+		t.Fatalf("read todo endpoint: %v", err)
+	}
+	if gotEndpoint != owner.ID {
+		t.Fatalf("todo endpoint_id = %q, want the webhook owner %q", gotEndpoint, owner.ID)
+	}
+}
+
+// Fan-out across a webhook_routes grant: one delivery to a webhook owned by endpoint A that is also
+// routed to endpoint B mints TWO todos — one per target, each pinned to its own endpoint — and each
+// target's doorbell rings only for its own row. This is the push half of the cross-tenant leak
+// ADR-0022 closes: before the endpoint dimension existed, A and B shared the "reviews" queue string
+// and so shared a single todo and each other's doorbell, across humans.
+//
+// The per-target idempotency keys must differ (CreateEventTodos prefixes each target's endpoint id),
+// or the second target would collapse onto the first target's row and the fan-out would silently
+// deliver to one tenant instead of two.
+// Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)",
+// SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
+func TestSelfManagedFanOutIsPerEndpoint(t *testing.T) {
+	ing, hub, pool, ctx, _ := testIngestDeps(t, Config{})
+	st := store.New(pool)
+	const secret = "whsec_fanout"
+	ownerHuman, owner, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "route-token-fanout", secret)
+	// A second, independent tenant sharing the SAME queue string — the exact collision that used to
+	// leak. It receives this webhook's deliveries ONLY because of the explicit route below.
+	friendHuman, friend := seedEndpoint(t, st, ctx, "fanout-friend", []string{"reviews"})
+	grantFriendEdge(t, st, ctx, "fanout", ownerHuman.ID, friendHuman.ID)
+	if err := st.AddWebhookRoute(ctx, wh.ID, friend.ID, ownerHuman.ID); err != nil {
+		t.Fatalf("add webhook route: %v", err)
+	}
+
+	ownerCh, cancelOwner := hub.Subscribe(owner.ID, []string{"reviews"})
+	defer cancelOwner()
+	friendCh, cancelFriend := hub.Subscribe(friend.ID, []string{"reviews"})
+	defer cancelFriend()
+	// A third tenant on the same queue with NO route: it must observe nothing at all.
+	_, stranger := seedEndpoint(t, st, ctx, "fanout-stranger", []string{"reviews"})
+	strangerCh, cancelStranger := hub.Subscribe(stranger.ID, []string{"reviews"})
+	defer cancelStranger()
+
+	body := `{"action":"opened","number":11}`
+	hdr := map[string]string{"X-GitHub-Delivery": "guid-fan", "X-Hub-Signature-256": githubSig(secret, body)}
+	todos, created := fanOut202(t, postSelfManaged(ing, "route-token-fanout", body, hdr))
+
+	if len(todos) != 2 || created != 2 {
+		t.Fatalf("fan-out = %d todos (%d created), want 2/2: %+v", len(todos), created, todos)
+	}
+	// ResolveWebhookTargets returns the owner first, so the response's compatibility `id` keeps
+	// naming the owner's todo.
+	if todos[0].EndpointID != owner.ID {
+		t.Fatalf("todos[0].endpoint_id = %q, want the owner %q", todos[0].EndpointID, owner.ID)
+	}
+	if todos[1].EndpointID != friend.ID {
+		t.Fatalf("todos[1].endpoint_id = %q, want the routed target %q", todos[1].EndpointID, friend.ID)
+	}
+	if todos[0].ID == todos[1].ID {
+		t.Fatalf("fan-out must mint a DISTINCT todo per endpoint, got the same id %q", todos[0].ID)
+	}
+
+	// Two rows, one per endpoint, sharing ONE idempotency key: the separation lives in the
+	// (endpoint_id, idempotency_key) composite index (migration 0012), not in the key text. Both
+	// halves are asserted — one key (so the row stays join-compatible with the event's external_id,
+	// which the Board's dedup count and received-card retirement depend on) across two distinct
+	// endpoint_ids (so the two tenants hold independent dedup slots).
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos WHERE queue='reviews'`); n != 2 {
+		t.Fatalf("todos in reviews = %d, want 2 (one per target endpoint)", n)
+	}
+	if n := countRows(t, ctx, pool,
+		`SELECT count(DISTINCT idempotency_key) FROM todos WHERE queue='reviews'`); n != 1 {
+		t.Fatalf("distinct idempotency keys = %d, want 1 (one delivery mints one key)", n)
+	}
+	if n := countRows(t, ctx, pool,
+		`SELECT count(DISTINCT endpoint_id) FROM todos WHERE queue='reviews'`); n != 2 {
+		t.Fatalf("distinct endpoint_ids = %d, want 2 (dedup namespace is per-endpoint)", n)
+	}
+
+	// Each target's doorbell rang exactly once, for its own todo — and the unrouted stranger, who
+	// shares the queue string, heard nothing.
+	if n := drainHub(ownerCh); n != 1 {
+		t.Fatalf("owner doorbell = %d, want 1", n)
+	}
+	if n := drainHub(friendCh); n != 1 {
+		t.Fatalf("routed target doorbell = %d, want 1", n)
+	}
+	if n := drainHub(strangerCh); n != 0 {
+		t.Fatalf("unrouted endpoint sharing the queue string heard %d todos, want 0 — cross-tenant leak", n)
+	}
+
+	// A redelivery collapses independently within EACH target: still two rows, nothing newly created,
+	// and no second doorbell for anyone.
+	_, createdAgain := fanOut202(t, postSelfManaged(ing, "route-token-fanout", body, hdr))
+	if createdAgain != 0 {
+		t.Fatalf("redelivery created = %d, want 0 (each target collapses onto its own row)", createdAgain)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos WHERE queue='reviews'`); n != 2 {
+		t.Fatalf("todos after redelivery = %d, want 2", n)
+	}
+	if n := drainHub(ownerCh) + drainHub(friendCh); n != 0 {
+		t.Fatalf("redelivery doorbells = %d, want 0", n)
+	}
 }
 
 // A wrong signature on a signed self-managed webhook is rejected 401 and NOTHING is persisted — the
 // receiver fails closed exactly like the operator-configured signed receivers, never faking trust.
 // Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency"; SPEC-0003.
 func TestSelfManagedSignedWrongSignatureRejected(t *testing.T) {
-	ing, _, pool, ctx := testIngestDeps(t, Config{})
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
 	st := store.New(pool)
 	seedWebhook(t, st, ctx, "github", "signed", "reviews", "route-token-badsig", "whsec_realsecret")
 
@@ -171,7 +283,7 @@ func TestSelfManagedSignedWrongSignatureRejected(t *testing.T) {
 // ingest URL authenticates the caller, the body is not signature-verified, so the delivery persists
 // honestly with verified=false and trust_mode=token — never presented as signed.
 func TestSelfManagedTokenModeUnverified(t *testing.T) {
-	ing, _, pool, ctx := testIngestDeps(t, Config{})
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
 	st := store.New(pool)
 	seedWebhook(t, st, ctx, "generic", "token", "reviews", "route-token-tokenmode", "")
 
@@ -203,7 +315,7 @@ func TestSelfManagedTokenModeUnverified(t *testing.T) {
 
 // An unknown ingest token is 404 and persists nothing — a guessed URL cannot manufacture a todo.
 func TestSelfManagedUnknownTokenIs404(t *testing.T) {
-	ing, _, _, _ := testIngestDeps(t, Config{})
+	ing, _, _, _, _ := testIngestDeps(t, Config{})
 	rec := postSelfManaged(ing, "no-such-token", `{"x":1}`, nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown token: got %d, want 404 (body %s)", rec.Code, rec.Body.String())

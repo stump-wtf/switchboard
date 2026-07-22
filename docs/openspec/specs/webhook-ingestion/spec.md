@@ -1,7 +1,8 @@
 ---
-status: implemented
-date: 2026-07-06
-implements: [ADR-0003, ADR-0014]
+status: amended
+date: 2026-07-21
+amends: [ADR-0003, ADR-0014]
+implements: [ADR-0003, ADR-0014, ADR-0022]
 ---
 
 # SPEC-0001: Webhook Ingestion (Push Adapters)
@@ -23,9 +24,16 @@ modes are honest and ordered — `signed` (HMAC verified, `verified=true`) is st
 than `open` (no check, `verified=false`, off by default). The trust mode is stored on every event and
 surfaced everywhere so a human never has to guess whether a delivery was authenticated.
 
-The reference implementation is the signed GitHub adapter (`POST /webhooks/github`,
-`internal/ingest/ingest.go`); Stripe, Slack, and the token/open generic endpoint follow the same
-contract. This capability covers *only* the push family; pull (queue) ingestion is SPEC-0002.
+**As of ADR-0022, all webhook ingestion flows through agent self-managed webhooks**
+([ADR-0012](../../../adrs/ADR-0012-agents-self-manage-webhooks.md)) served at
+`POST /webhooks/w/{ingest_token}` (`internal/ingest/selfmanaged.go`). Every webhook is owned by
+exactly one vended MCP endpoint, and every todo produced by a delivery is pinned to that endpoint
+(per the [todo-queue spec](../todo-queue/spec.md) "Endpoint Ownership" requirement). The
+operator-configured signed receivers for GitHub/Stripe/Slack and the generic token/open receiver are
+retired: they carried no endpoint owner and could not satisfy the tenant-isolation invariant.
+Self-managed signed webhooks cover the same providers (the agent creates the webhook; switchboard
+mints and holds the HMAC secret exactly as before). This capability covers *only* the push family;
+pull (queue) ingestion is SPEC-0002.
 
 ## Requirements
 
@@ -161,20 +169,87 @@ placeholder. Full signatures, tokens, and secrets MUST NOT be logged or persiste
 - **THEN** the persisted `headers` JSON shows those values as `«redacted»` and no log line contains
   the full secret
 
-### Requirement: Enqueue Accepted Delivery as Todo
+### Requirement: Enqueue Accepted Delivery as Endpoint-Owned Todo
 
-An accepted delivery MUST normalize to the common todo shape and create a durable todo in the target
-queue via the shared back-half contract, so a push delivery and a pull delivery of the same logical
-event yield the identical todo. The todo MUST reference the persisted event, carry a human-legible
-title, and be published to the live hub so any attached agent session is nudged. Todo creation MUST
-be idempotent on `(queue, idempotency_key)` among non-terminal rows.
+Governing: ADR-0022, ADR-0007. An accepted delivery MUST normalize to the common todo shape and
+create a durable todo **pinned to the webhook's owning endpoint** (`endpoint_id` from
+`endpoint_webhooks.endpoint_id`), via the shared back-half contract. The todo MUST reference the
+persisted event, carry a human-legible title, and be published to the live hub so any attached agent
+session is nudged. Todo creation MUST be idempotent on `(endpoint_id, idempotency_key)` among
+non-terminal rows (see the [todo-queue spec](../todo-queue/spec.md) "Per-Endpoint Idempotency and
+Dedup"). The `idempotency_key` passed to the store MUST be namespaced by the target endpoint id so
+that routed fan-out to N endpoints dedups per-target independently.
 
-#### Scenario: Accepted delivery becomes a durable todo
+#### Scenario: Accepted delivery becomes a durable endpoint-owned todo
 
-- **WHEN** a delivery passes verification
-- **THEN** an event row is inserted, a todo is created in the configured queue referencing that
-  event, the todo is published to the hub if newly created, and the response is HTTP 202 with the
-  todo id and queue
+- **WHEN** a delivery passes verification on a self-managed webhook owned by endpoint A
+- **THEN** an event row is inserted, a todo is created pinned to endpoint A (NOT to a global
+  queue namespace) referencing that event, the todo is published to the hub if newly created, and
+  the response is HTTP 202 with the todo id and queue
+
+The 202 body MUST represent the FULL set of todos the delivery produced, since a routed
+delivery yields N:
+
+```json
+{
+  "todos": [{"id": "td_…", "endpoint_id": "…", "queue": "reviews", "created": true}],
+  "created": 1,
+  "id": "td_…", "queue": "reviews",
+  "verified": true, "trust_mode": "signed"
+}
+```
+
+`id` and `queue` MUST name the OWNING endpoint's todo, which the resolved target order puts
+first — so an unrouted webhook (the common case) returns a body byte-identical to the
+pre-fan-out shape. `created` is the count of newly-minted todos; a wholly idempotent
+redelivery reports `0` while still returning the existing todos. `endpoint_id` is included
+per todo so a fan-out is auditable: the producer already knows the webhook it posted to, and
+the response is the only place the delivery says where the work actually landed.
+
+#### Scenario: Routed delivery reports every todo it created
+
+- **WHEN** a webhook routed to endpoints A and B receives one verified delivery
+- **THEN** the 202 body's `todos` array MUST hold two entries — one per target, each naming its
+  `endpoint_id` — with `created: 2`, and `id`/`queue` MUST name the owner endpoint A's todo
+
+### Requirement: Deterministic Route Fan-Out (Token-Free)
+
+Governing: ADR-0022. A webhook MAY be routed to N target endpoints via the `webhook_routes` table.
+When a delivery arrives, the receiver MUST resolve the webhook's target endpoints and create **one
+todo per target endpoint**, each pinned to that target, in a single transaction with the event row
+(atomic across targets: all commit or none). If no routes are configured, the target set is the
+singleton `{webhook.endpoint_id}`. If the resolved target set is EMPTY — the owning endpoint is not
+resolvable — the receiver MUST treat the delivery as a misconfiguration and answer HTTP 503 with
+nothing persisted, so the producer retries. It MUST NOT answer 202: a delivery that produces no work
+anywhere has been dropped, and reporting success for it hides the broken webhook indefinitely.
+Routing is deterministic and **token-free**: once a route exists,
+every delivery fans out server-side without any agent spending model tokens on a `create_for` call.
+Routes are populated by human-approved actions (friending, a future routing verb) — never by a
+per-delivery agent decision.
+
+#### Scenario: Single delivery, two routes, two todos
+
+- **WHEN** a webhook with routes to endpoints A and B receives one verified delivery
+- **THEN** exactly two todos are created — one pinned to A, one pinned to B — each independently
+  claimable, and the event row commits atomically with both
+
+#### Scenario: No routes configured falls back to owner
+
+- **WHEN** a webhook with no rows in `webhook_routes` receives a delivery
+- **THEN** exactly one todo is created, pinned to the webhook's owning endpoint
+
+#### Scenario: Unresolvable target set is refused, not dropped
+
+- **WHEN** a delivery passes verification but the webhook resolves to no target endpoints
+- **THEN** the response MUST be HTTP 503, no event row and no todo MUST be persisted, and the
+  condition MUST be logged with the webhook id
+
+#### Scenario: Route fan-out is token-free
+
+- **WHEN** a webhook with a route to endpoint B receives a delivery and endpoint B's agent is idle
+  (no model invocation in flight)
+- **THEN** the todo pinned to endpoint B is still created and doorbelled; routing required no agent
+  action and zero model tokens
 
 ### Requirement: Error Handling Standards
 
@@ -194,17 +269,14 @@ internal detail, and MUST be logged with structured context.
 
 ### Authentication
 
-All ingestion endpoints authenticate the *delivery*, not a Switchboard human/agent session: `signed`
-endpoints verify a per-provider HMAC over the raw body, `token` endpoints require a shared-secret
-token, and `open` endpoints are an explicit trusted-network opt-in. There are no anonymous
-state-changing endpoints in this capability except the deliberately-opted-in `open` provider.
+All ingestion endpoints authenticate the *delivery*, not a Switchboard human/agent session. As of
+ADR-0022, the only ingestion endpoint is the self-managed webhook receiver; the operator-configured
+signed/token/open receivers are retired (they carried no endpoint owner).
 
 | Endpoint | Auth | Justification |
 |----------|------|---------------|
-| `POST /webhooks/github` | Required (signed) | HMAC-SHA256 over raw body verified constant-time; fail ⇒ 401, no persist |
-| `POST /webhooks/{provider}` (stripe, slack) | Required (signed) | Per-provider HMAC + timestamp freshness window; fail ⇒ 401, no persist |
-| `POST /webhooks/generic/{name}` | Required (token) | Shared-secret token authenticates the caller; disabled until token set; fail ⇒ 403 |
-| `POST /webhooks/generic/{name}` (open mode) | Public | Explicit operator opt-in only, off by default, trusted-network only, labeled loudest tier |
+| `POST /webhooks/w/{ingest_token}` (signed source type) | Required (signed) | Per-provider HMAC-SHA256 over raw body verified constant-time against the secret switchboard minted and holds; fail ⇒ 401, no persist |
+| `POST /webhooks/w/{ingest_token}` (token source type) | Required (token) | The unguessable ingest token in the URL authenticates the caller; the body is not signature-verified; fail (unknown token) ⇒ 404 |
 
 ### Rate Limiting
 

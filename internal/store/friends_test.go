@@ -722,3 +722,188 @@ func TestListFriendEdgesCarriesEndpointLastSeen(t *testing.T) {
 		t.Fatalf("touched endpoint's last-seen must surface on the edge: %+v", edges[0].EndpointLastSeenAt)
 	}
 }
+
+// pendingApprovals is the read the Friends view's pending lane performs: the target human's own
+// pending friend edges, straight out of friend_edges. It exists so this test asserts the SAME query
+// path the Board uses, not a bespoke one.
+func pendingApprovals(t *testing.T, s *Store, ctx context.Context, humanID string) []FriendEdge {
+	t.Helper()
+	edges, err := s.ListFriendEdges(ctx, humanID, "pending")
+	if err != nil {
+		t.Fatalf("list pending approvals: %v", err)
+	}
+	return edges
+}
+
+// A pending friend request is surfaced to the target human from its friend_edges row and NOT as a
+// todo, and every terminal decision clears it from that view by the same write that decides the
+// edge. This is the whole approval lane: it appears for the targeted human, is invisible to any
+// other human, a duplicate ask collides instead of double-listing, and approve / deny / revoke each
+// drain it. It also pins the negative half of the contract — the todos table stays empty throughout,
+// because a human approval has no owning endpoint and todos.endpoint_id is NOT NULL.
+// Governing: ADR-0022, SPEC-0010 REQ "Approval Surfaced from the Friend Edge" (scenarios "Pending
+// request is visible to the targeted human", "A request is not visible to another human", "Deciding
+// the edge clears the pending view", "A duplicate request collides rather than double-listing").
+func TestPendingApprovalSurfacedFromFriendEdge(t *testing.T) {
+	s, ctx := testStore(t)
+	requester := mustHuman(t, s, ctx, "pocket|appr-req", "Requester")
+	target := mustHuman(t, s, ctx, "pocket|appr-tgt", "Target")
+	stranger := mustHuman(t, s, ctx, "pocket|appr-str", "Stranger")
+
+	e := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "a@a", ToPersona: "b@b", FromHuman: requester.ID, ToHuman: target.ID,
+		RequestedQueues: []string{"reviews"}, RequestedVerbs: []string{"create_for"},
+		Reason: "hand you PR reviews", ProvenanceVerified: true,
+	})
+
+	// Happy path: the request appears for the TARGET human, carrying the legible who/why/scope the
+	// human decides on — the edge row is the approval surface, so it must be self-sufficient.
+	pending := pendingApprovals(t, s, ctx, target.ID)
+	if len(pending) != 1 || pending[0].ID != e.ID {
+		t.Fatalf("target must see exactly their one pending request, got %+v", pending)
+	}
+	got := pending[0]
+	if got.FromHuman != requester.ID || got.FromPersona != "a@a" || got.ToPersona != "b@b" {
+		t.Errorf("pending request lost its principals: %+v", got)
+	}
+	if got.Reason != "hand you PR reviews" || !got.ProvenanceVerified {
+		t.Errorf("pending request lost its why/provenance: %+v", got)
+	}
+	if len(got.RequestedQueues) != 1 || got.RequestedQueues[0] != "reviews" ||
+		len(got.RequestedVerbs) != 1 || got.RequestedVerbs[0] != "create_for" {
+		t.Errorf("pending request lost its requested scope: %+v", got)
+	}
+
+	// Unhappy path — cross-tenant: another human must not see A's request to B. ListFriendEdges is
+	// owner-scoped on to_human, which is the isolation key.
+	if other := pendingApprovals(t, s, ctx, stranger.ID); len(other) != 0 {
+		t.Fatalf("a request for another human must not be visible, got %+v", other)
+	}
+
+	// Unhappy path — duplicate: a second live ask for the same directional pair collides on
+	// idx_friend_edges_live rather than producing a second listing. This is the dedup the removed
+	// approval todo's idempotency key only pretended to provide.
+	if _, err := s.CreateFriendRequest(ctx, CreateFriendRequestParams{
+		FromPersona: "a@a", ToPersona: "b@b", FromHuman: requester.ID, ToHuman: target.ID,
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate live request must be ErrConflict, got %v", err)
+	}
+	if again := pendingApprovals(t, s, ctx, target.ID); len(again) != 1 {
+		t.Fatalf("a refused duplicate must not double-list, got %d pending", len(again))
+	}
+
+	// No todo was minted anywhere along the way. Asserted before the decisions so a leak cannot be
+	// masked by a later "resolve" that marks it done rather than never creating it.
+	assertNoTodos(t, s, ctx, "pending friend request")
+
+	// Approving clears it: the edge moves to `approved`, and the pending lane reads state.
+	vendAgent := mustAgent(t, s, ctx, target.ID, "b-persona")
+	slug, _ := MintSlug(vendAgent.Name)
+	approved, _, err := s.ApproveFriendRequest(ctx, ApproveFriendRequestParams{
+		EdgeID: e.ID, OwnerHumanID: target.ID, AgentID: vendAgent.ID,
+		CredentialHash: "appr-hash-1", CredentialPrefix: "sbk_ap1", Slug: slug,
+	})
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if left := pendingApprovals(t, s, ctx, target.ID); len(left) != 0 {
+		t.Fatalf("approval must clear the pending view, got %+v", left)
+	}
+
+	// Revoking an approved edge also leaves the pending view empty — revocation is terminal, it does
+	// not resurrect the request as work to redo.
+	if _, err := s.RevokeFriendEdge(ctx, approved.ID, target.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if left := pendingApprovals(t, s, ctx, target.ID); len(left) != 0 {
+		t.Fatalf("revocation must leave the pending view empty, got %+v", left)
+	}
+
+	// Denying clears it too. The revoked pair above is terminal, so a fresh request re-opens the live
+	// index and gives us a pending edge to deny.
+	d := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "a@a", ToPersona: "b@b", FromHuman: requester.ID, ToHuman: target.ID,
+		RequestedVerbs: []string{"create_for"}, ProvenanceVerified: true,
+	})
+	if len(pendingApprovals(t, s, ctx, target.ID)) != 1 {
+		t.Fatalf("re-request after a terminal edge must surface as pending")
+	}
+	if _, err := s.DenyFriendRequest(ctx, d.ID, target.ID); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	if left := pendingApprovals(t, s, ctx, target.ID); len(left) != 0 {
+		t.Fatalf("denial must clear the pending view, got %+v", left)
+	}
+
+	// Still no todos: the whole lifecycle ran without touching the todo queue.
+	assertNoTodos(t, s, ctx, "full approve/revoke/deny lifecycle")
+}
+
+// assertNoTodos fails if any todo row exists. The approval lane must never mint one — under ADR-0022
+// a todo is endpoint-owned, and a human friend approval has no owning endpoint.
+func assertNoTodos(t *testing.T, s *Store, ctx context.Context, when string) {
+	t.Helper()
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos`).Scan(&n); err != nil {
+		t.Fatalf("count todos: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("%s minted %d todo(s); the approval lane must mint none", when, n)
+	}
+}
+
+// TestCreateForFriendHandoffReachability pins WHO can actually reach a friend handoff after
+// ADR-0022 made todo visibility endpoint-scoped rather than queue-scoped. Before ADR-0022 any of
+// the target's agents listening on the granted queue would see the work; now visibility follows
+// endpoint_id, which changes the answer. The change is easy to make silently and impossible to
+// notice from the create path alone — TestCreateForFriendLandsAsTodo asserts queue/source/kind/
+// dedup and would pass under either behaviour — so the reachability is asserted explicitly here.
+//
+// This test documents current behaviour rather than blessing it: whether a handoff SHOULD remain
+// visible to the sender, and whether it SHOULD be drainable from the target's other endpoints, are
+// SPEC-0010 design questions. Pinning them means any future answer has to change this test on
+// purpose. Governing: ADR-0010, ADR-0022, SPEC-0010 REQ "Work Flows as Todos, Not A2A Tasks",
+// SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+func TestCreateForFriendHandoffReachability(t *testing.T) {
+	s, ctx := testStore(t)
+	target := mustHuman(t, s, ctx, "pocket|cff-reach", "Target")
+	vendAgent := mustAgent(t, s, ctx, target.ID, "b-handler")
+	_, friendEP := mustApprovedFriend(t, s, ctx, target, vendAgent,
+		[]string{"reviews"}, []string{"create_for", "list_todos"})
+
+	td, created, err := s.CreateForFriend(ctx, CreateForFriendParams{
+		EndpointID: friendEP.ID, Queue: "reviews", Intent: "create_for",
+		Title: "Review PR #7", IdempotencyKey: "reach-1",
+	})
+	if err != nil || !created {
+		t.Fatalf("create_for friend: created=%v err=%v", created, err)
+	}
+
+	// The row is pinned to the friendship's vended endpoint — the tenancy anchor.
+	if td.EndpointID != friendEP.ID {
+		t.Fatalf("handoff todo endpoint_id=%s, want the friendship's vended endpoint %s",
+			td.EndpointID, friendEP.ID)
+	}
+
+	// Reachable through the friendship endpoint. This is the positive control: it proves the
+	// negative assertion below is about SCOPE, not about the todo failing to be written at all.
+	viaFriendship, err := s.ListTodos(ctx, friendEP.ID, []string{"reviews"}, "", 50)
+	if err != nil {
+		t.Fatalf("list via friendship endpoint: %v", err)
+	}
+	if len(viaFriendship) != 1 || viaFriendship[0].ID != td.ID {
+		t.Fatalf("the friendship endpoint must reach the handoff, got %d rows", len(viaFriendship))
+	}
+
+	// NOT reachable through another endpoint of the target's — even the SAME agent, even the same
+	// granted queue. Queue name is no longer a visibility channel.
+	otherEP := mustEndpointScoped(t, s, ctx, vendAgent.ID, "cff-reach-other",
+		[]string{"reviews"}, []string{"list_todos"})
+	viaOther, err := s.ListTodos(ctx, otherEP.ID, []string{"reviews"}, "", 50)
+	if err != nil {
+		t.Fatalf("list via the target's other endpoint: %v", err)
+	}
+	if len(viaOther) != 0 {
+		t.Fatalf("a sibling endpoint on the same queue must not see the handoff, got %d rows", len(viaOther))
+	}
+}

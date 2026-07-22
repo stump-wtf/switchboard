@@ -222,7 +222,7 @@ var ErrProvenanceUnavailable = errors.New("auth: provenance verification unavail
 
 // VerifyProvenance verifies an OIDC-signed provenance assertion — the requesting human's ID token —
 // against the SAME trusted issuer switchboard authenticates its own humans with, and returns the
-// attested subject (OIDC `sub`) plus display name/email for the legible approval todo. This is the
+// attested subject (OIDC `sub`) plus display name/email for the legible pending-request row. This is the
 // A2A friend-request credential: the request carries the requesting human's signed identity in-band,
 // NOT the agent's self-assertion of who owns it (ADR-0010). The verifier checks issuer, audience,
 // expiry, and signature; it deliberately does NOT enforce an amr/acr assurance claim because the one
