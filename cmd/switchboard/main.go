@@ -6,7 +6,7 @@
 //
 // Agents connect with nothing but the vended URL + bearer credential — there is no local binary,
 // subprocess, or stdio adapter. The design record is the source of truth:
-// https://joestump.github.io/switchboard/
+// https://switchboard.stump.wtf/docs/
 package main
 
 import (
