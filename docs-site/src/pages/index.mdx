@@ -1,0 +1,132 @@
+---
+title: Switchboard
+description: An MCP server that receives inbound webhooks, verifies each caller, and patches it through to a durable todo queue that human-owned agents drain over scoped endpoints.
+hide_table_of_contents: true
+wrapperClassName: sb-home
+---
+
+import Link from '@docusaurus/Link';
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+<div className="sb-hero">
+  <div className="sb-hero__eyebrow">// MCP server · durable todo queue · local web UI</div>
+  <h1 className="sb-hero__title">many lines come in.<br/>the operator <em>verifies</em> each caller,<br/>and patches it through.</h1>
+  <p className="sb-hero__lead">Switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human‑vended MCP endpoints — served exclusively over HTTP/S. one box: receive · verify · patch through.</p>
+  <div className="sb-hero__cta">
+    <Link className="button button--primary button--lg" to="/guides/overview">get started →</Link>
+    <a className="button button--secondary button--lg" href="https://switchboard.stump.wtf">open the operator board</a>
+    <Link className="button button--outline button--lg" to="/api">browse the API</Link>
+  </div>
+  <div className="sb-hero__meta">
+    <span><span className="on">●</span> live over SSE</span>
+    <span>MCP over HTTP/S</span>
+    <span>Go · PostgreSQL</span>
+  </div>
+</div>
+
+<div className="sb-jobs">
+  <div className="sb-job sb-job--recv">
+    <div className="sb-job__n">01</div>
+    <div className="sb-job__glyph">◆</div>
+    <div className="sb-job__name">receive</div>
+    <p className="sb-job__body">webhooks and queue messages arrive on scoped lines — GitHub, Stripe, Slack, Redis, generic token/open.</p>
+  </div>
+  <div className="sb-job sb-job--verify">
+    <div className="sb-job__n">02</div>
+    <div className="sb-job__glyph">✓</div>
+    <div className="sb-job__name">verify</div>
+    <p className="sb-job__body">every caller is checked at the boundary — HMAC signatures, shared‑secret tokens, replay windows — and stamped with a trust mode.</p>
+  </div>
+  <div className="sb-job sb-job--patch">
+    <div className="sb-job__n">03</div>
+    <div className="sb-job__glyph">→</div>
+    <div className="sb-job__name">patch through</div>
+    <p className="sb-job__body">the verified line becomes a durable todo an agent claims under a lease and completes — pushed live as a channel doorbell.</p>
+  </div>
+</div>
+
+<div className="sb-tiles">
+
+  <Link className="sb-tile" to="/guides/connect-a-provider">
+    <div className="sb-tile__icon" aria-hidden="true">⇅</div>
+    <div className="sb-tile__title">Connect a provider</div>
+    <p className="sb-tile__body">Point GitHub, Stripe, Slack, Docker Hub, a generic sender, or a Redis queue at switchboard. Each line carries an enforced trust mode; pull adapters ack the source only after the todo is durably stored, so nothing is lost at the boundary.</p>
+  </Link>
+
+  <Link className="sb-tile" to="/guides/vend-an-endpoint">
+    <div className="sb-tile__icon" aria-hidden="true">◈</div>
+    <div className="sb-tile__title">Vend an endpoint to an agent</div>
+    <p className="sb-tile__body">You are the accountable principal. Vend each agent a scoped MCP endpoint — a queue set plus a verb allowlist. The credential is stored hashed, short‑lived and revocable: revoke = kill the endpoint.</p>
+  </Link>
+
+  <Link className="sb-tile" to="/guides/personas">
+    <div className="sb-tile__icon" aria-hidden="true">◫</div>
+    <div className="sb-tile__title">Personas as A2A Agent Cards</div>
+    <p className="sb-tile__body">One agent, many least‑privilege faces. A persona is a human‑authored prompt plus a verb subset; its advertised skills are derived from what's actually vended, published as an A2A Agent Card.</p>
+  </Link>
+
+  <Link className="sb-tile" to="/guides/friending">
+    <div className="sb-tile__icon" aria-hidden="true">⇄</div>
+    <div className="sb-tile__title">Human‑approved friending</div>
+    <p className="sb-tile__body">Agents discover peers over A2A and send a scoped friend request. Approval lands as a todo in the target human's queue — and approving is the vend. Per‑direction, revocable, non‑transitive.</p>
+  </Link>
+
+  <Link className="sb-tile" to="/guides/draining-the-queue">
+    <div className="sb-tile__icon" aria-hidden="true">▤</div>
+    <div className="sb-tile__title">Drain the durable queue</div>
+    <p className="sb-tile__body">Every event becomes a work‑item with a lifecycle — claimed under a lease, completed with an ack, deduped by idempotency key. A crashed worker's todo re‑surfaces; nothing is read‑once and lost.</p>
+  </Link>
+
+  <Link className="sb-tile" to="/api">
+    <div className="sb-tile__icon" aria-hidden="true">◇</div>
+    <div className="sb-tile__title">The HTTP API</div>
+    <p className="sb-tile__body">The webhook ingestion receivers and the local web‑UI routes, rendered per endpoint from the OpenAPI 3.1 contract — request/response schemas, trust posture, and a try‑it console.</p>
+  </Link>
+
+</div>
+
+<div className="sb-trust">
+  <span>Two families — webhook &amp; queue — each event's trust shown:</span>
+  <span className="sb-badge sb-badge--signed">signed</span>
+  <span className="sb-badge sb-badge--token">token</span>
+  <span className="sb-badge sb-badge--open">open</span>
+  <span className="sb-badge sb-badge--queue">queue</span>
+  <span>— see <Link to="/decisions/ADR-0003-per-provider-ingestion-and-trust-model">ADR‑0003</Link>.</span>
+</div>
+
+<div className="sb-shots">
+  <div className="sb-shots__head">
+    <div className="sb-shots__eyebrow">The operator board · live</div>
+    <div className="sb-shots__title">See it live</div>
+    <p className="sb-shots__sub">Six views — Board, Todos, Endpoints, Personas, Friends, Providers — server‑rendered on Go + HTMX and updating over Server‑Sent Events, wearing the same trust badges the API and MCP surfaces carry.</p>
+  </div>
+  <div className="sb-shots__grid">
+    <figure className="sb-shot">
+      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf</span></div>
+      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/board.png')} alt="The Switchboard operator board: a three-lane patch panel — received, verified, patched through — with trust badges and live throughput tiles." loading="lazy" />
+      <figcaption className="sb-shot__cap"><strong>The Board</strong> — the three‑lane patch panel: received → verified → patched through, with live throughput tiles and the trust legend.</figcaption>
+    </figure>
+    <figure className="sb-shot">
+      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf/providers</span></div>
+      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/providers.png')} alt="The Providers view: connected webhook and queue providers with their enforced trust mode, plus a catalog of providers to connect." loading="lazy" />
+      <figcaption className="sb-shot__cap"><strong>Providers</strong> — every inbound line enters through a provider; each carries an enforced trust mode, connected inline from the catalog.</figcaption>
+    </figure>
+    <figure className="sb-shot">
+      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf/todos</span></div>
+      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/todos.png')} alt="The Todos view: the durable work-queue table — claim under a lease, complete with an ack, dedup by idempotency key, at-least-once delivery." loading="lazy" />
+      <figcaption className="sb-shot__cap"><strong>Todos</strong> — the durable queue: claim under a lease, complete with an ack, dedup by idempotency key, at‑least‑once.</figcaption>
+    </figure>
+  </div>
+</div>
+
+<div className="sb-start">
+  <div className="sb-start__title">Start here</div>
+  <ul className="sb-start__list">
+    <li><Link to="/guides/overview"><strong>Guides</strong></Link> — what switchboard is, what an endpoint is, and how to connect a provider, vend an endpoint, publish a persona, friend a peer, and drain the queue.</li>
+    <li><Link to="/api"><strong>API</strong></Link> — the HTTP surface rendered per endpoint from the OpenAPI 3.1 contract, with schemas and a try‑it console.</li>
+    <li><Link to="/decisions"><strong>Decisions (ADRs)</strong></Link> — 19 architecture decision records: the stack, the PostgreSQL persistence, the trust model, the MCP contract, and the todo/agent‑vending/A2A layer.</li>
+    <li><Link to="/specs"><strong>Specifications</strong></Link> — 17 OpenSpec capabilities (RFC 2119 requirements + Mermaid design).</li>
+    <li><Link to="/design"><strong>Design</strong></Link> — the charm‑web design language (ADR‑0018): day/night tokens, components, screens, and voice.</li>
+    <li><Link to="/reference"><strong>Reference</strong></Link> — the raw OpenAPI (HTTP surface) and AsyncAPI (SSE stream) contracts.</li>
+  </ul>
+</div>

@@ -1,9 +1,13 @@
 // Generate docs-site/docs-generated/ from the repo's SDD-canonical design record at build time:
+//   docs/guides/NN-slug.md         -> /guides      (user-facing usage guides)
 //   docs/adrs/                     -> /decisions   (ADRs, MADR)
 //   docs/openspec/specs/{cap}/     -> /specs       (OpenSpec spec.md + design.md pairs)
 //   docs/design/NN-slug.md         -> /design      (design language, ADR-0016)
 //   docs/reference/*.yaml          -> /reference   (machine-readable contracts)
 //   docs/prfaq.md                  -> /prfaq
+// The marketing landing page (route /) is NOT generated here — it is the standalone
+// docs-site/src/pages/index.mdx (a page, so it renders with no docs sidebar). The per-endpoint HTTP
+// API reference at /api is generated separately by `docusaurus gen-api-docs` (see package.json).
 // These files are the single source of truth; this script only adapts them for Docusaurus
 // (sidebar order, status lines, cross-link rewrites). docs-generated/ is gitignored.
 //
@@ -22,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SITE = join(__dirname, '..');
 const REPO = join(SITE, '..');
+const GUIDES_SRC = join(REPO, 'docs', 'guides');
 const ADR_SRC = join(REPO, 'docs', 'adrs');
 const SPEC_SRC = join(REPO, 'docs', 'openspec', 'specs');
 const DESIGN_SRC = join(REPO, 'docs', 'design');
@@ -33,6 +38,7 @@ const GITHUB = 'https://gitea.stump.rocks/stump.wtf/switchboard';
 const GITHUB_RAW = 'https://gitea.stump.rocks/stump.wtf/switchboard/raw/branch/main';
 
 // ---- discover sources ----
+const guideFiles = readdirSync(GUIDES_SRC).filter((f) => /^\d+-.*\.md$/.test(f)).sort();
 const adrFiles = readdirSync(ADR_SRC).filter((f) => /^ADR-\d+.*\.md$/.test(f)).sort();
 const capDirs = readdirSync(SPEC_SRC)
   .filter((d) => statSync(join(SPEC_SRC, d)).isDirectory())
@@ -42,6 +48,7 @@ const designFiles = readdirSync(DESIGN_SRC).filter((f) => /^\d+-.*\.md$/.test(f)
 
 // ---- clean + scaffold ----
 rmSync(OUT, { recursive: true, force: true });
+mkdirSync(join(OUT, 'guides'), { recursive: true });
 mkdirSync(join(OUT, 'decisions'), { recursive: true });
 mkdirSync(join(OUT, 'specs'), { recursive: true });
 mkdirSync(join(OUT, 'design'), { recursive: true });
@@ -79,157 +86,35 @@ function rewriteDesignLinks(s) {
     .replace(/\]\([^)]*?reference\/(openapi|asyncapi)\.ya?ml([^)]*)\)/g, '](/reference/$1$2)');
 }
 
-// ---- landing page ----
-writeFileSync(join(OUT, 'intro.mdx'), `---
-slug: /
-title: Switchboard
-sidebar_label: Overview
-sidebar_position: 0
-hide_title: true
-hide_table_of_contents: true
----
-
-import Link from '@docusaurus/Link';
-import useBaseUrl from '@docusaurus/useBaseUrl';
-
-<div className="sb-hero">
-  <div className="sb-hero__eyebrow">// MCP server · durable todo queue · local web UI</div>
-  <h1 className="sb-hero__title">many lines come in.<br/>the operator <em>verifies</em> each caller,<br/>and patches it through.</h1>
-  <p className="sb-hero__lead">Switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human‑vended MCP endpoints — served exclusively over HTTP/S. one box: receive · verify · patch through.</p>
-  <div className="sb-hero__cta">
-    <a className="button button--primary button--lg" href="https://switchboard.stump.wtf">open the operator board →</a>
-    <Link className="button button--secondary button--lg" to="/decisions">read the decisions</Link>
-    <Link className="button button--outline button--lg" to="/prfaq">read the PRFAQ</Link>
-  </div>
-  <div className="sb-hero__meta">
-    <span><span className="on">●</span> live over SSE</span>
-    <span>MCP over HTTP/S</span>
-    <span>Go · PostgreSQL</span>
-  </div>
-</div>
-
-<div className="sb-jobs">
-  <div className="sb-job sb-job--recv">
-    <div className="sb-job__n">01</div>
-    <div className="sb-job__glyph">◆</div>
-    <div className="sb-job__name">receive</div>
-    <p className="sb-job__body">webhooks and queue messages arrive on scoped lines — GitHub, Stripe, Slack, Redis, generic token/open.</p>
-  </div>
-  <div className="sb-job sb-job--verify">
-    <div className="sb-job__n">02</div>
-    <div className="sb-job__glyph">✓</div>
-    <div className="sb-job__name">verify</div>
-    <p className="sb-job__body">every caller is checked at the boundary — HMAC signatures, shared‑secret tokens, replay windows — and stamped with a trust mode.</p>
-  </div>
-  <div className="sb-job sb-job--patch">
-    <div className="sb-job__n">03</div>
-    <div className="sb-job__glyph">→</div>
-    <div className="sb-job__name">patch through</div>
-    <p className="sb-job__body">the verified line becomes a durable todo an agent claims under a lease and completes — pushed live as a channel doorbell.</p>
-  </div>
-</div>
-
-<div className="sb-tiles">
-
-  <Link className="sb-tile" to="/decisions/ADR-0014-ingestion-adapters-push-pull">
-    <div className="sb-tile__icon" aria-hidden="true">⇅</div>
-    <div className="sb-tile__title">Push &amp; pull ingestion adapters</div>
-    <p className="sb-tile__body">Push webhooks (GitHub, Stripe, Slack, Docker Hub, generic) and pull queue adapters (Redis, with SQS/NATS/AMQP to follow) normalize into the same todo — each with an enforced trust mode. Pull adapters ack the source only after the todo is durably stored, so nothing is lost at the boundary.</p>
-  </Link>
-
-  <Link className="sb-tile" to="/decisions/ADR-0007-todos-as-core-primitive">
-    <div className="sb-tile__icon" aria-hidden="true">▤</div>
-    <div className="sb-tile__title">Durable todo work‑queue</div>
-    <p className="sb-tile__body">Every event becomes a work‑item with a lifecycle — claimed under a lease, completed with an ack, deduped by idempotency key. A crashed worker's todo re‑surfaces; nothing is read‑once and lost.</p>
-  </Link>
-
-  <Link className="sb-tile" to="/decisions/ADR-0008-human-principal-vended-endpoints">
-    <div className="sb-tile__icon" aria-hidden="true">◈</div>
-    <div className="sb-tile__title">Per‑agent vended MCP endpoints</div>
-    <p className="sb-tile__body">Humans are the accountable principals; each agent is vended a scoped MCP endpoint (queues + verb allowlist). The credential is stored hashed in Postgres, short‑lived and revocable — revoke = kill the endpoint.</p>
-  </Link>
-
-  <Link className="sb-tile" to="/decisions/ADR-0009-personas-as-scoped-agent-cards">
-    <div className="sb-tile__icon" aria-hidden="true">◫</div>
-    <div className="sb-tile__title">Personas as A2A Agent Cards</div>
-    <p className="sb-tile__body">One agent, many least‑privilege faces. A persona is a human‑authored prompt plus a verb subset; its advertised skills are derived from what's actually vended, published as an A2A Agent Card.</p>
-  </Link>
-
-  <Link className="sb-tile" to="/decisions/ADR-0010-a2a-discovery-human-vended-friending">
-    <div className="sb-tile__icon" aria-hidden="true">⇄</div>
-    <div className="sb-tile__title">Human‑approved friending</div>
-    <p className="sb-tile__body">Agents discover peers over A2A and send a scoped friend request. Approval lands as a todo in the target human's queue — and approving is the vend. Per‑direction, revocable, non‑transitive.</p>
-  </Link>
-
-  <Link className="sb-tile" to="/decisions/ADR-0013-channels-push-delivery">
-    <div className="sb-tile__icon" aria-hidden="true">◔</div>
-    <div className="sb-tile__title">Push into your live session</div>
-    <p className="sb-tile__body">When a harness is attached, switchboard pushes new todos straight into the session over the open Claude Code Channels standard — a doorbell, not the ledger. Offline? The durable queue keeps the work until it's pulled.</p>
-  </Link>
-
-  <Link className="sb-tile" to="/decisions/ADR-0001-web-stack-go-htmx-pico">
-    <div className="sb-tile__icon" aria-hidden="true">▦</div>
-    <div className="sb-tile__title">Live operator board</div>
-    <p className="sb-tile__body">A six‑view operator board — Board, Todos, Endpoints, Personas, Friends, Providers — on Go (net/http) + HTMX, wearing the charm‑web design language (day/night, monospace‑first) and updating live over Server‑Sent Events, with the same trust badges the API and MCP surfaces carry.</p>
-  </Link>
-
-</div>
-
-<div className="sb-trust">
-  <span>Two families — webhook &amp; queue — each event's trust shown:</span>
-  <span className="sb-badge sb-badge--signed">signed</span>
-  <span className="sb-badge sb-badge--token">token</span>
-  <span className="sb-badge sb-badge--open">open</span>
-  <span className="sb-badge sb-badge--queue">queue</span>
-  <span>— see <Link to="/decisions/ADR-0003-per-provider-ingestion-and-trust-model">ADR‑0003</Link>.</span>
-</div>
-
-<div className="sb-shots">
-  <div className="sb-shots__head">
-    <div className="sb-shots__eyebrow">The operator board · live</div>
-    <div className="sb-shots__title">See it live</div>
-    <p className="sb-shots__sub">Six views — Board, Todos, Endpoints, Personas, Friends, Providers — server‑rendered on Go + HTMX and updating over Server‑Sent Events, wearing the same trust badges the API and MCP surfaces carry.</p>
-  </div>
-  <div className="sb-shots__grid">
-    <figure className="sb-shot">
-      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf</span></div>
-      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/board.png')} alt="The Switchboard operator board: a three-lane patch panel — received, verified, patched through — with trust badges and live throughput tiles." loading="lazy" />
-      <figcaption className="sb-shot__cap"><strong>The Board</strong> — the three‑lane patch panel: received → verified → patched through, with live throughput tiles and the trust legend.</figcaption>
-    </figure>
-    <figure className="sb-shot">
-      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf/providers</span></div>
-      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/providers.png')} alt="The Providers view: connected webhook and queue providers with their enforced trust mode, plus a catalog of providers to connect." loading="lazy" />
-      <figcaption className="sb-shot__cap"><strong>Providers</strong> — every inbound line enters through a provider; each carries an enforced trust mode, connected inline from the catalog.</figcaption>
-    </figure>
-    <figure className="sb-shot">
-      <div className="sb-shot__chrome"><span className="sb-shot__dot" style={{ background: '#FF5F57' }} /><span className="sb-shot__dot" style={{ background: '#FEBC2E' }} /><span className="sb-shot__dot" style={{ background: '#28C840' }} /><span className="sb-shot__url">switchboard.stump.wtf/todos</span></div>
-      <img className="sb-shot__img" src={useBaseUrl('/img/screenshots/todos.png')} alt="The Todos view: the durable work-queue table — claim under a lease, complete with an ack, dedup by idempotency key, at-least-once delivery." loading="lazy" />
-      <figcaption className="sb-shot__cap"><strong>Todos</strong> — the durable queue: claim under a lease, complete with an ack, dedup by idempotency key, at‑least‑once.</figcaption>
-    </figure>
-  </div>
-</div>
-
-:::note Design record
-This site is the **canonical, SDD‑governed design record** for switchboard — ${adrFiles.length} architecture
-decision records and ${capDirs.length} OpenSpec capability specs (each a requirements + design pair),
-plus machine‑readable reference contracts. The MVP application code is built from these documents. The
-name is the architecture: a manual telephone exchange took many incoming lines, an operator verified
-the caller, and patched the line through — and these pages wear the same charm‑web design language as
-the app (ADR‑0018): a blue‑black void lit by ANSI neon — Charm purple and hot pink, cyan and mint —
-with a lavender‑paper day mode, monospace throughout.
-:::
-
-## Start here
-
-- **[Decisions (ADRs)](/decisions)** — why switchboard is built the way it is: the stack, the PostgreSQL
-  persistence, the trust model, the MCP contract, and the todo/agent‑vending/A2A layer.
-- **[Specifications](/specs)** — ${capDirs.length} OpenSpec capabilities (RFC 2119 requirements + Mermaid design):
-  ingestion, the durable todo queue, persistence, the MCP + agent tool surfaces, vended endpoints,
-  identity, personas, friending, Channels push delivery, and the web UI.
-- **[Design](/design)** — the charm‑web design language (ADR‑0018): day/night tokens, components,
-  the six operator‑board screens, voice, and the directions explored.
-- **[Reference](/reference)** — the OpenAPI (HTTP surface) and AsyncAPI (SSE stream) contracts.
-`);
+// ---- user guides (docs/guides/NN-slug.md) -> guides/ ----
+// User-facing usage docs. Numeric filename prefix orders the sidebar and the emitted filename drops
+// it, so routes are clean (/guides/overview, /guides/connect-a-provider, …). Guides are authored with
+// site-absolute links already; the standard rewrites run anyway for safety. format: md (CommonMark)
+// keeps machine-ish `<host>`/`<slug>` tokens (always inside code spans) harmless.
+for (const f of guideFiles) {
+  const pos = parseInt(f.match(/^(\d+)-/)[1], 10);
+  const slug = f.replace(/^\d+-/, '').replace(/\.md$/, '');
+  const raw = readFileSync(join(GUIDES_SRC, f), 'utf8');
+  const { fm, body } = splitFrontmatter(raw);
+  const label = fmValue(fm, 'title') || slug;
+  const content = rewriteDesignLinks(rewriteRepoLinks(body));
+  writeFileSync(
+    join(OUT, 'guides', `${slug}.md`),
+    `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,
+  );
+}
+writeFileSync(
+  join(OUT, 'guides', '_category_.json'),
+  JSON.stringify(
+    {
+      label: 'Guides',
+      position: 1,
+      link: { type: 'generated-index', slug: '/guides', title: 'Guides', description: 'How to use switchboard: connect a provider, vend an endpoint, publish a persona, friend a peer, and drain the durable todo queue.' },
+    },
+    null,
+    2,
+  ),
+);
 
 // ---- PRFAQ -> /prfaq ----
 {
@@ -237,7 +122,7 @@ with a lavender‑paper day mode, monospace throughout.
   const content = sanitizeMdx(rewriteRepoLinks(raw));
   writeFileSync(
     join(OUT, 'prfaq.md'),
-    `---\nslug: /prfaq\ntitle: PRFAQ\nsidebar_label: PRFAQ\nsidebar_position: 1\n---\n\n${content}`,
+    `---\nslug: /prfaq\ntitle: PRFAQ\nsidebar_label: PRFAQ\nsidebar_position: 6\n---\n\n${content}`,
   );
 }
 
