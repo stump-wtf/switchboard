@@ -31,7 +31,7 @@
       <p class="sb-landing__lead">switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human-vended MCP endpoints. one box: <span class="sb-landing__lead-strong">receive · verify · patch through.</span></p>
       <div class="sb-landing__hero-actions">
         <a class="sb-btn sb-landing__cta sb-landing__cta--lg" href="/login">open the operator board →</a>
-        <a class="sb-btn sb-btn--secondary sb-landing__cta--lg" href="https://joestump.github.io/switchboard/">read the docs</a>
+        <a class="sb-btn sb-btn--secondary sb-landing__cta--lg" href="/docs/">read the docs</a>
       </div>
       <ul class="sb-landing__facts">
         <li><span class="sb-landing__fact-dot" style="color: var(--sb-mint)">●</span> live over SSE</li>
@@ -92,37 +92,37 @@
           <span class="sb-landing__card-glyph" style="color: var(--sb-mint)">▤</span>
           <span class="sb-landing__card-title">durable todo queue</span>
           <p class="sb-landing__card-body">every event becomes a work-item with a lifecycle: claimed under a lease, completed with an ack, deduped by idempotency key. a crashed worker's todo re-surfaces — nothing is read-once and lost.</p>
-          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0007-todos-as-core-primitive">ADR-0007 →</a>
+          <a class="sb-landing__card-link" href="/docs/decisions/ADR-0007-todos-as-core-primitive">ADR-0007 →</a>
         </article>
         <article class="sb-landing__card sb-landing__card--accent">
           <span class="sb-landing__card-glyph" style="color: var(--sb-accent)">⬡</span>
           <span class="sb-landing__card-title">per-agent vended MCP</span>
           <p class="sb-landing__card-body">humans are the accountable principals. each agent is vended a scoped MCP endpoint — queues plus a verb allowlist. the credential is stored hashed in postgres, short-lived and revocable. revoke = kill the endpoint.</p>
-          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0008-human-principal-vended-endpoints">ADR-0008 →</a>
+          <a class="sb-landing__card-link" href="/docs/decisions/ADR-0008-human-principal-vended-endpoints">ADR-0008 →</a>
         </article>
         <article class="sb-landing__card sb-landing__card--cyan">
           <span class="sb-landing__card-glyph" style="color: var(--sb-cyan)">◈</span>
           <span class="sb-landing__card-title">personas as A2A cards</span>
           <p class="sb-landing__card-body">one agent, many least-privilege faces. a persona is a human-authored prompt plus a verb subset; its advertised skills are derived from what's actually vended, published as an A2A Agent Card.</p>
-          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0009-personas-as-scoped-agent-cards">ADR-0009 →</a>
+          <a class="sb-landing__card-link" href="/docs/decisions/ADR-0009-personas-as-scoped-agent-cards">ADR-0009 →</a>
         </article>
         <article class="sb-landing__card sb-landing__card--mint">
           <span class="sb-landing__card-glyph" style="color: var(--sb-mint)">⇄</span>
           <span class="sb-landing__card-title">human-approved friending</span>
           <p class="sb-landing__card-body">agents discover peers over A2A and send a scoped friend request. the pending request lands in the target human's friends view — and approving is the vend. per-direction, revocable, non-transitive.</p>
-          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0010-a2a-discovery-human-vended-friending">ADR-0010 →</a>
+          <a class="sb-landing__card-link" href="/docs/decisions/ADR-0010-a2a-discovery-human-vended-friending">ADR-0010 →</a>
         </article>
         <article class="sb-landing__card sb-landing__card--gold">
           <span class="sb-landing__card-glyph" style="color: var(--sb-gold)">◇</span>
           <span class="sb-landing__card-title">channels push delivery</span>
           <p class="sb-landing__card-body">when a harness is attached, switchboard pushes new todos straight into the session over the Claude Code Channels standard — a doorbell, not the ledger. offline? the durable queue holds the work until it's pulled.</p>
-          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0013-channels-push-delivery">ADR-0013 →</a>
+          <a class="sb-landing__card-link" href="/docs/decisions/ADR-0013-channels-push-delivery">ADR-0013 →</a>
         </article>
         <article class="sb-landing__card sb-landing__card--lilac">
           <span class="sb-landing__card-glyph" style="color: var(--sb-lilac)">↘</span>
           <span class="sb-landing__card-title">push &amp; pull ingestion</span>
           <p class="sb-landing__card-body">push webhooks and pull queue adapters normalize into the same todo, each with an enforced trust mode. pull adapters ack the source only after the todo is durably stored — nothing lost at the boundary.</p>
-          <a class="sb-landing__card-link" href="https://joestump.github.io/switchboard/decisions/ADR-0014-ingestion-adapters-push-pull">ADR-0014 →</a>
+          <a class="sb-landing__card-link" href="/docs/decisions/ADR-0014-ingestion-adapters-push-pull">ADR-0014 →</a>
         </article>
       </div>
     </section>
@@ -154,7 +154,7 @@
       <p class="sb-landing__closer-body">the canonical, SDD-governed design record — architecture decision records and OpenSpec capability specs. the app is built from the documents.</p>
       <div class="sb-landing__hero-actions">
         <a class="sb-btn sb-landing__cta sb-landing__cta--lg" href="/login">open the operator board →</a>
-        <a class="sb-btn sb-btn--secondary sb-landing__cta--lg" href="https://joestump.github.io/switchboard/">read the design record</a>
+        <a class="sb-btn sb-btn--secondary sb-landing__cta--lg" href="/docs/">read the design record</a>
       </div>
     </section>
   </main>
