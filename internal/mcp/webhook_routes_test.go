@@ -445,6 +445,85 @@ func TestResolveWebhookTargetsDropsRevokedEndpoint(t *testing.T) {
 	}
 }
 
+// TestResolveWebhookTargetsDropsExpiredEndpoint is the reaper-lag half of endpoint liveness. A target
+// whose expires_at is already in the PAST but whose state is still 'active' — the window before
+// ExpireEndpoints' periodic reaper flips it — must ALSO stop receiving deliveries. ResolveWebhookTargets
+// checks expiry directly (`te.expires_at IS NULL OR te.expires_at > now()`) rather than trusting the
+// state flag, exactly as EndpointByCredHash refuses a passed expiry ahead of the reaper. Without it a
+// lapsed cross-human endpoint would keep receiving the sender's payloads until the next reap. The clause
+// had no direct test, so a refactor that trusted state alone would silently re-open that window and pass
+// the whole suite; this locks it. Governing: ADR-0022, SPEC-0007 REQ "Instant, Total Revocation".
+func TestResolveWebhookTargetsDropsExpiredEndpoint(t *testing.T) {
+	pool, ctx := routeTestPool(t)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	f := newRouteFixture(t, ctx, pool)
+
+	// Same-human route, so endpoint liveness is the only variable (no friend edge in play).
+	if err := f.st.AddWebhookRoute(ctx, f.webhookA, f.epA2, f.humanA); err != nil {
+		t.Fatalf("seed route: %v", err)
+	}
+	// Positive control: active + unexpired IS a target — guards the negative below from passing vacuously.
+	if got := mustTargets(t, ctx, f, f.webhookA); !slices.Equal(got, []string{f.epA1, f.epA2}) {
+		t.Fatalf("active unexpired target must be delivered to, got %v want [%s %s]", got, f.epA1, f.epA2)
+	}
+
+	// Lapse expires_at into the past WITHOUT reaping: state stays 'active', only the timestamp lapses —
+	// the exact window the resolve query must refuse to route into.
+	if _, err := pool.Exec(ctx,
+		`UPDATE endpoints SET expires_at = now() - interval '1 hour' WHERE id = $1`, f.epA2); err != nil {
+		t.Fatalf("lapse target expiry: %v", err)
+	}
+	// Guard the test itself: the row must still be 'active', else we'd be re-testing the revoked-state
+	// path instead of the expiry clause.
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM endpoints WHERE id = $1`, f.epA2).Scan(&state); err != nil {
+		t.Fatalf("read target state: %v", err)
+	}
+	if state != "active" {
+		t.Fatalf("precondition: target must still be 'active' (reaper must not have run), got %q", state)
+	}
+
+	if got := mustTargets(t, ctx, f, f.webhookA); !slices.Equal(got, []string{f.epA1}) {
+		t.Fatalf("an expired (but not-yet-reaped) endpoint must not be a delivery target, got %v want [%s]", got, f.epA1)
+	}
+}
+
+// TestResolveWebhookTargetsDropsNonApprovedFriendEdge locks the resolve-time edge clause to
+// state='approved' specifically, not merely "not revoked". Revocation of an approved edge is already
+// covered (TestAddWebhookRouteCrossHumanRequiresApprovedFriendEdge step 4); this pins the OTHER terminal
+// non-authorizing state, 'denied'. A live cross-human route can only exist after approval, so 'denied' is
+// unreachable through the API post-add — it is forced here via SQL precisely to prove the resolve query
+// drops it, so a weakening from `state = 'approved'` to `state <> 'revoked'` (which would wrongly
+// re-authorize denied/pending edges) fails this test. Governing: store.ResolveWebhookTargets, SPEC-0010
+// REQ "Per-Direction, Revocable, Non-Transitive Edges".
+func TestResolveWebhookTargetsDropsNonApprovedFriendEdge(t *testing.T) {
+	pool, ctx := routeTestPool(t)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	f := newRouteFixture(t, ctx, pool)
+
+	// Approve A→B, then seed the cross-human route directly (the resolve path is under test here, not the
+	// add verb's own authz, which TestAddWebhookRoute* covers).
+	edgeID := friendRequest(t, ctx, f.st, "persona-a", "persona-b", f.humanA, f.humanB)
+	approveFriend(t, ctx, f.st, edgeID, f.humanB, f.agentB, "friend-a-66666666")
+	if err := f.st.AddWebhookRoute(ctx, f.webhookA, f.epB, f.humanA); err != nil {
+		t.Fatalf("seed route: %v", err)
+	}
+	// Positive control: with the edge approved, B IS a target.
+	if got := mustTargets(t, ctx, f, f.webhookA); !slices.Equal(got, []string{f.epA1, f.epB}) {
+		t.Fatalf("approved cross-human target must be delivered to, got %v want [%s %s]", got, f.epA1, f.epB)
+	}
+
+	// Force the edge terminal-denied. The route row survives; only the authorizing fact is gone.
+	if _, err := pool.Exec(ctx, `UPDATE friend_edges SET state = 'denied' WHERE id = $1`, edgeID); err != nil {
+		t.Fatalf("deny edge: %v", err)
+	}
+	if got := mustTargets(t, ctx, f, f.webhookA); !slices.Equal(got, []string{f.epA1}) {
+		t.Fatalf("a non-approved (denied) edge must drop the cross-human target, got %v want [%s]", got, f.epA1)
+	}
+}
+
 // TestAddWebhookRouteWrongDirectionEdgeForbidden is the privilege-escalation guard. B asks to hand
 // work to A and A approves: the approved edge is B→A. That says nothing about A handing work to B,
 // so A routing ITS webhook into B's endpoint MUST still be refused. An implementation that checked
