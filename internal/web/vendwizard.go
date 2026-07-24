@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -28,7 +29,7 @@ import (
 var vendWizard = wizardDef{
 	name:  "vend",
 	base:  "/endpoints/vend",
-	steps: []string{"persona", "queues", "verbs", "lifetime", "confirm"},
+	steps: []string{"persona", "queues", "verbs", "webhooks", "lifetime", "confirm"},
 }
 
 // lifetimePresets is the lifetime step's preset vocabulary (SPEC-0016: lifetime chosen at vend
@@ -86,16 +87,23 @@ type vendStepView struct {
 	// verbs step
 	VerbOptions []vendVerbOption
 
+	// webhooks step
+	WebhookMax         string // text input for max self-managed webhooks ("" = 0 = disabled)
+	WebhookSourceTypes []vendChipOption
+	WebhookQueues      []vendChipOption // mirrors QueueOptions but checked independently
+	WebhookQueuesExtra string
+
 	// lifetime step
 	LifetimePresets []lifetimePreset
 	LifetimePreset  string // checked choice: "", one of lifetimePresets, or "custom"
 	LifetimeCustom  string
 
 	// confirm step summary
-	PersonaName   string
-	Queues        []string
-	Verbs         []string
-	LifetimeLabel string
+	PersonaName     string
+	Queues          []string
+	Verbs           []string
+	WebhookMaxLabel string
+	LifetimeLabel   string
 }
 
 // VendStart begins the vend wizard: it mints fresh server-side state (optionally seeded from an
@@ -202,6 +210,24 @@ func (h *Handler) VendStepSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		values["verbs"] = verbs
+	case "webhooks":
+		// The webhooks step is OPTIONAL — leaving it empty vends with webhook_max=0 (self-managed
+		// webhooks disabled). The operator only fills it when they want the agent to create its
+		// own webhooks (ADR-0012).
+		webhookMax := strings.TrimSpace(r.FormValue("webhook_max"))
+		if webhookMax != "" {
+			if n, err := strconv.Atoi(webhookMax); err != nil || n < 0 {
+				h.renderVendStep(w, r, &human, slug, values, "max webhooks must be a non-negative integer", http.StatusBadRequest)
+				return
+			}
+		}
+		sourceTypes := dedupe(multiValues(r, "webhook_source_types"))
+		whQueues := multiValues(r, "webhook_queues")
+		whQueues = append(whQueues, splitCSV(r.FormValue("webhook_queues_extra"))...)
+		whQueues = dedupe(whQueues)
+		values.Set("webhook_max", webhookMax)
+		values["webhook_source_types"] = sourceTypes
+		values["webhook_queues"] = whQueues
 	case "lifetime":
 		lifetime := strings.TrimSpace(r.FormValue("lifetime"))
 		if lifetime == "custom" {
@@ -223,11 +249,14 @@ func (h *Handler) VendStepSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		minted := h.executeVend(w, r, &human, vendSubmission{
-			Name:      values.Get("name"),
-			PersonaID: values.Get("persona"),
-			Queues:    values["queues"],
-			Verbs:     values["verbs"],
-			Lifetime:  values.Get("lifetime"),
+			Name:               values.Get("name"),
+			PersonaID:          values.Get("persona"),
+			Queues:             values["queues"],
+			Verbs:              values["verbs"],
+			Lifetime:           values.Get("lifetime"),
+			WebhookMax:         webhookMaxFromValues(values),
+			WebhookSourceTypes: values["webhook_source_types"],
+			WebhookQueues:      values["webhook_queues"],
 		})
 		if minted {
 			// The reveal is already on the wire, so only the server-side draft is dropped here (no
@@ -302,6 +331,25 @@ func (h *Handler) renderVendStep(w http.ResponseWriter, r *http.Request, human *
 				v.VerbOptions[i].Checked = slices.Contains(chosen, v.VerbOptions[i].Name)
 			}
 		}
+	case "webhooks":
+		v.WebhookMax = values.Get("webhook_max")
+		knownSources := []string{"github", "generic"}
+		chosenSources := values["webhook_source_types"]
+		for _, s := range knownSources {
+			v.WebhookSourceTypes = append(v.WebhookSourceTypes, vendChipOption{Name: s, Checked: slices.Contains(chosenSources, s)})
+		}
+		knownQueues := h.vendQueueOptions(r)
+		chosenWhQueues := values["webhook_queues"]
+		for _, q := range knownQueues {
+			v.WebhookQueues = append(v.WebhookQueues, vendChipOption{Name: q, Checked: slices.Contains(chosenWhQueues, q)})
+		}
+		var extra []string
+		for _, q := range chosenWhQueues {
+			if !slices.Contains(knownQueues, q) {
+				extra = append(extra, q)
+			}
+		}
+		v.WebhookQueuesExtra = strings.Join(extra, ", ")
 	case "lifetime":
 		v.LifetimePresets = lifetimePresets
 		lifetime := values.Get("lifetime")
@@ -315,6 +363,11 @@ func (h *Handler) renderVendStep(w http.ResponseWriter, r *http.Request, human *
 		v.Queues = values["queues"]
 		v.Verbs = values["verbs"]
 		v.PersonaName = h.personaNameByID(r, human.ID, values.Get("persona"))
+		if wm := values.Get("webhook_max"); wm != "" {
+			v.WebhookMaxLabel = wm
+		} else {
+			v.WebhookMaxLabel = "disabled"
+		}
 		if lifetime := values.Get("lifetime"); lifetime == "" {
 			v.LifetimeLabel = "until revoked"
 		} else {
@@ -353,4 +406,15 @@ func dedupe(items []string) []string {
 		}
 	}
 	return out
+}
+
+// webhookMaxFromValues parses the wizard state's webhook_max string into an int. Empty or invalid
+// values return 0 (webhook self-management disabled).
+func webhookMaxFromValues(values url.Values) int {
+	if v := values.Get("webhook_max"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return 0
 }

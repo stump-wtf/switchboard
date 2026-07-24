@@ -190,7 +190,7 @@ func (s *Store) ApproveFriendRequest(ctx context.Context, p ApproveFriendRequest
 
 	// Approval is the vend: mint the scoped endpoint in this same transaction (ADR-0008).
 	ep, err := createEndpoint(ctx, tx, p.AgentID, p.CredentialHash, p.CredentialPrefix, p.Slug,
-		nonNilStrings(grantedQueues), nonNilStrings(grantedVerbs), nil, nil)
+		nonNilStrings(grantedQueues), nonNilStrings(grantedVerbs), nil, nil, 0, nil, nil)
 	if err != nil {
 		return FriendEdge{}, Endpoint{}, err
 	}

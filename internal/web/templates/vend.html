@@ -67,6 +67,37 @@
       <p class="sb-help">allowed MCP tools · at least one required · the drain verbs start checked; wider grants are a deliberate toggle</p>
     </div>
 
+    {{else if eq $v.Step "webhooks"}}
+    {{/* Webhook ceiling (ADR-0012): optional — leaving empty disables self-managed webhooks. */}}
+    <div class="sb-field">
+      <label for="sb-vend-webhook-max">Max self-managed webhooks</label>
+      <input id="sb-vend-webhook-max" class="sb-input" name="webhook_max" value="{{$v.WebhookMax}}" placeholder="0" autocomplete="off" type="number" min="0">
+      <p class="sb-help">how many webhooks the agent may create on its own · 0 or empty = disabled · e.g. 5</p>
+    </div>
+    {{if gt $v.WebhookMax 0}}
+    <div class="sb-field">
+      <span class="sb-label" id="sb-vend-wh-sources-label">Allowed source types</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-vend-wh-sources-label">
+        {{range $v.WebhookSourceTypes}}<label class="sb-chip sb-chip--toggle"><input type="checkbox" name="webhook_source_types" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+      </div>
+      <p class="sb-help">which ingestion types the agent may use</p>
+    </div>
+    <div class="sb-field">
+      {{if $v.WebhookQueues}}
+      <span class="sb-label" id="sb-vend-wh-queues-label">Webhook target queues</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-vend-wh-queues-label">
+        {{range $v.WebhookQueues}}<label class="sb-chip sb-chip--queue sb-chip--toggle"><input type="checkbox" name="webhook_queues" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+      </div>
+      <p class="sb-help">which queues webhook events may route to</p>
+      {{end}}
+      <label for="sb-vend-wh-queues-extra">{{if $v.WebhookQueues}}Add queues{{else}}Webhook target queues{{end}}</label>
+      <input id="sb-vend-wh-queues-extra" class="sb-input" name="webhook_queues_extra" value="{{$v.WebhookQueuesExtra}}" placeholder="reviews, builds" autocomplete="off">
+      <p class="sb-help">comma-separated · which queues webhook events may route to</p>
+    </div>
+    {{else}}
+    <p class="sb-callout sb-callout--info">Leave max at 0 to disable webhook self-management. The agent will only work the todo queue.</p>
+    {{end}}
+
     {{else if eq $v.Step "lifetime"}}
     <div class="sb-field">
       <span class="sb-label" id="sb-vend-lifetime-label">Credential lifetime</span>
@@ -88,6 +119,7 @@
       {{if $.PersonasEnabled}}<div class="sb-epcard__row"><dt class="sb-microlabel">Persona</dt><dd>{{if $v.PersonaName}}{{$v.PersonaName}}{{else}}<span class="sb-muted">none — agent-level</span>{{end}}</dd></div>{{end}}
       <div class="sb-epcard__row"><dt class="sb-microlabel">Queues</dt><dd>{{range $v.Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span> {{end}}</dd></div>
       <div class="sb-epcard__row"><dt class="sb-microlabel">Verbs</dt><dd>{{range $v.Verbs}}<span class="sb-chip sb-chip--verb">{{.}}</span> {{end}}</dd></div>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Webhooks</dt><dd>{{$v.WebhookMaxLabel}}</dd></div>
       <div class="sb-epcard__row"><dt class="sb-microlabel">Lifetime</dt><dd data-sb-wiz-lifetime>{{$v.LifetimeLabel}}</dd></div>
     </dl>
     <p class="sb-callout sb-callout--danger">Vending is irreversible: it mints a live credential shown exactly once, and the scope above is immutable for the endpoint's lifetime. To change scope later, revoke and re-vend.</p>

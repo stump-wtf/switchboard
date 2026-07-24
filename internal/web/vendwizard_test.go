@@ -38,10 +38,10 @@ func renderVendPage(t *testing.T, h *Handler, v *vendStepView, personasEnabled b
 	})
 }
 
-// TestVendWizardStepOrder pins the SPEC-0015 step contract: persona → queues → verbs → lifetime →
-// confirm, under /endpoints/vend.
+// TestVendWizardStepOrder pins the SPEC-0015 step contract: persona → queues → verbs →
+// webhooks → lifetime → confirm, under /endpoints/vend.
 func TestVendWizardStepOrder(t *testing.T) {
-	want := []string{"persona", "queues", "verbs", "lifetime", "confirm"}
+	want := []string{"persona", "queues", "verbs", "webhooks", "lifetime", "confirm"}
 	if len(vendWizard.steps) != len(want) {
 		t.Fatalf("vend wizard has %d steps, want %d", len(vendWizard.steps), len(want))
 	}
@@ -69,7 +69,7 @@ func TestVendStepPersonaRendersNameAndPersonaSelect(t *testing.T) {
 		`data-sb-wizard="vend"`,      // the wizard page hook
 		`aria-current="step"`,        // tracker marks the current step
 		`data-sb-wiz-step="persona"`, // tracker entries carry their slugs
-		"step 1 of 5",                // progress line
+		"step 1 of 6",                // progress line
 		`method="post"`,              // plain form — no-JS completion
 		`action="/endpoints/vend/persona"`,
 		`name="csrf_token" value="tok"`,
@@ -170,7 +170,7 @@ func TestVendStepLifetimeRendersPresets(t *testing.T) {
 		`name="lifetime" value="7d"`, `name="lifetime" value="30d"`,
 		`name="lifetime" value="custom"`,
 		`name="lifetime_custom"`, `data-sb-vend-lifetime-custom`,
-		`href="/endpoints/vend/verbs" data-sb-wiz-back`,
+		`href="/endpoints/vend/webhooks" data-sb-wiz-back`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("lifetime step: missing %q", want)
@@ -266,12 +266,16 @@ func TestVendStepReVendBanner(t *testing.T) {
 // Revoke is a link here, never a direct kill (SPEC-0015: irreversible steps confirm).
 func TestRevokeConfirmPageStatesTheKill(t *testing.T) {
 	h := newTestHandler(t)
-	card := endpointCard{ID: "e1", AgentName: "reviewer-bot", Principal: "Joe Stump",
+	card := endpointCard{
+		ID: "e1", AgentName: "reviewer-bot", Principal: "Joe Stump",
 		Slug: "reviewer-bot-ab12cd", URL: "https://sb.example.com/mcp/reviewer-bot-ab12cd",
-		CredPrefix: "sbk_ab12cd", Queues: []string{"reviews"}, Verbs: []string{"claim"}, State: "active"}
-	body := renderPage(t, h, "revoke", view{Title: "Revoke endpoint", Human: testHuman(), CSRF: "tok",
+		CredPrefix: "sbk_ab12cd", Queues: []string{"reviews"}, Verbs: []string{"claim"}, State: "active",
+	}
+	body := renderPage(t, h, "revoke", view{
+		Title: "Revoke endpoint", Human: testHuman(), CSRF: "tok",
 		Shell:         shell{Active: "endpoints", DBConnected: true, Initials: "JS"},
-		RevokeConfirm: &revokeConfirmView{Card: card}})
+		RevokeConfirm: &revokeConfirmView{Card: card},
+	})
 	for _, want := range []string{
 		`data-sb-revoke-confirm`,
 		"reviewer-bot", "sbk_ab12cd…", "https://sb.example.com/mcp/reviewer-bot-ab12cd",

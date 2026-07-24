@@ -225,6 +225,10 @@ type vendSubmission struct {
 	Queues    []string
 	Verbs     []string
 	Lifetime  string // parseLifetime vocabulary; "" = valid until revoked
+	// Webhook ceiling (ADR-0012, SPEC-0006). WebhookMax=0 disables self-managed webhooks.
+	WebhookMax         int
+	WebhookSourceTypes []string
+	WebhookQueues      []string
 }
 
 // Vend mints a scoped endpoint from a direct form POST (the wizard's confirm step submits through
@@ -246,12 +250,24 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 	if h.personasEnabled {
 		personaID = strings.TrimSpace(r.FormValue("persona"))
 	}
+	// Webhook ceiling fields from the direct POST path. When absent the defaults (max=0, nil
+	// source types, nil queues) disable webhook self-management — the same as the wizard when the
+	// operator skips the webhooks step.
+	webhookMax := 0
+	if v := strings.TrimSpace(r.FormValue("webhook_max")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			webhookMax = n
+		}
+	}
 	h.executeVend(w, r, &human, vendSubmission{
-		Name:      strings.TrimSpace(r.FormValue("name")),
-		PersonaID: personaID,
-		Queues:    multiValues(r, "queues"),
-		Verbs:     multiValues(r, "verbs"),
-		Lifetime:  strings.TrimSpace(r.FormValue("lifetime")),
+		Name:               strings.TrimSpace(r.FormValue("name")),
+		PersonaID:          personaID,
+		Queues:             multiValues(r, "queues"),
+		Verbs:              multiValues(r, "verbs"),
+		Lifetime:           strings.TrimSpace(r.FormValue("lifetime")),
+		WebhookMax:         webhookMax,
+		WebhookSourceTypes: multiValues(r, "webhook_source_types"),
+		WebhookQueues:      multiValues(r, "webhook_queues"),
 	})
 }
 
@@ -303,7 +319,8 @@ func (h *Handler) executeVend(w http.ResponseWriter, r *http.Request, human *sto
 	res, err := h.store.VendAgentEndpoint(r.Context(), store.VendParams{
 		OwnerHumanID: human.ID, Name: sub.Name, PersonaID: sub.PersonaID,
 		CredHash: hash, CredPrefix: prefix, Slug: slug, Queues: sub.Queues, Verbs: sub.Verbs,
-		ExpiresAt: expiresAt,
+		ExpiresAt: expiresAt, WebhookMax: sub.WebhookMax,
+		WebhookSourceTypes: sub.WebhookSourceTypes, WebhookQueues: sub.WebhookQueues,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
