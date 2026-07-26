@@ -68,13 +68,19 @@
     </div>
 
     {{else if eq $v.Step "webhooks"}}
-    {{/* Webhook ceiling (ADR-0012): optional — leaving empty disables self-managed webhooks. */}}
+    {{/* Webhook ceiling (ADR-0012): optional — leaving max at 0/empty disables self-managed
+         webhooks. Every field renders unconditionally, and that is deliberate twice over: gating
+         the pickers on the previously-SAVED max meant a straight-through vend could set max>0 and
+         sail past pickers it never saw, minting an endpoint with no allowed source types — the
+         exact forbidden_source_type dead end this feature exists to fix. And the original gate,
+         `gt $v.WebhookMax 0`, compared the string-typed WebhookMax against an int, which is a
+         RUNTIME template error — every visit to this step was a 500. See
+         TestVendStepWebhooksRendersAllFields, which pins all three fields on first visit. */}}
     <div class="sb-field">
       <label for="sb-vend-webhook-max">Max self-managed webhooks</label>
       <input id="sb-vend-webhook-max" class="sb-input" name="webhook_max" value="{{$v.WebhookMax}}" placeholder="0" autocomplete="off" type="number" min="0">
       <p class="sb-help">how many webhooks the agent may create on its own · 0 or empty = disabled · e.g. 5</p>
     </div>
-    {{if gt $v.WebhookMax 0}}
     <div class="sb-field">
       <span class="sb-label" id="sb-vend-wh-sources-label">Allowed source types</span>
       <div class="sb-chipset" role="group" aria-labelledby="sb-vend-wh-sources-label">
@@ -94,9 +100,7 @@
       <input id="sb-vend-wh-queues-extra" class="sb-input" name="webhook_queues_extra" value="{{$v.WebhookQueuesExtra}}" placeholder="reviews, builds" autocomplete="off">
       <p class="sb-help">comma-separated · which queues webhook events may route to</p>
     </div>
-    {{else}}
-    <p class="sb-callout sb-callout--info">Leave max at 0 to disable webhook self-management. The agent will only work the todo queue.</p>
-    {{end}}
+    <p class="sb-callout sb-callout--info">Leave max at 0 or empty to disable webhook self-management — the source types and queues above are ignored. The agent will only work the todo queue.</p>
 
     {{else if eq $v.Step "lifetime"}}
     <div class="sb-field">
