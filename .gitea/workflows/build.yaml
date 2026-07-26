@@ -110,10 +110,11 @@ jobs:
           cache-to: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache,mode=max
 
   # On-merge deploy to cloud01 via Ansible. Governing: ADR-0045 (on-merge CI deploy for owned
-  # services). Runs only after the image is pushed :latest (needs: [image]) and is gated off
-  # (vars.DEPLOY_ON_MERGE) until cloud01 is onboarded to Ansible and playbooks/services/switchboard.yaml
-  # targets it. The deploy job checks out stumpcloud/ansible for the playbooks + gva.yaml inventory,
-  # then ansible-runner recreates the switchboard service on cloud01 (pulls :latest).
+  # services). Runs only after the image is pushed :latest (needs: [image]), gated on
+  # vars.DEPLOY_ON_MERGE. playbooks/services/switchboard.yaml is pre-converge aware: on cloud01
+  # (host_docker_enabled false) it converges the git-templated edge stack, then pulls and
+  # restarts the switchboard + docs containers inside it; after the ADR-0044 flip the same
+  # playbook deploys via the service role with no change here.
   deploy:
     name: deploy to cloud01 (ansible)
     needs: [image]
@@ -122,7 +123,14 @@ jobs:
     env:
       ANSIBLE_FORCE_COLOR: 'true'
       DOCKER_TIMEOUT: 600
-      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      # AppRole rather than a static token. A static VAULT_TOKEN in a repo secret
+      # cannot re-authenticate: it dies at max-TTL and takes every subsequent
+      # deploy with it, silently — the 2026-07-01 vault-agent OMG, repeated in CI.
+      # The runner logs in per run and exports a short-lived token scoped to
+      # secret/data/cloud01/* only (policy deploy-cloud01). Requires
+      # ansible-runner >= v2.
+      VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
+      VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
     steps:
       - name: Checkout stumpcloud/ansible (playbooks + inventory)
         uses: actions/checkout@v4
@@ -130,10 +138,14 @@ jobs:
           repository: stumpcloud/ansible
           ref: main
           token: ${{ secrets.GIT_AUTH_TOKEN }}
-      - name: Set up SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      # NOTE: no job-level ssh-agent step. One used to sit here and it was a
+      # no-op that *looked* load-bearing: the agent's socket lives in the job
+      # container, ansible-playbook runs inside the ansible-runner action
+      # container, and the two never meet. The key that actually reaches
+      # ansible is the ssh_private_key input below, which ansible-runner
+      # v2.1.0+ installs inside its own container (earlier versions silently
+      # dropped the undeclared input — cairn's deploy job spent its whole
+      # life red on "Permission denied (publickey)" because of it).
       - name: Log in to Gitea (pull the ansible-runner action image)
         uses: docker/login-action@v3
         with:
@@ -141,7 +153,10 @@ jobs:
           username: joestump-agent
           password: ${{ secrets.GIT_AUTH_TOKEN }}
       - name: Deploy Switchboard to cloud01
-        uses: https://gitea.stump.rocks/stumpcloud/ansible-runner@v1
+        # v2.1.0 exactly: the first release where ssh_private_key is a real,
+        # delivered input. @v2 was not moved forward to it, so do not "tidy"
+        # this back to the major alias without checking what v2 points at.
+        uses: https://gitea.stump.rocks/stumpcloud/ansible-runner@v2.1.0
         with:
           playbook: playbooks/services/switchboard.yaml
           inventory: gva.yaml
