@@ -151,7 +151,7 @@ func MintSlug(agentName string) (string, error) {
 // immutable (ADR-0008). The endpoint is bound to no persona (persona_id NULL) — persona binding is
 // done through VendAgentEndpoint, which validates the persona against the endpoint's agent.
 func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefix, slug string, queues, verbs []string) (Endpoint, error) {
-	return createEndpoint(ctx, s.pool, agentID, credHash, credPrefix, slug, queues, verbs, nil, nil)
+	return createEndpoint(ctx, s.pool, agentID, credHash, credPrefix, slug, queues, verbs, nil, nil, 0, nil, nil)
 }
 
 // createEndpoint is the querier-based core of CreateEndpoint: it runs on either the pool or a
@@ -162,13 +162,13 @@ func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefi
 // SAME agent — the caller is responsible for that same-agent invariant (ADR-0009). expiresAt is
 // the optional credential lifetime chosen at vend time; nil = valid until revoked (SPEC-0016 REQ
 // "Credential Lifetime").
-func createEndpoint(ctx context.Context, q querier, agentID, credHash, credPrefix, slug string, queues, verbs []string, personaID any, expiresAt *time.Time) (Endpoint, error) {
+func createEndpoint(ctx context.Context, q querier, agentID, credHash, credPrefix, slug string, queues, verbs []string, personaID any, expiresAt *time.Time, webhookMax int, webhookSourceTypes, webhookQueues []string) (Endpoint, error) {
 	var e Endpoint
 	err := q.QueryRow(ctx, `
-		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues, scope_verbs, persona_id, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues, scope_verbs, persona_id, expires_at, webhook_max, webhook_source_types, webhook_queues)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at, expires_at`,
-		agentID, credHash, credPrefix, slug, queues, verbs, personaID, expiresAt,
+		agentID, credHash, credPrefix, slug, queues, verbs, personaID, expiresAt, webhookMax, webhookSourceTypes, webhookQueues,
 	).Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt, &e.ExpiresAt)
 	return e, err
 }
@@ -190,6 +190,12 @@ type VendParams struct {
 	// step); nil vends an endpoint valid until revoked. Governing: SPEC-0016 REQ "Credential
 	// Lifetime", ADR-0019.
 	ExpiresAt *time.Time
+	// Webhook ceiling (ADR-0012, SPEC-0006): the max self-managed webhooks this endpoint may
+	// create, the source types it may use, and the queues those webhooks may route to. Defaults
+	// (WebhookMax=0, nil slices) disable webhook self-management for this endpoint.
+	WebhookMax         int
+	WebhookSourceTypes []string
+	WebhookQueues      []string
 }
 
 // VendResult is what VendAgentEndpoint returns: the backing agent's name (for the one-time reveal)
@@ -250,7 +256,7 @@ func (s *Store) VendAgentEndpoint(ctx context.Context, p VendParams) (VendResult
 		}
 	}
 
-	ep, err := createEndpoint(ctx, tx, agentID, p.CredHash, p.CredPrefix, p.Slug, p.Queues, p.Verbs, personaID, p.ExpiresAt)
+	ep, err := createEndpoint(ctx, tx, agentID, p.CredHash, p.CredPrefix, p.Slug, p.Queues, p.Verbs, personaID, p.ExpiresAt, p.WebhookMax, p.WebhookSourceTypes, p.WebhookQueues)
 	if err != nil {
 		return VendResult{}, fmt.Errorf("store: vend create endpoint: %w", err)
 	}
