@@ -105,7 +105,7 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 
 // templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown}
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown, "trustdef": trustDef}
 }
 
 // parsePages composes layout.html and the per-view fragment files (templates/fragments/*.html)
@@ -548,6 +548,26 @@ func relTime(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+// trustDefs is the single source for the one-line definition every trust-mode pill carries as
+// its tooltip (SPEC-0001 chip vocabulary). The Board legend, provider cards, the catalog, and the
+// todos trust column all read their copy from this map so the definitions never drift.
+// Governing: #84 (trust modes need a legend).
+var trustDefs = map[string]string{
+	"signed": "signature verified per delivery",
+	"token":  "shared-secret token",
+	"open":   "no verification — explicitly open",
+	"queue":  "drained from a queue, trusted transport",
+}
+
+// trustDef renders the one-line definition for a trust-mode pill's title tooltip; an unknown mode
+// falls back to a neutral gloss so the tooltip never renders empty.
+func trustDef(mode string) string {
+	if def, ok := trustDefs[strings.ToLower(mode)]; ok {
+		return def
+	}
+	return "delivery trust mode"
 }
 
 // providerTags maps known source names to their design-doc two-letter chips
