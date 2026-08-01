@@ -69,6 +69,38 @@
     });
   }
 
+  // ---- todos table: filter fidelity for live-inserted rows + empty-state upkeep ----
+  // todo_created/todo_resurfaced frames insert rows OOB into #sb-todos-body (data-sb-live-row,
+  // fragments/todos.html) because the SSE stream is one broadcast and the server cannot know each
+  // viewer's filter. This sweep keeps the view honest: a live-inserted row is dropped when a
+  // search is active (the query can't be evaluated here) or when its state chip misses the active
+  // filter pill; the empty-state label follows the row count. Presentation-only — the durable
+  // queue is untouched and a reload renders truth. Governing: SPEC-0015 REQ "Todos View And
+  // Drawer" (#96).
+  function initTodos() {
+    var panel = document.getElementById("sb-todos-panel");
+    if (!panel) return;
+    function sweep() {
+      var body = document.getElementById("sb-todos-body");
+      if (!body) return;
+      var active = panel.querySelector(".sb-fpill--active");
+      var filter = active ? active.getAttribute("data-sb-filter") : "all";
+      var search = document.getElementById("sb-todos-search");
+      var querying = !!(search && search.value);
+      Array.prototype.forEach.call(body.querySelectorAll("[data-sb-live-row]"), function (row) {
+        var chip = row.querySelector("[data-sb-state]");
+        var state = chip ? chip.getAttribute("data-sb-state") : "";
+        if (querying || (filter !== "all" && state !== filter)) row.remove();
+      });
+      var empty = panel.querySelector("[data-sb-todos-empty]");
+      if (empty) empty.hidden = body.children.length > 0;
+    }
+    // The panel's inner regions are swapped wholesale by filter/search GETs, so observe the
+    // stable panel node with subtree to survive every swap.
+    new MutationObserver(sweep).observe(panel, { childList: true, subtree: true });
+    sweep();
+  }
+
   // ---- lease/retry countdowns: animate toward a server-stamped deadline (data-sb-deadline, unix ms) ----
   // Purely cosmetic: the store owns the lease and the retry schedule; this only re-labels the time
   // remaining once a second and drains the progress bar. It re-syncs whenever an SSE swap re-stamps
@@ -131,6 +163,7 @@
   function init() {
     initToasts();
     initLanes();
+    initTodos();
     tickCountdowns();
     tickLiveDecay();
     setInterval(function () {

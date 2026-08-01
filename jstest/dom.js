@@ -77,6 +77,21 @@ class SBElement {
     return child;
   }
 
+  get children() {
+    return this.childNodes.filter((n) => n.nodeType === 1);
+  }
+
+  removeChild(child) {
+    const i = this.childNodes.indexOf(child);
+    if (i >= 0) this.childNodes.splice(i, 1);
+    child.parentNode = null;
+    return child;
+  }
+
+  remove() {
+    if (this.parentNode) this.parentNode.removeChild(this);
+  }
+
   get textContent() {
     return this.childNodes.map((n) => n.textContent).join("");
   }
@@ -301,6 +316,11 @@ function createDOM(opts) {
     document: new SBDocument(),
     localStorage: o.storage || (o.brokenStorage ? brokenStorage() : memStorage()),
   };
+  // MutationObserver registrations made by loaded modules land here; tests call
+  // env.flushObservers() after mutating the DOM to run every observer callback synchronously
+  // (the stub records no mutation details — sb.js observers re-derive state from the DOM).
+  env.observers = [];
+  env.flushObservers = () => env.observers.forEach((o) => o.fn([], o));
   env.window = {
     document: env.document,
     localStorage: env.localStorage,
@@ -326,6 +346,22 @@ function loadModule(env, name) {
     localStorage: env.localStorage,
     Date: { now: () => (env.now !== null ? env.now : Date.now()) },
     console,
+    // Observer/timer stubs: observers register into env.observers (fire via env.flushObservers);
+    // timers are recorded but never fire — the sb.js periodic ticks are cosmetic and tests assert
+    // the immediate DOM effects instead.
+    MutationObserver: class {
+      constructor(fn) {
+        this.fn = fn;
+      }
+      observe(target, options) {
+        env.observers.push({ fn: this.fn, target, options });
+      }
+      disconnect() {}
+    },
+    setTimeout: () => 0,
+    setInterval: () => 0,
+    clearTimeout: () => {},
+    clearInterval: () => {},
   });
   vm.runInContext(src, ctx, { filename: "static/js/" + name });
 }

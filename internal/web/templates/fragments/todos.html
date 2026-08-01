@@ -49,9 +49,14 @@
      trust badge and state chip carry their modes as data-sb-trust/data-sb-state stamps (the DOM
      contract tests key on). The action cell dispatches a lifecycle POST scoped to the row
      (closest tr → the responder returns a refreshed row). Live SSE transitions replace this row
-     OOB by its sb-tr-<id> id; a reaper re-surface arrives with the flash modifier. Data:
-     web.todoRow. Governing: SPEC-0015 REQ "Todos View And Drawer" (scenario "Live claim"). */}}
-{{define "todo_row"}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}" data-sb-row-open{{if .Flash}} data-sb-flash{{end}} tabindex="0"{{if .OOB}} hx-swap-oob="true"{{end}}>
+     OOB by its sb-tr-<id> id; a reaper re-surface arrives with the flash modifier. Creation and
+     re-surface (Insert) instead render the lane_move idiom — an idempotent OOB delete of the
+     stable id plus an afterbegin insertion into #sb-todos-body — because an id-targeted swap
+     silently no-ops when the open table never rendered the row (#96). Inserted rows carry
+     data-sb-live-row so sb-live.js can drop ones that don't match the viewer's active
+     filter/search. Data: web.todoRow. Governing: SPEC-0015 REQ "Todos View And Drawer"
+     (scenario "Live claim"), REQ "Live Fragment Architecture" (OOB removal + insertion). */}}
+{{define "todo_row"}}{{if .Insert}}<tr id="sb-tr-{{.ID}}" hx-swap-oob="delete"></tr>{{end}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}" data-sb-row-open{{if .Flash}} data-sb-flash{{end}}{{if .Insert}} data-sb-live-row{{end}} tabindex="0"{{if .Insert}} hx-swap-oob="afterbegin:#sb-todos-body"{{else if .OOB}} hx-swap-oob="true"{{end}}>
   <td><button type="button" class="sb-linklike sb-mono" data-sb-row-trigger hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>
   <td>{{if .Source}}<span class="sb-tag" data-sb-tag aria-hidden="true">{{tag .Source}}</span> {{end}}<span class="sb-trow__source" data-sb-source>{{if .Source}}{{.Source}}{{else}}—{{end}}</span> <span class="sb-trow__kind" data-sb-kind>{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" data-sb-dedup title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
   <td><span class="sb-badge sb-badge--{{.TrustMode}}" data-sb-trust="{{.TrustMode}}" title="{{trustdef .TrustMode}}">{{.TrustMode}}</span></td>
