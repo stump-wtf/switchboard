@@ -48,6 +48,26 @@ func TestSummarizeGitHub(t *testing.T) {
 	}
 }
 
+func TestSummarizeGitea(t *testing.T) {
+	pr := []byte(`{"action":"opened","pull_request":{"number":98,"title":"Add provider"},"repository":{"full_name":"stump.wtf/switchboard"}}`)
+	got := summarizeGitea("pull_request", pr)
+	if !strings.Contains(got, "#98") || !strings.Contains(got, "stump.wtf/switchboard") || !strings.Contains(got, "Add provider") {
+		t.Fatalf("PR summary missing fields: %q", got)
+	}
+	issue := []byte(`{"action":"closed","issue":{"number":96,"title":"Live list"},"repository":{"full_name":"stump.wtf/switchboard"}}`)
+	got = summarizeGitea("issues", issue)
+	if !strings.Contains(got, "#96") || !strings.Contains(got, "closed") || !strings.Contains(got, "Live list") {
+		t.Fatalf("issue summary missing fields: %q", got)
+	}
+	// Unknown event falls back gracefully, with and without a repository name.
+	if got := summarizeGitea("push", []byte(`{"repository":{"full_name":"stump.wtf/switchboard"}}`)); got != "gitea push in stump.wtf/switchboard" {
+		t.Fatalf("fallback summary with repo: %q", got)
+	}
+	if got := summarizeGitea("ping", []byte(`{}`)); got != "gitea ping" {
+		t.Fatalf("fallback summary: %q", got)
+	}
+}
+
 func TestSanitizeHeadersRedacts(t *testing.T) {
 	h := map[string][]string{
 		"X-Hub-Signature-256": {"sha256=secret"},

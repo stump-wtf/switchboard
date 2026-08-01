@@ -32,7 +32,7 @@ func requireJSONError(t *testing.T, rec *httptest.ResponseRecorder) {
 // "Request Body Size Limits", REQ "Error Handling Standards".
 func TestOversizedBodyRejectedEverywhere(t *testing.T) {
 	i := New(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{
-		GitHubSecret: "secret", StripeSecret: "secret", SlackSecret: "secret",
+		GitHubSecret: "secret", GiteaSecret: "secret", StripeSecret: "secret", SlackSecret: "secret",
 		DevLogin: true,
 	})
 
@@ -46,6 +46,9 @@ func TestOversizedBodyRejectedEverywhere(t *testing.T) {
 		{"github", "/webhooks/github",
 			map[string]string{"X-Hub-Signature-256": sign("secret", big)}, // valid sig, body too large
 			i.GitHub},
+		{"gitea", "/webhooks/gitea",
+			map[string]string{"X-Hub-Signature-256": sign("secret", big)}, // same scheme as GitHub
+			i.Gitea},
 		{"stripe", "/webhooks/stripe", nil, i.Stripe},
 		{"slack", "/webhooks/slack", nil, i.Slack},
 		{"dev todos", "/dev/todos", nil, i.DevCreateTodo},
@@ -72,7 +75,7 @@ func TestOversizedBodyRejectedEverywhere(t *testing.T) {
 // Verification" (401, no persist), scenario "Signature secret not configured" (503).
 func TestRejectionStatusAndShape(t *testing.T) {
 	configured := New(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{
-		GitHubSecret: "secret", StripeSecret: "secret", SlackSecret: "secret",
+		GitHubSecret: "secret", GiteaSecret: "secret", StripeSecret: "secret", SlackSecret: "secret",
 	})
 	unconfigured := New(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{})
 
@@ -85,10 +88,14 @@ func TestRejectionStatusAndShape(t *testing.T) {
 		{"github bad signature", configured.GitHub,
 			map[string]string{"X-Hub-Signature-256": "sha256=deadbeef"}, http.StatusUnauthorized},
 		{"github missing signature", configured.GitHub, nil, http.StatusUnauthorized},
+		{"gitea bad signature", configured.Gitea,
+			map[string]string{"X-Hub-Signature-256": "sha256=deadbeef"}, http.StatusUnauthorized},
+		{"gitea missing signature", configured.Gitea, nil, http.StatusUnauthorized},
 		{"stripe bad signature", configured.Stripe,
 			map[string]string{"Stripe-Signature": "t=1,v1=deadbeef"}, http.StatusUnauthorized},
 		{"slack missing signature", configured.Slack, nil, http.StatusUnauthorized},
 		{"github secret not configured", unconfigured.GitHub, nil, http.StatusServiceUnavailable},
+		{"gitea secret not configured", unconfigured.Gitea, nil, http.StatusServiceUnavailable},
 		{"stripe secret not configured", unconfigured.Stripe, nil, http.StatusServiceUnavailable},
 		{"slack secret not configured", unconfigured.Slack, nil, http.StatusServiceUnavailable},
 	}

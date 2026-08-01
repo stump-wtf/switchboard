@@ -352,6 +352,58 @@ func TestGitHubRedeliveryDedup(t *testing.T) {
 	}
 }
 
+// The Gitea receiver rides the same HMAC scheme as GitHub but keys off its own headers
+// (X-Gitea-Event / X-Gitea-Delivery) and defaults to the "gitea" queue: a verified delivery
+// persists event + todo atomically, a redelivered GUID collapses onto the existing todo, and a
+// distinct GUID mints a new one. Governing: SPEC-0001 REQ "Signed Webhook Verification", REQ
+// "Idempotency Key Extraction and Dedup"; SPEC-0002/0004 REQ atomic ingestion.
+func TestGiteaRedeliveryDedup(t *testing.T) {
+	const secret = "s3cr3t"
+	ing, hub, pool, ctx, endpointID := testIngestDeps(t, Config{GiteaSecret: secret})
+	ch, cancel := hub.Subscribe(endpointID, []string{"gitea"})
+	defer cancel()
+
+	body := `{"action":"opened","issue":{"number":96,"title":"Live list"},"repository":{"full_name":"stump.wtf/switchboard"}}`
+	headers := func(delivery string) map[string]string {
+		return map[string]string{
+			"X-Hub-Signature-256": sign(secret, []byte(body)),
+			"X-Gitea-Event":       "issues",
+			"X-Gitea-Delivery":    delivery,
+			"Content-Type":        "application/json",
+		}
+	}
+
+	// First delivery: event + todo created on the default gitea queue, published, 202 {id, queue}.
+	id1, queue := accepted202(t, post(t, ing.Gitea, "/webhooks/gitea", body, headers("guid-1")))
+	if queue != "gitea" {
+		t.Fatalf("queue = %q, want gitea (default Gitea queue)", queue)
+	}
+	if n := drainHub(ch); n != 1 {
+		t.Fatalf("hub publishes = %d, want 1", n)
+	}
+
+	// Redelivery of the SAME delivery GUID: returns the existing todo, creates nothing new.
+	id2, _ := accepted202(t, post(t, ing.Gitea, "/webhooks/gitea", body, headers("guid-1")))
+	if id2 != id1 {
+		t.Fatalf("redelivery must return the existing todo: got %s, want %s", id2, id1)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 1 {
+		t.Fatalf("redelivery must not create a duplicate todo: %d rows", n)
+	}
+	if n := drainHub(ch); n != 0 {
+		t.Fatalf("redelivery must not publish: %d", n)
+	}
+
+	// A DISTINCT delivery id derives a distinct key and creates its own todo.
+	id3, _ := accepted202(t, post(t, ing.Gitea, "/webhooks/gitea", body, headers("guid-2")))
+	if id3 == id1 {
+		t.Fatal("distinct delivery ids must create distinct todos")
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 2 {
+		t.Fatalf("distinct delivery should add a todo: %d rows, want 2", n)
+	}
+}
+
 // A GitHub delivery with NO X-GitHub-Delivery header still derives a key (sha256 of the body), so
 // identical redeliveries without the GUID still collapse to one todo instead of bypassing dedup
 // with a NULL key. Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup" (body-hash
