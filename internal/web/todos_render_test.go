@@ -514,3 +514,48 @@ func TestDrawerTimelineStepStamps(t *testing.T) {
 		t.Errorf("claimed drawer: %d resolved steps, want 3 (received/created/claimed): %q", n, out)
 	}
 }
+
+// TestTodoRowInsertPairForCreation pins the live-insertion contract behind #96: a row rendered
+// with Insert (todo_created / todo_resurfaced frames) is the lane_move idiom — an idempotent OOB
+// delete of the stable row id followed by the row itself inserted afterbegin into
+// #sb-todos-body, stamped data-sb-live-row for the sb-live.js filter sweep. A plain OOB render
+// (every other transition) stays an id-targeted replacement and never carries the insertion
+// artifacts, because an in-place update must not move the row. Governing: SPEC-0015 REQ "Todos
+// View And Drawer", REQ "Live Fragment Architecture" (OOB removal + insertion).
+func TestTodoRowInsertPairForCreation(t *testing.T) {
+	h := newTestHandler(t)
+
+	ins := rowFixture("pending")
+	ins.OOB, ins.Insert = true, true
+	out, err := h.renderFragment("todo_row", ins)
+	if err != nil {
+		t.Fatalf("render todo_row (insert): %v", err)
+	}
+	for _, want := range []string{
+		`<tr id="sb-tr-` + ins.ID + `" hx-swap-oob="delete"></tr>`, // delete no-ops when absent — the pair is idempotent
+		`hx-swap-oob="afterbegin:#sb-todos-body"`,
+		`data-sb-live-row`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("insert row missing %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, `hx-swap-oob="true"`) {
+		t.Errorf("insert row must not also render the id-replacement swap: %q", out)
+	}
+
+	upd := rowFixture("claimed")
+	upd.OOB = true
+	out, err = h.renderFragment("todo_row", upd)
+	if err != nil {
+		t.Fatalf("render todo_row (update): %v", err)
+	}
+	if !strings.Contains(out, `hx-swap-oob="true"`) {
+		t.Errorf("update row must keep the id-targeted replacement swap: %q", out)
+	}
+	for _, forbid := range []string{`hx-swap-oob="delete"`, "afterbegin", "data-sb-live-row"} {
+		if strings.Contains(out, forbid) {
+			t.Errorf("update row must not carry insertion artifact %q: %q", forbid, out)
+		}
+	}
+}

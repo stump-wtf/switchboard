@@ -272,6 +272,12 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 		if h.store != nil {
 			if it, err := h.store.GetTodoItem(ctx, t.ID); err == nil {
 				trow := h.todoRowFromItem(ctx, it, true, name == "todo_resurfaced")
+				// Creation and re-surface may address a row the open table never rendered (a new
+				// todo, or one that had left the current filter), where an id-targeted OOB swap
+				// silently no-ops (#96). Those render as the lane_move idiom instead: an
+				// idempotent OOB delete plus an afterbegin insertion into #sb-todos-body;
+				// sb-live.js drops inserts that miss the viewer's active filter/search.
+				trow.Insert = name == "todo_created" || name == "todo_resurfaced"
 				if frag, err := h.renderFragment("todo_row", trow); err == nil {
 					payload.WriteString(frag)
 				} else {

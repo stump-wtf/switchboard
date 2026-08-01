@@ -50,6 +50,7 @@ type todoRow struct {
 	CreatedAt       time.Time
 	Flash           bool // reaper re-surface — flash the row briefly on swap-in
 	OOB             bool // render as an hx-swap-oob replacement (live SSE update)
+	Insert          bool // render as an OOB delete+insert pair — the row may not exist client-side (creation/re-surface, #96)
 }
 
 // drawerView feeds the "drawer" fragment (and the standalone "todo" page fallback): the todo detail
