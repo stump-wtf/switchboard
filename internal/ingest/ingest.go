@@ -70,6 +70,8 @@ type Ingest struct {
 	log          *slog.Logger
 	githubSecret string
 	githubQueue  string
+	giteaSecret  string
+	giteaQueue   string
 	stripeSecret string
 	stripeQueue  string
 	slackSecret  string
@@ -90,6 +92,8 @@ type Ingest struct {
 type Config struct {
 	GitHubSecret string
 	GitHubQueue  string
+	GiteaSecret  string
+	GiteaQueue   string
 	StripeSecret string
 	StripeQueue  string
 	SlackSecret  string
@@ -127,6 +131,9 @@ func (c Config) Normalized() Config {
 	if c.GitHubQueue == "" {
 		c.GitHubQueue = "reviews"
 	}
+	if c.GiteaQueue == "" {
+		c.GiteaQueue = "gitea"
+	}
 	if c.StripeQueue == "" {
 		c.StripeQueue = "stripe"
 	}
@@ -152,6 +159,7 @@ func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 	return &Ingest{
 		store: st, hub: hub, log: log,
 		githubSecret: cfg.GitHubSecret, githubQueue: cfg.GitHubQueue,
+		giteaSecret: cfg.GiteaSecret, giteaQueue: cfg.GiteaQueue,
 		stripeSecret: cfg.StripeSecret, stripeQueue: cfg.StripeQueue,
 		slackSecret: cfg.SlackSecret, slackQueue: cfg.SlackQueue,
 		generic:   cfg.Generic,

@@ -147,6 +147,7 @@ var publicRoutes = map[string]bool{
 	"GET /a/{persona_id}/.well-known/agent-card.json": true,
 	// Webhook receivers authenticate per-provider (HMAC/token; SPEC-0001), not via session.
 	"POST /webhooks/github":         true,
+	"POST /webhooks/gitea":          true,
 	"POST /webhooks/stripe":         true,
 	"POST /webhooks/slack":          true,
 	"POST /webhooks/generic/{name}": true,

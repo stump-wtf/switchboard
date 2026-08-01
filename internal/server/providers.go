@@ -53,6 +53,7 @@ func seedEnvProviders(ctx context.Context, st providerSeeder, cfg ingest.Config,
 
 	signed := []struct{ name, secret, queue string }{
 		{"github", cfg.GitHubSecret, cfg.GitHubQueue},
+		{"gitea", cfg.GiteaSecret, cfg.GiteaQueue},
 		{"stripe", cfg.StripeSecret, cfg.StripeQueue},
 		{"slack", cfg.SlackSecret, cfg.SlackQueue},
 	}

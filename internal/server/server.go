@@ -117,6 +117,8 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	icfg := ingest.Config{
 		GitHubSecret: os.Getenv("SWITCHBOARD_GITHUB_SECRET"),
 		GitHubQueue:  os.Getenv("SWITCHBOARD_GITHUB_QUEUE"),
+		GiteaSecret:  os.Getenv("SWITCHBOARD_GITEA_SECRET"),
+		GiteaQueue:   os.Getenv("SWITCHBOARD_GITEA_QUEUE"),
 		StripeSecret: os.Getenv("SWITCHBOARD_STRIPE_SECRET"),
 		StripeQueue:  os.Getenv("SWITCHBOARD_STRIPE_QUEUE"),
 		SlackSecret:  os.Getenv("SWITCHBOARD_SLACK_SECRET"),
@@ -298,6 +300,7 @@ func newRouter(d routerDeps) chi.Router {
 	r.Group(func(wr chi.Router) {
 		wr.Use(webhookRL.middleware)
 		wr.Post("/webhooks/github", d.ing.GitHub)
+		wr.Post("/webhooks/gitea", d.ing.Gitea)
 		wr.Post("/webhooks/stripe", d.ing.Stripe)
 		wr.Post("/webhooks/slack", d.ing.Slack)
 		// Generic token/open providers (SPEC-0001): shared-secret token compared constant-time, or

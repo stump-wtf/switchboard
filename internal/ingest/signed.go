@@ -88,6 +88,72 @@ func (i *Ingest) Stripe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": td.ID, "queue": td.Queue, "verified": true})
 }
 
+// Gitea is the signed Gitea webhook receiver: POST /webhooks/gitea.
+//
+// Gitea signs the raw body with HMAC-SHA256 and presents it as `X-Hub-Signature-256: sha256=<hex>`,
+// the same scheme GitHub uses. The event type arrives as `X-Gitea-Event` and the delivery id as
+// `X-Gitea-Delivery`. Gitea's payload shape is GitHub-compatible for the common events (issues,
+// pull_request, push, etc.), so the same summarizer works.
+func (i *Ingest) Gitea(w http.ResponseWriter, r *http.Request) {
+	body, ok := i.readBody(w, r)
+	if !ok {
+		return
+	}
+	event := r.Header.Get("X-Gitea-Event")
+	// Idempotency key from the Gitea delivery GUID; body-hash fallback if absent (SPEC-0001 REQ
+	// "Idempotency Key Extraction and Dedup").
+	key := idempotencyKey(r.Header.Get("X-Gitea-Delivery"), body)
+	i.observeReceived("gitea", event, "signed", key)
+	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
+	secret, ok := i.signedSecret(w, r, "gitea", i.giteaSecret)
+	if !ok {
+		i.observeRejected("gitea", event, "signed", key, "provider unavailable")
+		return
+	}
+	sig := r.Header.Get("X-Hub-Signature-256")
+	if !verifyGitHub(secret, body, sig) {
+		// Reject without persisting; log a redacted line (never the signature value).
+		i.log.Warn("gitea signature rejected", "delivery", r.Header.Get("X-Gitea-Delivery"),
+			"event", r.Header.Get("X-Gitea-Event"), "remote", clientIP(r))
+		i.observeRejected("gitea", event, "signed", key, "signature verification failed")
+		writeErr(w, http.StatusUnauthorized, "signature verification failed")
+		return
+	}
+	// INTERIM (PR 2): operator-configured receiver, no vended endpoint of its own — the todo is
+	// owned by the operator-designated legacy endpoint; unconfigured → 503, nothing persisted
+	// (legacyEndpoint). ADR-0022.
+	endpointID, ok := i.legacyEndpoint(w, "gitea")
+	if !ok {
+		i.observeRejected("gitea", event, "signed", key, "receiver not configured")
+		return
+	}
+	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
+	_, td, created, err := i.store.CreateEventTodo(r.Context(),
+		store.EventInput{
+			Source: "gitea", Family: "webhook", EventType: event, ExternalID: key,
+			TrustMode: "signed", Verified: true, VerifyDetail: "hmac-sha256 ok",
+			ContentType: r.Header.Get("Content-Type"), Headers: sanitizeHeaders(r.Header),
+			Payload: body, SourceIP: clientIP(r),
+		},
+		store.CreateTodoParams{
+			EndpointID: endpointID,
+			Queue:      i.giteaQueue, Source: "gitea", Kind: event, Title: summarizeGitea(event, body),
+			Payload: body, IdempotencyKey: key,
+		})
+	if err != nil {
+		i.log.Error("ingest gitea delivery", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if created {
+		i.hub.Publish(td)
+	} else {
+		// Idempotent redelivery: resolve the in-flight card without a lane advance (SPEC-0015).
+		i.observeDeduped("gitea", event, "signed", key)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": td.ID, "queue": td.Queue, "verified": true})
+}
+
 // Slack is the signed Slack webhook receiver: POST /webhooks/slack.
 //
 // Slack signs `v0:<timestamp>:<raw body>` with HMAC-SHA256 and presents it as
@@ -289,4 +355,40 @@ func summarizeSlack(eventType string) string {
 		return "slack event"
 	}
 	return "slack " + eventType
+}
+
+// summarizeGitea builds a one-line, legible todo title from a Gitea payload. Gitea's payload
+// shape is GitHub-compatible for the common events, so this mirrors summarizeGitHub.
+func summarizeGitea(event string, body []byte) string {
+	var p struct {
+		Action     string `json:"action"`
+		Number     int    `json:"number"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+		PullRequest struct {
+			Number int    `json:"number"`
+			Title  string `json:"title"`
+		} `json:"pull_request"`
+		Issue struct {
+			Number int    `json:"number"`
+			Title  string `json:"title"`
+		} `json:"issue"`
+		Sender struct {
+			Login string `json:"login"`
+		} `json:"sender"`
+	}
+	_ = json.Unmarshal(body, &p)
+	repo := p.Repository.FullName
+	switch event {
+	case "pull_request":
+		return strings.TrimSpace("PR #" + itoa(p.PullRequest.Number) + " " + p.Action + " in " + repo + " — " + p.PullRequest.Title)
+	case "issues":
+		return strings.TrimSpace("Issue #" + itoa(p.Issue.Number) + " " + p.Action + " in " + repo + " — " + p.Issue.Title)
+	default:
+		if repo != "" {
+			return "gitea " + event + " in " + repo
+		}
+		return "gitea " + event
+	}
 }
