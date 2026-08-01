@@ -52,7 +52,9 @@ const (
 	instructions = `Todos routed to you arrive as <channel source="switchboard"> doorbell events ` +
 		`(notifications/claude/channel) on this session's notification stream. The durable todo ` +
 		`queue is the record: a doorbell is only a hint, and a missed push is never a lost todo. ` +
-		`Use list_todos to see work, claim to take a todo (which sets a lease), then complete or fail it.`
+		`Use list_todos to see work, claim to take a todo (which sets a lease), then complete or fail it. ` +
+		`A2UI surfaces at switchboard://queue/{name}/a2ui and switchboard://todo/{id}/a2ui render ` +
+		`the queue and per-todo detail as application/a2ui+json for hosts that support it.`
 )
 
 // EndpointStore is the slice of the store the auth middleware needs: resolution of BOTH credential
@@ -368,6 +370,9 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	// the same allowlist-filtered registration (webhook_routes.go).
 	h.registerWebhookRouteTools(srv, ep)
 	h.registerEventResources(srv, ep)
+	// The #102 A2UI resource surface (a2ui.go): queue and todo detail rendered as
+	// application/a2ui+json for A2UI-capable hosts.
+	h.registerA2UIResources(srv, ep)
 	srv.AddReceivingMiddleware(h.scopeGuard(ep))
 	return srv
 }
