@@ -114,8 +114,9 @@ func TestTrustBadgesCarryText(t *testing.T) {
 			ID: "td_7", Source: "stripe", Kind: "invoice.paid", State: "pending", CreatedAt: time.Now(),
 		}, TrustMode: mode})
 		out := renderFrag(t, h, "lane_card", card)
-		// The badge carries the mode word (signed additionally gets its ✓ glyph, aria-hidden).
-		want := regexp.MustCompile(`<span class="sb-badge sb-badge--` + mode + `">(<span aria-hidden="true">✓ </span>)?` + mode + `</span>`)
+		// The badge carries the mode word (signed additionally gets its ✓ glyph, aria-hidden);
+		// the title tooltip (#84) sits between the class and the closing quote.
+		want := regexp.MustCompile(`<span class="sb-badge sb-badge--` + mode + `"[^>]*>(<span aria-hidden="true">✓ </span>)?` + mode + `</span>`)
 		if !want.MatchString(out) {
 			t.Errorf("trust mode %q: badge must carry both the class and the text, got %q", mode, out)
 		}
@@ -124,8 +125,35 @@ func TestTrustBadgesCarryText(t *testing.T) {
 	// dot — aria-hidden so AT still reads just the mode word (color/glyph never carry alone).
 	body := boardBody(t)
 	for _, mode := range []string{"signed", "token", "open", "queue"} {
-		if !strings.Contains(body, `sb-badge--`+mode+`"><span aria-hidden="true">● </span>`+mode+`<`) {
+		if !strings.Contains(body, `sb-badge--`+mode+`" title="`+trustDefs[mode]+`"><span aria-hidden="true">● </span>`+mode+`<`) {
 			t.Errorf("trust legend missing ● dot prefix + readable text for %q", mode)
+		}
+	}
+}
+
+// TestTrustLegendDefinesEveryMode: every trust pill on the Board carries a one-line definition as
+// a title tooltip drawn from the single trustDefs source, and the legend row reads as a legend
+// (a leading "trust modes:" caption), never as system status. Governing: #84.
+func TestTrustLegendDefinesEveryMode(t *testing.T) {
+	body := boardBody(t)
+	if !strings.Contains(body, `trust modes:`) {
+		t.Error("board legend must open with a 'trust modes:' caption so the pills read as a legend")
+	}
+	// Each legend pill carries the shared definition text as its tooltip.
+	for mode, def := range trustDefs {
+		want := `sb-badge--` + mode + `" title="` + def + `"`
+		if !strings.Contains(body, want) {
+			t.Errorf("board legend pill %q missing tooltip %q", mode, def)
+		}
+	}
+	// Lane-card trust badges carry the same tooltip text.
+	for mode, def := range trustDefs {
+		card := laneCardFromItem(store.TodoItem{Todo: store.Todo{
+			ID: "td_9", Source: "github", Kind: "push", State: "pending", CreatedAt: time.Now(),
+		}, TrustMode: mode})
+		out := renderFrag(t, newTestHandler(t), "lane_card", card)
+		if !strings.Contains(out, `title="`+def+`"`) {
+			t.Errorf("lane card trust badge %q missing tooltip %q, got %q", mode, def, out)
 		}
 	}
 }

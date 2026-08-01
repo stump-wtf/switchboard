@@ -440,6 +440,10 @@ func TestTodoRowStampsTrustAndState(t *testing.T) {
 		if !strings.Contains(out, `data-sb-trust="signed"`) || !strings.Contains(out, ">signed</span>") {
 			t.Errorf("%s row: trust badge must carry the data-sb-trust stamp and the mode text: %q", state, out)
 		}
+		// The trust badge tooltip carries the shared one-line definition (#84).
+		if !strings.Contains(out, `title="`+trustDefs["signed"]+`"`) {
+			t.Errorf("%s row: trust badge missing the shared definition tooltip: %q", state, out)
+		}
 		if !strings.Contains(out, `data-sb-state="`+state+`"`) || !strings.Contains(out, ">"+state+"</span>") {
 			t.Errorf("%s row: state chip must carry the data-sb-state stamp and the state text: %q", state, out)
 		}

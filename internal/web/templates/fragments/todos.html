@@ -54,7 +54,7 @@
 {{define "todo_row"}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}" data-sb-row-open{{if .Flash}} data-sb-flash{{end}} tabindex="0"{{if .OOB}} hx-swap-oob="true"{{end}}>
   <td><button type="button" class="sb-linklike sb-mono" data-sb-row-trigger hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>
   <td>{{if .Source}}<span class="sb-tag" data-sb-tag aria-hidden="true">{{tag .Source}}</span> {{end}}<span class="sb-trow__source" data-sb-source>{{if .Source}}{{.Source}}{{else}}—{{end}}</span> <span class="sb-trow__kind" data-sb-kind>{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" data-sb-dedup title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
-  <td><span class="sb-badge sb-badge--{{.TrustMode}}" data-sb-trust="{{.TrustMode}}">{{.TrustMode}}</span></td>
+  <td><span class="sb-badge sb-badge--{{.TrustMode}}" data-sb-trust="{{.TrustMode}}" title="{{trustdef .TrustMode}}">{{.TrustMode}}</span></td>
   <td><span class="sb-status sb-status--{{.State}}" data-sb-state="{{.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.State}}</span>{{if and (eq .State "claimed") .HasLease}}<span class="sb-trow__sub" data-sb-countdown data-sb-deadline="{{.LeaseDeadlineMS}}" data-sb-suffix=" left">lease {{.LeaseSecs}}s left</span>{{else if and (eq .State "failed") .RetryScheduled}}<span class="sb-trow__sub sb-trow__sub--retry" data-sb-countdown data-sb-deadline="{{.RetryDeadlineMS}}" data-sb-prefix="↻ retry " data-sb-expired="↻ re-queuing…">↻ retry {{.RetrySecs}}s</span>{{else if eq .State "failed"}}<span class="sb-trow__sub">{{.Attempt}}/{{.MaxAttempts}} attempts</span>{{end}}</td>
   <td class="sb-mono">{{if .OwnerLabel}}{{.OwnerLabel}}{{else}}—{{end}}</td>
   <td class="sb-trow__age">{{reltime .CreatedAt}}</td>
@@ -111,7 +111,7 @@
   <div class="sb-callout sb-callout--danger">Dead-lettered after {{.Row.Attempt}}/{{.Row.MaxAttempts}} attempts. Retry re-queues it with a fresh attempt budget.</div>
   {{end}}
   <dl class="sb-meta">
-    <div class="sb-meta__cell"><dt>trust</dt><dd><span class="sb-badge sb-badge--{{.Row.TrustMode}}" data-sb-trust="{{.Row.TrustMode}}">{{.Row.TrustMode}}</span></dd></div>
+    <div class="sb-meta__cell"><dt>trust</dt><dd><span class="sb-badge sb-badge--{{.Row.TrustMode}}" data-sb-trust="{{.Row.TrustMode}}" title="{{trustdef .Row.TrustMode}}">{{.Row.TrustMode}}</span></dd></div>
     <div class="sb-meta__cell"><dt>agent</dt><dd class="sb-mono">{{if .Row.OwnerLabel}}{{.Row.OwnerLabel}}{{else}}—{{end}}</dd></div>
     <div class="sb-meta__cell"><dt>attempts</dt><dd>{{.Row.Attempt}}/{{.Row.MaxAttempts}}</dd></div>
     <div class="sb-meta__cell"><dt>age</dt><dd>{{reltime .Row.CreatedAt}}</dd></div>

@@ -89,6 +89,13 @@ func TestProvidersViewTrustChipsAndNoSecrets(t *testing.T) {
 			t.Errorf("providers page must not render %q — secrets never render on the view", forbid)
 		}
 	}
+
+	// Every provider-line trust chip carries the shared one-line definition as its tooltip (#84).
+	for mode, def := range trustDefs {
+		if !strings.Contains(body, `title="`+def+`"`) {
+			t.Errorf("providers page: trust chip %q missing tooltip %q", mode, def)
+		}
+	}
 }
 
 // SPEC-0017 REQ "Provider Lifecycle": enabled lines offer disable/rotate/remove behind the

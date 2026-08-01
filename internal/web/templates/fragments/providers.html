@@ -35,8 +35,8 @@
       <span class="sb-prcard__name">{{$l.Name}}</span>
       <span class="sb-prcard__kind sb-mono">{{$l.Kind}} → {{$l.Queue}}</span>
     </div>
-    {{/* The enforced trust mode, SPEC-0001 chip vocabulary. */}}
-    <span class="sb-badge sb-badge--{{$l.TrustMode}}" data-sb-trust="{{$l.TrustMode}}">{{$l.TrustMode}}</span>
+    {{/* The enforced trust mode, SPEC-0001 chip vocabulary; the tooltip defines it (#84). */}}
+    <span class="sb-badge sb-badge--{{$l.TrustMode}}" data-sb-trust="{{$l.TrustMode}}" title="{{trustdef $l.TrustMode}}">{{$l.TrustMode}}</span>
     {{if not $l.Enabled}}<span class="sb-badge sb-badge--revoked" data-sb-provider-disabled>disabled</span>{{end}}
   </div>
   <dl class="sb-prcard__meta">
@@ -86,7 +86,7 @@
   <div class="sb-catcard__head">
     <span class="sb-catcard__tag sb-tag sb-tag--{{.Trust}}" aria-hidden="true">{{tag .Kind}}</span>
     <span class="sb-catcard__title">{{.Title}}</span>
-    {{if eq .State "available"}}<span class="sb-badge sb-badge--planned">planned</span>{{else}}<span class="sb-badge sb-badge--{{.Trust}}">{{.Trust}}</span>{{end}}
+    {{if eq .State "available"}}<span class="sb-badge sb-badge--planned">planned</span>{{else}}<span class="sb-badge sb-badge--{{.Trust}}" title="{{trustdef .Trust}}">{{.Trust}}</span>{{end}}
   </div>
   <p class="sb-catcard__desc">{{.Desc}} <span class="sb-muted">· {{.Family}}</span></p>
   <div class="sb-catcard__foot">

@@ -704,10 +704,18 @@ a:hover {
 .sb-legend {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin: 0 0 6px;
   padding: 0;
   list-style: none;
+}
+
+.sb-legend__caption {
+  font-family: var(--sb-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--sb-muted);
 }
 
 /* ---- tables ---- */

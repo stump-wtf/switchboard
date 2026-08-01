@@ -13,10 +13,11 @@
   </div>
   <div class="sb-view-head__aside">
     <ul class="sb-legend" aria-label="Trust modes">
-      <li><span class="sb-badge sb-badge--signed"><span aria-hidden="true">● </span>signed</span></li>
-      <li><span class="sb-badge sb-badge--token"><span aria-hidden="true">● </span>token</span></li>
-      <li><span class="sb-badge sb-badge--open"><span aria-hidden="true">● </span>open</span></li>
-      <li><span class="sb-badge sb-badge--queue"><span aria-hidden="true">● </span>queue</span></li>
+      <li class="sb-legend__caption" aria-hidden="true">trust modes:</li>
+      <li><span class="sb-badge sb-badge--signed" title="{{trustdef "signed"}}"><span aria-hidden="true">● </span>signed</span></li>
+      <li><span class="sb-badge sb-badge--token" title="{{trustdef "token"}}"><span aria-hidden="true">● </span>token</span></li>
+      <li><span class="sb-badge sb-badge--open" title="{{trustdef "open"}}"><span aria-hidden="true">● </span>open</span></li>
+      <li><span class="sb-badge sb-badge--queue" title="{{trustdef "queue"}}"><span aria-hidden="true">● </span>queue</span></li>
     </ul>
     {{template "reaper_pill"}}
   </div>
