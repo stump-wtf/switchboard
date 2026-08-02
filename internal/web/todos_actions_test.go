@@ -68,15 +68,20 @@ func TestToastTextByTransition(t *testing.T) {
 	td := store.Todo{ID: "td_8f2a99aa", Owner: "op:h1"}
 	id := shortID(td.ID) // the id the operator sees in the toast
 
-	cases := map[string]string{
-		"todo_claimed":    id + " · claimed · operator",
-		"todo_completed":  id + " · completed · ack sent",
-		"todo_failed":     id + " · failed · attempts exhausted",
-		"todo_resurfaced": id + " · re-surfaced to queue",
+	cases := map[string]toastMsg{
+		"todo_claimed":    {Kind: "claimed", Text: id + " · claimed · operator"},
+		"todo_completed":  {Kind: "completed", Text: id + " · completed · ack sent"},
+		"todo_failed":     {Kind: "failed", Text: id + " · failed · attempts exhausted"},
+		"todo_resurfaced": {Kind: "resurfaced", Text: id + " · re-surfaced to queue"},
 	}
 	for name, want := range cases {
-		if got := h.toastText(t.Context(), name, td); got != want {
-			t.Errorf("toastText(%q) = %q, want %q", name, got, want)
+		got := h.toastFor(t.Context(), name, td)
+		if got == nil {
+			t.Errorf("toastFor(%q) = nil, want %+v", name, want)
+			continue
+		}
+		if *got != want {
+			t.Errorf("toastFor(%q) = %+v, want %+v", name, *got, want)
 		}
 	}
 	// A below-cap fail carries a scheduled retry window (SPEC-0003 scheduled backoff) and the toast
@@ -84,14 +89,15 @@ func TestToastTextByTransition(t *testing.T) {
 	next := time.Now().Add(30 * time.Second)
 	scheduled := td
 	scheduled.NextRetryAt = &next
-	if got, want := h.toastText(t.Context(), "todo_failed", scheduled), id+" · failed · will retry with backoff"; got != want {
-		t.Errorf("toastText(todo_failed, retry scheduled) = %q, want %q", got, want)
+	want := toastMsg{Kind: "failed", Text: id + " · failed · will retry with backoff"}
+	if got := h.toastFor(t.Context(), "todo_failed", scheduled); got == nil || *got != want {
+		t.Errorf("toastFor(todo_failed, retry scheduled) = %+v, want %+v", got, want)
 	}
 	// todo_created (a new row appearing announces itself) and any unmapped name produce no toast.
-	if got := h.toastText(t.Context(), "todo_created", td); got != "" {
-		t.Errorf("toastText(todo_created) = %q, want empty (row appearance is its own announcement)", got)
+	if got := h.toastFor(t.Context(), "todo_created", td); got != nil {
+		t.Errorf("toastFor(todo_created) = %+v, want nil (row appearance is its own announcement)", got)
 	}
-	if got := h.toastText(t.Context(), "unknown", td); got != "" {
-		t.Errorf("toastText(unknown) = %q, want empty", got)
+	if got := h.toastFor(t.Context(), "unknown", td); got != nil {
+		t.Errorf("toastFor(unknown) = %+v, want nil", got)
 	}
 }
