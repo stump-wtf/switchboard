@@ -54,7 +54,9 @@ const (
 		`queue is the record: a doorbell is only a hint, and a missed push is never a lost todo. ` +
 		`Use list_todos to see work, claim to take a todo (which sets a lease), then complete or fail it. ` +
 		`A2UI surfaces at switchboard://queue/{name}/a2ui and switchboard://todo/{id}/a2ui render ` +
-		`the queue and per-todo detail as application/a2ui+json for hosts that support it.`
+		`the queue and per-todo detail as application/a2ui+json for hosts that support it. Both ` +
+		`accept an optional ?w=N width hint (ignored by these surfaces) so a host may append it ` +
+		`uniformly to any /a2ui URI.`
 )
 
 // EndpointStore is the slice of the store the auth middleware needs: resolution of BOTH credential

@@ -69,7 +69,7 @@ func (h *Handler) registerA2UIResources(srv *sdk.Server, ep store.AuthEndpoint) 
 		return
 	}
 	srv.AddResourceTemplate(&sdk.ResourceTemplate{
-		URITemplate: "switchboard://queue/{queue}/a2ui",
+		URITemplate: "switchboard://queue/{queue}/a2ui{?w}",
 		Name:        "queue_a2ui",
 		Description: "A2UI view of pending todos in one queue. Read-only; use claim/complete/fail tools to mutate.",
 		MIMEType:    a2uiMIMEType,
@@ -77,7 +77,7 @@ func (h *Handler) registerA2UIResources(srv *sdk.Server, ep store.AuthEndpoint) 
 	}, h.queueA2UIResource(ep))
 
 	srv.AddResourceTemplate(&sdk.ResourceTemplate{
-		URITemplate: "switchboard://todo/{id}/a2ui",
+		URITemplate: "switchboard://todo/{id}/a2ui{?w}",
 		Name:        "todo_a2ui",
 		Description: "A2UI detail view of a single todo. Read-only; use claim/complete/fail tools to mutate.",
 		MIMEType:    a2uiMIMEType,
@@ -258,6 +258,9 @@ func renderTodoA2UI(t store.Todo) a2uiPayload {
 // queue/{value}/a2ui, "todo" matches todo/{value}/a2ui.
 func uriSegment(uri, pathPrefix string) string {
 	rest := strings.TrimPrefix(uri, "switchboard://")
+	// A query string (an A2UI host's optional ?w= width hint) rides on the
+	// /a2ui suffix; strip it before splitting so parts[2] stays "a2ui".
+	rest, _, _ = strings.Cut(rest, "?")
 	parts := strings.Split(rest, "/")
 	if len(parts) != 3 {
 		return ""
