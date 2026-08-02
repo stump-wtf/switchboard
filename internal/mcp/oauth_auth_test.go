@@ -109,7 +109,7 @@ func TestOAuthTokenAuthMatrix(t *testing.T) {
 		!strings.Contains(ch, "resource_metadata=") {
 		t.Fatalf("challenge = %q, want RFC 9728 resource_metadata challenge", ch)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 
 	// "Revoked": the resolution disappears (store returns ErrNotFound once revoked/expired) → 401.
 	f.byOAuthHash = map[string]store.AuthEndpoint{}
@@ -117,7 +117,7 @@ func TestOAuthTokenAuthMatrix(t *testing.T) {
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("revoked oauth token: status = %d, want 401", res.StatusCode)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 
 	// Valid token, wrong endpoint path → 403, same as a static bearer.
 	tokenA2 := vendOAuth(t, f, epA)
@@ -125,5 +125,5 @@ func TestOAuthTokenAuthMatrix(t *testing.T) {
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-endpoint oauth token: status = %d, want 403", res.StatusCode)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 }

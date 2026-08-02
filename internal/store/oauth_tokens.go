@@ -77,7 +77,7 @@ func (s *Store) RotateOAuthToken(ctx context.Context, refreshHash, clientID, new
 	if err != nil {
 		return OAuthToken{}, fmt.Errorf("store: rotate token begin: %w", err)
 	}
-	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	var endpointID string
 	err = tx.QueryRow(ctx, `

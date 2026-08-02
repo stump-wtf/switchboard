@@ -148,7 +148,7 @@ func (s *Store) RedeemOAuthCode(ctx context.Context, codeHash string) (OAuthCode
 	if err != nil {
 		return OAuthCode{}, fmt.Errorf("store: redeem code begin: %w", err)
 	}
-	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	var c OAuthCode
 	err = tx.QueryRow(ctx, `

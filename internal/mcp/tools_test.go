@@ -327,7 +327,7 @@ func TestChunkedOversizedBodyGets413(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.ContentLength >= 0 && req.ContentLength > 0 {
 		t.Fatalf("test bug: request had declared Content-Length %d, want chunked", req.ContentLength)
 	}

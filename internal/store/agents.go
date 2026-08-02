@@ -223,7 +223,7 @@ func (s *Store) VendAgentEndpoint(ctx context.Context, p VendParams) (VendResult
 	if err != nil {
 		return VendResult{}, fmt.Errorf("store: vend begin: %w", err)
 	}
-	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	var agentID, agentName string
 	var personaID any // nil → persona_id NULL
@@ -352,7 +352,7 @@ func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID str
 	if err != nil {
 		return fmt.Errorf("store: revoke endpoint begin: %w", err)
 	}
-	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	ct, err := tx.Exec(ctx, `
 		UPDATE endpoints SET state = 'revoked', revoked_at = now()
@@ -411,7 +411,7 @@ func (s *Store) DeleteEndpoint(ctx context.Context, endpointID, ownerHumanID str
 	if err != nil {
 		return fmt.Errorf("store: delete endpoint begin: %w", err)
 	}
-	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	var agentID string
 	err = tx.QueryRow(ctx, `
@@ -486,7 +486,7 @@ func (s *Store) ExpireEndpoints(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: expire endpoints begin: %w", err)
 	}
-	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	rows, err := tx.Query(ctx, `
 		UPDATE endpoints SET state = 'revoked', revoked_at = now()

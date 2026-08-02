@@ -173,7 +173,7 @@ func openSSE(t *testing.T, ts *httptest.Server, token string) (*sseStream, func(
 	ch := make(chan sseFrame, 64)
 	go func() {
 		defer close(ch)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var name, data string
 		sc := bufio.NewScanner(resp.Body)
 		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -258,7 +258,7 @@ func postGitHub(t *testing.T, ts *httptest.Server, delivery, sig string, body []
 	if err != nil {
 		t.Fatalf("POST /webhooks/github: %v", err)
 	}
-	t.Cleanup(func() { resp.Body.Close() })
+	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
 }
 

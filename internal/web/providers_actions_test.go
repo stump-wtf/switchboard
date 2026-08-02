@@ -129,7 +129,7 @@ func TestMintProviderSecret(t *testing.T) {
 		t.Fatal("two mints must differ")
 	}
 	for _, r := range a {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
 			t.Fatalf("secret must be lowercase hex, got %q", a)
 		}
 	}

@@ -11,7 +11,8 @@ import (
 )
 
 func TestCSRFTokenBoundToSession(t *testing.T) {
-	if csrfToken("session-a") != csrfToken("session-a") {
+	first, second := csrfToken("session-a"), csrfToken("session-a")
+	if first != second {
 		t.Fatal("csrfToken must be deterministic for a given session")
 	}
 	if csrfToken("session-a") == csrfToken("session-b") {

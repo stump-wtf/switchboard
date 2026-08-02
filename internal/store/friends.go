@@ -154,7 +154,7 @@ func (s *Store) ApproveFriendRequest(ctx context.Context, p ApproveFriendRequest
 	if err != nil {
 		return FriendEdge{}, Endpoint{}, err
 	}
-	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	// Lock the edge under the ownership predicate. A cross-owner or missing id is indistinguishable
 	// (ErrNotFound), so ownership failures never leak existence (matches agents.go isolation).
@@ -229,7 +229,7 @@ func (s *Store) RevokeFriendEdge(ctx context.Context, edgeID, ownerHumanID strin
 	if err != nil {
 		return FriendEdge{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	edge, err := scanFriendEdge(tx.QueryRow(ctx,
 		`SELECT `+friendEdgeCols+` FROM friend_edges WHERE id = $1 AND to_human = $2 FOR UPDATE`,
@@ -274,7 +274,7 @@ func (s *Store) decideTerminal(ctx context.Context, edgeID, ownerHumanID, fromSt
 	if err != nil {
 		return FriendEdge{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	edge, err := scanFriendEdge(tx.QueryRow(ctx,
 		`SELECT `+friendEdgeCols+` FROM friend_edges WHERE id = $1 AND to_human = $2 FOR UPDATE`,
@@ -383,7 +383,7 @@ func (s *Store) RemoveFriendEdge(ctx context.Context, edgeID, ownerHumanID strin
 	if err != nil {
 		return FriendEdge{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	edge, err := scanFriendEdge(tx.QueryRow(ctx,
 		`SELECT `+friendEdgeCols+` FROM friend_edges WHERE id = $1 AND to_human = $2 FOR UPDATE`,

@@ -159,7 +159,7 @@ func (f *fakeStore) ClaimTodo(_ context.Context, endpointID, id, owner string, t
 	// A failed todo with an elapsed retry window is claimable directly (SPEC-0003 scheduled
 	// backoff); one whose window is still open is not.
 	retryDue := t.State == "failed" && t.NextRetryAt != nil && !t.NextRetryAt.After(time.Now()) && t.Attempt < t.MaxAttempts
-	if !(t.State == "pending" || expired || retryDue) || (t.Assignee != "" && t.Assignee != owner) {
+	if (t.State != "pending" && !expired && !retryDue) || (t.Assignee != "" && t.Assignee != owner) {
 		return store.Todo{}, store.ErrConflict
 	}
 	now := time.Now()
@@ -547,7 +547,7 @@ func TestSessionCookieCarriesNoAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("cookie-only request status = %d, want 401", resp.StatusCode)
 	}

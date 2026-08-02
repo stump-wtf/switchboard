@@ -154,7 +154,7 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 	if err != nil {
 		return 0, Todo{}, false, err
 	}
-	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	ev, inserted, err := insertEvent(ctx, tx, e)
 	if err != nil {
@@ -219,7 +219,7 @@ func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpoi
 	if err != nil {
 		return 0, nil, err
 	}
-	defer tx.Rollback(ctx) // no-op once committed; rolls back on any early return
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	ev, inserted, err := insertEvent(ctx, tx, e)
 	if err != nil {

@@ -136,7 +136,9 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "retry: %d\n\n", h.sseRetryMS(r.Context()))
+	if _, err := fmt.Fprintf(w, "retry: %d\n\n", h.sseRetryMS(r.Context())); err != nil {
+		return
+	}
 	flusher.Flush()
 
 	keepAlive := time.NewTicker(h.keepAlive)
@@ -146,13 +148,17 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-keepAlive.C:
-			fmt.Fprint(w, ": keep-alive\n\n")
+			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 		case e, ok := <-ch:
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", sseSanitize(e.Name), sseSanitize(e.Data))
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", sseSanitize(e.Name), sseSanitize(e.Data)); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}

@@ -265,7 +265,7 @@ func doReplay(ctx context.Context, tgt replayTarget, payload []byte, headers htt
 	if err != nil {
 		return false, nil, elapsed, fmt.Errorf("replay POST: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxReplayResponseBytes))
 	code := resp.StatusCode
 	return true, &code, elapsed, nil

@@ -60,7 +60,7 @@ func TestBoardLanesFragmentRendersFromViewModels(t *testing.T) {
 	iR := strings.Index(body, `data-sb-lane="received"`)
 	iV := strings.Index(body, `data-sb-lane="verified"`)
 	iP := strings.Index(body, `data-sb-lane="patched"`)
-	if iR < 0 || iV < 0 || iP < 0 || !(iR < iV && iV < iP) {
+	if iR < 0 || iV < 0 || iP < 0 || iR >= iV || iV >= iP {
 		t.Errorf("lanes out of order: received=%d verified=%d patched=%d", iR, iV, iP)
 	}
 

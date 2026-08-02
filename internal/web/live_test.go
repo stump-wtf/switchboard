@@ -435,7 +435,8 @@ func TestLiveHelpers(t *testing.T) {
 
 	// rxCardID is deterministic (arrival and resolution frames must target the same node) and
 	// distinct across providers sharing a key.
-	if rxCardID("github", "k1") != rxCardID("github", "k1") {
+	first, second := rxCardID("github", "k1"), rxCardID("github", "k1")
+	if first != second {
 		t.Error("rxCardID must be deterministic")
 	}
 	if rxCardID("github", "k1") == rxCardID("stripe", "k1") {

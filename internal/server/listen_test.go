@@ -207,7 +207,7 @@ func TestListenTodoReadyDeliversNotification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(context.Background())
+	defer func() { _ = conn.Close(context.Background()) }()
 	// The listener dials + LISTENs asynchronously; retry the notify until it lands or times out.
 	deadline := time.After(8 * time.Second)
 	for {

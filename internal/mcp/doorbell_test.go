@@ -366,7 +366,7 @@ func TestSessionBoundToEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("cross-endpoint session reuse status = %d, want 404", resp.StatusCode)
 	}
