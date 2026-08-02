@@ -54,7 +54,9 @@
      stable id plus an afterbegin insertion into #sb-todos-body — because an id-targeted swap
      silently no-ops when the open table never rendered the row (#96). Inserted rows carry
      data-sb-live-row so sb-live.js can drop ones that don't match the viewer's active
-     filter/search. Data: web.todoRow. Governing: SPEC-0015 REQ "Todos View And Drawer"
+     filter/search — except an insert replacing a row already on screen (a re-surface), which
+     survives an active search because its searchable fields don't change. Data: web.todoRow.
+     Governing: SPEC-0015 REQ "Todos View And Drawer"
      (scenario "Live claim"), REQ "Live Fragment Architecture" (OOB removal + insertion). */}}
 {{define "todo_row"}}{{if .Insert}}<tr id="sb-tr-{{.ID}}" hx-swap-oob="delete"></tr>{{end}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}" data-sb-row-open{{if .Flash}} data-sb-flash{{end}}{{if .Insert}} data-sb-live-row{{end}} tabindex="0"{{if .Insert}} hx-swap-oob="afterbegin:#sb-todos-body"{{else if .OOB}} hx-swap-oob="true"{{end}}>
   <td><button type="button" class="sb-linklike sb-mono" data-sb-row-trigger hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>

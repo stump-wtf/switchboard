@@ -66,14 +66,49 @@ test("the all filter accepts every state", () => {
   assert.equal(page.body.children.length, 2);
 });
 
-test("an active search drops every live insert — the query cannot be evaluated client-side", () => {
+test("an active search drops a NEW live insert — the query cannot be evaluated client-side", () => {
   const env = createDOM({});
   const page = todosPage(env, "all");
   loadModule(env, "sb-live.js");
   page.search.value = "stripe";
   liveRow(env, page.body, "td_5", "pending");
   env.flushObservers();
-  assert.equal(page.body.children.length, 0, "inserts are suppressed while searching");
+  assert.equal(page.body.children.length, 0, "new inserts are suppressed while searching");
+});
+
+test("a live replace of a visible row survives an active search", () => {
+  // todo_resurfaced rides the delete+insert idiom, but its target may be a row the viewer is
+  // already watching: the searchable fields (id/source/event) don't change on a re-surface, so a
+  // row that matched the query before the swap still matches after it — sweeping it makes a
+  // visible row silently vanish.
+  const env = createDOM({});
+  const page = todosPage(env, "all");
+  loadModule(env, "sb-live.js");
+  page.search.value = "stripe";
+  // The server-rendered row the viewer is watching (it matched the query server-side).
+  const old = el(env.document, "tr", { id: "sb-tr-td_8" }, page.body);
+  el(env.document, "span", { "data-sb-state": "claimed" }, old);
+  env.flushObservers();
+  // The resurface frame: OOB delete of the stable id, then the replacement insert.
+  old.remove();
+  liveRow(env, page.body, "td_8", "pending");
+  env.flushObservers();
+  assert.equal(page.body.children.length, 1, "a replaced visible row must survive the search sweep");
+  assert.equal(page.empty.hidden, true, "empty label stays hidden — the row never left");
+});
+
+test("a live replace is still dropped when it misses the active filter", () => {
+  const env = createDOM({});
+  const page = todosPage(env, "failed");
+  loadModule(env, "sb-live.js");
+  // A failed row the viewer is watching resurfaces to pending: it no longer matches the pill.
+  const old = el(env.document, "tr", { id: "sb-tr-td_9" }, page.body);
+  el(env.document, "span", { "data-sb-state": "failed" }, old);
+  env.flushObservers();
+  old.remove();
+  liveRow(env, page.body, "td_9", "pending");
+  env.flushObservers();
+  assert.equal(page.body.children.length, 0, "a replace that misses the filter pill is dropped");
 });
 
 test("server-rendered rows are never swept, even when stale against the filter", () => {

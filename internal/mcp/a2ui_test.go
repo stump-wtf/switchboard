@@ -60,6 +60,19 @@ func TestRenderQueueA2UIWithTodos(t *testing.T) {
 	if err := validateRefs(p); err != nil {
 		t.Fatalf("dangling reference: %v", err)
 	}
+
+	// The list and every todo card must be REACHABLE from the root through container components
+	// (regression: the renderer once parented "list" under the h2 title Text, which a
+	// spec-conformant renderer never draws — flat id membership alone green-lit that tree).
+	seen := renderedIDs(p)
+	if !seen["list"] {
+		t.Fatal("list is not reachable from the root through container components")
+	}
+	for i := range todos {
+		if cardID := "todo-card-" + itoa(i); !seen[cardID] {
+			t.Fatalf("%s is not reachable from the root", cardID)
+		}
+	}
 }
 
 // TestRenderQueueA2UIEmpty verifies an empty queue renders a placeholder, not an empty list.
@@ -77,6 +90,15 @@ func TestRenderQueueA2UIEmpty(t *testing.T) {
 	// No list component should exist on an empty queue.
 	if findComponent(p, "list") != nil {
 		t.Fatal("empty queue must not have a list component")
+	}
+
+	// The empty branch must not leave dangling references (regression: the Column once kept a
+	// "count" child that the branch never emitted) and the placeholder must actually render.
+	if err := validateRefs(p); err != nil {
+		t.Fatalf("dangling reference: %v", err)
+	}
+	if !renderedIDs(p)["empty"] {
+		t.Fatal("empty placeholder is not reachable from the root through container components")
 	}
 }
 
@@ -295,6 +317,9 @@ func TestA2UIQueueResourceEmptyQueue(t *testing.T) {
 	if findComponent(p, "empty") == nil {
 		t.Fatal("empty queue must render a placeholder")
 	}
+	if err := validateRefs(p); err != nil {
+		t.Fatalf("dangling reference: %v", err)
+	}
 }
 
 // TestA2UIQueueResourceForbiddenQueue: reading a queue outside the endpoint's scope is a
@@ -505,6 +530,38 @@ func validateRefs(p a2uiPayload) error {
 		}
 	}
 	return nil
+}
+
+// renderedIDs walks the component tree from "root" via Child/Children and returns the set of ids
+// a renderer actually draws. Text components are leaves in A2UI — a spec-conformant renderer
+// draws nothing beneath them — so the walk does not descend into a Text's children. This is what
+// catches a subtree mis-parented under a leaf: validateRefs alone accepts it because every ref
+// still resolves.
+func renderedIDs(p a2uiPayload) map[string]bool {
+	byID := map[string]a2uiComponent{}
+	for _, c := range p.UpdateComponents.Components {
+		byID[c.ID] = c
+	}
+	seen := map[string]bool{}
+	var walk func(id string)
+	walk = func(id string) {
+		c, ok := byID[id]
+		if !ok || seen[id] {
+			return
+		}
+		seen[id] = true
+		if c.Component == "Text" {
+			return
+		}
+		if c.Child != "" {
+			walk(c.Child)
+		}
+		for _, child := range c.Children {
+			walk(child)
+		}
+	}
+	walk("root")
+	return seen
 }
 
 func componentIDs(p a2uiPayload) []string {

@@ -408,11 +408,13 @@ func verifyGitHub(secret string, body []byte, sig string) bool {
 	return hmac.Equal([]byte(expected), []byte(sig))
 }
 
-// summarizeGitHub builds a one-line, legible todo title from a GitHub payload.
-func summarizeGitHub(event string, body []byte) string {
+// summarizeForge builds a one-line, legible todo title from a GitHub-style forge payload. GitHub
+// and Gitea share this shape for the common events (pull_request, issues, push, ...), so both
+// receivers feed it their provider label, which only prefixes the fallback title for events the
+// switch doesn't know.
+func summarizeForge(provider, event string, body []byte) string {
 	var p struct {
 		Action     string `json:"action"`
-		Number     int    `json:"number"`
 		Repository struct {
 			FullName string `json:"full_name"`
 		} `json:"repository"`
@@ -424,9 +426,6 @@ func summarizeGitHub(event string, body []byte) string {
 			Number int    `json:"number"`
 			Title  string `json:"title"`
 		} `json:"issue"`
-		Sender struct {
-			Login string `json:"login"`
-		} `json:"sender"`
 	}
 	_ = json.Unmarshal(body, &p)
 	repo := p.Repository.FullName
@@ -437,10 +436,15 @@ func summarizeGitHub(event string, body []byte) string {
 		return strings.TrimSpace("Issue #" + itoa(p.Issue.Number) + " " + p.Action + " in " + repo + " — " + p.Issue.Title)
 	default:
 		if repo != "" {
-			return "github " + event + " in " + repo
+			return provider + " " + event + " in " + repo
 		}
-		return "github " + event
+		return provider + " " + event
 	}
+}
+
+// summarizeGitHub builds a one-line, legible todo title from a GitHub payload.
+func summarizeGitHub(event string, body []byte) string {
+	return summarizeForge("github", event, body)
 }
 
 // urlSecretParam matches a secret carried in a URL query string (e.g. a `?token=…` webhook URL that

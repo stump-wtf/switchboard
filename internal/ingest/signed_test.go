@@ -214,6 +214,30 @@ func TestSignedHandlersRejectWithoutPersisting(t *testing.T) {
 	}
 }
 
+// A VALID Gitea signature with no operator-designated legacy endpoint refuses the delivery with a
+// 503 and persists nothing — the nil store would panic on any persist attempt, and the 503 (not a
+// 401) proves verification passed before the refusal. This is the Gitea half of the contract
+// TestRouteFanOutEmptyTargetSetIsRefused pins for GitHub, minus the database. Governing: ADR-0022,
+// SPEC-0001 REQ "Signed Webhook Verification" (fail closed, no persist).
+func TestGiteaValidSignatureWithoutLegacyEndpoint(t *testing.T) {
+	const secret = "gitea_test_secret"
+	body := `{"action":"opened","pull_request":{"number":5,"title":"x"}}`
+	i := New(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{GiteaSecret: secret})
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/gitea", strings.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", sign(secret, []byte(body)))
+	req.Header.Set("X-Gitea-Event", "pull_request")
+	req.Header.Set("X-Gitea-Delivery", "guid-legacy-unset")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	i.Gitea(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d, want 503 (body %s)", rec.Code, rec.Body.String())
+	}
+	requireJSONError(t, rec)
+}
+
 func TestParseStripeSignature(t *testing.T) {
 	ts, sigs := parseStripeSignature("t=1700000000,v1=abc,v0=ignored,v1=def")
 	if ts != 1700000000 {

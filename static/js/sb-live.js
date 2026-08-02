@@ -74,12 +74,19 @@
   // fragments/todos.html) because the SSE stream is one broadcast and the server cannot know each
   // viewer's filter. This sweep keeps the view honest: a live-inserted row is dropped when a
   // search is active (the query can't be evaluated here) or when its state chip misses the active
-  // filter pill; the empty-state label follows the row count. Presentation-only — the durable
-  // queue is untouched and a reload renders truth. Governing: SPEC-0015 REQ "Todos View And
-  // Drawer" (#96).
+  // filter pill; the empty-state label follows the row count. One refinement: an insert whose row
+  // id was already in the table is the delete+insert idiom REPLACING a row the viewer could see
+  // (a reaper re-surface) — its searchable fields (id/source/event) don't change, so what matched
+  // the query before the swap still matches, and dropping it would make a visible row silently
+  // vanish. The filter check still applies: a re-surface changes state, and a replace that misses
+  // the pill leaves like any other row. Presentation-only — the durable queue is untouched and a
+  // reload renders truth. Governing: SPEC-0015 REQ "Todos View And Drawer" (#96).
   function initTodos() {
     var panel = document.getElementById("sb-todos-panel");
     if (!panel) return;
+    // Row ids present in #sb-todos-body when the previous sweep finished — the pre-swap truth the
+    // replace detection compares against (re-derived from the DOM each pass, never from events).
+    var present = {};
     function sweep() {
       var body = document.getElementById("sb-todos-body");
       if (!body) return;
@@ -90,7 +97,12 @@
       Array.prototype.forEach.call(body.querySelectorAll("[data-sb-live-row]"), function (row) {
         var chip = row.querySelector("[data-sb-state]");
         var state = chip ? chip.getAttribute("data-sb-state") : "";
-        if (querying || (filter !== "all" && state !== filter)) row.remove();
+        var replacing = !!(row.id && present[row.id]);
+        if ((querying && !replacing) || (filter !== "all" && state !== filter)) row.remove();
+      });
+      present = {};
+      Array.prototype.forEach.call(body.children, function (row) {
+        if (row.id) present[row.id] = true;
       });
       var empty = panel.querySelector("[data-sb-todos-empty]");
       if (empty) empty.hidden = body.children.length > 0;

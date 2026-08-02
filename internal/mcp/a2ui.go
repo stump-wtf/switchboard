@@ -153,20 +153,23 @@ func renderQueueA2UI(queue string, todos []store.Todo) a2uiPayload {
 	p.Version = a2uiVersion
 	p.UpdateComponents.SurfaceID = "queue-" + sanitizeID(queue)
 
+	// The Column at comps[1] owns every section; each branch below appends only the children it
+	// actually emits, so no reference dangles (an unresolved child renders as a missing-component
+	// error in A2UI hosts).
 	comps := []a2uiComponent{
 		{Component: "Card", ID: "root", Child: "col"},
-		{Component: "Column", ID: "col", Children: []string{"title", "count"}},
+		{Component: "Column", ID: "col", Children: []string{"title"}},
 		{Component: "Text", ID: "title", Variant: "h2", Text: "Queue: " + queue},
 	}
 
 	if len(todos) == 0 {
-		comps[len(comps)-1].Children = append(comps[len(comps)-1].Children, "empty")
+		comps[1].Children = append(comps[1].Children, "empty")
 		comps = append(comps, a2uiComponent{Component: "Text", ID: "empty", Text: "No pending todos."})
 		p.UpdateComponents.Components = comps
 		return p
 	}
 
-	comps[len(comps)-1].Children = append(comps[len(comps)-1].Children, "list")
+	comps[1].Children = append(comps[1].Children, "count", "list")
 	comps = append(comps, a2uiComponent{Component: "Text", ID: "count", Text: fmt.Sprintf("%d pending", len(todos))})
 
 	listChildren := make([]string, 0, len(todos))

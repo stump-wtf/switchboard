@@ -358,37 +358,8 @@ func summarizeSlack(eventType string) string {
 }
 
 // summarizeGitea builds a one-line, legible todo title from a Gitea payload. Gitea's payload
-// shape is GitHub-compatible for the common events, so this mirrors summarizeGitHub.
+// shape is GitHub-compatible for the common events, so it shares summarizeForge (ingest.go) with
+// the GitHub receiver — only the fallback label differs.
 func summarizeGitea(event string, body []byte) string {
-	var p struct {
-		Action     string `json:"action"`
-		Number     int    `json:"number"`
-		Repository struct {
-			FullName string `json:"full_name"`
-		} `json:"repository"`
-		PullRequest struct {
-			Number int    `json:"number"`
-			Title  string `json:"title"`
-		} `json:"pull_request"`
-		Issue struct {
-			Number int    `json:"number"`
-			Title  string `json:"title"`
-		} `json:"issue"`
-		Sender struct {
-			Login string `json:"login"`
-		} `json:"sender"`
-	}
-	_ = json.Unmarshal(body, &p)
-	repo := p.Repository.FullName
-	switch event {
-	case "pull_request":
-		return strings.TrimSpace("PR #" + itoa(p.PullRequest.Number) + " " + p.Action + " in " + repo + " — " + p.PullRequest.Title)
-	case "issues":
-		return strings.TrimSpace("Issue #" + itoa(p.Issue.Number) + " " + p.Action + " in " + repo + " — " + p.Issue.Title)
-	default:
-		if repo != "" {
-			return "gitea " + event + " in " + repo
-		}
-		return "gitea " + event
-	}
+	return summarizeForge("gitea", event, body)
 }
