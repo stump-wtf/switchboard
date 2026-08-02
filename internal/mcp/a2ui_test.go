@@ -189,6 +189,10 @@ func TestURISegment(t *testing.T) {
 	}{
 		{"switchboard://queue/reviews/a2ui", "queue", "reviews"},
 		{"switchboard://todo/td_123/a2ui", "todo", "td_123"},
+		// An A2UI host's optional ?w= width hint rides on the /a2ui suffix; the
+		// segment extraction must strip it rather than choke on "a2ui?w=...".
+		{"switchboard://queue/reviews/a2ui?w=120", "queue", "reviews"},
+		{"switchboard://todo/td_123/a2ui?w=80", "todo", "td_123"},
 		{"switchboard://queue//a2ui", "queue", ""},
 		{"switchboard://todo/td_1/nota2ui", "todo", ""},
 		{"switchboard://queue/reviews/extra/a2ui", "queue", ""},
@@ -294,6 +298,37 @@ func TestA2UIQueueResourceHappyPath(t *testing.T) {
 	}
 	if !strings.Contains(res.Contents[0].Text, "Review PR #42") {
 		t.Fatal("pending todo title must appear in the payload")
+	}
+}
+
+// TestA2UIResourceWidthHint: an A2UI host (Crush's read_mcp_resource) appends a ?w= width hint
+// to every /a2ui URI it reads. The surfaces ignore the value, but the SDK's {?w} template
+// matching must still route the read, and uriSegment must strip the query before extracting the
+// path variable — a template registered without {?w} 404s on the hinted URI, and a uriSegment
+// that doesn't strip the query extracts nothing. Both queue and todo surfaces must accept it.
+func TestA2UIResourceWidthHint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_1", Queue: "reviews",
+		Title: "Review PR #42", State: "pending", Payload: []byte(`{"pr":42}`)})
+	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+
+	for _, uri := range []string{
+		"switchboard://queue/reviews/a2ui?w=120",
+		"switchboard://todo/td_1/a2ui?w=80",
+	} {
+		res, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: uri})
+		if err != nil {
+			t.Fatalf("resources/read %s: %v", uri, err)
+		}
+		if len(res.Contents) != 1 || res.Contents[0].MIMEType != a2uiMIMEType {
+			t.Fatalf("read %s: contents = %+v, want one %q part", uri, res.Contents, a2uiMIMEType)
+		}
+		if !strings.Contains(res.Contents[0].Text, "Review PR #42") {
+			t.Fatalf("read %s: payload missing the todo title", uri)
+		}
 	}
 }
 
@@ -463,9 +498,9 @@ func TestA2UIResourceAdvertisedWithScope(t *testing.T) {
 			continue
 		}
 		switch rt.URITemplate {
-		case "switchboard://queue/{queue}/a2ui":
+		case "switchboard://queue/{queue}/a2ui{?w}":
 			sawQueue = true
-		case "switchboard://todo/{id}/a2ui":
+		case "switchboard://todo/{id}/a2ui{?w}":
 			sawTodo = true
 		}
 	}
