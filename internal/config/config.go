@@ -51,6 +51,14 @@ type Config struct {
 	// Navigation" (views whose backing capability is not enabled are hidden, not rendered broken).
 	// (SWITCHBOARD_FRIENDING=1)
 	FriendingEnabled bool
+
+	// PushAllowHTTP is the explicit operator opt-in that lets A2A push-notification webhook targets
+	// use http:// instead of https://. It exists only for a documented non-production scope (local
+	// testing against an http receiver); the SSRF guard otherwise requires https. NEVER enable in
+	// production — an http webhook target sends the outbound delivery (and any bearer/api-key auth
+	// descriptor) in cleartext. Off by default. (SWITCHBOARD_PUSH_ALLOW_HTTP=1)
+	// Governing: SPEC-0019 REQ "Webhook Target Validation (SSRF Guard)".
+	PushAllowHTTP bool
 }
 
 // FromEnv builds a Config from environment variables, applying defaults.
@@ -72,6 +80,7 @@ func FromEnv() Config {
 		SecretEncryptionKey: os.Getenv("SWITCHBOARD_SECRET_ENCRYPTION_KEY"),
 		DevLogin:            os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
 		FriendingEnabled:    os.Getenv("SWITCHBOARD_FRIENDING") == "1",
+		PushAllowHTTP:       os.Getenv("SWITCHBOARD_PUSH_ALLOW_HTTP") == "1",
 	}
 }
 
