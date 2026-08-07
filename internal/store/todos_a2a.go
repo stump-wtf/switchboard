@@ -46,7 +46,7 @@ func (s *Store) CancelTodo(ctx context.Context, id string, result []byte) (Todo,
 		RETURNING `+todoCols, id, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, id)
+		return Todo{}, s.classifyMiss(ctx, "", id)
 	}
 	if err == nil {
 		s.fireTodoHook("canceled", t)
@@ -71,7 +71,7 @@ func (s *Store) RejectTodo(ctx context.Context, id string, result []byte) (Todo,
 		RETURNING `+todoCols, id, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, id)
+		return Todo{}, s.classifyMiss(ctx, "", id)
 	}
 	if err == nil {
 		s.fireTodoHook("rejected", t)
@@ -99,7 +99,7 @@ func (s *Store) InterruptTodo(ctx context.Context, id, owner, state string, resu
 		RETURNING `+todoCols, id, owner, state, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, id)
+		return Todo{}, s.classifyMiss(ctx, "", id)
 	}
 	if err == nil {
 		s.fireTodoHook(t.State, t)
@@ -122,7 +122,7 @@ func (s *Store) ResumeTodo(ctx context.Context, id, owner string, result []byte)
 		RETURNING `+todoCols, id, owner, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, id)
+		return Todo{}, s.classifyMiss(ctx, "", id)
 	}
 	if err == nil {
 		s.fireTodoHook("claimed", t)

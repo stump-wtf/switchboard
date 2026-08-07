@@ -16,7 +16,7 @@ func TestInterruptStatesRetainOwnerAndLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	claimed, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour)
+	claimed, err := s.ClaimTodo(ctx, "", td.ID, "w", time.Hour)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestInterruptTodoGuards(t *testing.T) {
 	if _, err := s.InterruptTodo(ctx, td.ID, "w", StateInputRequired, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("interrupt pending should conflict, got %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, "", td.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	// Another owner cannot interrupt someone else's claim.
@@ -131,15 +131,15 @@ func TestRejectedIsDistinctFromFailed(t *testing.T) {
 		t.Fatalf("requeue picked up a rejected todo (n=%d); rejected must not be retried", n)
 	}
 	// …the claim scan never re-surfaces it…
-	if _, err := s.ClaimTodo(ctx, td.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
+	if _, err := s.ClaimTodo(ctx, "", td.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
 		t.Fatalf("claim rejected should conflict, got %v", err)
 	}
 	// …and the explicit operator RetryTodo (which only re-enqueues 'failed') refuses it.
-	if _, err := s.RetryTodo(ctx, td.ID); !errors.Is(err, ErrConflict) {
+	if _, err := s.RetryTodoAnyEndpoint(ctx, td.ID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("RetryTodo on rejected should conflict (only failed is retryable), got %v", err)
 	}
 	// Re-fetch confirms it is still 'rejected' — nothing moved it.
-	got, err := s.GetTodo(ctx, td.ID)
+	got, err := s.GetTodoAnyEndpoint(ctx, td.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestRejectedIsDistinctFromFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create2: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, td2.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, "", td2.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim2: %v", err)
 	}
 	if _, err := s.RejectTodo(ctx, td2.ID, nil); !errors.Is(err, ErrConflict) {
@@ -183,10 +183,10 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 		t.Fatalf("cancel: owner=%q lease=%v retry=%v; want all cleared", c.Owner, c.LeaseExpiresAt, c.NextRetryAt)
 	}
 	// Terminal and distinct from failed: not retryable, not re-claimable, not requeued.
-	if _, err := s.RetryTodo(ctx, pend.ID); !errors.Is(err, ErrConflict) {
+	if _, err := s.RetryTodoAnyEndpoint(ctx, pend.ID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("RetryTodo on canceled should conflict, got %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, pend.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
+	if _, err := s.ClaimTodo(ctx, "", pend.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
 		t.Fatalf("claim canceled should conflict, got %v", err)
 	}
 	// Idempotency signal: a second cancel finds it already terminal → ErrConflict (handler maps to
@@ -200,7 +200,7 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create2: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, cl.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, "", cl.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim2: %v", err)
 	}
 	c2, err := s.CancelTodo(ctx, cl.ID, nil)
@@ -217,7 +217,7 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create3: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, intr.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, "", intr.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim3: %v", err)
 	}
 	if _, err := s.InterruptTodo(ctx, intr.ID, "w", StateInputRequired, nil); err != nil {
@@ -237,10 +237,10 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 		t.Fatalf("create4: %v", err)
 	}
 	for i := 0; i < 5; i++ {
-		if _, err := s.ClaimTodo(ctx, dl.ID, "w", time.Hour); err != nil {
+		if _, err := s.ClaimTodo(ctx, "", dl.ID, "w", time.Hour); err != nil {
 			t.Fatalf("claim4 %d: %v", i, err)
 		}
-		if _, err := s.FailTodo(ctx, dl.ID, "w", nil); err != nil {
+		if _, err := s.FailTodoAnyEndpoint(ctx, dl.ID, "w", nil); err != nil {
 			t.Fatalf("fail4 %d: %v", i, err)
 		}
 		if i < 4 {
@@ -291,7 +291,7 @@ func TestA2ATransitionsFireHookAfterCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create2: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, c.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, "", c.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	verbs, states = nil, nil
