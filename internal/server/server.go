@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	switchboard "github.com/joestump/switchboard"
+	"github.com/joestump/switchboard/internal/a2a"
 	"github.com/joestump/switchboard/internal/adapter/runner"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
@@ -170,11 +171,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	})
 
 	r := newRouter(routerDeps{
-		st:      st,
-		authr:   authr,
-		webh:    webh,
-		ing:     ing,
-		mcp:     mcph,
+		st:    st,
+		authr: authr,
+		webh:  webh,
+		ing:   ing,
+		mcp:   mcph,
+		// The A2A task surface (ADR-0021, SPEC-0018) authenticates against the SAME vended-endpoint
+		// credential the MCP surface uses — *store.Store satisfies both EndpointStore interfaces, so an
+		// A2A call and an MCP call resolve a credential identically.
+		a2a:     a2a.New(st, log),
 		oauth:   oauthsrv.New(st, cfg.BaseURL, log),
 		friends: newFriendIntake(st, authr, log),
 		ping:    pool.Ping,
@@ -257,6 +262,7 @@ type routerDeps struct {
 	webh    *web.Handler
 	ing     *ingest.Ingest
 	mcp     *mcpsrv.Handler             // the Run-wired MCP handler (doorbell + revocation hooks attached)
+	a2a     *a2a.Handler                // the A2A JSON-RPC task surface (ADR-0021, SPEC-0018); same vended-endpoint auth as MCP
 	oauth   *oauthsrv.Handler           // OAuth AS surface: discovery metadata + dynamic client registration (ADR-0019)
 	friends *friendIntake               // A2A friend-request intake (OIDC-provenance authenticated)
 	ping    func(context.Context) error // /healthz DB probe
@@ -352,6 +358,14 @@ func newRouter(d routerDeps) chi.Router {
 	// rate limit, and the 1 MiB body cap all live inside the package's own middleware stack.
 	// The handler is Run-wired (doorbell + revocation hooks) and passed in — never constructed here.
 	r.Mount("/mcp", d.mcp.Routes())
+
+	// Native A2A task RPC surface (ADR-0021; SPEC-0018) mounted per vended endpoint at
+	// /a2a/{endpoint}. It is a SECOND wire protocol over the same authorized relationship the MCP
+	// surface serves: the same bearer credential, resolved the same way, gates both — an A2A caller
+	// without a valid vended-endpoint credential is rejected identically to an unauthenticated MCP
+	// call. Bearer auth, the 256 KiB body cap, and the security headers all live inside the package's
+	// own middleware stack. Governing: SPEC-0018 REQ "SendMessage Requires a Vended Endpoint".
+	r.Mount("/a2a", d.a2a.Routes())
 
 	// A2A friend-request intake (ADR-0010; SPEC-0010). Inbound only, and deliberately NOT
 	// session-authenticated: the request carries the requesting human's OIDC-signed provenance
