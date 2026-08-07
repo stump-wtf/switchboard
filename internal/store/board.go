@@ -27,6 +27,14 @@ type BoardStats struct {
 }
 
 // BoardStats returns the Board tile counts in one round trip.
+//
+// InFlight counts strictly `claimed` and AwaitingClaim strictly `pending`; the four A2A states
+// (SPEC-0018) are deliberately excluded from both. The interrupt states (input-required/
+// auth-required) are paused, not actively working, so they are not "in flight"; the terminal A2A
+// states (canceled/rejected) are neither in flight nor awaiting a claim. They remain in TotalTodos
+// (an unfiltered count) so nothing is dropped from the grand total — matching the intentional-ignore
+// documented on TodoCounts. A dedicated A2A-state tile is the province of the A2A feature stories,
+// not story #58. Governing: SPEC-0018 REQ "Task State Machine Extension".
 func (s *Store) BoardStats(ctx context.Context) (BoardStats, error) {
 	var b BoardStats
 	err := s.pool.QueryRow(ctx, `

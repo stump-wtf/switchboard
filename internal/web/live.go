@@ -367,17 +367,28 @@ func (h *Handler) PublishQueueNudge(string) {
 	h.enqueueLive(func(ctx context.Context) { h.publishCounts(ctx) })
 }
 
-// sseEventNames maps store transition verbs onto the typed event taxonomy.
+// sseEventNames maps store transition verbs onto the typed event taxonomy. The four A2A states
+// (SPEC-0018 REQ "Task State Machine Extension") ride their own typed events so the board advances
+// live on cancel/reject/interrupt just as it does on the original four transitions; an interrupt
+// resolving back to `claimed` (ResumeTodo) reuses the existing todo_claimed event. Governing:
+// SPEC-0015 lane semantics, SPEC-0018 REQ "Task State Machine Extension".
 var sseEventNames = map[string]string{
-	"created": "todo_created",
-	"claimed": "todo_claimed",
-	"done":    "todo_completed",
-	"failed":  "todo_failed",
-	"pending": "todo_resurfaced", // reaper re-surface or retry back to the queue
+	"created":        "todo_created",
+	"claimed":        "todo_claimed",
+	"done":           "todo_completed",
+	"failed":         "todo_failed",
+	"pending":        "todo_resurfaced", // reaper re-surface or retry back to the queue
+	"canceled":       "todo_canceled",
+	"rejected":       "todo_rejected",
+	"input-required": "todo_input_required",
+	"auth-required":  "todo_auth_required",
 }
 
 // laneForState maps a durable todo state onto its board lane: pending = verified (durable,
-// unclaimed); claimed and beyond = patched through. Governing: SPEC-0015 lane semantics.
+// unclaimed); claimed and beyond = patched through. The four A2A states (SPEC-0018) are all
+// post-pending — canceled/rejected/input-required/auth-required each land in the patched lane via
+// this default, which is correct: none is an unclaimed durable arrival. Governing: SPEC-0015 lane
+// semantics, SPEC-0018 REQ "Task State Machine Extension".
 func laneForState(state string) string {
 	if state == "pending" {
 		return laneVerified
@@ -386,7 +397,10 @@ func laneForState(state string) string {
 }
 
 // laneStateLabel renders a card's state chip text: the durable "pending" state reads "queued" on
-// the board (the design record's chip), every other state is its own label.
+// the board (the design record's chip), every other state is its own label. The A2A states
+// (canceled/rejected/input-required/auth-required, SPEC-0018) render under their own internal
+// spelling here — the A2A wire projection (store.A2ATaskState) applies only at the A2A boundary, not
+// on switchboard's own board.
 func laneStateLabel(state string) string {
 	if state == "pending" {
 		return "queued"
@@ -413,6 +427,16 @@ func (h *Handler) toastFor(ctx context.Context, name string, t store.Todo) *toas
 		return &toastMsg{Kind: "failed", Text: id + " · failed · attempts exhausted"}
 	case "todo_resurfaced":
 		return &toastMsg{Kind: "resurfaced", Text: id + " · re-surfaced to queue"}
+	// A2A transitions (SPEC-0018 REQ "Task State Machine Extension"). Cancel/reject are terminal
+	// moves worth a toast; the interrupt states announce the todo is paused waiting on the client.
+	case "todo_canceled":
+		return &toastMsg{Kind: "completed", Text: id + " · canceled"}
+	case "todo_rejected":
+		return &toastMsg{Kind: "failed", Text: id + " · rejected"}
+	case "todo_input_required":
+		return &toastMsg{Kind: "claimed", Text: id + " · awaiting input"}
+	case "todo_auth_required":
+		return &toastMsg{Kind: "claimed", Text: id + " · awaiting auth"}
 	}
 	return nil
 }
@@ -570,14 +594,32 @@ func laneCardDetail(t store.Todo) string {
 			return "failed · will retry"
 		}
 		return "failed · attempts exhausted"
+	// A2A states (SPEC-0018 REQ "Task State Machine Extension"). Terminal canceled/rejected read
+	// their own outcome; the interrupt states surface who they're still owned by, since the lease is
+	// retained and the todo returns to that owner when the requirement is supplied.
+	case "canceled":
+		return "canceled"
+	case "rejected":
+		return "rejected · not retried"
+	case "input-required":
+		return "input required · " + ownerLabel(t.Owner)
+	case "auth-required":
+		return "auth required · " + ownerLabel(t.Owner)
 	}
 	return ""
 }
 
-// laneCardDetail (method) resolves the claimed owner's display name via the store.
+// laneCardDetail (method) resolves the claimed/interrupted owner's display name via the store. The
+// A2A interrupt states (input-required/auth-required, SPEC-0018) retain their owner just like
+// `claimed`, so they get the same store-resolved owner label rather than the raw owner id.
 func (h *Handler) laneCardDetail(ctx context.Context, t store.Todo) string {
-	if t.State == "claimed" {
+	switch t.State {
+	case "claimed":
 		return "claimed · " + h.ownerLabel(ctx, t.Owner)
+	case "input-required":
+		return "input required · " + h.ownerLabel(ctx, t.Owner)
+	case "auth-required":
+		return "auth required · " + h.ownerLabel(ctx, t.Owner)
 	}
 	return laneCardDetail(t)
 }

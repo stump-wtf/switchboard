@@ -83,20 +83,20 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 		"claimed · agent · 0a1b2c3",              // claimed card detail with owner label
 		"hx-post=\"/todos/td_1/claim\"",          // Claim action on the queued card
 		"id=\"sb-td-td_1\"", "id=\"sb-td-td_2\"", // stable card ids for OOB lane movement
-		"sse-connect=\"/events\"",                                                                  // one authenticated stream per page
-		"sse-swap=\"lane_received,lane_rejected,lane_deduped\"",                                    // page-local sink: ephemeral received lane
-		"sse-swap=\"todo_created,todo_claimed,todo_completed,todo_failed,todo_resurfaced,counts\"", // OOB sink
-		"hx-headers='{\"X-CSRF-Token\":\"tok\"}'",                                                  // CSRF injected into HTMX requests
-		"aria-live=\"polite\"",                                                                     // live regions present in DOM
-		"id=\"sb-overlay\"",                                                                        // overlay slot present-but-empty
-		"id=\"sb-toasts\"",                                                                         // toast region
-		"id=\"sb-todo-count\"",                                                                     // rail count pill is a swap target
-		"/static/js/theme-boot.js",                                                                 // pre-paint theme boot (SPEC-0015 Theme Toggle)
-		"/static/js/sb-live.js",                                                                    // toast TTL / lane cap helper (split sb.js module)
-		"/static/js/sb-keys.js",                                                                    // keymap registry + key-hint footer
-		">JS</span>",                                                                               // avatar initials
-		"/static/switchboard.css",                                                                  // component layer linked
-		"aria-label=\"Switchboard mark\"",                                                          // accessible inline-SVG mark
+		"sse-connect=\"/events\"",                               // one authenticated stream per page
+		"sse-swap=\"lane_received,lane_rejected,lane_deduped\"", // page-local sink: ephemeral received lane
+		"sse-swap=\"todo_created,todo_claimed,todo_completed,todo_failed,todo_resurfaced,todo_canceled,todo_rejected,todo_input_required,todo_auth_required,counts\"", // OOB sink (incl. the four A2A states, SPEC-0018)
+		"hx-headers='{\"X-CSRF-Token\":\"tok\"}'", // CSRF injected into HTMX requests
+		"aria-live=\"polite\"",                    // live regions present in DOM
+		"id=\"sb-overlay\"",                       // overlay slot present-but-empty
+		"id=\"sb-toasts\"",                        // toast region
+		"id=\"sb-todo-count\"",                    // rail count pill is a swap target
+		"/static/js/theme-boot.js",                // pre-paint theme boot (SPEC-0015 Theme Toggle)
+		"/static/js/sb-live.js",                   // toast TTL / lane cap helper (split sb.js module)
+		"/static/js/sb-keys.js",                   // keymap registry + key-hint footer
+		">JS</span>",                              // avatar initials
+		"/static/switchboard.css",                 // component layer linked
+		"aria-label=\"Switchboard mark\"",         // accessible inline-SVG mark
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board: missing %q", want)
