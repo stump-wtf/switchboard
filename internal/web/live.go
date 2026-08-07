@@ -104,6 +104,13 @@ type laneCounts struct {
 	Patched  int // claimed or beyond (claimed + done + failed)
 }
 
+// toastMsg is the render model for one toast notification (fragments/shared.html "toast"):
+// the transition type drives the accent color and icon, the message is the one-line summary.
+type toastMsg struct {
+	Kind string // claimed | completed | failed | resurfaced
+	Text string // e.g. "td_42 · claimed · operator"
+}
+
 // lanesView feeds the "board_lanes" fragment: the server-rendered three-lane panel. Received is
 // empty on every full render (ephemeral, SSE-only); verified/patched render from the durable queue.
 type lanesView struct {
@@ -288,7 +295,7 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 			}
 		}
 		// Background transitions surface as transient toasts announced with the todo id.
-		if msg := h.toastText(ctx, name, t); msg != "" {
+		if msg := h.toastFor(ctx, name, t); msg != nil {
 			if frag, err := h.renderFragment("toast", msg); err == nil {
 				payload.WriteString(frag)
 			} else {
@@ -387,27 +394,27 @@ func laneStateLabel(state string) string {
 	return state
 }
 
-// toastText renders the toast copy for a transition, or "" for transitions that only move the
+// toastFor renders the toast for a transition, or nil for transitions that only move the
 // board (creation is announced by its own card appearing). It resolves the lease owner's display
 // name via the store (claimed · <agent name>).
-func (h *Handler) toastText(ctx context.Context, name string, t store.Todo) string {
+func (h *Handler) toastFor(ctx context.Context, name string, t store.Todo) *toastMsg {
 	id := shortID(t.ID)
 	switch name {
 	case "todo_claimed":
-		return id + " · claimed · " + h.ownerLabel(ctx, t.Owner)
+		return &toastMsg{Kind: "claimed", Text: id + " · claimed · " + h.ownerLabel(ctx, t.Owner)}
 	case "todo_completed":
-		return id + " · completed · ack sent"
+		return &toastMsg{Kind: "completed", Text: id + " · completed · ack sent"}
 	case "todo_failed":
 		// A scheduled-backoff fail and a dead-letter both commit as 'failed'; NextRetryAt tells the
 		// truthful story (SPEC-0003 scheduled backoff — design "will retry with backoff").
 		if t.NextRetryAt != nil {
-			return id + " · failed · will retry with backoff"
+			return &toastMsg{Kind: "failed", Text: id + " · failed · will retry with backoff"}
 		}
-		return id + " · failed · attempts exhausted"
+		return &toastMsg{Kind: "failed", Text: id + " · failed · attempts exhausted"}
 	case "todo_resurfaced":
-		return id + " · re-surfaced to queue"
+		return &toastMsg{Kind: "resurfaced", Text: id + " · re-surfaced to queue"}
 	}
-	return ""
+	return nil
 }
 
 // publishCounts re-renders the count bundle (tiles + rail count + LIVE pill + lane counts) from

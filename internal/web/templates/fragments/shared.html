@@ -42,8 +42,9 @@
      Args via dict: C store.TodoCounts, OOB bool. */}}
 {{define "todo_pill_counts"}}<span id="sb-tc-all" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.All}}</span><span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Pending}}</span><span id="sb-tc-claimed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Claimed}}</span><span id="sb-tc-done" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Done}}</span><span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Failed}}</span>{{end}}
 
-{{/* toast — a transient announcement prepended into the aria-live toast region. Data: string. */}}
-{{define "toast"}}<div class="sb-toast" role="status" hx-swap-oob="afterbegin:#sb-toasts">{{.}}</div>{{end}}
+{{/* toast — a transient announcement prepended into the aria-live toast region. Data: toastMsg
+     (Kind drives the accent color + icon, Text is the one-line summary). */}}
+{{define "toast"}}<div class="sb-toast sb-toast--{{.Kind}}" role="status" hx-swap-oob="afterbegin:#sb-toasts"><span class="sb-toast__icon" aria-hidden="true">{{if eq .Kind "claimed"}}⏵{{else if eq .Kind "completed"}}✓{{else if eq .Kind "failed"}}✗{{else if eq .Kind "resurfaced"}}↻{{end}}</span>{{.Text}}</div>{{end}}
 
 {{/* overlay_clear — empties the shared overlay OOB in the same response (sb.js's overlay watcher
      then hides it), so a successful add-friend submit dismisses its modal (#175). innerHTML swap on

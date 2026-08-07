@@ -346,8 +346,8 @@ func TestCountsFragmentCarriesOOBBundle(t *testing.T) {
 
 func TestToastFragmentTargetsToastRegion(t *testing.T) {
 	h := newTestHandler(t)
-	out := renderFrag(t, h, "toast", "td_8f2a · lease expired, re-surfaced to queue")
-	for _, want := range []string{`hx-swap-oob="afterbegin:#sb-toasts"`, `class="sb-toast"`, `role="status"`, "re-surfaced"} {
+	out := renderFrag(t, h, "toast", toastMsg{Kind: "resurfaced", Text: "td_8f2a · lease expired, re-surfaced to queue"})
+	for _, want := range []string{`hx-swap-oob="afterbegin:#sb-toasts"`, `sb-toast--resurfaced`, `role="status"`, "re-surfaced", "sb-toast__icon"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("toast: missing %q in %q", want, out)
 		}

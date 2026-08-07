@@ -1128,26 +1128,77 @@ pre code {
 .sb-toasts {
   position: fixed;
   bottom: 18px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 18px;
   z-index: 50;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  align-items: center;
+  gap: 6px;
+  align-items: flex-end;
   pointer-events: none;
+  max-height: 40vh;
+  overflow: hidden;
 }
 
 .sb-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   background: var(--sb-toast-bg);
   color: var(--sb-toast-text);
   font-family: var(--sb-font-mono);
   font-size: 12px;
+  line-height: 1.4;
   border-radius: 10px;
-  padding: 9px 16px;
+  padding: 8px 14px;
+  max-width: 380px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   box-shadow: var(--sb-shadow-toast);
+  border-left: 3px solid var(--sb-muted);
   animation: sb-fade-up var(--sb-dur-enter) var(--sb-ease);
   pointer-events: auto;
+}
+
+.sb-toast--claimed {
+  border-left-color: var(--sb-status-claimed);
+}
+
+.sb-toast--completed {
+  border-left-color: var(--sb-status-done);
+}
+
+.sb-toast--failed {
+  border-left-color: var(--sb-status-failed);
+}
+
+.sb-toast--resurfaced {
+  border-left-color: var(--sb-cyan);
+}
+
+.sb-toast__icon {
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.sb-toast--claimed .sb-toast__icon {
+  color: var(--sb-status-claimed);
+}
+
+.sb-toast--completed .sb-toast__icon {
+  color: var(--sb-status-done);
+}
+
+.sb-toast--failed .sb-toast__icon {
+  color: var(--sb-status-failed);
+}
+
+.sb-toast--resurfaced .sb-toast__icon {
+  color: var(--sb-cyan);
+}
+
+.sb-toast--exiting {
+  animation: sb-toast-out 0.25s var(--sb-ease) forwards;
 }
 
 /* ---- Todos view: ❯ search prompt, flat filter chips, queue table (SPEC-0015 REQ "Todos View
@@ -1579,6 +1630,17 @@ pre code {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes sb-toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px);
   }
 }
 

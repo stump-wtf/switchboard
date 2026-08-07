@@ -12,6 +12,7 @@
   "use strict";
 
   var TOAST_TTL_MS = 4000;
+  var TOAST_MAX = 5;
 
   // watch observes childList mutations on el and runs fn now and on every change.
   function watch(el, fn) {
@@ -20,15 +21,22 @@
     fn();
   }
 
-  // ---- toasts: auto-expire after a short TTL ----
+  // ---- toasts: auto-expire after a short TTL, cap visible count ----
   function initToasts() {
     var toasts = document.getElementById("sb-toasts");
     watch(toasts, function () {
+      // Trim oldest toasts beyond the cap.
+      while (toasts.children.length > TOAST_MAX) {
+        toasts.removeChild(toasts.lastElementChild);
+      }
       Array.prototype.forEach.call(toasts.children, function (toast) {
         if (toast.dataset.sbTtl) return; // already scheduled
         toast.dataset.sbTtl = "1";
         setTimeout(function () {
-          toast.remove();
+          toast.classList.add("sb-toast--exiting");
+          setTimeout(function () {
+            toast.remove();
+          }, 250);
         }, TOAST_TTL_MS);
       });
     });
