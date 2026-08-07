@@ -18,11 +18,15 @@ connects an agent to *other agents* for discovery. Personas are published as A2A
 defines how one agent gains scoped access to hand work to another: a **friend request** that a **human
 approves**, where approval *is* the vend that mints a scoped MCP endpoint.
 
-The controlling rule is that A2A is strictly outward-facing (discovery/announcement) and grants nothing;
-inbound work is governed by human vending and lands as durable **todos**
-([ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md)), never as A2A direct peer tasks. Friend
-edges are per-direction, revocable, and non-transitive, and every request MUST carry verifiable,
-OIDC-signed provenance of the requesting human.
+The controlling rule is that A2A grants nothing on its own; inbound work is governed by human vending and
+lands as durable **todos** ([ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md)) regardless of
+which wire protocol created them. Originally A2A was discovery/announcement only and cross-agent work
+flowed exclusively through MCP's `create_for`; as of
+[ADR-0021](../../../adrs/ADR-0021-a2a-task-delegation-transport.md) /
+[SPEC-0018](../a2a-tasks/spec.md), a grant-holder may **also** hand work in via A2A's own `SendMessage` —
+but only once a grant from this spec's flow exists. A2A discovery still grants nothing by itself, and this
+spec's flow remains the *only* way to acquire a grant. Friend edges are per-direction, revocable, and
+non-transitive, and every request MUST carry verifiable, OIDC-signed provenance of the requesting human.
 
 This spec realizes [ADR-0010](../../../adrs/ADR-0010-a2a-discovery-human-vended-friending.md). It depends
 on SPEC-0009 for the personas/Agent Cards that are discovered, and on
@@ -175,18 +179,34 @@ one granted; there MUST be no graph traversal across edges.
 - **THEN** A MUST NOT be able to enumerate B's other friends, B's other personas, or any of B's queues
   beyond the granted one
 
-### Requirement: Work Flows as Todos, Not A2A Tasks
+### Requirement: Work Flows as Todos, Whether Via MCP or A2A
 
-After a grant is minted, cross-agent work MUST flow as todos created in the granted queue (via
-`create_for`), which are durable, owned, dedup'd, and leaseable
-([ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md)). Switchboard MUST NOT expose an A2A
-direct-task delegation intake; A2A's role MUST be limited to discovery/announcement.
+> Amended 2026-07-20 by [ADR-0021](../../../adrs/ADR-0021-a2a-task-delegation-transport.md) /
+> [SPEC-0018](../a2a-tasks/spec.md). Originally this requirement read "Work Flows as Todos, Not A2A
+> Tasks" and forbade any A2A task intake. The grant-acquisition invariant this requirement protects —
+> nothing lands in a queue without a grant minted by this spec's approval flow — is unchanged; only the
+> set of wire protocols that can *use* an existing grant has grown.
 
-#### Scenario: Cross-agent work arrives as a todo
+After a grant is minted, cross-agent work MUST flow as todos created in the granted queue — via MCP's
+`create_for`, or via A2A's `SendMessage` once [SPEC-0018](../a2a-tasks/spec.md) is implemented — and MUST
+be durable, owned, dedup'd, and leaseable
+([ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md)) regardless of which protocol created it.
+A2A's `SendMessage` MUST enforce the exact same vended-endpoint authorization `create_for` does; it MUST
+NOT accept a task from a caller that does not hold a grant minted by this spec's flow. A2A's role in
+*acquiring* a grant remains limited to discovery/announcement — `SendMessage` is only usable after a grant
+already exists.
 
-- **WHEN** A, holding an approved grant, hands work to B
-- **THEN** the work MUST land as a todo in B's granted queue via `create_for`, and switchboard MUST
-  expose no A2A direct-task endpoint to accept it otherwise
+#### Scenario: Cross-agent work arrives as a todo regardless of protocol
+
+- **WHEN** A, holding an approved grant, hands work to B via either `create_for` or A2A's `SendMessage`
+- **THEN** the work MUST land as a todo in B's granted queue, indistinguishable in the store from work
+  created via the other protocol
+
+#### Scenario: A2A task intake still requires a grant
+
+- **WHEN** a caller without an approved grant invokes A2A's `SendMessage` against a persona
+- **THEN** switchboard MUST reject the call exactly as it would reject an unauthenticated `create_for`
+  call, and MUST NOT create a todo
 
 ### Requirement: Anti-Spam — Bounded Discovery and Quotas
 

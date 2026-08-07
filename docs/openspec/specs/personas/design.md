@@ -35,13 +35,20 @@ that.
 - Make advertised skills a pure function of the vended verb subset, so over-advertisement is
   structurally impossible.
 - Publish each persona as a schema-valid A2A Agent Card at a per-persona well-known endpoint.
-- Keep the card outward-only (discovery/announcement); no work-intake through it.
+- Keep the public discovery card's `url` outward-only (discovery/announcement); no work-intake through
+  *that* URL — actual task intake, once implemented, happens at a separately vended, credentialed
+  endpoint (SPEC-0010), never the public discovery identifier.
+- Keep `capabilities` flags accurate to what switchboard actually implements for the persona (originally
+  always discovery-only; `streaming` flips to `true` once [SPEC-0018](../a2a-tasks/spec.md) ships).
 
 ### Non-Goals
 
 - Defining the friending/approval flow that consumes these cards — that is SPEC-0010
-  ([ADR-0010](../../../adrs/ADR-0010-a2a-discovery-human-vended-friending.md)).
-- Implementing A2A direct task delegation — deliberately excluded; work arrives as todos.
+  ([ADR-0010](../../../adrs/ADR-0010-a2a-discovery-human-vended-friending.md), superseded for the
+  transport question by [ADR-0021](../../../adrs/ADR-0021-a2a-task-delegation-transport.md)).
+- Implementing the A2A task RPC surface itself (`SendMessage`, streaming, etc.) — that is
+  [SPEC-0018](../a2a-tasks/spec.md). This spec only defines the card those capability flags are advertised
+  on, not the RPC handlers behind them.
 - Specifying the OIDC provenance mechanics of the owner identity chain — that is
   [ADR-0011](../../../adrs/ADR-0011-identity-assurance-oidc-passkey-deferred.md).
 

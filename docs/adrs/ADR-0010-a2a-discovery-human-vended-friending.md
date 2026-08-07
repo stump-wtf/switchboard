@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded
 date: 2026-07-05
 decision-makers: Joe Stump
 related: [ADR-0007, ADR-0008, ADR-0009, ADR-0011]
