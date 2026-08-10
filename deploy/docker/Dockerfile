@@ -16,7 +16,7 @@
 # act_runner's BuildKit (docker-container driver) has no egress to the Go module proxy, so an
 # in-container `go mod download` (or a GOTOOLCHAIN fetch) fails — vendoring makes the build hermetic.
 # Base MUST be >= the go.mod `go` directive or GOTOOLCHAIN would try to fetch a toolchain (needs network).
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY . .
 ARG VERSION=dev
