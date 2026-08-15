@@ -70,9 +70,10 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 		"The Board",                                                                // display page title
 		"every inbound line, from arrival to hand-off",                             // tagline
 		"sb-badge--signed", "sb-badge--token", "sb-badge--open", "sb-badge--queue", // trust legend
-		"sb-tile--alert",   // awaiting-claim tile tinted (count > 0)
-		"83%",              // verified pct tile
-		"sb-icon-wrap",     // provider icons (SVG) replace two-letter tags when available
+		"sb-tile--alert", // awaiting-claim tile tinted (count > 0)
+		"83%",            // verified pct tile
+		// Provider brand SVGs replace the two-letter tags wherever an icon ships (github, stripe).
+		"/static/icons/brands/github.svg", "/static/icons/brands/stripe.svg",
 		"2m ago", "3h ago", // relative ages
 		"id=\"sb-tiles\"",   // tiles band is the counts swap target
 		"sb-bars__bar--now", // throughput activity bars w/ current bucket

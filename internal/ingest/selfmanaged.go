@@ -31,7 +31,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -158,7 +157,8 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		}, targets,
 		store.CreateTodoParams{
 			Queue: wh.TargetQueue, Source: wh.SourceType, Kind: "webhook",
-			Title: summarizeSelfManagedTitle(wh.SourceType, body), Payload: body, IdempotencyKey: key,
+			Title:   summarizeSelfManagedTitle(wh.SourceType, selfManagedEvent(r), body),
+			Payload: body, IdempotencyKey: key,
 		})
 	if err != nil {
 		i.log.Error("ingest self-managed delivery", "webhook", wh.ID, "err", err)
@@ -217,7 +217,15 @@ func (i *Ingest) verifySelfManagedSigned(r *http.Request, sourceType, secret str
 	case "github":
 		return verifyGitHub(secret, body, r.Header.Get("X-Hub-Signature-256")), nil
 	case "gitea":
-		return verifyGitea(secret, body, r.Header.Get("X-Gitea-Signature")), nil
+		// Gitea signs the raw body with HMAC-SHA256 and presents it TWICE: natively as
+		// `X-Gitea-Signature: <hex>` and, for GitHub compatibility, as
+		// `X-Hub-Signature-256: sha256=<hex>`. The operator-configured receiver (Gitea, signed.go)
+		// verifies the latter, so accept either here rather than leaving the two Gitea paths
+		// disagreeing about which header is authoritative.
+		if sig := r.Header.Get("X-Gitea-Signature"); sig != "" {
+			return verifyGitea(secret, body, sig), nil
+		}
+		return verifyGitHub(secret, body, r.Header.Get("X-Hub-Signature-256")), nil
 	case "stripe":
 		return verifyStripe(secret, body, r.Header.Get("Stripe-Signature"), i.now(), i.tolerance), nil
 	case "slack":
@@ -249,40 +257,26 @@ func summarizeSelfManaged(sourceType string) string {
 	return "self-managed " + sourceType + " delivery"
 }
 
-// summarizeSelfManagedTitle builds a PR-aware todo title for a self-managed webhook delivery. For
-// gitea (and github) payloads carrying pull_request data it emits "PR #N \"title\" · action · repo · author";
-// for other source types or unparseable payloads it falls back to summarizeSelfManaged.
-func summarizeSelfManagedTitle(sourceType string, body []byte) string {
+// selfManagedEvent reads the forge event type off the delivery. Gitea sends X-Gitea-Event and, for
+// GitHub compatibility, X-GitHub-Event; GitHub sends only the latter.
+func selfManagedEvent(r *http.Request) string {
+	if event := r.Header.Get("X-GitHub-Event"); event != "" {
+		return event
+	}
+	return r.Header.Get("X-Gitea-Event")
+}
+
+// summarizeSelfManagedTitle builds a legible todo title for a self-managed webhook delivery. The
+// forge sources (gitea, github) share GitHub's payload shape, so they reuse summarizeForge — the
+// SAME summarizer the operator-configured receivers feed — and the board reads identically whether
+// a delivery arrived on /webhooks/gitea or on a vended self-managed URL. That also buys issue
+// events a real title, not just pull requests. Other source types keep the generic one-liner.
+func summarizeSelfManagedTitle(sourceType, event string, body []byte) string {
 	if sourceType != "gitea" && sourceType != "github" {
 		return summarizeSelfManaged(sourceType)
 	}
-	var p struct {
-		Action     string `json:"action"`
-		Repository struct {
-			FullName string `json:"full_name"`
-		} `json:"repository"`
-		PullRequest struct {
-			Number int    `json:"number"`
-			Title  string `json:"title"`
-			User   struct {
-				Login string `json:"login"`
-			} `json:"user"`
-		} `json:"pull_request"`
-	}
-	if err := json.Unmarshal(body, &p); err != nil || p.PullRequest.Number == 0 {
+	if event == "" {
 		return summarizeSelfManaged(sourceType)
 	}
-	repo := p.Repository.FullName
-	author := p.PullRequest.User.Login
-	title := "PR #" + itoa(p.PullRequest.Number) + " \"" + p.PullRequest.Title + "\""
-	if p.Action != "" {
-		title += " · " + p.Action
-	}
-	if repo != "" {
-		title += " · " + repo
-	}
-	if author != "" {
-		title += " · " + author
-	}
-	return title
+	return summarizeForge(sourceType, event, body)
 }

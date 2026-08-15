@@ -447,25 +447,70 @@ func TestVerifyGitea(t *testing.T) {
 	}
 }
 
-// summarizeSelfManagedTitle produces PR-aware titles for gitea payloads.
+// summarizeSelfManagedTitle produces forge-aware titles for gitea payloads, reusing the SAME
+// summarizer the operator-configured /webhooks/gitea receiver uses so one delivery reads
+// identically on the board whichever path carried it.
 func TestSummarizeSelfManagedTitleGitea(t *testing.T) {
 	pr := `{"action":"opened","pull_request":{"number":7,"title":"Fix login","user":{"login":"bob"}},"repository":{"full_name":"stump.wtf/switchboard"}}`
-	got := summarizeSelfManagedTitle("gitea", []byte(pr))
-	want := `PR #7 "Fix login" · opened · stump.wtf/switchboard · bob`
-	if got != want {
+	got := summarizeSelfManagedTitle("gitea", "pull_request", []byte(pr))
+	if want := summarizeGitea("pull_request", []byte(pr)); got != want {
+		t.Fatalf("gitea PR title = %q, want %q (parity with the operator-configured receiver)", got, want)
+	}
+	if want := "PR #7 opened in stump.wtf/switchboard — Fix login"; got != want {
 		t.Fatalf("gitea PR title = %q, want %q", got, want)
 	}
 
-	// Non-PR payload falls back to generic.
-	issue := `{"action":"created","issue":{"number":3,"title":"Bug"},"repository":{"full_name":"o/r"}}`
-	got = summarizeSelfManagedTitle("gitea", []byte(issue))
-	if got != "self-managed gitea delivery" {
-		t.Fatalf("non-PR gitea title = %q, want fallback", got)
+	// Issue events get a real title too — the PR-only summarizer swallowed them into the generic
+	// one-liner, which matters because issues route to their own queue.
+	issue := `{"action":"opened","issue":{"number":3,"title":"Bug"},"repository":{"full_name":"o/r"}}`
+	got = summarizeSelfManagedTitle("gitea", "issues", []byte(issue))
+	if want := "Issue #3 opened in o/r — Bug"; got != want {
+		t.Fatalf("gitea issue title = %q, want %q", got, want)
 	}
 
-	// Non-gitea source type always falls back.
-	got = summarizeSelfManagedTitle("stripe", []byte(pr))
+	// An unknown event still names the provider and repo rather than going fully generic.
+	got = summarizeSelfManagedTitle("gitea", "release", []byte(issue))
+	if want := "gitea release in o/r"; got != want {
+		t.Fatalf("gitea release title = %q, want %q", got, want)
+	}
+
+	// No event header at all → the generic one-liner; there is nothing to summarize against.
+	got = summarizeSelfManagedTitle("gitea", "", []byte(pr))
+	if got != "self-managed gitea delivery" {
+		t.Fatalf("eventless gitea title = %q, want fallback", got)
+	}
+
+	// Non-forge source types always fall back.
+	got = summarizeSelfManagedTitle("stripe", "pull_request", []byte(pr))
 	if got != "self-managed stripe delivery" {
 		t.Fatalf("stripe title = %q, want fallback", got)
+	}
+}
+
+// A self-managed gitea delivery that presents only the GitHub-compatible signature header
+// (X-Hub-Signature-256: sha256=<hex>) verifies too — the operator-configured /webhooks/gitea
+// receiver has always keyed on that header, so both Gitea paths MUST accept it.
+func TestSelfManagedGiteaHubSignatureAccepted(t *testing.T) {
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
+	st := store.New(pool)
+	const secret = "whsec_giteahub"
+	seedWebhook(t, st, ctx, "gitea", "signed", "reviews", "route-token-gitea-hub", secret)
+
+	body := `{"action":"opened","pull_request":{"number":9,"title":"Hub sig"},"repository":{"full_name":"o/r"}}`
+	rec := postSelfManaged(ing, "route-token-gitea-hub", body, map[string]string{
+		"X-Gitea-Delivery":    "guid-hub",
+		"X-Gitea-Event":       "pull_request",
+		"X-Hub-Signature-256": "sha256=" + giteaSig(secret, body),
+	})
+	if _, queue := accepted202(t, rec); queue != "reviews" {
+		t.Fatalf("queue = %q, want reviews", queue)
+	}
+	var title string
+	if err := pool.QueryRow(ctx,
+		`SELECT title FROM todos WHERE queue='reviews'`).Scan(&title); err != nil {
+		t.Fatalf("query todo: %v", err)
+	}
+	if want := "PR #9 opened in o/r — Hub sig"; title != want {
+		t.Fatalf("todo title = %q, want %q", title, want)
 	}
 }

@@ -411,8 +411,20 @@ func TestTodoRowCarriesSourceTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render todo_row: %v", err)
 	}
-	if !strings.Contains(out, `sb-icon-wrap`) && !strings.Contains(out, `data-sb-tag aria-hidden="true">GH</span>`) {
-		t.Errorf("todo_row: missing provider icon or two-letter source tag tile: %q", out)
+	// github ships a brand SVG, so the row renders the icon tile — pin the icon, not just the class,
+	// so a broken iconpath lookup silently falling back can never pass this assertion.
+	if !strings.Contains(out, `<img src="/static/icons/brands/github.svg"`) {
+		t.Errorf("todo_row: missing github provider icon: %q", out)
+	}
+	// A source with no brand SVG keeps the two-letter tag tile — the fallback branch stays covered.
+	noIcon := rowFixture("pending")
+	noIcon.Source = "healthchecks"
+	out2, err := h.renderFragment("todo_row", noIcon)
+	if err != nil {
+		t.Fatalf("render todo_row (no icon): %v", err)
+	}
+	if !strings.Contains(out2, `data-sb-tag aria-hidden="true">HL</span>`) {
+		t.Errorf("todo_row: iconless source must fall back to the two-letter tag: %q", out2)
 	}
 	bare := rowFixture("pending")
 	bare.Source = ""

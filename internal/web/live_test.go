@@ -51,7 +51,8 @@ func TestLaneCardFragmentStates(t *testing.T) {
 		`data-sb-lane-card="received"`,
 		`data-sb-ephemeral="60000"`,
 		"sb-lcard__pulse", "verifying",
-		"sb-badge--signed", "sb-icon-wrap",
+		"sb-badge--signed", `sb-icon-wrap sb-icon-wrap--signed`,
+		"/static/icons/brands/github.svg", // brand SVG, not the two-letter GH tag
 		"checking signature",
 	} {
 		if !strings.Contains(out, want) {

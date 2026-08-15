@@ -3403,9 +3403,23 @@ pre code {
   background: var(--sb-code-bg);
   flex-shrink: 0;
 }
+/* The templates render these icons as <img src="…svg">, not inline <svg>, so the sizing rules must
+   target img. An SVG loaded through <img> is an isolated document: it cannot inherit the page's
+   currentColor, so the trust-mode `color` below tints the CHIP, never the glyph. Simple Icons ship
+   with no fill attribute (i.e. black), which is why night mode inverts them further down. */
+.sb-icon-wrap img,
 .sb-icon-wrap svg {
   display: block;
-  fill: currentColor;
+  width: 16px;
+  height: 16px;
+}
+/* Standalone icons (not inside a chip wrap): the wizard choice list, the vend chipset, and the
+   inline event glyph beside a todo's kind. */
+.sb-choice-icon,
+.sb-chip-icon,
+.sb-event-icon {
+  display: inline-block;
+  vertical-align: text-bottom;
 }
 .sb-icon-wrap--signed {
   color: var(--sb-trust-signed);
@@ -3432,7 +3446,27 @@ pre code {
   margin-right: 3px;
   color: var(--sb-muted);
 }
+.sb-icon-wrap--event img,
 .sb-icon-wrap--event svg {
   width: 14px;
   height: 14px;
+}
+
+/* Night mode: the brand SVGs are monochrome black with no fill attribute, and arriving via <img>
+   they are unreachable by `color`/`fill` — so on the night palette they render black-on-dark, i.e.
+   invisible. Inverting the image is the only lever <img> leaves us. Mirrors the theme switching in
+   tokens.css: prefers-color-scheme unless data-theme="day", plus the explicit data-theme="night". */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="day"]) .sb-icon-wrap img,
+  :root:not([data-theme="day"]) .sb-choice-icon,
+  :root:not([data-theme="day"]) .sb-chip-icon,
+  :root:not([data-theme="day"]) .sb-event-icon {
+    filter: invert(1);
+  }
+}
+[data-theme="night"] .sb-icon-wrap img,
+[data-theme="night"] .sb-choice-icon,
+[data-theme="night"] .sb-chip-icon,
+[data-theme="night"] .sb-event-icon {
+  filter: invert(1);
 }
