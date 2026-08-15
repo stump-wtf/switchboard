@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"strings"
@@ -137,5 +138,52 @@ func TestMigrateFailedMigrationRollsBackAtomically(t *testing.T) {
 	}
 	if exists {
 		t.Fatal("failed migration's partial DDL must have been rolled back")
+	}
+}
+
+// TestMigrateFreshDatabaseAppliesEveryMigration pins the invariant that broke silently: the FULL
+// embedded chain MUST apply to a virgin database, in lexical filename order, with no step assuming
+// a schema shape an earlier-sorting migration has since changed.
+//
+// The regression it guards: 0012_endpoint_scoped_todos.sql runs `TRUNCATE todos, events`, and
+// 0012_a2a_push_notification_configs.sql — which sorts BEFORE it, sharing the 0012 prefix — adds
+// push_notification_configs.task_id → todos(id). Postgres then refuses the truncate ("cannot
+// truncate a table referenced in a foreign key constraint", SQLSTATE 0A000) and NO fresh install
+// can migrate. Existing deployments never noticed: schema_migrations already recorded that version,
+// so it is skipped forever. Only a from-scratch apply catches it, which is exactly what this does.
+//
+// Governing: SPEC-0004 REQ "Embedded, Ordered, Transactional Migrations".
+func TestMigrateFreshDatabaseAppliesEveryMigration(t *testing.T) {
+	pool, ctx := migrateTestPool(t)
+
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("the embedded migration chain must apply cleanly to a fresh database: %v", err)
+	}
+
+	// Every embedded migration recorded — not just "no error", which a silently-skipped file
+	// would also satisfy.
+	names, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+	for _, e := range names {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		if !recorded(t, pool, ctx, e.Name()) {
+			t.Errorf("migration %s did not apply to a fresh database", e.Name())
+		}
+	}
+
+	// Spot-check that the tables the 0012 trio contends over all exist afterwards.
+	for _, table := range []string{"todos", "events", "push_notification_configs", "webhook_routes"} {
+		var exists bool
+		if err := pool.QueryRow(ctx,
+			`SELECT to_regclass('public.'||$1) IS NOT NULL`, table).Scan(&exists); err != nil {
+			t.Fatalf("regclass %s: %v", table, err)
+		}
+		if !exists {
+			t.Errorf("table %s missing after a fresh migrate", table)
+		}
 	}
 }

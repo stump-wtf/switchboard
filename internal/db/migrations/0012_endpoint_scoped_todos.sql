@@ -26,8 +26,19 @@ DROP INDEX IF EXISTS idx_todos_pending;
 -- events (0001_init.sql), and Postgres rejects truncating a table referenced by an FK unless
 -- every referencing table is truncated in the same command:
 --   ERROR: cannot truncate a table referenced in a foreign key constraint (SQLSTATE 0A000)
--- Naming both tables in one TRUNCATE satisfies that check.
-TRUNCATE todos, events;
+--
+-- CASCADE, not an explicit table list. Naming todos and events alone was correct when this file
+-- was written, but it silently assumed no OTHER table would ever reference them. Migrations apply
+-- in lexical filename order, and 0012_a2a_push_notification_configs.sql (push_notification_configs
+-- .task_id → todos.id) sorts BEFORE this file — so on a FRESH database that FK exists by the time
+-- this statement runs and raises exactly the error above. Every already-migrated deployment stayed
+-- green throughout, because schema_migrations records this version as applied and never re-runs
+-- it; only new installs broke, which is why CI (no Postgres on the primary gate) never saw it.
+-- CASCADE pulls in every referencing table automatically, so the next table to reference todos
+-- cannot re-break it. Truncating those dependents is correct by construction: this migration
+-- deliberately destroys all todo/event data, and a row referencing a destroyed todo cannot outlive
+-- it (push_notification_configs.task_id is itself ON DELETE CASCADE for the same reason).
+TRUNCATE todos, events CASCADE;
 
 -- Pin every todo to exactly one vended MCP endpoint for its entire lifecycle. The endpoint's
 -- owning human (endpoints → agents → humans) is the todo's tenant. ON DELETE CASCADE mirrors the
