@@ -3,11 +3,22 @@
 # SWITCHBOARD_DEV_LOGIN=1 to exercise the vend → Channels loop without Pocket ID.
 services:
   db:
-    image: postgres:16-alpine
+    # Upgrading an EXISTING volume from a previous major (e.g. 16 → 18) is NOT in-place: Postgres
+    # refuses to start on a data directory written by another major version. Dump before the bump
+    # and restore after, or start from an empty volume:
+    #   docker compose exec db pg_dumpall -U switchboard > sb.sql   # on the OLD image
+    #   docker compose down -v && docker compose up -d db
+    #   docker compose exec -T db psql -U switchboard < sb.sql
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: switchboard
       POSTGRES_PASSWORD: change-me
       POSTGRES_DB: switchboard
+      # Pin PGDATA. The postgres:18 image moved its default from /var/lib/postgresql/data to
+      # /var/lib/postgresql/18/docker, so the volume mount below would no longer cover the data
+      # directory: Postgres would initialize into the container's writable layer and every byte
+      # would vanish on the next `docker compose down`, silently and with a healthy-looking stack.
+      PGDATA: /var/lib/postgresql/data
     volumes:
       - switchboard-db:/var/lib/postgresql/data
     healthcheck:
