@@ -164,6 +164,18 @@ func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefi
 // "Credential Lifetime").
 func createEndpoint(ctx context.Context, q querier, agentID, credHash, credPrefix, slug string, queues, verbs []string, personaID any, expiresAt *time.Time, webhookMax int, webhookSourceTypes, webhookQueues []string) (Endpoint, error) {
 	var e Endpoint
+	// The ceiling columns are `text[] NOT NULL DEFAULT '{}'`, and a nil Go slice encodes as SQL
+	// NULL — not as the column default — so passing nil violates the NOT NULL constraint outright:
+	//   ERROR: null value in column "webhook_source_types" ... violates not-null constraint (23502)
+	// nil is the DOCUMENTED way to vend an endpoint with webhook self-management disabled (see
+	// VendParams), and CreateEndpoint below passes it unconditionally, so normalize here rather
+	// than at each call site.
+	if webhookSourceTypes == nil {
+		webhookSourceTypes = []string{}
+	}
+	if webhookQueues == nil {
+		webhookQueues = []string{}
+	}
 	err := q.QueryRow(ctx, `
 		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues, scope_verbs, persona_id, expires_at, webhook_max, webhook_source_types, webhook_queues)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)

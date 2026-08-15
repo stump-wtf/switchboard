@@ -687,3 +687,44 @@ func countTodos(t *testing.T, s *Store, ctx context.Context, ids ...string) int 
 	}
 	return n
 }
+
+// TestCreateEndpointNilWebhookCeilingPersistsEmptyArrays pins that a nil webhook ceiling — the
+// DOCUMENTED way to vend an endpoint with self-management disabled (see VendParams) — persists as
+// empty arrays rather than blowing up.
+//
+// The regression it guards: endpoints.webhook_source_types / webhook_queues are
+// `text[] NOT NULL DEFAULT '{}'`, but a nil Go slice encodes as SQL NULL, NOT as the column
+// default. Passing nil therefore violated the NOT NULL constraint outright:
+//
+//	ERROR: null value in column "webhook_source_types" of relation "endpoints"
+//	violates not-null constraint (SQLSTATE 23502)
+//
+// CreateEndpoint passes nil unconditionally, so EVERY call to it failed, and VendAgentEndpoint
+// failed whenever the vend flow left the ceiling unset.
+//
+// Governing: ADR-0012, SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling".
+func TestCreateEndpointNilWebhookCeilingPersistsEmptyArrays(t *testing.T) {
+	s, ctx := testStore(t)
+	h := mustHuman(t, s, ctx, "pocket|nilceiling", "Nil Ceiling")
+	ag := mustAgent(t, s, ctx, h.ID, "nil-ceiling-agent")
+
+	// CreateEndpoint passes a nil ceiling through to the INSERT.
+	ep := mustEndpoint(t, s, ctx, ag.ID, "hash-nil-ceiling")
+
+	var sourceTypes, queues []string
+	var max int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT webhook_max, webhook_source_types, webhook_queues FROM endpoints WHERE id = $1`,
+		ep.ID).Scan(&max, &sourceTypes, &queues); err != nil {
+		t.Fatalf("read back ceiling: %v", err)
+	}
+	if max != 0 {
+		t.Errorf("webhook_max = %d, want 0 (self-management disabled)", max)
+	}
+	if sourceTypes == nil || len(sourceTypes) != 0 {
+		t.Errorf("webhook_source_types = %#v, want an empty (non-NULL) array", sourceTypes)
+	}
+	if queues == nil || len(queues) != 0 {
+		t.Errorf("webhook_queues = %#v, want an empty (non-NULL) array", queues)
+	}
+}
