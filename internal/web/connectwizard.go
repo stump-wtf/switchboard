@@ -43,13 +43,13 @@ var connectWizard = wizardDef{
 // signedSchemeKinds are the webhook kinds with a REAL signing scheme — the only kinds the wizard
 // offers `signed` for (SPEC-0017: signed only where a real scheme exists). Their route is
 // /webhooks/<kind>, so their registry name IS the kind (single instance).
-var signedSchemeKinds = map[string]bool{"github": true, "stripe": true, "slack": true}
+var signedSchemeKinds = map[string]bool{"gitea": true, "github": true, "stripe": true, "slack": true}
 
 // connectReservedNames are registry names the wizard refuses for generic/redis lines: "connect"
 // would shadow this wizard's own routes under /providers/…, and the signed kind names would
 // collide with the signed dispatch routes under /webhooks/… (a generic row named "github" would
 // wedge the real GitHub line).
-var connectReservedNames = map[string]bool{"connect": true, "github": true, "stripe": true, "slack": true}
+var connectReservedNames = map[string]bool{"connect": true, "gitea": true, "github": true, "stripe": true, "slack": true}
 
 // providerNameRe bounds wizard-created provider names: they become URL path segments
 // (/webhooks/generic/<name>) and DOM ids (sb-pr-<name>), so the charset is deliberately narrow.

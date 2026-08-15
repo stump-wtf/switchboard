@@ -35,7 +35,7 @@
       {{/* Only implemented kinds appear — the wizard offers nothing the backend cannot serve
            (SPEC-0017 REQ "Provider Catalog": available ≠ connectable). */}}
       <div class="sb-wiz__choices" role="radiogroup" aria-labelledby="sb-connect-kind-label" data-sb-connect-kinds>
-        {{range $v.KindOptions}}<label class="sb-wiz__choice"><input type="radio" name="kind" value="{{.Kind}}"{{if .Checked}} checked{{end}}> {{.Title}} <span class="sb-muted">· {{.Family}} · {{.Desc}}</span></label>
+        {{range $v.KindOptions}}<label class="sb-wiz__choice"><input type="radio" name="kind" value="{{.Kind}}"{{if .Checked}} checked{{end}}> {{with iconpath .Kind}}<img src="{{.}}" alt="" width="16" height="16" class="sb-choice-icon"> {{end}}{{.Title}} <span class="sb-muted">· {{.Family}} · {{.Desc}}</span></label>
         {{end}}
       </div>
       <p class="sb-help">webhooks push to an ingestion URL · the queue adapter drains a broker</p>

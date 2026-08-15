@@ -349,3 +349,48 @@ func webhookSecret(f *fakeStore, id string) string {
 	defer f.mu.Unlock()
 	return f.webhookSecrets[id]
 }
+
+// TestCreateWebhookGiteaSourceType: a gitea source type is accepted when in the ceiling and
+// derives trust_mode=signed with a revealed signing secret, identical to github.
+// Governing: SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling".
+func TestCreateWebhookGiteaSourceType(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	cs := webhookSession(t, ctx, f, strings.Fields(allWebhookVerbs),
+		ceiling{max: 5, types: []string{"gitea"}, queues: []string{"reviews"}})
+
+	var out webhookOut
+	callOK(t, ctx, cs, "create_webhook",
+		map[string]any{"source_type": "gitea", "target_queue": "reviews"}, &out)
+	if out.TrustMode != "signed" {
+		t.Fatalf("trust_mode = %q, want signed (derived from gitea)", out.TrustMode)
+	}
+	if out.SourceType != "gitea" || out.TargetQueue != "reviews" {
+		t.Fatalf("create output = %+v, want gitea/reviews", out)
+	}
+	if !strings.HasPrefix(out.SigningSecret, "whsec_") {
+		t.Fatalf("signing_secret = %q, want a revealed whsec_ secret", out.SigningSecret)
+	}
+	if held := webhookSecret(f, out.WebhookID); held != out.SigningSecret {
+		t.Fatalf("revealed secret %q != server-held secret %q", out.SigningSecret, held)
+	}
+}
+
+// TestCreateWebhookGiteaForbiddenWhenNotInCeiling: gitea outside the ceiling is refused with
+// forbidden_source_type, same as any other unsupported type.
+func TestCreateWebhookGiteaForbiddenWhenNotInCeiling(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	cs := webhookSession(t, ctx, f, strings.Fields(allWebhookVerbs),
+		ceiling{max: 5, types: []string{"github"}, queues: []string{"reviews"}})
+
+	callErr(t, ctx, cs, "create_webhook",
+		map[string]any{"source_type": "gitea", "target_queue": "reviews"}, "forbidden_source_type")
+	if n := webhookCount(f, "ep-webhooks"); n != 0 {
+		t.Fatalf("webhook count = %d, want 0 (forbidden source must not persist)", n)
+	}
+}

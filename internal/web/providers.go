@@ -115,6 +115,7 @@ var providerFamilyOrder = []struct{ Key, Title string }{
 // the "connectable" catalog tier. Single-instance signed kinds drop out of the catalog once
 // connected; generic and redis stay connectable (many instances make sense).
 var implementedCatalog = []catalogCard{
+	{Kind: "gitea", Title: "Gitea", Family: "webhook", Trust: "signed", Desc: "PR/issue/push webhooks · HMAC-verified per delivery", State: "connectable"},
 	{Kind: "github", Title: "GitHub", Family: "webhook", Trust: "signed", Desc: "push/PR/issue webhooks · HMAC-verified per delivery", State: "connectable"},
 	{Kind: "stripe", Title: "Stripe", Family: "webhook", Trust: "signed", Desc: "billing events · signature-verified per delivery", State: "connectable"},
 	{Kind: "slack", Title: "Slack", Family: "webhook", Trust: "signed", Desc: "workspace events · signature-verified per delivery", State: "connectable"},
@@ -134,7 +135,7 @@ var availableCatalog = []catalogCard{
 
 // singleInstanceKinds are the signed webhook kinds where one connected provider saturates the kind
 // (their route is /webhooks/<kind>); their catalog card drops once connected.
-var singleInstanceKinds = map[string]bool{"github": true, "stripe": true, "slack": true}
+var singleInstanceKinds = map[string]bool{"gitea": true, "github": true, "stripe": true, "slack": true}
 
 // providerLineFrom projects one registry row + its health onto the render model.
 func providerLineFrom(a store.Adapter, health map[string]store.ProviderHealth) providerLine {

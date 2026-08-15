@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	switchboard "github.com/joestump/switchboard"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/store"
@@ -105,7 +106,7 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 
 // templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown, "trustdef": trustDef}
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "iconpath": providerIconPath, "eventiconpath": eventIconPath, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown, "trustdef": trustDef}
 }
 
 // parsePages composes layout.html and the per-view fragment files (templates/fragments/*.html)
@@ -571,14 +572,75 @@ func trustDef(mode string) string {
 }
 
 // providerTags maps known source names to their design-doc two-letter chips
-// (GH/ST/SL/DH/HL/RD per docs/design/03-components.md).
+// (GH/ST/SL/DH/HL/RD per docs/design/03-components.md). Used as fallback when
+// no SVG icon is available.
 var providerTags = map[string]string{
 	"github": "GH", "stripe": "ST", "slack": "SL", "dockerhub": "DH",
-	"healthchecks": "HL", "redis": "RD",
+	"healthchecks": "HL", "redis": "RD", "gitea": "GT",
+}
+
+// eventIconSlugs maps an event kind onto the icon slug that represents it; several kinds share one
+// glyph (every pull_request_* flavour is one PR icon).
+var eventIconSlugs = map[string]string{
+	"pull_request": "pull_request", "pull_request_review": "pull_request",
+	"pull_request_review_comment": "pull_request",
+	"issues":                      "issue", "issue_comment": "issue",
+	"push":  "push",
+	"merge": "merge", "merge_group": "merge",
+	"workflow_run": "ci", "check_run": "ci", "check_suite": "ci",
+	"release": "release",
+	"ping":    "ping",
+}
+
+// iconPaths is the set of icon URL paths that actually exist in StaticFS, resolved ONCE at init.
+// The alternative — probing the embedded FS per call — costs a full read-and-discard of the SVG
+// bytes on every render, and these helpers run per todo row, per lane card and per catalog card on
+// the hot live-fragment path (SPEC-0015 OOB swaps fire on every doorbell).
+var iconPaths = buildIconPaths()
+
+func buildIconPaths() map[string]string {
+	paths := map[string]string{}
+	for _, dir := range []string{"brands", "ui"} {
+		entries, err := fs.ReadDir(switchboard.StaticFS, "static/icons/"+dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".svg") {
+				continue
+			}
+			slug := strings.TrimSuffix(name, ".svg")
+			paths[dir+"/"+slug] = "/static/icons/" + dir + "/" + name
+		}
+	}
+	return paths
+}
+
+// providerIconPath returns the /static/ URL path for a provider's brand icon, or empty string if
+// no icon exists. Templates render this as an <img> tag — no template.HTML escape bypass needed.
+func providerIconPath(source string) string {
+	slug := strings.ToLower(source)
+	if slug == "dockerhub" {
+		slug = "docker"
+	}
+	return iconPaths["brands/"+slug]
+}
+
+// eventIconPath returns the /static/ URL path for an event kind icon, or empty string if none.
+// NOTE: static/icons/ui/ currently ships no SVGs, so this returns "" for every kind and the
+// {{with eventiconpath …}} blocks render nothing — the templates degrade to the bare label.
+func eventIconPath(kind string) string {
+	slug, ok := eventIconSlugs[strings.ToLower(kind)]
+	if !ok {
+		return ""
+	}
+	return iconPaths["ui/"+slug]
 }
 
 // providerTag renders the two-letter provider chip for a source name (github → GH); unknown
-// sources fall back to their first two letters upper-cased.
+// sources fall back to their first two letters upper-cased. Used as text fallback alongside
+// providerIconSVG.
 func providerTag(source string) string {
 	if tag, ok := providerTags[strings.ToLower(source)]; ok {
 		return tag

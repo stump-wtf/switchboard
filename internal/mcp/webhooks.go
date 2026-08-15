@@ -62,6 +62,7 @@ var webhookTrustModes = map[string]string{
 	"github":  "signed",
 	"stripe":  "signed",
 	"slack":   "signed",
+	"gitea":   "signed",
 	"generic": "token",
 }
 

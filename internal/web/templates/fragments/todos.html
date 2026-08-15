@@ -60,7 +60,7 @@
      (scenario "Live claim"), REQ "Live Fragment Architecture" (OOB removal + insertion). */}}
 {{define "todo_row"}}{{if .Insert}}<tr id="sb-tr-{{.ID}}" hx-swap-oob="delete"></tr>{{end}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}" data-sb-row-open{{if .Flash}} data-sb-flash{{end}}{{if .Insert}} data-sb-live-row{{end}} tabindex="0"{{if .Insert}} hx-swap-oob="afterbegin:#sb-todos-body"{{else if .OOB}} hx-swap-oob="true"{{end}}>
   <td><button type="button" class="sb-linklike sb-mono" data-sb-row-trigger hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>
-  <td>{{if .Source}}<span class="sb-tag" data-sb-tag aria-hidden="true">{{tag .Source}}</span> {{end}}<span class="sb-trow__source" data-sb-source>{{if .Source}}{{.Source}}{{else}}—{{end}}</span> <span class="sb-trow__kind" data-sb-kind>{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" data-sb-dedup title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
+  <td>{{if .Source}}{{with iconpath .Source}}<span class="sb-icon-wrap" data-sb-tag aria-hidden="true"><img src="{{.}}" alt="" width="16" height="16"></span>{{else}}<span class="sb-tag" data-sb-tag aria-hidden="true">{{tag .Source}}</span>{{end}} {{end}}<span class="sb-trow__source" data-sb-source>{{if .Source}}{{.Source}}{{else}}—{{end}}</span> {{with eventiconpath .Kind}}<span class="sb-icon-wrap sb-icon-wrap--event" aria-hidden="true"><img src="{{.}}" alt="" width="14" height="14"></span>{{end}}<span class="sb-trow__kind" data-sb-kind>{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" data-sb-dedup title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
   <td><span class="sb-badge sb-badge--{{.TrustMode}}" data-sb-trust="{{.TrustMode}}" title="{{trustdef .TrustMode}}">{{.TrustMode}}</span></td>
   <td><span class="sb-status sb-status--{{.State}}" data-sb-state="{{.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.State}}</span>{{if and (eq .State "claimed") .HasLease}}<span class="sb-trow__sub" data-sb-countdown data-sb-deadline="{{.LeaseDeadlineMS}}" data-sb-suffix=" left">lease {{.LeaseSecs}}s left</span>{{else if and (eq .State "failed") .RetryScheduled}}<span class="sb-trow__sub sb-trow__sub--retry" data-sb-countdown data-sb-deadline="{{.RetryDeadlineMS}}" data-sb-prefix="↻ retry " data-sb-expired="↻ re-queuing…">↻ retry {{.RetrySecs}}s</span>{{else if eq .State "failed"}}<span class="sb-trow__sub">{{.Attempt}}/{{.MaxAttempts}} attempts</span>{{end}}</td>
   <td class="sb-mono">{{if .OwnerLabel}}{{.OwnerLabel}}{{else}}—{{end}}</td>
@@ -83,10 +83,10 @@
        drawer: detail.tag / detail.src / detail.type). Governing: SPEC-0015 REQ "Todos View And
        Drawer" (drawer identity). */}}
   <div class="sb-identity" data-sb-identity>
-    <span class="sb-tag sb-tag--{{.Row.TrustMode}}" data-sb-tag data-sb-trust="{{.Row.TrustMode}}" aria-hidden="true">{{tag .Row.Source}}</span>
+    {{with iconpath .Row.Source}}<span class="sb-icon-wrap sb-icon-wrap--{{$.Row.TrustMode}}" data-sb-tag data-sb-trust="{{$.Row.TrustMode}}" aria-hidden="true"><img src="{{.}}" alt="" width="16" height="16"></span>{{else}}<span class="sb-tag sb-tag--{{.Row.TrustMode}}" data-sb-tag data-sb-trust="{{.Row.TrustMode}}" aria-hidden="true">{{tag .Row.Source}}</span>{{end}}
     <div class="sb-identity__text">
       <span class="sb-identity__src" data-sb-source>{{if .Row.Source}}{{.Row.Source}}{{else}}—{{end}}</span>
-      <span class="sb-identity__type" data-sb-kind>{{.Row.Kind}}</span>
+      <span class="sb-identity__type" data-sb-kind>{{with eventiconpath .Row.Kind}}<img src="{{.}}" alt="" width="14" height="14" class="sb-event-icon"> {{end}}{{.Row.Kind}}</span>
     </div>
   </div>
   {{if and (eq .Row.State "claimed") .Row.HasLease}}

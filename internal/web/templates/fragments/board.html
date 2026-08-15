@@ -10,9 +10,9 @@
      OOB renders the card as an insertion into its lane. Data: web.laneCard. */}}
 {{define "lane_card"}}<li id="{{.DomID}}" class="sb-lcard sb-lcard--{{.State}}" data-sb-lane-card="{{.Lane}}"{{if .TTLMS}} data-sb-ephemeral="{{.TTLMS}}"{{end}}{{if .OOB}} hx-swap-oob="afterbegin:#sb-lane-{{.Lane}}-cards"{{end}}>
   <div class="sb-lcard__head">
-    <span class="sb-tag sb-tag--{{.TrustMode}}" aria-hidden="true">{{tag .Source}}</span>
+    {{with iconpath .Source}}<span class="sb-icon-wrap sb-icon-wrap--{{$.TrustMode}}" aria-hidden="true"><img src="{{.}}" alt="" width="16" height="16"></span>{{else}}<span class="sb-tag sb-tag--{{.TrustMode}}" aria-hidden="true">{{tag .Source}}</span>{{end}}
     <div class="sb-lcard__text">
-      <span class="sb-lcard__title">{{if .Kind}}{{.Kind}}{{else}}{{.Source}}{{end}}</span>
+      <span class="sb-lcard__title">{{with eventiconpath .Kind}}<img src="{{.}}" alt="" width="14" height="14" class="sb-event-icon"> {{end}}{{if .Kind}}{{.Kind}}{{else}}{{.Source}}{{end}}</span>
       <span class="sb-lcard__sub">{{if .Title}}{{.Title}}{{else}}{{.Source}}{{end}}</span>
     </div>
   </div>
