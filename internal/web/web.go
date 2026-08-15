@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	switchboard "github.com/joestump/switchboard"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/store"
@@ -105,7 +106,7 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 
 // templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"reltime": relTime, "tag": providerTag, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown, "trustdef": trustDef}
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "iconpath": providerIconPath, "eventiconpath": eventIconPath, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown, "trustdef": trustDef}
 }
 
 // parsePages composes layout.html and the per-view fragment files (templates/fragments/*.html)
@@ -571,14 +572,59 @@ func trustDef(mode string) string {
 }
 
 // providerTags maps known source names to their design-doc two-letter chips
-// (GH/ST/SL/DH/HL/RD per docs/design/03-components.md).
+// (GH/ST/SL/DH/HL/RD per docs/design/03-components.md). Used as fallback when
+// no SVG icon is available.
 var providerTags = map[string]string{
 	"github": "GH", "stripe": "ST", "slack": "SL", "dockerhub": "DH",
-	"healthchecks": "HL", "redis": "RD",
+	"healthchecks": "HL", "redis": "RD", "gitea": "GT",
+}
+
+// providerIconPath returns the /static/ URL path for a provider's brand icon, or empty string if
+// no icon exists. Templates render this as an <img> tag — no template.HTML escape bypass needed.
+func providerIconPath(source string) string {
+	slug := strings.ToLower(source)
+	switch slug {
+	case "dockerhub":
+		slug = "docker"
+	}
+	path := "static/icons/brands/" + slug + ".svg"
+	if _, err := switchboard.StaticFS.ReadFile(path); err != nil {
+		return ""
+	}
+	return "/static/icons/brands/" + slug + ".svg"
+}
+
+// eventIconPath returns the /static/ URL path for an event kind icon, or empty string if none.
+func eventIconPath(kind string) string {
+	slug := ""
+	switch strings.ToLower(kind) {
+	case "pull_request", "pull_request_review", "pull_request_review_comment":
+		slug = "pull_request"
+	case "issues", "issue_comment":
+		slug = "issue"
+	case "push":
+		slug = "push"
+	case "merge_group", "merge":
+		slug = "merge"
+	case "workflow_run", "check_run", "check_suite":
+		slug = "ci"
+	case "release":
+		slug = "release"
+	case "ping":
+		slug = "ping"
+	default:
+		return ""
+	}
+	path := "static/icons/ui/" + slug + ".svg"
+	if _, err := switchboard.StaticFS.ReadFile(path); err != nil {
+		return ""
+	}
+	return "/static/icons/ui/" + slug + ".svg"
 }
 
 // providerTag renders the two-letter provider chip for a source name (github → GH); unknown
-// sources fall back to their first two letters upper-cased.
+// sources fall back to their first two letters upper-cased. Used as text fallback alongside
+// providerIconSVG.
 func providerTag(source string) string {
 	if tag, ok := providerTags[strings.ToLower(source)]; ok {
 		return tag

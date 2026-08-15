@@ -211,7 +211,7 @@ func TestDrawerIdentityBlock(t *testing.T) {
 	for _, want := range []string{
 		`data-sb-identity`,       // the block itself, before the meta grid
 		`data-sb-trust="signed"`, // provider tag stamped with the trust mode
-		`>GH<`,                   // github → GH per providerTag
+		`sb-icon-wrap`,           // github → SVG icon (replaces two-letter tag)
 		`data-sb-source>github<`, // the source name
 		`data-sb-kind>push<`,     // the event type
 	} {
@@ -411,8 +411,8 @@ func TestTodoRowCarriesSourceTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render todo_row: %v", err)
 	}
-	if !strings.Contains(out, `data-sb-tag aria-hidden="true">GH</span>`) {
-		t.Errorf("todo_row: missing two-letter source tag tile: %q", out)
+	if !strings.Contains(out, `sb-icon-wrap`) && !strings.Contains(out, `data-sb-tag aria-hidden="true">GH</span>`) {
+		t.Errorf("todo_row: missing provider icon or two-letter source tag tile: %q", out)
 	}
 	bare := rowFixture("pending")
 	bare.Source = ""

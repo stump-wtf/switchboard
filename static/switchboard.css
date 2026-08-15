@@ -3391,3 +3391,48 @@ pre code {
     font-size: 12px;
   }
 }
+
+/* --- Provider & event icons (Simple Icons SVGs) --- */
+.sb-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--sb-radius-chip);
+  background: var(--sb-code-bg);
+  flex-shrink: 0;
+}
+.sb-icon-wrap svg {
+  display: block;
+  fill: currentColor;
+}
+.sb-icon-wrap--signed {
+  color: var(--sb-trust-signed);
+  background: var(--sb-trust-signed-bg);
+}
+.sb-icon-wrap--token {
+  color: var(--sb-trust-token);
+  background: var(--sb-trust-token-bg);
+}
+.sb-icon-wrap--open {
+  color: var(--sb-trust-open);
+  background: var(--sb-trust-open-bg);
+}
+.sb-icon-wrap--queue {
+  color: var(--sb-trust-queue);
+  background: var(--sb-trust-queue-bg);
+}
+.sb-icon-wrap--event {
+  width: auto;
+  height: auto;
+  background: none;
+  border-radius: 0;
+  vertical-align: middle;
+  margin-right: 3px;
+  color: var(--sb-muted);
+}
+.sb-icon-wrap--event svg {
+  width: 14px;
+  height: 14px;
+}

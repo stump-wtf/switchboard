@@ -84,7 +84,7 @@
      nothing that could dead-end (scenario "Catalog honesty"). Data: web.catalogCard. */}}
 {{define "provider_catalog_card"}}<article class="sb-catcard sb-catcard--{{.State}}" data-sb-catalog-kind="{{.Kind}}" data-sb-catalog-state="{{.State}}">
   <div class="sb-catcard__head">
-    <span class="sb-catcard__tag sb-tag sb-tag--{{.Trust}}" aria-hidden="true">{{tag .Kind}}</span>
+    {{with iconpath .Kind}}<span class="sb-icon-wrap sb-icon-wrap--{{$.Trust}}" aria-hidden="true"><img src="{{.}}" alt="" width="16" height="16"></span>{{else}}<span class="sb-catcard__tag sb-tag sb-tag--{{.Trust}}" aria-hidden="true">{{tag .Kind}}</span>{{end}}
     <span class="sb-catcard__title">{{.Title}}</span>
     {{if eq .State "available"}}<span class="sb-badge sb-badge--planned">planned</span>{{else}}<span class="sb-badge sb-badge--{{.Trust}}" title="{{trustdef .Trust}}">{{.Trust}}</span>{{end}}
   </div>

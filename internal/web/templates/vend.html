@@ -84,7 +84,7 @@
     <div class="sb-field">
       <span class="sb-label" id="sb-vend-wh-sources-label">Allowed source types</span>
       <div class="sb-chipset" role="group" aria-labelledby="sb-vend-wh-sources-label">
-        {{range $v.WebhookSourceTypes}}<label class="sb-chip sb-chip--toggle"><input type="checkbox" name="webhook_source_types" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+        {{range $v.WebhookSourceTypes}}<label class="sb-chip sb-chip--toggle"><input type="checkbox" name="webhook_source_types" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{with iconpath .Name}}<img src="{{.}}" alt="" width="16" height="16" class="sb-chip-icon"> {{end}}{{.Name}}</label>{{end}}
       </div>
       <p class="sb-help">which ingestion types the agent may use</p>
     </div>
