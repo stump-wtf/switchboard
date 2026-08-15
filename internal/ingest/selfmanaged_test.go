@@ -321,3 +321,151 @@ func TestSelfManagedUnknownTokenIs404(t *testing.T) {
 		t.Fatalf("unknown token: got %d, want 404 (body %s)", rec.Code, rec.Body.String())
 	}
 }
+
+// giteaSig computes the X-Gitea-Signature header value: bare hex HMAC-SHA256(secret, body), no
+// "sha256=" prefix (that is GitHub's format).
+func giteaSig(secret, body string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// The self-managed gitea signed happy path: X-Gitea-Signature uses bare hex HMAC-SHA256 (no
+// "sha256=" prefix), X-Gitea-Delivery provides the idempotency key, and the persisted event is
+// verified=true under trust_mode=signed. A redelivery of the same delivery id dedups.
+// Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency"; ADR-0003.
+func TestSelfManagedGiteaSignedVerifiedRoundTrip(t *testing.T) {
+	ing, hub, pool, ctx, _ := testIngestDeps(t, Config{})
+	st := store.New(pool)
+	const secret = "whsec_gitearounds"
+	_, owner, _ := seedWebhook(t, st, ctx, "gitea", "signed", "reviews", "route-token-gitea", secret)
+	ch, cancel := hub.Subscribe(owner.ID, []string{"reviews"})
+	defer cancel()
+
+	body := `{"action":"opened","pull_request":{"number":42,"title":"Add gitea support","user":{"login":"alice"}},"repository":{"full_name":"stump.wtf/switchboard"}}`
+	rec := postSelfManaged(ing, "route-token-gitea", body,
+		map[string]string{"X-Gitea-Delivery": "guid-g1", "X-Gitea-Signature": giteaSig(secret, body)})
+	id1, queue := accepted202(t, rec)
+	if queue != "reviews" {
+		t.Fatalf("queue = %q, want reviews", queue)
+	}
+	var resp struct {
+		TrustMode string `json:"trust_mode"`
+		Verified  bool   `json:"verified"`
+	}
+	decode(t, rec.Body.Bytes(), &resp)
+	if resp.TrustMode != "signed" || !resp.Verified {
+		t.Fatalf("202 = %+v, want trust_mode=signed verified=true", resp)
+	}
+
+	var mode, detail string
+	var verified bool
+	if err := pool.QueryRow(ctx,
+		`SELECT trust_mode, verified, COALESCE(verify_detail,'') FROM events WHERE source='gitea' AND external_id LIKE '%:guid-g1'`,
+	).Scan(&mode, &verified, &detail); err != nil {
+		t.Fatalf("query event: %v", err)
+	}
+	if mode != "signed" || !verified || !strings.Contains(detail, "hmac") {
+		t.Fatalf("event = (mode=%q verified=%v detail=%q), want signed/true/hmac", mode, verified, detail)
+	}
+
+	if n := drainHub(ch); n != 1 {
+		t.Fatalf("owner doorbell = %d, want 1", n)
+	}
+
+	// Redelivery dedup.
+	id2, _ := accepted202(t, postSelfManaged(ing, "route-token-gitea", body,
+		map[string]string{"X-Gitea-Delivery": "guid-g1", "X-Gitea-Signature": giteaSig(secret, body)}))
+	if id2 != id1 {
+		t.Fatalf("redelivery todo id = %q, want dedup to %q", id2, id1)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos WHERE queue='reviews'`); n != 1 {
+		t.Fatalf("todos in reviews = %d, want 1 (dedup)", n)
+	}
+	if n := drainHub(ch); n != 0 {
+		t.Fatalf("redelivery doorbell = %d, want 0", n)
+	}
+}
+
+// A self-managed gitea delivery with an invalid signature is rejected 401 and nothing is persisted.
+func TestSelfManagedGiteaBadSignatureRejected(t *testing.T) {
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
+	st := store.New(pool)
+	const secret = "whsec_giteabad"
+	seedWebhook(t, st, ctx, "gitea", "signed", "reviews", "route-token-gitea-bad", secret)
+
+	body := `{"action":"opened"}`
+	rec := postSelfManaged(ing, "route-token-gitea-bad", body,
+		map[string]string{"X-Gitea-Delivery": "guid-bad", "X-Gitea-Signature": "deadbeef"})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad sig: got %d, want 401 (body %s)", rec.Code, rec.Body.String())
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM events WHERE source='gitea'`); n != 0 {
+		t.Fatalf("rejected delivery must not persist: %d events", n)
+	}
+}
+
+// A self-managed gitea delivery with a missing signature is rejected 401.
+func TestSelfManagedGiteaMissingSignatureRejected(t *testing.T) {
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
+	st := store.New(pool)
+	const secret = "whsec_giteanone"
+	seedWebhook(t, st, ctx, "gitea", "signed", "reviews", "route-token-gitea-none", secret)
+
+	rec := postSelfManaged(ing, "route-token-gitea-none", `{"action":"opened"}`,
+		map[string]string{"X-Gitea-Delivery": "guid-none"})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing sig: got %d, want 401 (body %s)", rec.Code, rec.Body.String())
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM events WHERE source='gitea'`); n != 0 {
+		t.Fatalf("rejected delivery must not persist: %d events", n)
+	}
+}
+
+// verifyGitea unit tests: valid, invalid, empty signature.
+func TestVerifyGitea(t *testing.T) {
+	secret := "s3cr3t"
+	body := []byte(`{"action":"opened"}`)
+	good := giteaSig(secret, string(body))
+
+	if !verifyGitea(secret, body, good) {
+		t.Fatal("valid gitea signature must verify")
+	}
+	if verifyGitea("other", body, good) {
+		t.Fatal("wrong secret must not verify")
+	}
+	if verifyGitea(secret, []byte(`{"action":"closed"}`), good) {
+		t.Fatal("wrong body must not verify")
+	}
+	if verifyGitea(secret, body, "") || verifyGitea(secret, body, "deadbeef") {
+		t.Fatal("empty or bogus signature must not verify")
+	}
+	// The sha256= prefix format that GitHub uses must NOT verify for gitea.
+	githubFormat := "sha256=" + good
+	if verifyGitea(secret, body, githubFormat) {
+		t.Fatal("sha256= prefixed signature must not verify for gitea (bare hex only)")
+	}
+}
+
+// summarizeSelfManagedTitle produces PR-aware titles for gitea payloads.
+func TestSummarizeSelfManagedTitleGitea(t *testing.T) {
+	pr := `{"action":"opened","pull_request":{"number":7,"title":"Fix login","user":{"login":"bob"}},"repository":{"full_name":"stump.wtf/switchboard"}}`
+	got := summarizeSelfManagedTitle("gitea", []byte(pr))
+	want := `PR #7 "Fix login" · opened · stump.wtf/switchboard · bob`
+	if got != want {
+		t.Fatalf("gitea PR title = %q, want %q", got, want)
+	}
+
+	// Non-PR payload falls back to generic.
+	issue := `{"action":"created","issue":{"number":3,"title":"Bug"},"repository":{"full_name":"o/r"}}`
+	got = summarizeSelfManagedTitle("gitea", []byte(issue))
+	if got != "self-managed gitea delivery" {
+		t.Fatalf("non-PR gitea title = %q, want fallback", got)
+	}
+
+	// Non-gitea source type always falls back.
+	got = summarizeSelfManagedTitle("stripe", []byte(pr))
+	if got != "self-managed stripe delivery" {
+		t.Fatalf("stripe title = %q, want fallback", got)
+	}
+}

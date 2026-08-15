@@ -31,7 +31,7 @@ exactly one vended MCP endpoint, and every todo produced by a delivery is pinned
 (per the [todo-queue spec](../todo-queue/spec.md) "Endpoint Ownership" requirement). The
 operator-configured signed receivers for GitHub/Stripe/Slack and the generic token/open receiver are
 retired: they carried no endpoint owner and could not satisfy the tenant-isolation invariant.
-Self-managed signed webhooks cover the same providers (the agent creates the webhook; switchboard
+Self-managed signed webhooks cover the same providers plus Gitea (the agent creates the webhook; switchboard
 mints and holds the HMAC secret exactly as before). This capability covers *only* the push family;
 pull (queue) ingestion is SPEC-0002.
 
@@ -39,7 +39,7 @@ pull (queue) ingestion is SPEC-0002.
 
 ### Requirement: Signed Webhook Verification
 
-For a webhook provider declared `signed` (GitHub, Stripe, Slack), the receiver MUST verify a
+For a webhook provider declared `signed` (GitHub, Gitea, Stripe, Slack), the receiver MUST verify a
 cryptographic signature over the **raw request body** before parsing the payload, using a
 constant-time comparison. A missing, malformed, or failing signature MUST return HTTP 401 and MUST
 NOT persist the payload; only a redacted rejection line MAY be logged (provider, event type if
@@ -55,6 +55,14 @@ plain byte equality.
 - **THEN** the event is persisted with `source='github'`, `family='webhook'`,
   `trust_mode='signed'`, `verified=true`, `verify_detail='hmac-sha256 ok'`, a todo is created, and
   the response is HTTP 202 with `{id, queue, verified: true}`
+
+#### Scenario: Valid Gitea self-managed signature is accepted
+
+- **WHEN** a self-managed gitea webhook delivery arrives whose `X-Gitea-Signature` header matches
+  the bare hex HMAC-SHA256 of the raw body under the minted signing secret (no `sha256=` prefix)
+- **THEN** the event is persisted with `source='gitea'`, `family='webhook'`,
+  `trust_mode='signed'`, `verified=true`, `verify_detail='hmac-sha256 ok'`, a todo is created, and
+  the response is HTTP 202 with `{todos, created, verified: true, trust_mode: 'signed'}`
 
 #### Scenario: Missing or invalid signature is rejected without persisting
 
@@ -73,7 +81,7 @@ plain byte equality.
 For signed providers whose scheme signs a timestamp (Stripe `t=`, Slack
 `X-Slack-Request-Timestamp`), the receiver MUST reject a delivery whose signed timestamp is outside
 a freshness tolerance (default 300 seconds) even when the HMAC is otherwise valid, returning HTTP
-401 and persisting nothing. For providers whose scheme does not sign a timestamp (GitHub), the
+401 and persisting nothing. For providers whose scheme does not sign a timestamp (GitHub, Gitea), the
 receiver MUST NOT fabricate a replay window.
 
 #### Scenario: Stale Stripe timestamp is rejected
@@ -139,10 +147,11 @@ the loudest/weakest tier everywhere. The system MUST NOT default any provider to
 
 Each accepted webhook delivery MUST derive an idempotency key and use it to dedup redeliveries into a
 single todo. The key SHOULD be derived from a provider delivery id where one exists (GitHub
-`X-GitHub-Delivery`, Stripe event `id`) and MUST fall back to a body hash where the provider supplies
-no delivery id (Slack, generic). If a non-terminal todo already exists in the target queue for the
-derived key, ingestion MUST return the existing todo and create nothing new. Events MUST additionally
-dedup on `(source, external_id)` so a duplicate delivery does not create a second event row.
+`X-GitHub-Delivery`, Gitea `X-Gitea-Delivery`, Stripe event `id`) and MUST fall back to a body hash
+where the provider supplies no delivery id (Slack, generic). If a non-terminal todo already exists
+in the target queue for the derived key, ingestion MUST return the existing todo and create nothing
+new. Events MUST additionally dedup on `(source, external_id)` so a duplicate delivery does not
+create a second event row.
 
 #### Scenario: Redelivery of the same webhook creates one todo
 
@@ -159,9 +168,10 @@ dedup on `(source, external_id)` so a duplicate delivery does not create a secon
 ### Requirement: Header and Secret Sanitization Before Persist
 
 Before an event's `headers` are persisted, the receiver MUST redact all signature-, token-, and
-secret-bearing header values (`X-Hub-Signature`, `X-Hub-Signature-256`, `Stripe-Signature`,
-`X-Slack-Signature`, `Authorization`, `Cookie`, `X-Api-Key`, and any `?token=`) to a redaction
-placeholder. Full signatures, tokens, and secrets MUST NOT be logged or persisted in full anywhere.
+secret-bearing header values (`X-Hub-Signature`, `X-Hub-Signature-256`, `X-Gitea-Signature`,
+`Stripe-Signature`, `X-Slack-Signature`, `Authorization`, `Cookie`, `X-Api-Key`, and any `?token=`)
+to a redaction placeholder. Full signatures, tokens, and secrets MUST NOT be logged or persisted in
+full anywhere.
 
 #### Scenario: Sensitive headers are redacted in storage
 

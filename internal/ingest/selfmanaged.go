@@ -28,6 +28,10 @@
 package ingest
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -68,7 +72,11 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// Idempotency key scoped to this webhook so a redelivery to the SAME webhook dedups but identical
 	// payloads to different self-managed webhooks (which share a source namespace like "github") never
 	// collide. Prefer a provider delivery id where one exists; fall back to a body hash otherwise.
+	// Gitea uses X-Gitea-Delivery; GitHub uses X-GitHub-Delivery.
 	deliveryID := r.Header.Get("X-GitHub-Delivery")
+	if deliveryID == "" {
+		deliveryID = r.Header.Get("X-Gitea-Delivery")
+	}
 	key := wh.ID + ":" + idempotencyKey(deliveryID, body)
 	// The routed line is in flight: surface it on the board's ephemeral received lane (SPEC-0015).
 	// Unknown tokens (the 404s above) never ring the board — a guess is not a line.
@@ -100,7 +108,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			// Reject without persisting; log a redacted line (never the signature value or secret) —
 			// exactly like the operator-configured signed receivers.
 			i.log.Warn("self-managed webhook signature rejected", "webhook", wh.ID, "source", wh.SourceType,
-				"delivery", r.Header.Get("X-GitHub-Delivery"), "remote", clientIP(r))
+				"delivery", deliveryID, "remote", clientIP(r))
 			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "signature verification failed")
 			writeErr(w, http.StatusUnauthorized, "signature verification failed")
 			return
@@ -150,7 +158,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		}, targets,
 		store.CreateTodoParams{
 			Queue: wh.TargetQueue, Source: wh.SourceType, Kind: "webhook",
-			Title: summarizeSelfManaged(wh.SourceType), Payload: body, IdempotencyKey: key,
+			Title: summarizeSelfManagedTitle(wh.SourceType, body), Payload: body, IdempotencyKey: key,
 		})
 	if err != nil {
 		i.log.Error("ingest self-managed delivery", "webhook", wh.ID, "err", err)
@@ -208,6 +216,8 @@ func (i *Ingest) verifySelfManagedSigned(r *http.Request, sourceType, secret str
 	switch sourceType {
 	case "github":
 		return verifyGitHub(secret, body, r.Header.Get("X-Hub-Signature-256")), nil
+	case "gitea":
+		return verifyGitea(secret, body, r.Header.Get("X-Gitea-Signature")), nil
 	case "stripe":
 		return verifyStripe(secret, body, r.Header.Get("Stripe-Signature"), i.now(), i.tolerance), nil
 	case "slack":
@@ -218,10 +228,61 @@ func (i *Ingest) verifySelfManagedSigned(r *http.Request, sourceType, secret str
 	}
 }
 
+// verifyGitea checks X-Gitea-Signature (bare hex HMAC-SHA256) over the raw body in constant time.
+// Gitea's self-managed webhook signing uses a bare hex digest without the "sha256=" prefix that
+// GitHub uses. Governing: SPEC-0001 REQ "Signed Webhook Verification", ADR-0003.
+func verifyGitea(secret string, body []byte, sig string) bool {
+	if sig == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(sig))
+}
+
 // summarizeSelfManaged builds a one-line, legible todo title for a self-managed webhook delivery.
 func summarizeSelfManaged(sourceType string) string {
 	if sourceType == "" {
 		return "self-managed webhook delivery"
 	}
 	return "self-managed " + sourceType + " delivery"
+}
+
+// summarizeSelfManagedTitle builds a PR-aware todo title for a self-managed webhook delivery. For
+// gitea (and github) payloads carrying pull_request data it emits "PR #N \"title\" · action · repo · author";
+// for other source types or unparseable payloads it falls back to summarizeSelfManaged.
+func summarizeSelfManagedTitle(sourceType string, body []byte) string {
+	if sourceType != "gitea" && sourceType != "github" {
+		return summarizeSelfManaged(sourceType)
+	}
+	var p struct {
+		Action     string `json:"action"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+		PullRequest struct {
+			Number int    `json:"number"`
+			Title  string `json:"title"`
+			User   struct {
+				Login string `json:"login"`
+			} `json:"user"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil || p.PullRequest.Number == 0 {
+		return summarizeSelfManaged(sourceType)
+	}
+	repo := p.Repository.FullName
+	author := p.PullRequest.User.Login
+	title := "PR #" + itoa(p.PullRequest.Number) + " \"" + p.PullRequest.Title + "\""
+	if p.Action != "" {
+		title += " · " + p.Action
+	}
+	if repo != "" {
+		title += " · " + repo
+	}
+	if author != "" {
+		title += " · " + author
+	}
+	return title
 }

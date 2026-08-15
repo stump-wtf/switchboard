@@ -37,9 +37,9 @@ const defaultReplayTolerance = 300 * time.Second
 // persisted. Governing: SPEC-0001 REQ "Header and Secret Sanitization Before Persist" (the spec's
 // named set), ADR-0003.
 var sensitiveHeaders = map[string]bool{
-	"x-hub-signature": true, "x-hub-signature-256": true, "authorization": true,
-	"proxy-authorization": true, "cookie": true, "set-cookie": true, "x-slack-signature": true,
-	"stripe-signature": true, "x-api-key": true, "x-webhook-token": true,
+	"x-hub-signature": true, "x-hub-signature-256": true, "x-gitea-signature": true,
+	"authorization": true, "proxy-authorization": true, "cookie": true, "set-cookie": true,
+	"x-slack-signature": true, "stripe-signature": true, "x-api-key": true, "x-webhook-token": true,
 }
 
 // sensitiveNameFragments catches secret-bearing headers beyond the explicit denylist (e.g.
