@@ -3,9 +3,11 @@
 # The FULL suite — including the Postgres-backed store/server tests — runs against a service
 # container, so the gate executes what branch protection actually claims to gate (issue #128).
 # Reproduce locally with `make ci`.
-# NOTE: act_runner runs jobs in docker containers and reaches services by network alias, not by
-# published localhost ports — hence the DSN below says host `postgres` where the GitHub mirror's
-# (VM-job) DSN says `localhost`. Do not "sync" one into the other.
+# NOTE: this act_runner pins container.network to the DEFAULT docker bridge, which has no
+# embedded DNS — the GitHub-style `postgres` alias does NOT resolve. The resolve step below
+# finds the service container via the socket act mounts into every job and points the DSN at
+# its bridge IP. It tries the alias first, so the day the runner moves to user-defined
+# networks the discovery becomes a no-op.
 name: ci
 
 on:
@@ -36,8 +38,10 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
-      # `postgres` is the service's network alias (see the header note); the store tests
-      # additionally CREATE DATABASE their own per-package databases from this DSN (issue #133).
+      # Placeholder host `postgres` — correct wherever service-name DNS exists (the GitHub
+      # mirror's VM jobs); the resolve step rewrites it to the service container's bridge IP on
+      # this runner. The store tests additionally CREATE DATABASE their own per-package
+      # databases from this DSN (issue #133).
       SWITCHBOARD_TEST_DATABASE_URL: postgres://switchboard:switchboard@postgres:5432/switchboard?sslmode=disable
     steps:
       - uses: actions/checkout@v4
@@ -55,19 +59,36 @@ jobs:
         run: go vet ./...
       - name: build
         run: go build ./...
-      - name: wait for postgres
-        # Belt-and-suspenders on top of the service health-cmd: the entrypoint only exposes TCP
-        # once init finished, so a successful /dev/tcp connect means the server takes queries.
+      - name: resolve and wait for postgres
+        # act puts the job and its services on the default docker bridge (no name DNS), but mounts
+        # the docker socket into the job — so locate this job's service container via the socket
+        # and rewrite the DSN host to its bridge IP. The alias is tried first so this degrades to
+        # a plain readiness wait wherever service-name DNS does exist.
         run: |
+          host=postgres
+          if ! (exec 3<>/dev/tcp/$host/5432) 2>/dev/null; then
+            task=$(docker inspect --format '{{.Name}}' "$HOSTNAME" | sed -E 's|^/(GITEA-ACTIONS-TASK-[0-9]+)-.*|\1|')
+            case "$task" in
+              GITEA-ACTIONS-TASK-[0-9]*) ;;
+              *) echo "cannot derive this job's task prefix from container name \"$task\"" >&2; exit 1 ;;
+            esac
+            cid=$(docker ps -q --filter "name=^${task}" --filter ancestor=postgres:18-alpine | head -1)
+            [ -n "$cid" ] || { echo "no postgres service container found for $task" >&2; exit 1; }
+            host=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cid")
+            [ -n "$host" ] || { echo "postgres service $cid has no bridge IP" >&2; exit 1; }
+            echo "service alias unreachable; postgres service $cid is at $host:5432"
+            printf 'SWITCHBOARD_TEST_DATABASE_URL=postgres://switchboard:switchboard@%s:5432/switchboard?sslmode=disable\n' "$host" >> "$GITHUB_ENV"
+          else
+            echo "postgres reachable by service alias"
+          fi
           for i in $(seq 1 30); do
-            if (exec 3<>/dev/tcp/postgres/5432) 2>/dev/null; then
-              exec 3>&- 3<&-
-              echo "postgres is accepting connections"
+            if (exec 3<>/dev/tcp/$host/5432) 2>/dev/null; then
+              echo "postgres at $host:5432 is accepting connections"
               exit 0
             fi
             sleep 2
           done
-          echo "postgres never became ready" >&2
+          echo "postgres at $host:5432 never became ready" >&2
           exit 1
       - name: test
         # The sb.js behavioral suite (jstest/, via TestJSModules) needs node; without it that test
