@@ -11,12 +11,13 @@ import (
 // 'claimed' (not 'pending') when the requirement is supplied, keeping the same owner and lease.
 func TestInterruptStatesRetainOwnerAndLease(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "a2a-interrupt", "q")
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "a2a-int"})
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "a2a-int"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	claimed, err := s.ClaimTodo(ctx, "", td.ID, "w", time.Hour)
+	claimed, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -74,8 +75,9 @@ func TestInterruptStatesRetainOwnerAndLease(t *testing.T) {
 // by the caller and only accepts an interrupt state.
 func TestInterruptTodoGuards(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "a2a-guards", "q")
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t"})
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -83,7 +85,7 @@ func TestInterruptTodoGuards(t *testing.T) {
 	if _, err := s.InterruptTodo(ctx, td.ID, "w", StateInputRequired, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("interrupt pending should conflict, got %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, "", td.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	// Another owner cannot interrupt someone else's claim.
@@ -106,8 +108,9 @@ func TestInterruptTodoGuards(t *testing.T) {
 // eligible for retry/backoff.
 func TestRejectedIsDistinctFromFailed(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "a2a-reject", "q")
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "a2a-rej"})
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "a2a-rej"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -131,7 +134,7 @@ func TestRejectedIsDistinctFromFailed(t *testing.T) {
 		t.Fatalf("requeue picked up a rejected todo (n=%d); rejected must not be retried", n)
 	}
 	// …the claim scan never re-surfaces it…
-	if _, err := s.ClaimTodo(ctx, "", td.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
+	if _, err := s.ClaimTodo(ctx, ep, td.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
 		t.Fatalf("claim rejected should conflict, got %v", err)
 	}
 	// …and the explicit operator RetryTodo (which only re-enqueues 'failed') refuses it.
@@ -148,11 +151,11 @@ func TestRejectedIsDistinctFromFailed(t *testing.T) {
 	}
 
 	// Reject only applies before a claim: a claimed todo cannot be rejected (it would be a cancel).
-	td2, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t2", IdempotencyKey: "a2a-rej2"})
+	td2, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t2", IdempotencyKey: "a2a-rej2"})
 	if err != nil {
 		t.Fatalf("create2: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, "", td2.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, td2.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim2: %v", err)
 	}
 	if _, err := s.RejectTodo(ctx, td2.ID, nil); !errors.Is(err, ErrConflict) {
@@ -166,9 +169,10 @@ func TestRejectedIsDistinctFromFailed(t *testing.T) {
 // idempotent success.
 func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "a2a-cancel", "q")
 
 	// Cancel a pending todo.
-	pend, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "a2a-can1"})
+	pend, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "a2a-can1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -186,7 +190,7 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 	if _, err := s.RetryTodoAnyEndpoint(ctx, pend.ID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("RetryTodo on canceled should conflict, got %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, "", pend.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
+	if _, err := s.ClaimTodo(ctx, ep, pend.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
 		t.Fatalf("claim canceled should conflict, got %v", err)
 	}
 	// Idempotency signal: a second cancel finds it already terminal → ErrConflict (handler maps to
@@ -196,11 +200,11 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 	}
 
 	// Cancel a claimed todo too (a worker is mid-flight): still terminal, owner cleared.
-	cl, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t2", IdempotencyKey: "a2a-can2"})
+	cl, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t2", IdempotencyKey: "a2a-can2"})
 	if err != nil {
 		t.Fatalf("create2: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, "", cl.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, cl.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim2: %v", err)
 	}
 	c2, err := s.CancelTodo(ctx, cl.ID, nil)
@@ -213,11 +217,11 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 
 	// Cancel is valid from an interrupt state too: a task paused on input/auth is in-progress work
 	// and must be cancelable (SPEC-0018 REQ "CancelTask Is Idempotent" — out of claimable/in-progress).
-	intr, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t3", IdempotencyKey: "a2a-can3"})
+	intr, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t3", IdempotencyKey: "a2a-can3"})
 	if err != nil {
 		t.Fatalf("create3: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, "", intr.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, intr.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim3: %v", err)
 	}
 	if _, err := s.InterruptTodo(ctx, intr.ID, "w", StateInputRequired, nil); err != nil {
@@ -232,12 +236,12 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 	}
 
 	// A dead-lettered 'failed' todo is a resting state, not in-flight: cancel is not its move.
-	dl, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t4", IdempotencyKey: "a2a-can4"})
+	dl, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t4", IdempotencyKey: "a2a-can4"})
 	if err != nil {
 		t.Fatalf("create4: %v", err)
 	}
 	for i := 0; i < 5; i++ {
-		if _, err := s.ClaimTodo(ctx, "", dl.ID, "w", time.Hour); err != nil {
+		if _, err := s.ClaimTodo(ctx, ep, dl.ID, "w", time.Hour); err != nil {
 			t.Fatalf("claim4 %d: %v", i, err)
 		}
 		if _, err := s.FailTodoAnyEndpoint(ctx, dl.ID, "w", nil); err != nil {
@@ -273,8 +277,10 @@ func TestA2ATransitionsFireHookAfterCommit(t *testing.T) {
 	})
 	defer s.SetTodoTransitionHook(nil)
 
+	ep := seedEndpoint(t, s, ctx, "a2a-hooks", "q")
+
 	// Reject fires 'rejected'.
-	r, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t", IdempotencyKey: "hk-rej"})
+	r, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "hk-rej"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -287,11 +293,11 @@ func TestA2ATransitionsFireHookAfterCommit(t *testing.T) {
 	}
 
 	// Interrupt fires the interrupt state verb; resume fires 'claimed'.
-	c, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "q", Title: "t2", IdempotencyKey: "hk-int"})
+	c, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t2", IdempotencyKey: "hk-int"})
 	if err != nil {
 		t.Fatalf("create2: %v", err)
 	}
-	if _, err := s.ClaimTodo(ctx, "", c.ID, "w", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, c.ID, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	verbs, states = nil, nil

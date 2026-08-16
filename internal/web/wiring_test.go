@@ -1,6 +1,6 @@
 // Vended-credential wiring tests: the one-time reveal MUST emit Streamable-HTTP .mcp.json wiring
 // (type: http + /mcp/{slug} URL + bearer header) and MUST NOT reference a local binary or stdio
-// command. These are DB-less unit tests, so they run on the primary (Gitea) CI gate.
+// command. These are DB-less unit tests, so they run under plain `go test ./...`.
 // Governing: SPEC-0014 REQ "HTTP Wiring Is the Only Wiring" (scenario "Vend reveal shows HTTP
 // wiring"); SPEC-0012 REQ "Vend Flow and One-Time Credential Reveal".
 package web

@@ -1,6 +1,6 @@
 package web
 
-// Template render coverage for the SPEC-0017 Providers view that runs in the DB-less
+// Template render coverage for the SPEC-0017 Providers view that runs in the
 // `go test ./...` gate: family grouping, trust chips (scenario "Trust at a glance"), secret
 // PRESENCE-only rendering, health stamps, the lifecycle affordances, the two-tier catalog
 // (scenario "Catalog honesty" — available cards expose NO connect path), and the one-time rotate

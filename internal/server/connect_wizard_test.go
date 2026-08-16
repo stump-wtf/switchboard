@@ -5,7 +5,8 @@
 // explicit open acknowledgement (scenario "Open requires intent"), the queue path's Redis
 // connection settings, and the ends-registered-enabled-visible guarantee, including live dispatch
 // with no restart (REQ "Runtime Provider Registry"). Skipped without
-// SWITCHBOARD_TEST_DATABASE_URL (Gitea CI runs DB-less; the GitHub mirror provides Postgres).
+// SWITCHBOARD_TEST_DATABASE_URL (both CI hosts provide a Postgres service; local runs need
+// `make ci`).
 // Governing: SPEC-0017 REQ "Connect Provider Wizard"; SPEC-0015 REQ "Wizard Interaction Pattern"
 // (scenario "JavaScript disabled"); ADR-0020, ADR-0003.
 package server

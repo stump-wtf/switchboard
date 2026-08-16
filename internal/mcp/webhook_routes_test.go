@@ -8,7 +8,7 @@ package mcp
 // idea of the schema back at me; the friend-edge DIRECTION in particular is only meaningfully tested
 // against the real table and the real lifecycle transitions.
 //
-// Skips cleanly without SWITCHBOARD_TEST_DATABASE_URL, in the house style (Gitea CI runs DB-less).
+// Skips cleanly without SWITCHBOARD_TEST_DATABASE_URL, in the house style.
 //
 // Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)",
 // SPEC-0006 REQ "Webhook Route Fan-Out Under Ownership and Friendship", ADR-0010, ADR-0008.

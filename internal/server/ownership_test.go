@@ -1,7 +1,7 @@
 // End-to-end ownership-scoping tests through the real router + PostgreSQL: the dashboard lists
 // only the session human's agents, an unowned agent detail is an existence-hiding 404, and logout
-// revokes the server-side session. Skipped without SWITCHBOARD_TEST_DATABASE_URL (Gitea CI runs
-// DB-less; the GitHub mirror provides Postgres), matching the store test pattern.
+// revokes the server-side session. Skipped without SWITCHBOARD_TEST_DATABASE_URL (both CI hosts
+// provide a Postgres service; local runs need `make ci`), matching the store test pattern.
 // Governing: SPEC-0012 REQ "Screen Set and Routes" (ownership scoping, unowned → 404),
 // SPEC-0008 REQ "Session-Gated Human Surface".
 package server

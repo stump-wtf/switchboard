@@ -4,7 +4,7 @@
 // surfaces the vended result explicitly in the response (SPEC-0015 scenario "Approve mints and
 // shows the grant"), and — the load-bearing hardening — approve only ever vends onto a
 // TARGET-OWNED agent (a caller-supplied foreign agent id is refused with no mint). Skipped without
-// SWITCHBOARD_TEST_DATABASE_URL (Gitea CI runs DB-less), matching the ownership_test pattern.
+// SWITCHBOARD_TEST_DATABASE_URL (no DSN configured), matching the ownership_test pattern.
 // Governing: SPEC-0015 REQ "Friends View And Approval Flow", SPEC-0010 REQ "Approval Is the Vend,
 // Narrow-Only", wave-4 verification finding / hardening #152 (approve must resolve an owned agent).
 package server

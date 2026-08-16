@@ -3,8 +3,8 @@
 // They bind the SPEC-0015 wizard contract — routed step pages, server-side step state,
 // value-preserving back navigation, confirm-before-mint, the one-time reveal with both .mcp.json
 // variants, the recorded expiry for a chosen lifetime, and the revoke confirm flow. Skipped
-// without SWITCHBOARD_TEST_DATABASE_URL (Gitea CI runs DB-less; the GitHub mirror provides
-// Postgres). Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard" (scenario "Lifetime chosen
+// without SWITCHBOARD_TEST_DATABASE_URL (both CI hosts provide a Postgres service; local runs
+// need `make ci`). Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard" (scenario "Lifetime chosen
 // at vend"), REQ "Wizard Interaction Pattern" (scenario "JavaScript disabled"); SPEC-0016 REQ
 // "Credential Lifetime"; SPEC-0007 (one-time reveal + revoke semantics).
 package server
@@ -78,9 +78,10 @@ func followTo(t *testing.T, rec *httptest.ResponseRecorder, want string) string 
 }
 
 // TestVendWizardCompletesWithoutJS walks the whole wizard as a no-JS browser: start → persona →
-// queues → verbs → lifetime (7d) → confirm → one-time reveal, checking value-preserving back
-// navigation along the way, the recorded expiry, the countdown data on the card, and that the
-// plaintext credential is unrecoverable afterwards.
+// queues → verbs → webhooks (left empty: self-managed webhooks disabled) → lifetime (7d) →
+// confirm → one-time reveal, checking value-preserving back navigation along the way, the
+// recorded expiry, the countdown data on the card, and that the plaintext credential is
+// unrecoverable afterwards.
 func TestVendWizardCompletesWithoutJS(t *testing.T) {
 	r, st, ctx := newDBRouter(t)
 	human, token := mintSession(t, st, ctx, "test|alice", "Alice Ames", "alice@example.com")
@@ -122,7 +123,7 @@ func TestVendWizardCompletesWithoutJS(t *testing.T) {
 
 	// Step 3 — verbs.
 	followTo(t, c.do(http.MethodPost, "/endpoints/vend/verbs",
-		url.Values{"csrf_token": {csrf}, "verbs": {"claim", "complete"}}), "/endpoints/vend/lifetime")
+		url.Values{"csrf_token": {csrf}, "verbs": {"claim", "complete"}}), "/endpoints/vend/webhooks")
 	// Revisit renders the operator's own selection, not the drain-verb defaults.
 	backVerbs := c.get("/endpoints/vend/verbs").Body.String()
 	if !strings.Contains(backVerbs, `value="claim" checked`) || !strings.Contains(backVerbs, `value="complete" checked`) {
@@ -132,11 +133,16 @@ func TestVendWizardCompletesWithoutJS(t *testing.T) {
 		t.Error("back nav: verbs step re-checked a default the operator deselected")
 	}
 
-	// Step 4 — lifetime: the scenario's 7-day choice.
+	// Step 4 — webhooks: the optional self-managed webhook ceiling (ADR-0012 / SPEC-0006). Posted
+	// empty, which vends with webhook_max=0 — self-managed webhooks disabled.
+	followTo(t, c.do(http.MethodPost, "/endpoints/vend/webhooks",
+		url.Values{"csrf_token": {csrf}}), "/endpoints/vend/lifetime")
+
+	// Step 5 — lifetime: the scenario's 7-day choice.
 	followTo(t, c.do(http.MethodPost, "/endpoints/vend/lifetime",
 		url.Values{"csrf_token": {csrf}, "lifetime": {"7d"}}), "/endpoints/vend/confirm")
 
-	// Step 5 — confirm: summarizes the draft and states the irreversibility.
+	// Step 6 — confirm: summarizes the draft and states the irreversibility.
 	confirm := c.get("/endpoints/vend/confirm").Body.String()
 	for _, want := range []string{"wizard-bot", "reviews", "deploys", "claim", "complete", ">7d<", "Vending is irreversible"} {
 		if !strings.Contains(confirm, want) {

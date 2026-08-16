@@ -3,7 +3,7 @@
 // (session + CSRF) actually bite on the ingestion path — disable rejects new deliveries while
 // history stays queryable, rotate kills the old secret and reveals the new one exactly once, and
 // remove kills the route while events/todos survive. Skipped without SWITCHBOARD_TEST_DATABASE_URL
-// (Gitea CI runs DB-less), matching the ownership_test pattern.
+// (no DSN configured), matching the ownership_test pattern.
 //
 // Governing: SPEC-0017 REQ "Providers View" (scenario "Trust at a glance"), REQ "Provider
 // Lifecycle" (scenario "Disable stops the line"); ADR-0020.

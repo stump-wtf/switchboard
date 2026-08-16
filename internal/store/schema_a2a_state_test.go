@@ -11,6 +11,8 @@ import (
 // are now insertable, while an out-of-domain state is rejected by the database.
 func TestTodoStateCheckConstraint(t *testing.T) {
 	s, ctx := testStore(t)
+	// todos.endpoint_id is NOT NULL (ADR-0022), so even raw-SQL fixtures must name an owner.
+	ep := seedEndpoint(t, s, ctx, "state-check", "q")
 
 	// Every valid state must be insertable directly.
 	valid := []string{
@@ -20,14 +22,14 @@ func TestTodoStateCheckConstraint(t *testing.T) {
 	for _, st := range valid {
 		id := "td_check_" + st
 		if _, err := s.pool.Exec(ctx,
-			`INSERT INTO todos (id, queue, title, state) VALUES ($1, 'q', 't', $2)`, id, st); err != nil {
+			`INSERT INTO todos (id, endpoint_id, queue, title, state) VALUES ($1, $2, 'q', 't', $3)`, id, ep, st); err != nil {
 			t.Fatalf("insert state %q rejected but should be valid: %v", st, err)
 		}
 	}
 
 	// An out-of-domain state must be rejected by the CHECK (SQLSTATE 23514).
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO todos (id, queue, title, state) VALUES ('td_check_bad', 'q', 't', 'bogus')`)
+		`INSERT INTO todos (id, endpoint_id, queue, title, state) VALUES ('td_check_bad', $1, 'q', 't', 'bogus')`, ep)
 	if err == nil {
 		t.Fatalf("insert of an out-of-domain state succeeded; the CHECK constraint must reject it")
 	}

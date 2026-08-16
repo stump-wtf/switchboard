@@ -1,6 +1,6 @@
 package web
 
-// Template render coverage for the SPEC-0015 Friends view + approval flow that runs in the DB-less
+// Template render coverage for the SPEC-0015 Friends view + approval flow that runs in the
 // `go test ./...` gate: the pending-in-your-queue / awaiting-them / established / blocked sections,
 // per-status actions (the irreversible ones routing through their full confirm pages), the approve
 // confirm page ("approving IS the vend" — it presents the scoped endpoint approval mints), the

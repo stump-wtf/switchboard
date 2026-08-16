@@ -1,7 +1,8 @@
 // End-to-end vend-flow tests through the real router + PostgreSQL: the vend form rejects a missing
 // scope with 400 and mints nothing, and a successful vend reveals the plaintext credential exactly
 // once with HTTP-only .mcp.json wiring while persisting only its hash and prefix. Skipped without
-// SWITCHBOARD_TEST_DATABASE_URL (Gitea CI runs DB-less; the GitHub mirror provides Postgres).
+// SWITCHBOARD_TEST_DATABASE_URL (both CI hosts provide a Postgres service; local runs need
+// `make ci`).
 // Governing: SPEC-0012 REQ "Vend Flow and One-Time Credential Reveal"; SPEC-0014 REQ "HTTP Wiring
 // Is the Only Wiring".
 package server

@@ -7,9 +7,12 @@ import (
 )
 
 // newTask creates a todo and returns its id, for use as a push config's task_id FK target.
+// The todo is pinned to a freshly seeded endpoint — todos.endpoint_id is NOT NULL (ADR-0022), so
+// a tenantless fixture cannot exist.
 func newTask(t *testing.T, s *Store, ctx context.Context, key string) string {
 	t.Helper()
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{Queue: "reviews", Title: "task", IdempotencyKey: key})
+	ep := seedEndpoint(t, s, ctx, "push-config", "reviews")
+	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "reviews", Title: "task", IdempotencyKey: key})
 	if err != nil {
 		t.Fatalf("create todo: %v", err)
 	}

@@ -5,8 +5,8 @@
 // preview rendered from the unsaved draft (scenario "Preview before publish": editing the verb
 // subset updates the previewed skills before anything is persisted), the publish-step save, the
 // edit flow's pinned backing agent, and the unchanged well-known card output (SPEC-0009). Skipped
-// without SWITCHBOARD_TEST_DATABASE_URL (Gitea CI runs DB-less; the GitHub mirror provides
-// Postgres). Governing: SPEC-0015 REQ "Personas View And Wizard", REQ "Wizard Interaction Pattern"
+// without SWITCHBOARD_TEST_DATABASE_URL (both CI hosts provide a Postgres service; local runs
+// need `make ci`). Governing: SPEC-0015 REQ "Personas View And Wizard", REQ "Wizard Interaction Pattern"
 // (scenario "JavaScript disabled"); SPEC-0009 REQ "Agent Card Mapping"; ADR-0018.
 package server
 
