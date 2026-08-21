@@ -35,7 +35,7 @@ func allPages(t *testing.T, h *Handler) map[string]string {
 		// The vend wizard's step pages and the revoke confirm are full pages in the same shell
 		// (SPEC-0015 REQ "Wizard Interaction Pattern"), so the landmark/origin sweeps cover them.
 		"vend": {Title: "Vend endpoint", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"},
-			Vend: testVendStepView("persona")},
+			Vend: testVendStepView("agent")},
 		"revoke": {Title: "Revoke endpoint", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "endpoints", Initials: "JS"},
 			RevokeConfirm: &revokeConfirmView{Card: card}},
 	}

@@ -152,8 +152,8 @@ func TestFirstIncompleteVendStep(t *testing.T) {
 		values url.Values
 		want   string
 	}{
-		{url.Values{}, "persona"},
-		{url.Values{"name": {"  "}}, "persona"},
+		{url.Values{}, "agent"},
+		{url.Values{"name": {"  "}}, "agent"},
 		{url.Values{"name": {"bot"}}, "queues"},
 		{url.Values{"name": {"bot"}, "queues": {"reviews"}}, "verbs"},
 		{url.Values{"name": {"bot"}, "queues": {"reviews"}, "verbs": {"claim"}}, ""},

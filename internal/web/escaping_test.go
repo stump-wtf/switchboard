@@ -24,7 +24,7 @@ func TestDocumentDeclaresLangAndViewport(t *testing.T) {
 		"login":     {Title: "Log in"},
 		"board":     {Title: "The Board", Human: testHuman(), Shell: shell{Active: "board"}},
 		"endpoints": {Title: "Endpoints", Human: testHuman(), Shell: shell{Active: "endpoints"}},
-		"vend":      {Title: "Vend endpoint", Human: testHuman(), Shell: shell{Active: "endpoints"}, Vend: testVendStepView("persona")},
+		"vend":      {Title: "Vend endpoint", Human: testHuman(), Shell: shell{Active: "endpoints"}, Vend: testVendStepView("agent")},
 	}
 	for page, v := range pages {
 		body := renderPage(t, h, page, v)

@@ -38,10 +38,10 @@ func renderVendPage(t *testing.T, h *Handler, v *vendStepView, personasEnabled b
 	})
 }
 
-// TestVendWizardStepOrder pins the SPEC-0015 step contract: persona → queues → verbs →
+// TestVendWizardStepOrder pins the SPEC-0015 step contract: agent → queues → verbs →
 // webhooks → lifetime → confirm, under /endpoints/vend.
 func TestVendWizardStepOrder(t *testing.T) {
-	want := []string{"persona", "queues", "verbs", "webhooks", "lifetime", "confirm"}
+	want := []string{"agent", "queues", "verbs", "webhooks", "lifetime", "confirm"}
 	if len(vendWizard.steps) != len(want) {
 		t.Fatalf("vend wizard has %d steps, want %d", len(vendWizard.steps), len(want))
 	}
@@ -60,18 +60,18 @@ func TestVendWizardStepOrder(t *testing.T) {
 // draft's choice selected. With personas disabled no persona field renders.
 func TestVendStepPersonaRendersNameAndPersonaSelect(t *testing.T) {
 	h := newTestHandler(t)
-	v := testVendStepView("persona")
+	v := testVendStepView("agent")
 	v.Name = "release-bot"
 	v.PersonaID = "pr_123"
 	v.PersonaOptions = []vendPersonaOption{{ID: "pr_123", Name: "Reviewer"}, {ID: "pr_456", Name: "Deployer"}}
 	body := renderVendPage(t, h, v, true)
 	for _, want := range []string{
-		`data-sb-wizard="vend"`,      // the wizard page hook
-		`aria-current="step"`,        // tracker marks the current step
-		`data-sb-wiz-step="persona"`, // tracker entries carry their slugs
-		"step 1 of 6",                // progress line
-		`method="post"`,              // plain form — no-JS completion
-		`action="/endpoints/vend/persona"`,
+		`data-sb-wizard="vend"`,    // the wizard page hook
+		`aria-current="step"`,      // tracker marks the current step
+		`data-sb-wiz-step="agent"`, // tracker entries carry their slugs
+		"step 1 of 6",              // progress line
+		`method="post"`,            // plain form — no-JS completion
+		`action="/endpoints/vend/agent"`,
 		`name="csrf_token" value="tok"`,
 		`name="name"`, `value="release-bot"`, `data-sb-vend-name`, // prefilled name
 		`<select id="sb-vend-persona"`, `name="persona"`,
@@ -89,7 +89,7 @@ func TestVendStepPersonaRendersNameAndPersonaSelect(t *testing.T) {
 		t.Error("persona step must not render a Back link (it is the first step)")
 	}
 	// Personas off: no persona slot at all.
-	off := renderVendPage(t, h, testVendStepView("persona"), false)
+	off := renderVendPage(t, h, testVendStepView("agent"), false)
 	if strings.Contains(off, `name="persona"`) {
 		t.Error("persona step must not render a persona field while personas are disabled")
 	}
@@ -110,8 +110,8 @@ func TestVendStepQueuesRendersChipsAndFreeText(t *testing.T) {
 		`name="queues" value="reviews" checked`, // draft-checked chip survives back nav
 		`name="queues" value="deploys"`,
 		`name="queues_extra"`, `value="hotfixes"`, `data-sb-vend-queues`, // free-text add field, prefilled
-		`data-sb-vend-queue-preview`,                      // sb-vend.js mirrors typed queues as chips
-		`href="/endpoints/vend/persona" data-sb-wiz-back`, // Back to the previous step page
+		`data-sb-vend-queue-preview`,                    // sb-vend.js mirrors typed queues as chips
+		`href="/endpoints/vend/agent" data-sb-wiz-back`, // Back to the previous step page
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("queues step: missing %q", want)
@@ -251,7 +251,7 @@ func TestVendStepErrorRerenders(t *testing.T) {
 // re-vend doctrine (this mints a NEW endpoint; scope is immutable).
 func TestVendStepReVendBanner(t *testing.T) {
 	h := newTestHandler(t)
-	v := testVendStepView("persona")
+	v := testVendStepView("agent")
 	v.ReVendOf = "old-bot"
 	body := renderVendPage(t, h, v, false)
 	for _, want := range []string{"re-vend of old-bot", "mints a NEW endpoint", "revoke the old one"} {

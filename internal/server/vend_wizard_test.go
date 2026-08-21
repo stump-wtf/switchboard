@@ -89,22 +89,22 @@ func TestVendWizardCompletesWithoutJS(t *testing.T) {
 	csrf := scrapeCSRF(t, c.get("/endpoints").Body.String())
 
 	// Start: mints server-side state (cookie) and lands on the first step.
-	followTo(t, c.get("/endpoints/vend"), "/endpoints/vend/persona")
+	followTo(t, c.get("/endpoints/vend"), "/endpoints/vend/agent")
 	if _, ok := c.cookies["sb_wiz_vend"]; !ok {
 		t.Fatal("wizard start did not set the server-side state token cookie")
 	}
 
 	// Step 1 — persona: a full page with a plain form.
-	step1 := c.get("/endpoints/vend/persona")
+	step1 := c.get("/endpoints/vend/agent")
 	if step1.Code != http.StatusOK {
 		t.Fatalf("persona step: got %d", step1.Code)
 	}
-	for _, want := range []string{`data-sb-wizard="vend"`, `method="post"`, `action="/endpoints/vend/persona"`} {
+	for _, want := range []string{`data-sb-wizard="vend"`, `method="post"`, `action="/endpoints/vend/agent"`} {
 		if !strings.Contains(step1.Body.String(), want) {
 			t.Errorf("persona step: missing %q", want)
 		}
 	}
-	followTo(t, c.do(http.MethodPost, "/endpoints/vend/persona",
+	followTo(t, c.do(http.MethodPost, "/endpoints/vend/agent",
 		url.Values{"csrf_token": {csrf}, "name": {"wizard-bot"}}), "/endpoints/vend/queues")
 
 	// Step 2 — queues (empty store → free-text field).
@@ -112,7 +112,7 @@ func TestVendWizardCompletesWithoutJS(t *testing.T) {
 		url.Values{"csrf_token": {csrf}, "queues_extra": {"reviews, deploys"}}), "/endpoints/vend/verbs")
 
 	// Back navigation preserves entered values (SPEC-0015): both earlier steps re-render the draft.
-	back1 := c.get("/endpoints/vend/persona").Body.String()
+	back1 := c.get("/endpoints/vend/agent").Body.String()
 	if !strings.Contains(back1, `value="wizard-bot"`) {
 		t.Error("back nav: persona step lost the entered agent name")
 	}
@@ -212,14 +212,14 @@ func TestVendWizardValidatesEachStep(t *testing.T) {
 	human, token := mintSession(t, st, ctx, "test|alice", "Alice Ames", "alice@example.com")
 	c := newWizClient(t, r, token)
 	csrf := scrapeCSRF(t, c.get("/endpoints").Body.String())
-	followTo(t, c.get("/endpoints/vend"), "/endpoints/vend/persona")
+	followTo(t, c.get("/endpoints/vend"), "/endpoints/vend/agent")
 
 	// Confirm on a fresh (empty) draft: no mint, bounce to the first incomplete step.
 	followTo(t, c.do(http.MethodPost, "/endpoints/vend/confirm",
-		url.Values{"csrf_token": {csrf}}), "/endpoints/vend/persona")
+		url.Values{"csrf_token": {csrf}}), "/endpoints/vend/agent")
 
 	// Blank name → the persona step re-renders with the error.
-	rec := c.do(http.MethodPost, "/endpoints/vend/persona", url.Values{"csrf_token": {csrf}, "name": {"  "}})
+	rec := c.do(http.MethodPost, "/endpoints/vend/agent", url.Values{"csrf_token": {csrf}, "name": {"  "}})
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "data-sb-wiz-error") {
 		t.Errorf("blank name: got %d, want 400 with an inline step error", rec.Code)
 	}
@@ -278,10 +278,10 @@ func TestVendWizardReVendSeedsFromEndpoint(t *testing.T) {
 	if !strings.Contains(c.get("/endpoints").Body.String(), "/endpoints/vend?from="+src.ID) {
 		t.Fatal("active card missing its Rotate (re-vend) link")
 	}
-	followTo(t, c.get("/endpoints/vend?from="+src.ID), "/endpoints/vend/persona")
+	followTo(t, c.get("/endpoints/vend?from="+src.ID), "/endpoints/vend/agent")
 
 	// Seeded values render through the steps: name + re-vend banner, queues, verbs.
-	persona := c.get("/endpoints/vend/persona").Body.String()
+	persona := c.get("/endpoints/vend/agent").Body.String()
 	if !strings.Contains(persona, `value="old-bot"`) || !strings.Contains(persona, "re-vend of old-bot") {
 		t.Error("re-vend: persona step not seeded from the source endpoint")
 	}
@@ -303,8 +303,8 @@ func TestVendWizardReVendSeedsFromEndpoint(t *testing.T) {
 
 	// A foreign or unknown id seeds nothing (and never errors the start).
 	other := newWizClient(t, r, token)
-	followTo(t, other.get("/endpoints/vend?from=00000000-0000-0000-0000-000000000000"), "/endpoints/vend/persona")
-	if strings.Contains(other.get("/endpoints/vend/persona").Body.String(), "re-vend of") {
+	followTo(t, other.get("/endpoints/vend?from=00000000-0000-0000-0000-000000000000"), "/endpoints/vend/agent")
+	if strings.Contains(other.get("/endpoints/vend/agent").Body.String(), "re-vend of") {
 		t.Error("unknown ?from id must start an unseeded wizard")
 	}
 }

@@ -436,11 +436,12 @@ func newRouter(d routerDeps) chi.Router {
 		// Endpoints view + the vend wizard (SPEC-0015 REQ "Endpoints View And Vend Wizard", REQ
 		// "Wizard Interaction Pattern"). The retired SPEC-0012 /agents screens 303-redirect here.
 		// GET /endpoints/vend starts the wizard (mints server-side step state, 303 → the first step);
-		// GET/POST /endpoints/vend/{step} are the routed step pages (persona → queues → verbs →
+		// GET/POST /endpoints/vend/{step} are the routed step pages (agent → queues → verbs →
 		// lifetime → confirm) — the confirm POST is the mint. POST /endpoints/vend remains the direct
 		// single-form mint path (same executeVend, same validation gates).
 		pr.Get("/endpoints", d.webh.Endpoints)
 		pr.Get("/endpoints/vend", d.webh.VendStart)
+		pr.Get("/endpoints/vend/persona", d.webh.VendLegacyPersonaRedirect)
 		pr.Get("/endpoints/vend/{step}", d.webh.VendStep)
 		pr.Post("/endpoints/vend/{step}", d.webh.VendStepSubmit)
 		pr.Post("/endpoints/vend", d.webh.Vend)
