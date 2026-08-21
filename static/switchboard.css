@@ -1072,6 +1072,7 @@ code,
   color: var(--sb-body);
   border-radius: 4px;
   padding: 1px 5px;
+  overflow-wrap: anywhere;
 }
 
 pre,
@@ -2245,6 +2246,7 @@ pre code {
   flex-wrap: wrap;
   gap: 5px 4px;
   align-items: center;
+  min-width: 0;
 }
 .sb-epcard__foot {
   display: flex;
