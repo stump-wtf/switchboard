@@ -1718,21 +1718,39 @@ pre code {
    left rule) */
 .sb-persona__prompt {
   margin: 0;
-  padding: 8px 12px;
   border-left: 3px solid var(--sb-accent);
   background: var(--sb-code-bg);
   border-radius: var(--sb-radius-btn);
-  font-size: 13px;
-  font-style: italic;
+}
+.sb-persona__prompt-summary {
+  cursor: pointer;
+  padding: 6px 12px;
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+  color: var(--sb-muted);
+  list-style: none;
+}
+.sb-persona__prompt-summary::-webkit-details-marker {
+  display: none;
+}
+.sb-persona__prompt-summary::before {
+  content: "\25B8\00a0"; /* ▸ */
+  color: var(--sb-faint);
+}
+.sb-persona__prompt[open] .sb-persona__prompt-summary::before {
+  content: "\25BE\00a0"; /* ▾ */
+}
+.sb-persona__prompt-text {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--sb-font-mono);
+  font-size: 12px;
   color: var(--sb-body);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.sb-persona__prompt::before {
-  content: "\201C"; /* “ */
-}
-.sb-persona__prompt::after {
-  content: "\201D"; /* ” */
+  border-top: 1px solid var(--sb-divider);
+  max-height: 400px;
+  overflow-y: auto;
 }
 /* "Advertised skills · derived from vended verbs" section: microlabel over the skill + verb chips */
 .sb-persona__skills {

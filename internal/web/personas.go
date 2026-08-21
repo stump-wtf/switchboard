@@ -46,6 +46,7 @@ type personaCardView struct {
 	AgentName    string
 	Discoverable bool
 	SystemPrompt string
+	PromptLines  int // line count of SystemPrompt, for the collapse disclosure label
 	Verbs        []string
 	Queues       []string
 	Skills       []agentSkill
@@ -91,7 +92,7 @@ const pendingCardURLID = "{id}"
 // personaCardViewFrom projects a store persona plus its backing agent name into the card render model,
 // deriving the initials tile, the advertised skills, and the resolvable agent-card URL.
 func (h *Handler) personaCardViewFrom(p store.Persona, agentName string) personaCardView {
-	return personaCardView{
+	v := personaCardView{
 		ID:           p.ID,
 		Name:         p.Name,
 		Slug:         p.Slug,
@@ -105,6 +106,10 @@ func (h *Handler) personaCardViewFrom(p store.Persona, agentName string) persona
 		Skills:       deriveSkills(p.VerbSubset),
 		AgentCardURL: agentCardURL(h.cfg.BaseURL, p.ID),
 	}
+	if p.SystemPrompt != "" {
+		v.PromptLines = strings.Count(p.SystemPrompt, "\n") + 1
+	}
+	return v
 }
 
 // personaInitials derives the persona card's two-letter initials tile from the persona name: the
