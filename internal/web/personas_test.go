@@ -42,7 +42,7 @@ func cardFixture(discoverable bool) personaCardView {
 
 // TestPersonaCardPublishedState covers a discoverable persona: the initials block, the "published"
 // pill, the quoted system prompt, the derived skill chips, the advertised verb chips, the
-// resolvable agent-card URL, the vended-as usage row, and the Edit (→ wizard) + Unpublish actions.
+// resolvable agent-card URL, the vended-as usage row, and the edit (→ wizard) + unpublish actions.
 // Governing: SPEC-0015 REQ "Personas View And Wizard".
 func TestPersonaCardPublishedState(t *testing.T) {
 	h := newTestHandler(t)
@@ -66,7 +66,7 @@ func TestPersonaCardPublishedState(t *testing.T) {
 		"/a/0a1b2c3d-0000-0000-0000-000000000001/.well-known/agent-card.json", // resolvable card URL
 		`href="/personas/0a1b2c3d-0000-0000-0000-000000000001/edit"`,          // Edit → the edit wizard page
 		"data-sb-persona-edit",
-		"Unpublish",                  // a published persona offers Unpublish
+		"unpublish",                  // a published persona offers unpublish
 		`name="toggle_discoverable"`, // publish toggle is a discoverable-only flip
 	} {
 		if !strings.Contains(out, want) {
@@ -83,7 +83,7 @@ func TestPersonaCardPublishedState(t *testing.T) {
 	}
 }
 
-// TestPersonaCardDraftState covers a non-discoverable persona: the "draft" pill and the Publish
+// TestPersonaCardDraftState covers a non-discoverable persona: the "draft" pill and the publish
 // action (posting discoverable=1), plus the honest empty vended-as state.
 // Governing: SPEC-0015 REQ "Personas View And Wizard".
 func TestPersonaCardDraftState(t *testing.T) {
@@ -94,7 +94,7 @@ func TestPersonaCardDraftState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render persona_card: %v", err)
 	}
-	for _, want := range []string{">draft<", "Publish", "no active endpoint vends this persona"} {
+	for _, want := range []string{">draft<", "publish", "no active endpoint vends this persona"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("draft card missing %q:\n%s", want, out)
 		}
@@ -102,8 +102,8 @@ func TestPersonaCardDraftState(t *testing.T) {
 	if !strings.Contains(out, `name="discoverable" value="1"`) {
 		t.Errorf("draft card's toggle should post discoverable=1:\n%s", out)
 	}
-	if strings.Contains(out, "Unpublish") {
-		t.Errorf("draft card must offer Publish, not Unpublish:\n%s", out)
+	if strings.Contains(out, "unpublish") {
+		t.Errorf("draft card must offer publish, not unpublish:\n%s", out)
 	}
 }
 
@@ -180,7 +180,7 @@ func TestPersonasRailGating(t *testing.T) {
 }
 
 // TestPersonasPageRendersCardsAndWizardEntry covers the whole-page render: the cards grid and the
-// "+ New persona" entry point, which is now a plain link into the full-page create wizard (the
+// "+ new persona" entry point, which is now a plain link into the full-page create wizard (the
 // SPEC-0013 modal templates are gone). The active rail entry is marked. Governing: SPEC-0015 REQ
 // "Personas View And Wizard", REQ "Wizard Interaction Pattern".
 func TestPersonasPageRendersCardsAndWizardEntry(t *testing.T) {
@@ -192,9 +192,9 @@ func TestPersonasPageRendersCardsAndWizardEntry(t *testing.T) {
 		Shell: shell{Active: "personas", DBConnected: true, Initials: "JS", PersonasEnabled: true}, Personas: pv,
 	})
 	for _, want := range []string{
-		"Personas · A2A Agent Cards", // header per the design canvas
+		"personas · a2a agent cards", // header per the design canvas
 		"one agent, many least-privilege faces · a human-authored prompt plus a verb subset · advertised as an A2A Agent Card", // tagline per the design canvas
-		"+ New persona",           // entry point label per the design canvas
+		"+ new persona",           // entry point label per the design canvas
 		`href="/personas/wizard"`, // …which is a full-page wizard, not a modal
 		"data-sb-persona-new",     // its behavior hook
 		"Reviewer",                // the card
@@ -213,7 +213,7 @@ func TestPersonasPageRendersCardsAndWizardEntry(t *testing.T) {
 	}
 }
 
-// TestPersonasPageEmptyState proves the "+ New persona" entry point renders even with no personas
+// TestPersonasPageEmptyState proves the "+ new persona" entry point renders even with no personas
 // (the design canvas always shows it) alongside the empty-state line; the wizard's identity step —
 // not the page — explains an empty backing-agent list. Governing: SPEC-0015 REQ "Personas View And
 // Wizard".
@@ -225,7 +225,7 @@ func TestPersonasPageEmptyState(t *testing.T) {
 		Personas: &personasView{CSRF: "tok"},
 	})
 	for _, want := range []string{
-		"+ New persona", // the entry point is unconditional
+		"+ new persona", // the entry point is unconditional
 		`href="/personas/wizard"`,
 		"no personas yet", // empty state
 	} {

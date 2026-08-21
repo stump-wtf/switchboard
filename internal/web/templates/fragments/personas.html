@@ -35,12 +35,12 @@
     <a class="sb-mono sb-persona__urllink" href="{{.AgentCardURL}}">{{.AgentCardURL}}</a>
   </div>
   <div class="sb-persona__acts">
-    <a class="sb-btn sb-btn--secondary" href="/personas/{{.ID}}/edit" data-sb-persona-edit>Edit</a>
+    <a class="sb-btn sb-btn--secondary" href="/personas/{{.ID}}/edit" data-sb-persona-edit>edit</a>
     <form method="post" action="/personas/{{.ID}}" hx-post="/personas/{{.ID}}" hx-swap="none">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="toggle_discoverable" value="1">
       <input type="hidden" name="discoverable" value="{{if .Discoverable}}0{{else}}1{{end}}">
-      <button type="submit" class="sb-btn sb-btn--mono">{{if .Discoverable}}Unpublish{{else}}Publish{{end}}</button>
+      <button type="submit" class="sb-btn sb-btn--mono">{{if .Discoverable}}unpublish{{else}}publish{{end}}</button>
     </form>
   </div>
 </article>{{end}}

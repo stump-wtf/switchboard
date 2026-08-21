@@ -48,7 +48,7 @@
       {{/* Housekeeping: a revoked endpoint may be permanently deleted to clear its dead card. The
            credential is already dead (revoke did that); this only removes the row. Governing:
            SPEC-0007 REQ "Permanent Deletion of Revoked Endpoints". */}}
-      <form method="post" action="/endpoints/{{$c.ID}}/delete" class="sb-epcard__delete"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="sb-btn sb-btn--danger sb-btn--mono">Delete</button></form>
+      <form method="post" action="/endpoints/{{$c.ID}}/delete" class="sb-epcard__delete"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="sb-btn sb-btn--danger sb-btn--mono">delete</button></form>
     {{else}}
       {{/* Server render and the endpoint_seen SSE frame share this fragment, so the OOB swap target
            (sb-ep-seen-<id>) exists before the first live frame. */}}
@@ -59,10 +59,10 @@
              endpoint's scope; it mints a NEW endpoint and never touches this one, so the operator
              switches over, then revokes the old line. Governing: SPEC-0015 (the wizard is the
              re-vend path). */}}
-        <a class="sb-btn sb-btn--secondary sb-btn--mono" href="/endpoints/vend?from={{$c.ID}}" data-sb-ep-rotate title="Re-vend: start the vend wizard pre-filled from this endpoint's scope">Rotate</a>
+        <a class="sb-btn sb-btn--secondary sb-btn--mono" href="/endpoints/vend?from={{$c.ID}}" data-sb-ep-rotate title="Re-vend: start the vend wizard pre-filled from this endpoint's scope">rotate</a>
         {{/* Revoke is irreversible, so it confirms on a full page first (SPEC-0015 REQ "Wizard
              Interaction Pattern"); the kill POST fires only from that page's explicit confirm. */}}
-        <a class="sb-btn sb-btn--danger sb-btn--mono" href="/endpoints/{{$c.ID}}/revoke" data-sb-ep-revoke>Revoke</a>
+        <a class="sb-btn sb-btn--danger sb-btn--mono" href="/endpoints/{{$c.ID}}/revoke" data-sb-ep-revoke>revoke</a>
       </div>
     {{end}}
   </div>
