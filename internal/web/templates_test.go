@@ -67,7 +67,7 @@ func TestBoardRendersShellAndTiles(t *testing.T) {
 		"aria-current=\"page\"",                                                    // active rail entry
 		"LIVE · 7/min",                                                             // LIVE pill from DB rate
 		"postgres · connected",                                                     // connectivity footer
-		"The Board",                                                                // display page title
+		"the board",                                                                // display page title
 		"every inbound line, from arrival to hand-off",                             // tagline
 		"sb-badge--signed", "sb-badge--token", "sb-badge--open", "sb-badge--queue", // trust legend
 		"sb-tile--alert", // awaiting-claim tile tinted (count > 0)
@@ -199,7 +199,7 @@ func TestEndpointsViewRendersCards(t *testing.T) {
 		Shell: sh, EndpointCards: []endpointCard{active, revoked}})
 
 	for _, want := range []string{
-		"Vended MCP endpoints", // header copy per the design canvas
+		"vended mcp endpoints", // header copy per the design canvas
 		"humans are the accountable principals · each endpoint is a scoped, revocable capability · revoke = kill the endpoint", // tagline
 		"reviewer-bot", "old-bot",
 		`class="sb-epcard__avatar" aria-hidden="true">RE<`, // two-letter initials avatar tiles
@@ -217,7 +217,7 @@ func TestEndpointsViewRendersCards(t *testing.T) {
 		`href="/endpoints/vend?from=e1" data-sb-ep-rotate`, // Rotate = re-vend, seeded from this card
 		`href="/endpoints/e1/revoke" data-sb-ep-revoke`,    // Revoke goes via the confirm page
 		`action="/endpoints/e2/delete"`,                    // Delete on the revoked card (housekeeping)
-		"+ Vend endpoint", `href="/endpoints/vend"`,        // the wizard launcher
+		"+ vend endpoint", `href="/endpoints/vend"`,        // the wizard launcher
 		`sse-swap="endpoint_seen"`,              // page-local sink subscribes the endpoint screen
 		`href="/endpoints" aria-current="page"`, // rail marks Endpoints active
 	} {

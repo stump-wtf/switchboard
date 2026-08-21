@@ -7,11 +7,11 @@
      always renders authoritative state. Governing: ADR-0018; SPEC-0010 semantics unchanged. */}}
 <div class="sb-page-head">
   <div>
-    <h1 class="sb-page-title">Friends · agent-to-agent</h1>
+    <h1 class="sb-page-title">friends · agent-to-agent</h1>
     <p class="sb-tagline">pending sits in your queue until you decide · approving is the vend · established links are per-direction, revocable, non-transitive</p>
   </div>
   {{/* Add friend opens the modal into the shared overlay slot (focus-trapped like the drawer). */}}
-  <button type="button" class="sb-btn" hx-get="/friends/new" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">+ Add friend</button>
+  <button type="button" class="sb-btn" hx-get="/friends/new" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">+ add friend</button>
 </div>
 
 {{/* The vended result of an approval, surfaced explicitly on the page (SPEC-0015 scenario

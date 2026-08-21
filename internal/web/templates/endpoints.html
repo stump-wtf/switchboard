@@ -7,12 +7,12 @@
 <div class="sb-page-head">
   <div>
     {{/* Header + tagline copy per the design canvas. */}}
-    <h1 class="sb-page-title">Vended MCP endpoints</h1>
+    <h1 class="sb-page-title">vended mcp endpoints</h1>
     <p class="sb-tagline">humans are the accountable principals · each endpoint is a scoped, revocable capability · revoke = kill the endpoint</p>
   </div>
   {{/* Wizard launcher: a plain link — the wizard is routed pages with server-side state, so there
        is nothing to progressively enhance here (SPEC-0015 REQ "Wizard Interaction Pattern"). */}}
-  <a class="sb-btn sb-vend-open" href="/endpoints/vend">+ Vend endpoint</a>
+  <a class="sb-btn sb-vend-open" href="/endpoints/vend">+ vend endpoint</a>
 </div>
 
 {{if .Reveal}}<div class="sb-card sb-reveal-inline">{{template "vend_reveal" .Reveal}}</div>{{end}}
