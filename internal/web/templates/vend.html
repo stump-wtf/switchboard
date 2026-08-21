@@ -26,7 +26,7 @@
   <form id="sb-wiz-form" class="sb-vend sb-wiz__form" method="post" action="{{$v.ActionURL}}" data-sb-vend>
     <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 
-    {{if eq $v.Step "persona"}}
+    {{if eq $v.Step "agent"}}
     <div class="sb-field">
       <label for="sb-vend-name">Agent name</label>
       <input id="sb-vend-name" class="sb-input" name="name" value="{{$v.Name}}" placeholder="e.g. release-bot" required autocomplete="off" data-sb-vend-name>

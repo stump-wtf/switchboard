@@ -1,7 +1,7 @@
 package web
 
 // The vend wizard: the first full-page wizard on the wizard machinery (wizard.go), replacing the
-// SPEC-0013 vend modal. Vending walks persona → queues → verbs → lifetime → confirm as routed step
+// SPEC-0013 vend modal. Vending walks agent → queues → verbs → lifetime → confirm as routed step
 // pages with server-side state; the confirm step is the irreversible act (it mints the credential)
 // and states so before executing; completion renders the one-time reveal. Re-vend — the SPEC-0007
 // path for scope changes — starts the same wizard seeded from an existing endpoint's scope.
@@ -24,12 +24,12 @@ import (
 )
 
 // vendWizard is the vend flow's wizard definition. The step order is the SPEC-0015 contract:
-// persona → queues → verbs → lifetime → confirm (the confirm page is where the irreversible mint
+// agent → queues → verbs → lifetime → confirm (the confirm page is where the irreversible mint
 // is stated and executed).
 var vendWizard = wizardDef{
 	name:  "vend",
 	base:  "/endpoints/vend",
-	steps: []string{"persona", "queues", "verbs", "webhooks", "lifetime", "confirm"},
+	steps: []string{"agent", "queues", "verbs", "webhooks", "lifetime", "confirm"},
 }
 
 // lifetimePresets is the lifetime step's preset vocabulary (SPEC-0016: lifetime chosen at vend
@@ -142,6 +142,12 @@ func (h *Handler) VendStart(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, vendWizard.stepPath(vendWizard.first()), http.StatusSeeOther)
 }
 
+// VendLegacyPersonaRedirect 303-redirects the old /endpoints/vend/persona route to /endpoints/vend/agent
+// so bookmarks and back-links from before the step rename still resolve.
+func (h *Handler) VendLegacyPersonaRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, vendWizard.stepPath("agent"), http.StatusSeeOther)
+}
+
 // VendStep renders one wizard step page from the server-side state. A request with no live wizard
 // state (expired, cleared, or deep-linked cold) restarts the flow rather than rendering a
 // half-broken page. Requires human.
@@ -182,7 +188,7 @@ func (h *Handler) VendStepSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch slug {
-	case "persona":
+	case "agent":
 		name := strings.TrimSpace(r.FormValue("name"))
 		if name == "" {
 			h.renderVendStep(w, r, &human, slug, values, "an agent name is required", http.StatusBadRequest)
@@ -276,7 +282,7 @@ func (h *Handler) VendStepSubmit(w http.ResponseWriter, r *http.Request) {
 // empty value is the deliberate "until revoked" choice.
 func firstIncompleteVendStep(values url.Values) string {
 	if strings.TrimSpace(values.Get("name")) == "" {
-		return "persona"
+		return "agent"
 	}
 	if len(values["queues"]) == 0 {
 		return "queues"
@@ -305,7 +311,7 @@ func (h *Handler) renderVendStep(w http.ResponseWriter, r *http.Request, human *
 	}
 
 	switch slug {
-	case "persona":
+	case "agent":
 		v.Name = values.Get("name")
 		v.PersonaID = values.Get("persona")
 		v.PersonaOptions = h.vendPersonaOptions(r, human.ID)

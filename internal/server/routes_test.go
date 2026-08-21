@@ -69,6 +69,7 @@ var sessionRoutes = map[string]bool{
 	"GET /todos/{id}":             true, // Todo detail drawer (fragment / standalone)
 	"GET /endpoints":              true, // Endpoints view (SPEC-0015 vended-endpoint cards)
 	"GET /endpoints/vend":         true, // vend wizard start (mints server-side step state)
+	"GET /endpoints/vend/persona": true, // legacy redirect to /endpoints/vend/agent
 	"GET /endpoints/vend/{step}":  true, // vend wizard step pages (SPEC-0015 wizard pattern)
 	"POST /endpoints/vend/{step}": true, // step submit / confirm-step mint
 	// Providers view + lifecycle (SPEC-0017): the view over the runtime registry, the shared
@@ -180,7 +181,7 @@ func routePath(route string) string {
 	return strings.NewReplacer(
 		"{id}", "00000000-0000-0000-0000-000000000000",
 		"{persona_id}", "00000000-0000-0000-0000-000000000000",
-		"{name}", "x", "{endpoint}", "x", "{step}", "persona", "*", "x",
+		"{name}", "x", "{endpoint}", "x", "{step}", "agent", "*", "x",
 	).Replace(route)
 }
 
