@@ -54,7 +54,7 @@
     <div class="sb-lane__head">
       <span class="sb-lane__dot" aria-hidden="true"></span>
       <h2 class="sb-lane__title">verified</h2>
-      <span class="sb-lane__count"><span id="sb-lane-count-verified" class="sb-lane__n">{{.Counts.Verified}}</span> · durable todos</span>
+      <span class="sb-lane__count"><span id="sb-lane-count-verified" class="sb-lane__n"><a href="/todos?filter=pending" class="sb-lane__link">{{.Counts.Verified}}</a></span> · pending todos</span>
     </div>
     <ul id="sb-lane-verified-cards" class="sb-lane__cards" data-sb-lane-cards="verified" data-sb-lane-cap="8" aria-live="polite">{{range .Verified}}{{template "lane_card" .}}{{end}}</ul>
     <p class="sb-empty" data-sb-lane-empty="verified"{{if .Verified}} hidden{{end}}>none waiting · claims are keeping up</p>
@@ -63,7 +63,7 @@
     <div class="sb-lane__head">
       <span class="sb-lane__dot" aria-hidden="true"></span>
       <h2 class="sb-lane__title">patched through</h2>
-      <span class="sb-lane__count"><span id="sb-lane-count-patched" class="sb-lane__n">{{.Counts.Patched}}</span> · claimed &amp; beyond</span>
+      <span class="sb-lane__count"><span id="sb-lane-count-patched" class="sb-lane__n"><a href="/todos?filter=claimed" class="sb-lane__link">{{.Counts.Patched}}</a></span> · claimed, done, failed</span>
     </div>
     <ul id="sb-lane-patched-cards" class="sb-lane__cards" data-sb-lane-cards="patched" data-sb-lane-cap="8" aria-live="polite">{{range .Patched}}{{template "lane_card" .}}{{end}}</ul>
     <p class="sb-empty" data-sb-lane-empty="patched"{{if .Patched}} hidden{{end}}>nothing claimed yet</p>
