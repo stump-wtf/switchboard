@@ -16,9 +16,9 @@
         <p class="sb-persona__agent">backing agent · <span class="sb-mono">{{if .AgentName}}{{.AgentName}}{{else}}—{{end}}</span></p>
       </div>
     </div>
-    {{if .Discoverable}}<span class="sb-badge sb-badge--active" title="Discoverable — the agent card resolves">published</span>{{else}}<span class="sb-badge sb-badge--revoked" title="Draft — the agent card 404s until published">draft</span>{{end}}
+    {{if .Discoverable}}{{if not .VendedAs}}<span class="sb-badge sb-badge--active" title="Published but no active endpoint vends this persona">published · not vended</span>{{else}}<span class="sb-badge sb-badge--active" title="Discoverable — the agent card resolves">published</span>{{end}}{{else}}<span class="sb-badge sb-badge--revoked" title="Draft — the agent card 404s until published">draft</span>{{end}}
   </div>
-  {{if .SystemPrompt}}<blockquote class="sb-persona__prompt">{{.SystemPrompt}}</blockquote>{{end}}
+  {{if .SystemPrompt}}<details class="sb-persona__prompt"><summary class="sb-persona__prompt-summary">system prompt · {{.PromptLines}} lines</summary><pre class="sb-persona__prompt-text">{{.SystemPrompt}}</pre></details>{{end}}
   <div class="sb-persona__skills">
     <span class="sb-microlabel">Advertised skills · derived from vended verbs</span>
     {{if .Skills}}<div class="sb-chips" aria-label="Advertised skills">{{range .Skills}}<span class="sb-chip sb-chip--skill" title="{{.Description}}">{{.Name}}</span>{{end}}</div>{{end}}
