@@ -807,6 +807,13 @@ a:hover {
   color: var(--sb-text);
   font-weight: 600;
 }
+.sb-lane__link {
+  color: inherit;
+  text-decoration: none;
+}
+.sb-lane__link:hover {
+  text-decoration: underline;
+}
 
 .sb-lane__cards {
   list-style: none;

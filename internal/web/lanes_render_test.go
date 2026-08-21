@@ -82,8 +82,8 @@ func TestBoardLanesFragmentRendersFromViewModels(t *testing.T) {
 	// durable counts with their OOB swap-target ids.
 	for _, want := range []string{
 		`data-sb-lane-count="received">1<`,
-		`id="sb-lane-count-verified" class="sb-lane__n">3</span> · durable todos`,
-		`id="sb-lane-count-patched" class="sb-lane__n">2</span> · claimed &amp; beyond`,
+		`id="sb-lane-count-verified" class="sb-lane__n"><a href="/todos?filter=pending" class="sb-lane__link">3</a></span> · pending todos`,
+		`id="sb-lane-count-patched" class="sb-lane__n"><a href="/todos?filter=claimed" class="sb-lane__link">2</a></span> · claimed, done, failed`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("lane header counts: missing %q", want)
@@ -106,8 +106,8 @@ func TestBoardLanesFragmentRendersFromViewModels(t *testing.T) {
 	empty := renderFrag(t, h, "board_lanes", lanesView{})
 	for _, want := range []string{
 		`data-sb-lane-count="received">0<`,
-		`id="sb-lane-count-verified" class="sb-lane__n">0<`,
-		`id="sb-lane-count-patched" class="sb-lane__n">0<`,
+		`id="sb-lane-count-verified" class="sb-lane__n"><a href="/todos?filter=pending" class="sb-lane__link">0<`,
+		`id="sb-lane-count-patched" class="sb-lane__n"><a href="/todos?filter=claimed" class="sb-lane__link">0<`,
 		"quiet · no lines in flight",
 		"none waiting · claims are keeping up",
 		"nothing claimed yet",
