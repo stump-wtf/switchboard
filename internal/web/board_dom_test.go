@@ -174,7 +174,7 @@ func TestBoardHeaderCarriesReaperPill(t *testing.T) {
 }
 
 // TestTilesCarryDesignSublabels pins the stat-tile sublabels: the three count tiles read
-// 'in flight · being worked', 'awaiting claim', and 'verified sources' under the bare value
+// 'in flight · being worked', 'awaiting claim', and 'verified providers' under the bare value
 // (the throughput tile keeps its events/min unit).
 func TestTilesCarryDesignSublabels(t *testing.T) {
 	h := newTestHandler(t)
@@ -182,7 +182,7 @@ func TestTilesCarryDesignSublabels(t *testing.T) {
 	for _, want := range []string{
 		"in flight · being worked",
 		"awaiting claim",
-		"verified sources",
+		"verified providers",
 		"events/min",
 	} {
 		if !strings.Contains(out, want) {

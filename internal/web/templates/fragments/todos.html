@@ -16,7 +16,7 @@
 {{define "todos_search"}}<form class="sb-search" role="search" action="/todos" method="get">
   <input type="hidden" name="filter" value="{{.Filter}}">
   <span class="sb-search__prompt" aria-hidden="true">❯</span>
-  <input id="sb-todos-search" class="sb-input sb-search__input" type="search" name="q" value="{{.Query}}" placeholder="search id · source · event" autocomplete="off" aria-label="Search todos"
+  <input id="sb-todos-search" class="sb-input sb-search__input" type="search" name="q" value="{{.Query}}" placeholder="search id · provider · event" autocomplete="off" aria-label="Search todos"
     hx-get="/todos" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-trigger="input changed delay:300ms, search" hx-include="[name=filter]" hx-push-url="true">
 </form>{{end}}
 
