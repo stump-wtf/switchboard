@@ -928,9 +928,9 @@ func TestRevokeFriendEdgeCascadesOAuth(t *testing.T) {
 	})
 	slug, _ := MintSlug("cascade-bot")
 	_, ep, err := s.ApproveFriendRequest(ctx, ApproveFriendRequestParams{
-		EdgeID:      e.ID,
-		OwnerHumanID: target.ID,
-		AgentID:     vendAgent.ID,
+		EdgeID:         e.ID,
+		OwnerHumanID:   target.ID,
+		AgentID:        vendAgent.ID,
 		CredentialHash: "fcascade-hash", CredentialPrefix: "sbk_fc", Slug: slug,
 	})
 	if err != nil {
