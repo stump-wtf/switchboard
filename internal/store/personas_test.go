@@ -290,3 +290,75 @@ func contains(xs []string, want string) bool {
 	}
 	return false
 }
+
+// UpdatePersona must re-derive the slug from the new name so the (owner, slug) unique pair stays in
+// sync. A rename that slug-collides with another persona owned by the same human is rejected with
+// ErrConflict and nothing is written. Without slug sync, the slug drifts out of sync with the name,
+// and the well-known card endpoint (which could one day resolve by slug) would serve stale data.
+// Governing: ADR-0009, SPEC-0009 REQ "Persona Record".
+func TestUpdatePersonaSyncsSlugAndRejectsCollision(t *testing.T) {
+	s, ctx := testStore(t)
+	h := mustHuman(t, s, ctx, "pocket|slug-sync", "Owner")
+	ag := mustAgent(t, s, ctx, h.ID, "slug-sync-bot")
+	mustEndpointScoped(t, s, ctx, ag.ID, "grant-ss1", []string{"reviews"}, []string{"list_todos", "claim", "complete"})
+
+	// Two personas with different names → different slugs.
+	p1, err := s.CreatePersona(ctx, CreatePersonaParams{
+		OwnerHumanID: h.ID, AgentID: ag.ID, Name: "Reviewer",
+		SystemPrompt: "review", VerbSubset: []string{"list_todos"}, Queues: []string{"reviews"},
+	})
+	if err != nil {
+		t.Fatalf("create p1: %v", err)
+	}
+	if p1.Slug != "reviewer" {
+		t.Fatalf("p1 slug = %q, want %q", p1.Slug, "reviewer")
+	}
+	p2, err := s.CreatePersona(ctx, CreatePersonaParams{
+		OwnerHumanID: h.ID, AgentID: ag.ID, Name: "Auditor",
+		SystemPrompt: "audit", VerbSubset: []string{"list_todos"}, Queues: []string{"reviews"},
+	})
+	if err != nil {
+		t.Fatalf("create p2: %v", err)
+	}
+	if p2.Slug != "auditor" {
+		t.Fatalf("p2 slug = %q, want %q", p2.Slug, "auditor")
+	}
+
+	// Rename p1 to a name that slugifies differently — slug must update.
+	updated, err := s.UpdatePersona(ctx, UpdatePersonaParams{
+		ID: p1.ID, OwnerHumanID: h.ID, Name: "Inspector",
+		SystemPrompt: "inspect", VerbSubset: []string{"list_todos"}, Queues: []string{"reviews"},
+	})
+	if err != nil {
+		t.Fatalf("update p1 name: %v", err)
+	}
+	if updated.Slug != "inspector" {
+		t.Fatalf("after rename, slug = %q, want %q", updated.Slug, "inspector")
+	}
+	if updated.Name != "Inspector" {
+		t.Fatalf("after rename, name = %q, want %q", updated.Name, "Inspector")
+	}
+
+	// Rename p1 to "Auditor" — slug collides with p2 → ErrConflict, nothing written.
+	_, err = s.UpdatePersona(ctx, UpdatePersonaParams{
+		ID: p1.ID, OwnerHumanID: h.ID, Name: "Auditor",
+		SystemPrompt: "conflict", VerbSubset: []string{"list_todos"}, Queues: []string{"reviews"},
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("rename to colliding slug must be ErrConflict, got %v", err)
+	}
+
+	// The rejected update changed nothing — p1 still has the Inspector name/slug from the successful
+	// update above.
+	unchanged, err := s.GetPersona(ctx, p1.ID, h.ID)
+	if err != nil {
+		t.Fatalf("get p1 after rejected update: %v", err)
+	}
+	if unchanged.Name != "Inspector" || unchanged.Slug != "inspector" {
+		t.Fatalf("rejected update must not persist: name=%q slug=%q, want Inspector/inspector",
+			unchanged.Name, unchanged.Slug)
+	}
+	if unchanged.SystemPrompt != "inspect" {
+		t.Fatalf("rejected update must not persist prompt: got %q, want %q", unchanged.SystemPrompt, "inspect")
+	}
+}

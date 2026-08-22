@@ -264,7 +264,9 @@ func (s *Store) ListPersonas(ctx context.Context, ownerHumanID string) ([]Person
 // UpdatePersona edits a persona's authored fields, re-validating verb_subset and queues against the
 // backing agent's current vended grant so a persona can never advertise capability it does not hold.
 // Owner-scoped: a cross-owner or missing id is ErrNotFound; an out-of-grant scope is ErrScopeExceeded
-// and nothing is written. Governing: ADR-0009, SPEC-0009 REQ "Persona Record".
+// and nothing is written. Renaming re-derives the slug from the new name; if the new slug collides
+// with another persona owned by the same human, the update is rejected with ErrConflict and nothing
+// is written. Governing: ADR-0009, SPEC-0009 REQ "Persona Record".
 func (s *Store) UpdatePersona(ctx context.Context, p UpdatePersonaParams) (Persona, error) {
 	// Resolve the persona's backing agent within owner scope first: this both enforces ownership and
 	// pins the agent whose grant bounds the new scope. The backing agent is immutable, so we validate
@@ -288,15 +290,22 @@ func (s *Store) UpdatePersona(ctx context.Context, p UpdatePersonaParams) (Perso
 		return Persona{}, err
 	}
 
+	// Re-derive the slug from the new name so it stays in sync. A rename that collides with another
+	// persona's slug is rejected with ErrConflict — the caller can choose a different name.
+	newSlug := slugifyPersona(p.Name)
+
 	out, err := scanPersona(s.pool.QueryRow(ctx, `
 		UPDATE personas
-		SET name = $3, system_prompt = $4, verb_subset = $5, queues = $6,
-		    description = NULLIF($7, ''), updated_at = now()
+		SET name = $3, slug = $4, system_prompt = $5, verb_subset = $6, queues = $7,
+		    description = NULLIF($8, ''), updated_at = now()
 		WHERE id = $1 AND owner_human_id = $2
 		RETURNING `+personaCols,
-		p.ID, p.OwnerHumanID, p.Name, p.SystemPrompt, p.VerbSubset, p.Queues, p.Description))
+		p.ID, p.OwnerHumanID, p.Name, newSlug, p.SystemPrompt, p.VerbSubset, p.Queues, p.Description))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Persona{}, ErrNotFound
+	}
+	if isUniqueViolation(err) {
+		return Persona{}, fmt.Errorf("%w: persona slug %q already exists for this owner", ErrConflict, newSlug)
 	}
 	if err != nil {
 		return Persona{}, fmt.Errorf("store: update persona: %w", err)
