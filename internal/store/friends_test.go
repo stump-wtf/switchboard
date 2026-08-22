@@ -907,3 +907,85 @@ func TestCreateForFriendHandoffReachability(t *testing.T) {
 		t.Fatalf("a sibling endpoint on the same queue must not see the handoff, got %d rows", len(viaOther))
 	}
 }
+
+// RevokeFriendEdge must cascade OAuth tokens and codes just as RevokeEndpoint does: the endpoint
+// is revoked in the same transaction, and every unrevoked token and unspent code on that endpoint
+// is killed before the commit. Without the cascade, a friend-edge revoke would leave OAuth
+// credentials alive on a revoked endpoint — a half-dead capability violating SPEC-0016 "Revocation
+// Cascade" and SPEC-0007 "revoke is instant and total."
+// Governing: SPEC-0016 REQ "Revocation Cascade", SPEC-0007 REQ "Instant, Total Revocation",
+// SPEC-0010 REQ "Per-Direction, Revocable, Non-Transitive Edges".
+func TestRevokeFriendEdgeCascadesOAuth(t *testing.T) {
+	s, ctx := testStore(t)
+	target := mustHuman(t, s, ctx, "pocket|friend-cascade", "Target")
+	_ = mustHuman(t, s, ctx, "pocket|friend-cascade-req", "Requester")
+	vendAgent := mustAgent(t, s, ctx, target.ID, "cascade-bot")
+
+	// Create and approve a friend request, minting a vended endpoint.
+	e := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "a@a", ToPersona: "b@b", ToHuman: target.ID,
+		RequestedVerbs: []string{"create_for"},
+	})
+	slug, _ := MintSlug("cascade-bot")
+	_, ep, err := s.ApproveFriendRequest(ctx, ApproveFriendRequestParams{
+		EdgeID:      e.ID,
+		OwnerHumanID: target.ID,
+		AgentID:     vendAgent.ID,
+		CredentialHash: "fcascade-hash", CredentialPrefix: "sbk_fc", Slug: slug,
+	})
+	if err != nil {
+		t.Fatalf("approve friend request: %v", err)
+	}
+
+	// Issue an OAuth token and a pending code onto the friend-vended endpoint.
+	if _, err := s.CreateOAuthClient(ctx, "cid-fc", "Test Client",
+		[]string{"https://c.example.com/cb"}); err != nil {
+		t.Fatalf("create oauth client: %v", err)
+	}
+	if _, err := s.CreateOAuthToken(ctx, "th-fc", "rh-fc", "cid-fc", ep.ID,
+		time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create oauth token: %v", err)
+	}
+	if _, err := s.CreateOAuthCode(ctx, "ch-fc", "cid-fc", ep.ID, "chal-fc",
+		"https://c.example.com/cb", time.Now().Add(5*time.Minute)); err != nil {
+		t.Fatalf("create oauth code: %v", err)
+	}
+
+	// The token and code are live before revocation.
+	if _, err := s.EndpointByOAuthToken(ctx, "th-fc"); err != nil {
+		t.Fatalf("token must resolve before revoke: %v", err)
+	}
+
+	// Revoke the friend edge — this must cascade to OAuth tokens and codes.
+	if _, err := s.RevokeFriendEdge(ctx, e.ID, target.ID); err != nil {
+		t.Fatalf("revoke friend edge: %v", err)
+	}
+
+	// The static bearer is dead (endpoint state = revoked).
+	if _, err := s.EndpointByCredHash(ctx, "fcascade-hash"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("static bearer after friend revoke: err = %v, want ErrNotFound", err)
+	}
+	// The OAuth access token is dead.
+	if _, err := s.EndpointByOAuthToken(ctx, "th-fc"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("access token after friend revoke: err = %v, want ErrNotFound", err)
+	}
+	// The refresh grant is dead.
+	if _, err := s.RotateOAuthToken(ctx, "rh-fc", "cid-fc", "th-fc-2", "rh-fc-2",
+		time.Now().Add(time.Hour)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("refresh after friend revoke: err = %v, want ErrNotFound", err)
+	}
+	// The pending code is expired.
+	if _, err := s.RedeemOAuthCode(ctx, "ch-fc"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("pending code after friend revoke: err = %v, want ErrNotFound", err)
+	}
+
+	// The cascade stamped revoked_at on the token row itself (durable in the row, not just the join).
+	var revokedAt *time.Time
+	if err := s.pool.QueryRow(ctx,
+		`SELECT revoked_at FROM oauth_tokens WHERE token_hash = 'th-fc'`).Scan(&revokedAt); err != nil {
+		t.Fatalf("read token row: %v", err)
+	}
+	if revokedAt == nil {
+		t.Fatal("friend-edge cascade must stamp revoked_at on the token row, not rely on the join alone")
+	}
+}

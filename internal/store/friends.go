@@ -245,11 +245,18 @@ func (s *Store) RevokeFriendEdge(ctx context.Context, edgeID, ownerHumanID strin
 	}
 
 	// Kill the vended endpoint (ADR-0008 revoke = invalidate credential + unroute). Only this edge's
-	// endpoint is touched, so revocation stays one-sided.
+	// endpoint is touched, so revocation stays one-sided. The OAuth cascade runs in the SAME
+	// transaction — every token minted onto the endpoint is revoked and every unspent code is
+	// force-expired — mirroring RevokeEndpoint and ExpireEndpoints so friend-edge revocation is
+	// instant and total from every credential's point of view. Governing: SPEC-0016 REQ
+	// "Revocation Cascade", SPEC-0007 REQ "Instant, Total Revocation".
 	if edge.EndpointID != "" {
 		if _, err := tx.Exec(ctx,
 			`UPDATE endpoints SET state = 'revoked', revoked_at = now() WHERE id = $1 AND state = 'active'`,
 			edge.EndpointID); err != nil {
+			return FriendEdge{}, err
+		}
+		if err := revokeEndpointOAuth(ctx, tx, []string{edge.EndpointID}); err != nil {
 			return FriendEdge{}, err
 		}
 	}
