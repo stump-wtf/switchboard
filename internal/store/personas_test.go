@@ -69,6 +69,43 @@ func TestPersonaSubsetValidation(t *testing.T) {
 	}
 }
 
+// A caller that submits no verbs and no queues (every wizard chip unchecked) passes nil slices.
+// verb_subset/queues are text[] NOT NULL, so without normalization pgx encodes nil as SQL NULL and
+// the insert dies with 23502 — the operator sees "internal error" on publish. Nil must land as an
+// empty capability slice, and an update that clears every chip must not NULL the columns either.
+// Governing: SPEC-0009 REQ "Persona Record".
+func TestPersonaNilScopeSlicesStoredEmpty(t *testing.T) {
+	s, ctx := testStore(t)
+	h := mustHuman(t, s, ctx, "pocket|persona-nil", "Owner")
+	ag := mustAgent(t, s, ctx, h.ID, "quiet-bot")
+	mustEndpointScoped(t, s, ctx, ag.ID, "grant-nil", []string{"issues"}, []string{"list_todos"})
+
+	p, err := s.CreatePersona(ctx, CreatePersonaParams{
+		OwnerHumanID: h.ID, AgentID: ag.ID, Name: "Quiet",
+		SystemPrompt: "Does nothing yet.",
+	})
+	if err != nil {
+		t.Fatalf("nil-scope persona should be stored with empty slices, got: %v", err)
+	}
+	if p.VerbSubset == nil || len(p.VerbSubset) != 0 {
+		t.Fatalf("verb_subset should round-trip as empty, got: %#v", p.VerbSubset)
+	}
+	if p.Queues == nil || len(p.Queues) != 0 {
+		t.Fatalf("queues should round-trip as empty, got: %#v", p.Queues)
+	}
+
+	up, err := s.UpdatePersona(ctx, UpdatePersonaParams{
+		ID: p.ID, OwnerHumanID: h.ID, Name: "Quieter",
+		SystemPrompt: "Still nothing.",
+	})
+	if err != nil {
+		t.Fatalf("update clearing all chips should store empty slices, got: %v", err)
+	}
+	if up.VerbSubset == nil || len(up.VerbSubset) != 0 || up.Queues == nil || len(up.Queues) != 0 {
+		t.Fatalf("updated scope should round-trip as empty, got: %#v / %#v", up.VerbSubset, up.Queues)
+	}
+}
+
 // Two personas of one agent are independently bounded by their own verb_subset/queues: the reviewer
 // carries neither the deployer's verbs nor its queue, and vice versa. Scope follows the persona, not
 // the shared runtime. Governing: ADR-0009, SPEC-0009 REQ "Persona Record"

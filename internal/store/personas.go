@@ -157,6 +157,14 @@ func validatePersonaScope(verbSubset, queues, grantVerbs, grantQueues []string) 
 // is rejected with ErrScopeExceeded and never persisted.
 // Governing: ADR-0009, SPEC-0009 REQ "Persona Record".
 func (s *Store) CreatePersona(ctx context.Context, p CreatePersonaParams) (Persona, error) {
+	// A caller that submits no verbs or queues passes a nil slice, which pgx encodes as SQL NULL —
+	// and verb_subset/queues are text[] NOT NULL, so the insert dies with 23502 instead of recording
+	// an empty capability slice. "No selection" is a valid authoring state (the wizard's chips are
+	// all optional), so normalize it here rather than at each caller. Governing: SPEC-0009 REQ
+	// "Persona Record".
+	p.VerbSubset = nonNilStrings(p.VerbSubset)
+	p.Queues = nonNilStrings(p.Queues)
+
 	grantVerbs, grantQueues, err := s.agentVendedGrant(ctx, p.AgentID, p.OwnerHumanID)
 	if err != nil {
 		return Persona{}, err
@@ -286,6 +294,10 @@ func (s *Store) UpdatePersona(ctx context.Context, p UpdatePersonaParams) (Perso
 	if err != nil {
 		return Persona{}, err
 	}
+	// Same nil-slice normalization as CreatePersona: an edit that clears every chip must not
+	// become a NULL write against the NOT NULL columns.
+	p.VerbSubset = nonNilStrings(p.VerbSubset)
+	p.Queues = nonNilStrings(p.Queues)
 	if err := validatePersonaScope(p.VerbSubset, p.Queues, grantVerbs, grantQueues); err != nil {
 		return Persona{}, err
 	}
