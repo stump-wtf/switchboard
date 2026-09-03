@@ -205,7 +205,7 @@ sequenceDiagram
 
 ### Existing code this decision builds on
 
-<!-- Call graph: filtered to doorbell/vend/agentcard/friend-intake core symbols (db plumbing, test fixtures, and fake stores excluded), generated 2026-07-19 -->
+{/* Call graph: filtered to doorbell/vend/agentcard/friend-intake core symbols (db plumbing, test fixtures, and fake stores excluded), generated 2026-07-19 */}
 ```mermaid
 graph TD
     subgraph Friending [ADR-0010 friending flow — unchanged]
