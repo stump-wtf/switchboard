@@ -254,3 +254,64 @@ func TestConsentDecisionRequiresCSRF(t *testing.T) {
 		t.Fatalf("decision without CSRF: got %d, want 403", rec.Code)
 	}
 }
+
+// The regression this file exists to prevent from coming back.
+//
+// The consent screen carried the global CSP, whose form-action was 'self'. form-action governs not
+// only where a form submits but every redirect that submission follows — and approving consent
+// redirects to the OAuth client's registered callback, a different origin by construction. Safari
+// and Firefox enforce that and refuse the callback navigation; Chrome does not follow redirects
+// through form-action, so the bug was invisible there. Server-side everything looked perfect: the
+// code was minted and the 302 issued, while the browser dropped the callback and the page appeared
+// to reload unchanged. The only durable trace was an oauth_codes row whose used_at stayed NULL.
+//
+// A loopback callback is used deliberately — that is the RFC 8252 shape `switchboard login`
+// registers, and the shape that was actually broken in production.
+func TestConsentScreenAllowsFormActionToTheCallbackOrigin(t *testing.T) {
+	r, st, ctx := newDBRouter(t)
+	_, session := mintSession(t, st, ctx, "test|csp", "Joe Stump", "joe@example.com")
+
+	const loopback = "http://127.0.0.1:51688/callback"
+	if _, err := st.CreateOAuthClient(ctx, "cid-loopback", "switchboard CLI", []string{loopback}); err != nil {
+		t.Fatalf("create oauth client: %v", err)
+	}
+
+	q := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {"cid-loopback"},
+		"redirect_uri":          {loopback},
+		"state":                 {"st-csp"},
+		"code_challenge":        {consentChallenge},
+		"code_challenge_method": {"S256"},
+		"resource":              {"https://sb.example.com/api"},
+	}
+	page := newWizClient(t, r, session).get("/oauth/authorize?" + q.Encode())
+	if page.Code != http.StatusOK {
+		t.Fatalf("consent GET: got %d (body %.300s)", page.Code, page.Body.String())
+	}
+
+	csp := page.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "form-action 'self' http://127.0.0.1:51688") {
+		t.Errorf("consent CSP = %q\nwant form-action widened to the callback origin — without it the\n"+
+			"browser refuses the post-approval redirect and the minted code is never delivered", csp)
+	}
+	// Widening one directive must not have relaxed the rest.
+	for _, directive := range []string{"default-src 'self'", "script-src 'self'", "frame-ancestors 'none'", "base-uri 'none'"} {
+		if !strings.Contains(csp, directive) {
+			t.Errorf("consent CSP = %q, lost directive %q", csp, directive)
+		}
+	}
+}
+
+// Every other page keeps the locked-down policy: only the consent screen has a reason to submit
+// across origins, so only it gets the widening.
+func TestNonConsentPagesKeepFormActionSelfOnly(t *testing.T) {
+	r, st, ctx := newDBRouter(t)
+	_, session := mintSession(t, st, ctx, "test|csp2", "Joe Stump", "joe@example.com")
+
+	page := newWizClient(t, r, session).get("/endpoints")
+	csp := page.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "form-action 'self';") {
+		t.Errorf("/endpoints CSP = %q, want the unwidened form-action 'self'", csp)
+	}
+}

@@ -158,6 +158,11 @@ func (h *Handler) oauthConsent(w http.ResponseWriter, r *http.Request, human *st
 		return
 	}
 
+	// Approving this form 302s to the client's registered callback — another origin — and
+	// form-action governs the redirect, not just the POST. Without this the browser refuses the
+	// callback navigation and the minted code is never delivered. See CSPAllowingFormActionTo.
+	w.Header().Set("Content-Security-Policy", CSPAllowingFormActionTo(req.RedirectURI))
+
 	sh, _ := h.buildShell(r.Context(), "endpoints", human)
 	name := req.Client.Name
 	if name == "" {

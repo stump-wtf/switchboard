@@ -571,21 +571,13 @@ func staticHandler() http.Handler {
 }
 
 // secureHeaders sets defensive response headers on every route (SPEC-0001/0005/0006/0007/0008/0012).
-// The CSP is tuned to the actual web UI: an external stylesheet under /static plus an inline <style>
-// block and inline style="" attributes (hence style-src 'unsafe-inline'); the only scripts are the
-// vendored htmx assets embedded and served from /static (ADR-0001: no CDN), so script-src stays
-// locked to 'self'. connect-src 'self' is explicit — it permits exactly the same-origin SSE stream
-// (/events) and HTMX fetches, so injected markup cannot exfiltrate to another origin even under
-// default-src drift. base-uri 'none' forbids <base> entirely (no page needs one, and an injected
-// <base> would rebase every relative form action and asset URL). frame-ancestors 'none' backs up
-// X-Frame-Options: DENY. Governing: SPEC-0012 REQ "Security Headers" (base-uri 'none', explicit
-// connect-src), SPEC-0013 "Security Headers" (same-origin connect-src for SSE).
+// The policy itself and its rationale live on web.ContentSecurityPolicy, because the OAuth consent
+// screen widens one of its directives per-response (web.CSPAllowingFormActionTo) and two copies of a
+// policy drift. A handler that needs a different policy simply re-Sets the header before writing.
 func secureHeaders(next http.Handler) http.Handler {
-	const csp = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
-		"script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", csp)
+		h.Set("Content-Security-Policy", web.ContentSecurityPolicy)
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
