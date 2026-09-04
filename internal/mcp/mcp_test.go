@@ -170,6 +170,52 @@ func (f *fakeStore) ClaimTodo(_ context.Context, endpointID, id, owner string, t
 	return t, nil
 }
 
+// ClaimNext mirrors store.ClaimNext: scan this endpoint's rows in the given queues, oldest first,
+// and claim the first available one. "Available" is the same predicate ClaimTodo enforces
+// (pending, expired lease with attempts left, or an elapsed retry backoff). No work is
+// store.ErrNotFound, which the tool turns into empty=true.
+func (f *fakeStore) ClaimNext(_ context.Context, endpointID string, queues []string, owner string, ttl time.Duration) (store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Todo{}, f.failErr
+	}
+	inQueues := func(q string) bool {
+		for _, want := range queues {
+			if want == q {
+				return true
+			}
+		}
+		return false
+	}
+	ids := make([]string, 0, len(f.todos))
+	for id := range f.todos {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return f.todos[ids[i]].CreatedAt.Before(f.todos[ids[j]].CreatedAt) })
+	now := time.Now()
+	for _, id := range ids {
+		t := f.todos[id]
+		if t.EndpointID != endpointID || !inQueues(t.Queue) {
+			continue
+		}
+		expired := t.State == "claimed" && t.LeaseExpiresAt != nil && t.LeaseExpiresAt.Before(now) && t.Attempt < t.MaxAttempts
+		retryDue := t.State == "failed" && t.NextRetryAt != nil && !t.NextRetryAt.After(now) && t.Attempt < t.MaxAttempts
+		if t.State != "pending" && !expired && !retryDue {
+			continue
+		}
+		if t.Assignee != "" && t.Assignee != owner {
+			continue
+		}
+		lease := now.Add(ttl)
+		t.State, t.Owner, t.LeaseExpiresAt, t.ClaimedAt, t.NextRetryAt = "claimed", owner, &lease, &now, nil
+		t.Attempt++
+		f.todos[id] = t
+		return t, nil
+	}
+	return store.Todo{}, store.ErrNotFound
+}
+
 func (f *fakeStore) HeartbeatTodo(_ context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

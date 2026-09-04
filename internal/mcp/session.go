@@ -208,6 +208,18 @@ func (h *Handler) reapOnClose(s *mcpSession) {
 	h.mu.Lock()
 	_, live := h.sessions[s.id]
 	delete(h.sessions, s.id)
+	// Drop this endpoint's doorbell rotation cursor once its last session is gone, so the map
+	// tracks live endpoints rather than accumulating one entry per endpoint ever seen.
+	stillLive := false
+	for _, other := range h.sessions {
+		if other.endpointID == s.endpointID {
+			stillLive = true
+			break
+		}
+	}
+	if !stillLive {
+		delete(h.doorbellRR, s.endpointID)
+	}
 	h.mu.Unlock()
 	if live {
 		close(s.doorbells)

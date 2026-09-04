@@ -101,6 +101,18 @@ type failIn struct {
 	Result any    `json:"result,omitempty" jsonschema:"optional JSON failure detail recorded on the todo"`
 }
 
+type claimNextIn struct {
+	Queue           string `json:"queue,omitempty" jsonschema:"restrict the scan to one granted queue (default: all granted queues)"`
+	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default 300)"`
+}
+
+// claimNextOut carries the claimed todo, or Empty when the queues held no available work. Both
+// fields are always present in the schema so a caller can branch without inspecting for absence.
+type claimNextOut struct {
+	Todo  *todoOut `json:"todo,omitempty" jsonschema:"the claimed todo; absent when empty is true"`
+	Empty bool     `json:"empty" jsonschema:"true when no work was available - the normal idle answer, not an error"`
+}
+
 type heartbeatIn struct {
 	ID              string `json:"id" jsonschema:"the claimed todo id whose lease to extend"`
 	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"new lease TTL in seconds from now (default 300)"`
@@ -121,6 +133,15 @@ func (h *Handler) registerTools(srv *sdk.Server, ep store.AuthEndpoint) {
 			Name:        "claim",
 			Description: "Atomically claim a pending todo, acquiring a time-bounded lease.",
 		}, h.claimTool(ep))
+	}
+	if hasScope(ep.ScopeVerbs, "claim_next") {
+		sdk.AddTool(srv, &sdk.Tool{
+			Name: "claim_next",
+			Description: "Atomically claim the oldest available todo from this endpoint's granted queues, " +
+				"acquiring a time-bounded lease. Returns empty=true when there is no work — that is the " +
+				"normal idle answer, not an error. Safe to call concurrently from several workers sharing " +
+				"this endpoint: each caller receives a different todo.",
+		}, h.claimNextTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "complete") {
 		sdk.AddTool(srv, &sdk.Tool{
@@ -198,6 +219,35 @@ func (h *Handler) claimTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimIn, t
 			return nil, todoOut{}, h.mapStoreErr(ep, "claim", err)
 		}
 		return nil, toOut(t), nil
+	}
+}
+
+// claimNextTool is the competing-consumer dispatch verb. It never returns a not-found error for an
+// empty queue: a worker polling for work and finding none is the steady state, and modelling that
+// as an error trains every caller to swallow errors. It reports empty=true instead.
+//
+// Governing: SPEC-0006 REQ "Todo Drain Verbs"; SPEC-0003 (lease, bounded retries); ADR-0002
+// (FOR UPDATE SKIP LOCKED); ADR-0022 (the scan is constrained to this endpoint's rows).
+func (h *Handler) claimNextTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimNextIn, claimNextOut] {
+	return func(ctx context.Context, _ *sdk.CallToolRequest, in claimNextIn) (*sdk.CallToolResult, claimNextOut, error) {
+		queues := ep.ScopeQueues
+		if in.Queue != "" {
+			// Queue scope enforced at the boundary, before the store sees the call — same rule as
+			// list_todos, so narrowing can never widen.
+			if !hasScope(ep.ScopeQueues, in.Queue) {
+				return nil, claimNextOut{}, &toolError{codeForbidden, "queue " + in.Queue + " not in this endpoint's scope"}
+			}
+			queues = []string{in.Queue}
+		}
+		t, err := h.store.ClaimNext(ctx, ep.ID, queues, owner(ep), leaseTTL(in.LeaseTTLSeconds))
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, claimNextOut{Empty: true}, nil
+		}
+		if err != nil {
+			return nil, claimNextOut{}, h.mapStoreErr(ep, "claim_next", err)
+		}
+		out := toOut(t)
+		return nil, claimNextOut{Todo: &out}, nil
 	}
 }
 

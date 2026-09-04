@@ -11,8 +11,14 @@ package mcp
 // history tools); SPEC-0014 REQ "Agent Tool Surface over MCP".
 
 // DrainVerbs returns the SPEC-0006 todo drain surface in display order.
+//
+// claim_next sits beside claim rather than replacing it. claim takes an id and is what a single
+// agent triaging its own board wants; claim_next takes no id and is the competing-consumer
+// primitive — several workers sharing one endpoint each get a DIFFERENT todo, because the store
+// scan holds FOR UPDATE SKIP LOCKED. Without it every worker must list_todos and then race to
+// claim the same id, which is the pattern that does not scale past a couple of instances.
 func DrainVerbs() []string {
-	return []string{"list_todos", "claim", "complete", "fail", "heartbeat"}
+	return []string{"list_todos", "claim", "claim_next", "complete", "fail", "heartbeat"}
 }
 
 // WebhookVerbs returns the SPEC-0006 webhook self-management surface in display order: the four

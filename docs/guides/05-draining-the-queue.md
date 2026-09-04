@@ -36,6 +36,11 @@ Over its [vended endpoint](/guides/vend-an-endpoint), an agent runs a simple loo
 
 1. `list_todos` — see what's pending on its granted queues.
 2. `claim` — take one under a lease. Claiming is atomic: no two consumers get the same todo at once.
+
+   Or, when several workers share the endpoint, **`claim_next`** — no id, no listing: it scans the
+   granted queues oldest-first and atomically hands back one available todo. Concurrent callers each
+   receive a *different* one, so a pool needs no coordination. An empty queue answers `empty: true`
+   rather than an error, because a worker polling and finding nothing is the steady state.
 3. Do the work. If it's slow, `heartbeat` to extend the lease so it doesn't lapse mid-flight.
 4. `complete` on success, or `fail` on error.
 
@@ -52,6 +57,23 @@ delivery is **at-least-once** — so **handlers must be idempotent**.
   **pool/topic queue** that many consumers drain competitively (work-sharing).
 
 ## Push: a doorbell, not the ledger
+
+### Running several workers on one endpoint
+
+An endpoint is vended to one agent, so several sessions on it are that agent running as competing
+consumers. Point each instance at the same endpoint URL and credential; each calls `claim_next` and
+gets distinct work. Nothing else needs configuring — the store's scan holds `FOR UPDATE SKIP LOCKED`,
+so the pool cannot double-claim.
+
+This is load-sharing, and it is not the same as fan-out. Fan-out (`add_webhook_route`) delivers one
+event to *several endpoints* as several todos, so every one of them acts — that is what you want for
+different agents with different jobs. Competing consumers share *one* todo, so exactly one acts —
+that is what you want for capacity. Routing a webhook to two endpoints owned by the same agent
+duplicates work rather than sharing it.
+
+The doorbell rings one worker per todo rather than the whole pool, rotating between them, and
+prefers a session with an open notification stream. That keeps a pool from spending N model turns to
+do one todo's work.
 
 Pulling with `list_todos` is always correct on its own. Where a harness supports it, switchboard also
 **pushes** a notification the moment a todo is ready for a channel-attached consumer — over the same

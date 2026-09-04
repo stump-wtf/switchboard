@@ -400,3 +400,93 @@ func TestPullPathNeverCrossesEndpointsOnASharedQueue(t *testing.T) {
 		t.Fatalf("cross-tenant claim mutated another endpoint's todo: state = %q, want pending", got)
 	}
 }
+
+// --- claim_next: the competing-consumer dispatch verb ---
+
+// The property that makes claim_next worth having: several workers sharing one endpoint each get a
+// DIFFERENT todo. With only `claim`, every worker must list and then race for the same id.
+func TestClaimNextHandsEachWorkerDistinctWork(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	base := time.Now().Add(-time.Hour)
+	for i, id := range []string{"td_1", "td_2", "td_3"} {
+		f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: id, Queue: "reviews",
+			Title: id, State: "pending", CreatedAt: base.Add(time.Duration(i) * time.Minute)})
+	}
+	cs := session(t, ctx, f, []string{"reviews"}, []string{"claim_next"})
+
+	seen := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		var out struct {
+			Todo  *struct{ ID, State, Owner string } `json:"todo"`
+			Empty bool                               `json:"empty"`
+		}
+		callOK(t, ctx, cs, "claim_next", map[string]any{"lease_ttl_seconds": 60}, &out)
+		if out.Empty || out.Todo == nil {
+			t.Fatalf("call %d: got empty, want a todo", i)
+		}
+		if out.Todo.State != "claimed" {
+			t.Errorf("state = %q, want claimed", out.Todo.State)
+		}
+		if seen[out.Todo.ID] {
+			t.Fatalf("claim_next handed out %s twice — competing consumers would duplicate work", out.Todo.ID)
+		}
+		seen[out.Todo.ID] = true
+	}
+	// Oldest first, so work does not starve.
+	if !seen["td_1"] || !seen["td_2"] || !seen["td_3"] {
+		t.Fatalf("claimed set = %v, want all three", seen)
+	}
+}
+
+// An empty queue is the steady state for a polling worker, not an error. Modelling it as one
+// would train every caller to swallow errors from this verb.
+func TestClaimNextEmptyQueueIsNotAnError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cs := session(t, ctx, newFakeStore(), []string{"reviews"}, []string{"claim_next"})
+	var out struct {
+		Todo  *struct{ ID string } `json:"todo"`
+		Empty bool                 `json:"empty"`
+	}
+	callOK(t, ctx, cs, "claim_next", map[string]any{}, &out)
+	if !out.Empty || out.Todo != nil {
+		t.Fatalf("empty queue: got %+v, want empty=true with no todo", out)
+	}
+}
+
+// Narrowing to a queue must never widen: a queue outside the endpoint's grant is refused at the
+// boundary, before the store sees the call — the same rule list_todos enforces.
+func TestClaimNextQueueScopeEnforcedAtTheBoundary(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_secret", Queue: "deploys",
+		Title: "not yours", State: "pending"})
+	cs := session(t, ctx, f, []string{"reviews"}, []string{"claim_next"})
+
+	callErr(t, ctx, cs, "claim_next", map[string]any{"queue": "deploys"}, codeForbidden)
+	// And the ungranted queue's todo is not reachable via the default (all granted queues) path.
+	var out struct {
+		Todo  *struct{ ID string } `json:"todo"`
+		Empty bool                 `json:"empty"`
+	}
+	callOK(t, ctx, cs, "claim_next", map[string]any{}, &out)
+	if !out.Empty {
+		t.Fatalf("claim_next reached a queue outside the grant: %+v", out.Todo)
+	}
+}
+
+// claim_next is allowlisted like every other verb: an endpoint without it must not see it in
+// tools/list nor be able to call it.
+func TestClaimNextRespectsTheVerbAllowlist(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cs := session(t, ctx, newFakeStore(), []string{"reviews"}, []string{"list_todos", "claim"})
+	callErr(t, ctx, cs, "claim_next", map[string]any{}, codeForbidden)
+}

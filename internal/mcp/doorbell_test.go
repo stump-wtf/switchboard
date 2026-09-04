@@ -492,3 +492,135 @@ func TestSystemTodoIsNeverPushedToAgentSessions(t *testing.T) {
 		t.Fatalf("system todo was pushed to an agent session: first doorbell was %q, want td_owned", got)
 	}
 }
+
+// --- unicast dispatch ---
+
+// The doorbell rings ONE session per todo, not all of them.
+//
+// An endpoint is vended to exactly one agent (ADR-0008), so several sessions on it are the same
+// logical agent running as competing consumers. Waking all of them was never a correctness problem
+// — claim_next hands each caller a different row — but every wake is a model turn, so N instances
+// burnt N invocations to do one todo's work. This asserts the dispatch decision, not the billing.
+func TestDoorbellRingsExactlyOneSessionPerTodo(t *testing.T) {
+	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	const slug = "worker-pool-33333333"
+	token := vend(t, f, slug, []string{"reviews"}, []string{"claim_next"})
+	ts, h := newTestServerHandler(t, f)
+
+	// Three workers sharing one endpoint, each with an open notification stream.
+	streams := make([]<-chan notification, 0, 3)
+	for i := 0; i < 3; i++ {
+		s := rawInitialize(t, ts.URL+"/mcp/"+slug, token)
+		ev, _ := s.openStream()
+		streams = append(streams, ev)
+	}
+
+	h.PublishTodoReady(store.Todo{
+		EndpointID: endpointIDFor(slug), ID: "td_solo", Queue: "reviews",
+		Kind: "pull_request", Source: "github", Title: "one worker's job",
+	})
+
+	rang := 0
+	for _, ev := range streams {
+		select {
+		case n := <-ev:
+			if got := n.Params.Meta["todo_id"]; got != "td_solo" {
+				t.Errorf("unexpected doorbell payload %q", got)
+			}
+			rang++
+		case <-time.After(750 * time.Millisecond):
+		}
+	}
+	if rang != 1 {
+		t.Fatalf("%d of 3 sessions were rung, want exactly 1 — waking the whole pool costs N model turns per todo", rang)
+	}
+}
+
+// Successive todos rotate across workers rather than always landing on the same one, so a pool
+// actually shares load instead of electing a permanent winner.
+func TestDoorbellRotatesAcrossWorkers(t *testing.T) {
+	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	const slug = "rotate-pool-44444444"
+	token := vend(t, f, slug, []string{"reviews"}, []string{"claim_next"})
+	ts, h := newTestServerHandler(t, f)
+
+	const workers = 3
+	streams := make([]<-chan notification, 0, workers)
+	for i := 0; i < workers; i++ {
+		s := rawInitialize(t, ts.URL+"/mcp/"+slug, token)
+		ev, _ := s.openStream()
+		streams = append(streams, ev)
+	}
+
+	// Publish one todo per worker; each should land somewhere different.
+	for i := 0; i < workers; i++ {
+		h.PublishTodoReady(store.Todo{
+			EndpointID: endpointIDFor(slug), ID: fmt.Sprintf("td_%d", i), Queue: "reviews",
+			Kind: "pull_request", Source: "github", Title: "work",
+		})
+	}
+
+	rung := make([]int, workers)
+	total := 0
+	deadline := time.After(3 * time.Second)
+	for total < workers {
+		progressed := false
+		for i, ev := range streams {
+			select {
+			case <-ev:
+				rung[i]++
+				total++
+				progressed = true
+			default:
+			}
+		}
+		if !progressed {
+			select {
+			case <-deadline:
+				t.Fatalf("only %d of %d doorbells delivered (per-worker: %v)", total, workers, rung)
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}
+	for i, n := range rung {
+		if n != 1 {
+			t.Errorf("worker %d rung %d times, want 1 — rotation should spread %d todos over %d workers (got %v)",
+				i, n, workers, workers, rung)
+		}
+	}
+}
+
+// Unicast must not weaken the tenant boundary: picking "one" session means one of the OWNING
+// endpoint's sessions, never a bystander that happens to share a queue name.
+func TestUnicastDoorbellStillNeverCrossesEndpoints(t *testing.T) {
+	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	const slugA, slugB = "tenant-a-55555555", "tenant-b-66666666"
+	tokenA := vend(t, f, slugA, []string{"reviews"}, []string{"claim_next"})
+	tokenB := vend(t, f, slugB, []string{"reviews"}, []string{"claim_next"})
+	ts, h := newTestServerHandler(t, f)
+
+	// B attaches TWO sessions and A only one, so a selection bug that ignored ownership would be
+	// more likely to pick a B session than A's.
+	sessA := rawInitialize(t, ts.URL+"/mcp/"+slugA, tokenA)
+	eventsA, _ := sessA.openStream()
+	var bStreams []<-chan notification
+	for i := 0; i < 2; i++ {
+		s := rawInitialize(t, ts.URL+"/mcp/"+slugB, tokenB)
+		ev, _ := s.openStream()
+		bStreams = append(bStreams, ev)
+	}
+
+	owned := store.Todo{
+		EndpointID: endpointIDFor(slugA), ID: "td_a_only", Queue: "reviews",
+		Kind: "pull_request", Source: "github", Title: "A's private work",
+	}
+	publishUntilDelivered(t, h, owned, eventsA)
+
+	for i, ev := range bStreams {
+		select {
+		case n := <-ev:
+			t.Fatalf("cross-tenant leak under unicast: B session %d received %+v", i, n)
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+}

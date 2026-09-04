@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -31,11 +32,25 @@ const (
 	doorbellBuffer = 16
 )
 
-// PublishTodoReady fans one committed, push-eligible todo out to every attached session whose
-// vended scope covers the todo's queue. The caller (the store's doorbell hook) has already applied
-// the sender gate: only verified, human-attributed todos reach this point. Delivery is lossy and
-// non-blocking by design: no session, no open stream, or a full buffer all degrade to pull, where
-// list_todos returns the todo unchanged.
+// PublishTodoReady rings ONE eligible session's doorbell for a committed, push-eligible todo. The
+// caller (the store's doorbell hook) has already applied the sender gate: only verified,
+// human-attributed todos reach this point. Delivery is lossy and non-blocking by design: no
+// session, no open stream, or a full buffer all degrade to pull, where list_todos and claim_next
+// return the todo unchanged.
+//
+// Why one and not all. An endpoint is vended to exactly one agent (ADR-0008), so several sessions
+// on one endpoint are the SAME logical agent running as competing consumers, and the store hands
+// each caller a different todo (FOR UPDATE SKIP LOCKED). Waking all of them was therefore never a
+// correctness problem — but it is not free: every wake is a model turn, so N instances burnt N
+// invocations to do one todo's work, and N-1 of those found the row already claimed. Unicast makes
+// the herd a dispatch decision instead of a billing one.
+//
+// Selection prefers sessions that can actually receive. inflight > 0 means an open notification
+// stream (the hanging GET), which is exactly the condition under which pump's write succeeds; a
+// session without one has its doorbell dropped at the transport. Ringing a streamless session
+// while a streaming sibling sat idle would be a silent loss, so streaming candidates are tried
+// first and the streamless ones only as a fallback. Within each group delivery rotates, so work
+// spreads rather than always landing on whichever session hashes first.
 //
 // Governing: ADR-0022 — the PRIMARY filter is endpoint ownership. A session minted under endpoint
 // A MUST NEVER receive a doorbell for a todo owned by endpoint B, even when both share a queue
@@ -48,6 +63,8 @@ func (h *Handler) PublishTodoReady(t store.Todo) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	var streaming, idle []*mcpSession
 	for _, s := range h.sessions {
 		// Tenant boundary (ADR-0022): a session only ever receives doorbells for todos pinned to
 		// its own endpoint. This is the cross-tenant isolation check; it runs first.
@@ -59,11 +76,41 @@ func (h *Handler) PublishTodoReady(t store.Todo) {
 		if !s.queues[t.Queue] {
 			continue
 		}
-		select {
-		case s.doorbells <- t:
-		default: // slow subscriber: drop — the todo remains recoverable by pull
+		if s.inflight.Load() > 0 {
+			streaming = append(streaming, s)
+		} else {
+			idle = append(idle, s)
 		}
 	}
+	if len(streaming) == 0 && len(idle) == 0 {
+		return // nobody attached: degrade to pull
+	}
+
+	// Rotate per endpoint so successive todos spread across workers. Sorting first makes the
+	// rotation deterministic — map iteration order is not.
+	cursor := h.doorbellRR[t.EndpointID]
+	delivered := false
+	for _, group := range [][]*mcpSession{streaming, idle} {
+		if len(group) == 0 || delivered {
+			continue
+		}
+		sort.Slice(group, func(i, j int) bool { return group[i].id < group[j].id })
+		for i := 0; i < len(group); i++ {
+			s := group[(int(cursor)+i)%len(group)]
+			select {
+			case s.doorbells <- t:
+				delivered = true
+			default:
+				continue // this worker's buffer is full; try the next rather than dropping
+			}
+			break
+		}
+	}
+	if delivered {
+		h.doorbellRR[t.EndpointID] = cursor + 1
+	}
+	// Not delivered: every eligible session's buffer was full. The todo remains recoverable by
+	// pull, which is the whole point of the queue being the ledger.
 }
 
 // pump drains one session's doorbell buffer onto its transport connection. A write with a

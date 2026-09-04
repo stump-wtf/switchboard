@@ -90,6 +90,7 @@ type ToolStore interface {
 	ListTodos(ctx context.Context, endpointID string, queues []string, state string, limit int) ([]store.Todo, error)
 	GetTodo(ctx context.Context, endpointID, id string) (store.Todo, error)
 	ClaimTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error)
+	ClaimNext(ctx context.Context, endpointID string, queues []string, owner string, ttl time.Duration) (store.Todo, error)
 	HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error)
 	CompleteTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
 	FailTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
@@ -163,6 +164,11 @@ type Handler struct {
 	sessions map[string]*mcpSession
 	closed   bool
 
+	// doorbellRR is the per-endpoint round-robin cursor for unicast doorbell delivery, guarded by
+	// mu alongside sessions. Keyed by endpoint id; entries are dropped when an endpoint's last
+	// session goes away, so the map tracks live endpoints rather than growing forever.
+	doorbellRR map[string]uint64
+
 	wg        sync.WaitGroup
 	done      chan struct{}
 	closeOnce sync.Once
@@ -186,6 +192,7 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 		replayRL:    newRateLimiter(5, 20),
 		idleTimeout: sessionIdleTimeout,
 		sessions:    map[string]*mcpSession{},
+		doorbellRR:  map[string]uint64{},
 		done:        make(chan struct{}),
 	}
 	h.wg.Add(1)
