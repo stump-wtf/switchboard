@@ -64,6 +64,22 @@ func (c *wizClient) get(path string) *httptest.ResponseRecorder {
 	return c.do(http.MethodGet, path, nil)
 }
 
+// postWithReferer POSTs with an explicit Referer, the way a browser submitting a rendered form
+// does. It matters for any handler that decides where to send the caller next.
+func (c *wizClient) postWithReferer(path string, form url.Values, referer string) *httptest.ResponseRecorder {
+	c.t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", referer)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: c.session})
+	for k, v := range c.cookies {
+		req.AddCookie(&http.Cookie{Name: k, Value: v})
+	}
+	rec := httptest.NewRecorder()
+	c.r.ServeHTTP(rec, req)
+	return rec
+}
+
 // followTo asserts a 303 See Other to want and returns the redirect target.
 func followTo(t *testing.T, rec *httptest.ResponseRecorder, want string) string {
 	t.Helper()

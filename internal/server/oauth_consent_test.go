@@ -315,3 +315,48 @@ func TestNonConsentPagesKeepFormActionSelfOnly(t *testing.T) {
 		t.Errorf("/endpoints CSP = %q, want the unwidened form-action 'self'", csp)
 	}
 }
+
+// Revoking an endpoint from the web UI used to land on a 404 every single time, which read as
+// "the revoke failed" even though it had succeeded.
+//
+// The POST's Referer IS the confirm page (/endpoints/{id}/revoke), safeRedirectTarget honoured it,
+// and RevokeConfirm only matches an ACTIVE endpoint — so the action invalidated the very page it
+// then redirected to. Every destructive confirm page has this shape, so the fix is general: never
+// return to the path that submitted the request.
+//
+// Governing: SPEC-0007 REQ "Revoke = Kill the Endpoint"; SPEC-0012 REQ open-redirect defense.
+func TestRevokeRedirectsToEndpointsNotBackToTheConfirmPage(t *testing.T) {
+	r, st, ctx := newDBRouter(t)
+	human, session := mintSession(t, st, ctx, "test|revoke-redirect", "Joe Stump", "joe@example.com")
+	ep := consentFixture(t, st, ctx, human.ID, "doomed", "doomed-ab12cd34", "cid-revoke-redirect")
+
+	c := newWizClient(t, r, session)
+	csrf := scrapeCSRF(t, c.get("/endpoints").Body.String())
+	confirmPath := "/endpoints/" + ep.ID + "/revoke"
+
+	// The confirm page renders while the endpoint is active.
+	if page := c.get(confirmPath); page.Code != http.StatusOK {
+		t.Fatalf("confirm page: got %d, want 200", page.Code)
+	}
+
+	// Submit the decision the way the browser does — with the confirm page as the Referer.
+	rec := c.postWithReferer(confirmPath, url.Values{"csrf_token": {csrf}}, confirmPath)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("revoke POST: got %d, want 303", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/endpoints" {
+		t.Fatalf("revoke redirected to %q, want /endpoints — returning to the confirm page 404s, "+
+			"because revoking is exactly what makes that page unreachable", loc)
+	}
+
+	// And the revoke really did happen.
+	cards, err := st.ListEndpointCards(ctx, human.ID)
+	if err != nil {
+		t.Fatalf("list cards: %v", err)
+	}
+	for _, card := range cards {
+		if card.ID == ep.ID && card.State != "revoked" {
+			t.Fatalf("endpoint state = %q, want revoked", card.State)
+		}
+	}
+}

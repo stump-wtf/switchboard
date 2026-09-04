@@ -106,17 +106,26 @@ func TestDispatchHelpAndVersion(t *testing.T) {
 			t.Fatalf("%v: code %d", args, code)
 		}
 		for _, cmd := range commands() {
+			if cmd.hidden {
+				// Pre-grouping aliases still work but are deliberately unlisted.
+				continue
+			}
 			mustContain(t, "usage", tc.stdout.String(), "switchboard "+cmd.name)
+			for _, sub := range cmd.subs {
+				mustContain(t, "usage", tc.stdout.String(), "switchboard "+cmd.name+" "+sub.name)
+			}
 		}
 		if tc.stderr.Len() != 0 {
 			t.Errorf("%v wrote to stderr: %q", args, tc.stderr.String())
 		}
 	}
-	for _, args := range [][]string{{"help", "vend"}, {"vend", "-h"}, {"vend", "--help"}, {"--help", "vend"}} {
+	for _, args := range [][]string{
+		{"help", "endpoint", "vend"}, {"endpoint", "vend", "-h"}, {"endpoint", "vend", "--help"},
+	} {
 		if code := tc.run(t, args...); code != exitOK {
 			t.Fatalf("%v: code %d", args, code)
 		}
-		mustContain(t, "vend help", tc.stdout.String(), "usage: switchboard vend [flags] NAME", "-queue", "-json")
+		mustContain(t, "vend help", tc.stdout.String(), "usage: switchboard endpoint vend [flags] NAME", "-queue", "-json")
 	}
 	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
 		if code := tc.run(t, args...); code != exitOK || strings.TrimSpace(tc.stdout.String()) != "switchboard "+version {
@@ -340,11 +349,14 @@ func TestVendUsageMistakes(t *testing.T) {
 	tc := newTestCLI(t)
 	f := newFakeDeployment(t)
 	tc.loggedIn(t, f, tc.clock.Add(time.Hour))
-	for _, args := range [][]string{{"vend"}, {"vend", " "}, {"vend", "a", "b"}, {"vend", "--bogus", "a"}, {"vend", "-q", "", "a"}} {
+	for _, args := range [][]string{
+		{"endpoint", "vend"}, {"endpoint", "vend", " "}, {"endpoint", "vend", "a", "b"},
+		{"endpoint", "vend", "--bogus", "a"}, {"endpoint", "vend", "-q", "", "a"},
+	} {
 		if code := tc.run(t, args...); code != exitUsage {
 			t.Errorf("%v: code %d, want %d (stderr %q)", args, code, exitUsage, tc.stderr.String())
 		}
-		mustContain(t, "vend usage", tc.stderr.String(), "usage: switchboard vend")
+		mustContain(t, "vend usage", tc.stderr.String(), "usage: switchboard endpoint vend")
 	}
 	if len(f.vends) != 0 {
 		t.Fatalf("a usage mistake reached the API: %v", f.vends)
@@ -411,4 +423,130 @@ func TestEndpointsAndAgentsTables(t *testing.T) {
 	if code := tc.run(t, "agents", "extra"); code != exitUsage {
 		t.Fatalf("agents extra: code %d, want %d", code, exitUsage)
 	}
+}
+
+// --- resource-grouped verbs ---
+
+// The grouping is the point: a resource named without a verb, or with one it does not have, must
+// say what it does support rather than dumping the whole top-level usage.
+func TestResourceGroupUsage(t *testing.T) {
+	tc := newTestCLI(t)
+	for _, args := range [][]string{{"endpoint"}, {"agent"}} {
+		if code := tc.run(t, args...); code != exitUsage {
+			t.Errorf("%v: code %d, want %d", args, code, exitUsage)
+		}
+		mustContain(t, "group usage", tc.stderr.String(), "usage: switchboard "+args[0]+" <verb>", "verbs:")
+	}
+	if code := tc.run(t, "endpoint", "bogus"); code != exitUsage {
+		t.Errorf("unknown verb: code %d, want %d", code, exitUsage)
+	}
+	mustContain(t, "unknown verb", tc.stderr.String(), `unknown verb "bogus"`, "switchboard endpoint revoke")
+
+	// -h on the group is help, not an error, and lands on stdout.
+	for _, args := range [][]string{{"endpoint", "-h"}, {"help", "endpoint"}} {
+		if code := tc.run(t, args...); code != exitOK {
+			t.Errorf("%v: code %d, want %d", args, code, exitOK)
+		}
+		mustContain(t, "group help", tc.stdout.String(), "switchboard endpoint list", "switchboard endpoint revoke")
+		if tc.stderr.Len() != 0 {
+			t.Errorf("%v wrote to stderr: %q", args, tc.stderr.String())
+		}
+	}
+}
+
+// The pre-grouping spellings still reach the same handlers, so anything already scripted against
+// them keeps working even though help no longer teaches them.
+func TestLegacyAliasesStillWork(t *testing.T) {
+	tc := newTestCLI(t)
+	f := newFakeDeployment(t)
+	tc.loggedIn(t, f, tc.clock.Add(time.Hour))
+	f.endpointRows = []map[string]any{{"slug": "a-1", "agent_name": "a", "state": "active", "queues": []string{"inbox"}}}
+
+	if code := tc.run(t, "endpoints"); code != exitOK {
+		t.Fatalf("legacy `endpoints`: code %d (stderr %q)", code, tc.stderr.String())
+	}
+	mustContain(t, "legacy endpoints", tc.stdout.String(), "a-1")
+
+	if code := tc.run(t, "vend", "svc", "--queue", "q"); code != exitOK {
+		t.Fatalf("legacy `vend`: code %d (stderr %q)", code, tc.stderr.String())
+	}
+	if len(f.vends) != 1 || f.vends[0]["name"] != "svc" {
+		t.Fatalf("legacy vend did not reach the API: %v", f.vends)
+	}
+}
+
+// --- endpoint revoke ---
+
+func TestEndpointRevoke(t *testing.T) {
+	tc := newTestCLI(t)
+	f := newFakeDeployment(t)
+	tc.loggedIn(t, f, tc.clock.Add(time.Hour))
+
+	// -y skips the prompt; the ref reaches the API path verbatim.
+	if code := tc.run(t, "endpoint", "revoke", "some-slug-ab12cd34", "-y"); code != exitOK {
+		t.Fatalf("revoke: code %d (stderr %q)", code, tc.stderr.String())
+	}
+	if len(f.revokes) != 1 || f.revokes[0] != "some-slug-ab12cd34" {
+		t.Fatalf("revokes = %v, want the slug once", f.revokes)
+	}
+	mustContain(t, "revoke output", tc.stdout.String(), "Revoked some-slug-ab12cd34", "endpoint vend")
+}
+
+// Revocation is terminal, so the interactive path must not act on anything but an explicit yes —
+// and "no" must leave the endpoint alone rather than falling through to the API.
+func TestEndpointRevokeConfirmation(t *testing.T) {
+	for _, tc2 := range []struct {
+		name, answer string
+		wantCall     bool
+	}{
+		{"yes", "y\n", true},
+		{"long yes", "yes\n", true},
+		{"no", "n\n", false},
+		{"empty", "\n", false},
+		{"eof", "", false},
+		{"garbage", "sure why not\n", false},
+	} {
+		t.Run(tc2.name, func(t *testing.T) {
+			tc := newTestCLI(t)
+			f := newFakeDeployment(t)
+			tc.loggedIn(t, f, tc.clock.Add(time.Hour))
+			tc.cli.stdin = strings.NewReader(tc2.answer)
+
+			if code := tc.run(t, "endpoint", "revoke", "ep-slug"); code != exitOK {
+				t.Fatalf("code %d (stderr %q)", code, tc.stderr.String())
+			}
+			if got := len(f.revokes) > 0; got != tc2.wantCall {
+				t.Fatalf("reached the API = %v, want %v (answer %q)", got, tc2.wantCall, tc2.answer)
+			}
+			if !tc2.wantCall {
+				mustContain(t, "declined", tc.stdout.String(), "Not revoked.")
+			}
+		})
+	}
+}
+
+func TestEndpointRevokeUsageAndErrors(t *testing.T) {
+	tc := newTestCLI(t)
+	f := newFakeDeployment(t)
+	tc.loggedIn(t, f, tc.clock.Add(time.Hour))
+
+	for _, args := range [][]string{
+		{"endpoint", "revoke"}, {"endpoint", "revoke", "a", "b"}, {"endpoint", "revoke", "--bogus", "a"},
+	} {
+		if code := tc.run(t, args...); code != exitUsage {
+			t.Errorf("%v: code %d, want %d", args, code, exitUsage)
+		}
+		mustContain(t, "revoke usage", tc.stderr.String(), "usage: switchboard endpoint revoke")
+	}
+	if len(f.revokes) != 0 {
+		t.Fatalf("a usage mistake reached the API: %v", f.revokes)
+	}
+
+	// An already-revoked endpoint is a conflict, and the CLI must surface it as a failure rather
+	// than reporting a kill that did not happen.
+	f.revokeStatus = 409
+	if code := tc.run(t, "endpoint", "revoke", "gone", "-y"); code != exitFailure {
+		t.Fatalf("409: code %d, want %d", code, exitFailure)
+	}
+	mustContain(t, "conflict", tc.stderr.String(), "already revoked")
 }

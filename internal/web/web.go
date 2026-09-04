@@ -435,6 +435,14 @@ func (h *Handler) safeRedirectTarget(r *http.Request, fallback string) string {
 	if !strings.HasPrefix(u.Path, "/") {
 		return fallback
 	}
+	// Never bounce back to the page that submitted this request. A destructive action's confirm
+	// page (endpoint revoke, friend revoke, delete) is reachable only while the thing still exists,
+	// so returning to it after the action succeeds lands on a 404 and reads as "the revoke failed"
+	// when it in fact worked. Revoke hit this 100% of the time: the POST's Referer IS the confirm
+	// page, and RevokeConfirm only matches an ACTIVE endpoint.
+	if u.Path == r.URL.Path {
+		return fallback
+	}
 	target := u.Path
 	if u.RawQuery != "" {
 		target += "?" + u.RawQuery

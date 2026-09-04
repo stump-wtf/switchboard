@@ -35,6 +35,8 @@ type fakeDeployment struct {
 	generation   int                 // bumps on every issuance
 	revoked      map[string]bool     // access tokens the API rejects with 401
 	vends        []map[string]string // POST /api/v1/endpoints bodies seen
+	revokes      []string            // endpoint refs seen on POST /api/v1/endpoints/{ref}/revoke
+	revokeStatus int                 // when non-zero, the status the revoke route answers with
 	endpointRows []map[string]any    // GET /api/v1/endpoints answer
 	agentRows    []map[string]any    // GET /api/v1/agents answer
 }
@@ -171,6 +173,19 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSONResponse(w, 200, rows)
 		default:
+			// POST /api/v1/endpoints/{ref}/revoke
+			ref, isRevoke := strings.CutPrefix(r.URL.Path, "/api/v1/endpoints/")
+			ref, alsoRevoke := strings.CutSuffix(ref, "/revoke")
+			if r.Method == http.MethodPost && isRevoke && alsoRevoke && ref != "" {
+				f.revokes = append(f.revokes, ref)
+				if f.revokeStatus != 0 {
+					writeJSONResponse(w, f.revokeStatus, map[string]any{"error": "endpoint is already revoked"})
+					return
+				}
+				writeJSONResponse(w, 200, map[string]any{
+					"id": "ep-1", "slug": ref, "agent_name": "some-agent", "state": "revoked"})
+				return
+			}
 			http.NotFound(w, r)
 		}
 	default:

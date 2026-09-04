@@ -142,7 +142,7 @@ type vendResponse struct {
 }
 
 func cmdVend(c *cli, args []string) int {
-	fs := c.flagSet("vend", "NAME", "Register an agent and vend its scoped MCP endpoint, its queue, and a token-trust\n"+
+	fs := c.flagSet("endpoint vend", "NAME", "Register an agent and vend its scoped MCP endpoint, its queue, and a token-trust\n"+
 		"ingestion webhook in one call. The credential is printed ONCE — store it now.")
 	queue := fs.String("queue", "inbox", "the queue the endpoint drains and the webhook feeds")
 	fs.StringVar(queue, "q", "inbox", "shorthand for --queue")
@@ -215,7 +215,7 @@ func printVendReveal(w io.Writer, v vendResponse) {
 // --- endpoints / agents ---
 
 func cmdEndpoints(c *cli, args []string) int {
-	fs := c.flagSet("endpoints", "", "List the vended endpoints you own. Credentials are never shown: a token is revealed\n"+
+	fs := c.flagSet("endpoint list", "", "List the vended endpoints you own. Credentials are never shown: a token is revealed\n"+
 		"exactly once, at vend time.")
 	asJSON := fs.Bool("json", false, "print the raw API response")
 	if pos, exit, ok := c.parseArgs(fs, args); !ok {
@@ -245,7 +245,7 @@ func cmdEndpoints(c *cli, args []string) int {
 		return c.fail(fmt.Errorf("endpoints: malformed response: %w", err))
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(c.stdout, "No endpoints vended yet. Run `switchboard vend NAME` to vend one.")
+		fmt.Fprintln(c.stdout, "No endpoints vended yet. Run `switchboard endpoint vend NAME` to vend one.")
 		return exitOK
 	}
 	tw := tabwriter.NewWriter(c.stdout, 0, 0, 2, ' ', 0)
@@ -262,7 +262,7 @@ func cmdEndpoints(c *cli, args []string) int {
 }
 
 func cmdAgents(c *cli, args []string) int {
-	fs := c.flagSet("agents", "", "List your registered agents.")
+	fs := c.flagSet("agent list", "", "List your registered agents.")
 	asJSON := fs.Bool("json", false, "print the raw API response")
 	if pos, exit, ok := c.parseArgs(fs, args); !ok {
 		return exit
@@ -353,3 +353,60 @@ var errNotLoggedIn = errors.New("not logged in — run `switchboard login <URL>`
 
 // isNotExist reports whether err is the missing-file error, for the idempotent logout path.
 func isNotExist(err error) bool { return errors.Is(err, os.ErrNotExist) }
+
+// cmdEndpointRevoke kills one endpoint. This is the rotation path: a credential that has leaked is
+// only actually dead once the endpoint is revoked, and before this verb existed that required the
+// web UI — which meant a headless box, or an agent that had just leaked a token, could not fix it.
+//
+// The endpoint is named by the slug `endpoint list` prints, or by its id. Revocation is terminal
+// (SPEC-0007: a changed scope means a new endpoint, never an edited one), so -y exists for scripts
+// but the interactive path asks first.
+func cmdEndpointRevoke(c *cli, args []string) int {
+	fs := c.flagSet("endpoint revoke", "SLUG|ID",
+		"Kill an endpoint: its stored credential stops authenticating immediately and any live MCP\n"+
+			"session on it is torn down. This cannot be undone — vend a new endpoint instead.")
+	asJSON := fs.Bool("json", false, "print the raw API response")
+	yes := fs.Bool("y", false, "skip the confirmation prompt")
+	pos, exit, ok := c.parseArgs(fs, args)
+	if !ok {
+		return exit
+	}
+	switch {
+	case len(pos) == 0:
+		return c.usageError(fs, "name the endpoint to revoke (its slug, from `switchboard endpoint list`)")
+	case len(pos) > 1:
+		return c.usageError(fs, fmt.Sprintf("unexpected argument %q", pos[1]))
+	}
+	ref := pos[0]
+
+	if !*yes && !*asJSON {
+		fmt.Fprintf(c.stdout, "Revoke %s? Its credential stops working immediately and cannot be restored. [y/N] ", ref)
+		if !c.confirm() {
+			fmt.Fprintln(c.stdout, "Not revoked.")
+			return exitOK
+		}
+	}
+
+	api, err := c.apiClient(context.Background())
+	if err != nil {
+		return c.fail(err)
+	}
+	body, err := api.post("/api/v1/endpoints/"+url.PathEscape(ref)+"/revoke", nil)
+	if err != nil {
+		return c.fail(err)
+	}
+	if *asJSON {
+		return c.printJSON(body)
+	}
+	var out struct {
+		Slug      string `json:"slug"`
+		AgentName string `json:"agent_name"`
+		State     string `json:"state"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return c.fail(fmt.Errorf("endpoint revoke: malformed response: %w", err))
+	}
+	fmt.Fprintf(c.stdout, "Revoked %s (%s). Its credential no longer authenticates.\n", out.Slug, out.AgentName)
+	fmt.Fprintln(c.stdout, "Anything wired to it needs a new endpoint: switchboard endpoint vend NAME --queue Q")
+	return exitOK
+}

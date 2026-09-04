@@ -13,8 +13,15 @@ package main
 //
 // @joestump-agent 09/03/2026 - Reworked from the hand-rolled argv loop: per-verb flag sets,
 // help/version, --json output, a status verb, an idempotent logout, and a per-OS browser opener.
+//
+// @joestump-agent 09/04/2026 - Grouped the verbs under the resource they manage: `endpoint list`,
+// `endpoint vend`, `endpoint revoke`, `agent list`. A flat verb table stops scaling the moment a
+// second thing can be revoked — `revoke` alone would have to mean endpoints by fiat, and the next
+// resource has nowhere to go. The pre-grouping spellings (`endpoints`, `agents`, `vend`) still
+// work as hidden aliases so anything already scripted keeps running.
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -37,6 +44,7 @@ const (
 // cli carries the injectable edges of the operator CLI.
 type cli struct {
 	stdout, stderr io.Writer
+	stdin          io.Reader
 	getenv         func(string) string
 	openBrowser    func(url string) error
 	http           *http.Client
@@ -52,6 +60,7 @@ func newCLI() *cli {
 	return &cli{
 		stdout:       os.Stdout,
 		stderr:       os.Stderr,
+		stdin:        os.Stdin,
 		getenv:       os.Getenv,
 		openBrowser:  openBrowser,
 		http:         &http.Client{Timeout: 30 * time.Second},
@@ -62,27 +71,90 @@ func newCLI() *cli {
 	}
 }
 
-// command is one verb of the CLI.
+// command is one verb of the CLI, or — when subs is non-empty — a resource that groups them.
 type command struct {
 	name    string
 	args    string // the argument synopsis shown in usage
 	summary string
 	run     func(c *cli, args []string) int
+	// subs are the verbs of a resource group ("endpoint list", "endpoint revoke"). A group has no
+	// run of its own: naming it without a verb is a usage error listing what it does support.
+	subs []command
+	// hidden keeps a command working without advertising it. Used for the pre-grouping aliases,
+	// which stay for compatibility but should not teach the old shape to anyone reading help.
+	hidden bool
 }
 
-// commands is the verb table in usage order. serve is listed first because it is the default.
+// commands is the command table in usage order. serve is listed first because it is the default;
+// the resource groups follow, then the session and meta verbs that belong to no resource.
 func commands() []command {
 	return []command{
-		{"serve", "", "run the service (the default; configured from the environment)", func(c *cli, args []string) int { return c.serve(c, args) }},
-		{"login", "[URL]", "sign in to a deployment over OAuth (opens your browser)", cmdLogin},
-		{"vend", "NAME", "register an agent and vend its endpoint in one call", cmdVend},
-		{"endpoints", "", "list the vended endpoints you own", cmdEndpoints},
-		{"agents", "", "list your registered agents", cmdAgents},
-		{"status", "", "show where you are logged in and whether the credentials are live", cmdStatus},
-		{"logout", "", "forget the local credentials", cmdLogout},
-		{"version", "", "print the build version", cmdVersion},
-		{"help", "[command]", "show help for a command", cmdHelp},
+		{name: "serve", summary: "run the service (the default; configured from the environment)",
+			run: func(c *cli, args []string) int { return c.serve(c, args) }},
+		{name: "endpoint", args: "<verb>", summary: "manage vended endpoints", subs: []command{
+			{name: "list", summary: "list the vended endpoints you own", run: cmdEndpoints},
+			{name: "vend", args: "NAME", summary: "register an agent and vend its endpoint in one call", run: cmdVend},
+			{name: "revoke", args: "SLUG|ID", summary: "kill an endpoint: its credential stops working immediately", run: cmdEndpointRevoke},
+		}},
+		{name: "agent", args: "<verb>", summary: "manage registered agents", subs: []command{
+			{name: "list", summary: "list your registered agents", run: cmdAgents},
+		}},
+		{name: "login", args: "[URL]", summary: "sign in to a deployment over OAuth (opens your browser)", run: cmdLogin},
+		{name: "status", summary: "show where you are logged in and whether the credentials are live", run: cmdStatus},
+		{name: "logout", summary: "forget the local credentials", run: cmdLogout},
+		{name: "version", summary: "print the build version", run: cmdVersion},
+		{name: "help", args: "[command]", summary: "show help for a command", run: cmdHelp},
+
+		// Pre-grouping spellings. Kept working, deliberately unlisted.
+		{name: "endpoints", summary: "list the vended endpoints you own", run: cmdEndpoints, hidden: true},
+		{name: "agents", summary: "list your registered agents", run: cmdAgents, hidden: true},
+		{name: "vend", args: "NAME", summary: "register an agent and vend its endpoint in one call", run: cmdVend, hidden: true},
 	}
+}
+
+// lookup resolves a command by name, groups included.
+func lookup(name string) (command, bool) {
+	for _, cmd := range commands() {
+		if cmd.name == name {
+			return cmd, true
+		}
+	}
+	return command{}, false
+}
+
+// runGroup dispatches "<resource> <verb>". Naming a resource with no verb, or with one it does not
+// have, lists the verbs it does — the shape a person is most likely to need at that moment.
+func (c *cli) runGroup(group command, args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintf(c.stderr, "switchboard %s: no verb given\n\n", group.name)
+		c.groupUsage(group, c.stderr)
+		return exitUsage
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		c.groupUsage(group, c.stdout)
+		return exitOK
+	}
+	for _, sub := range group.subs {
+		if sub.name == args[0] {
+			return sub.run(c, args[1:])
+		}
+	}
+	fmt.Fprintf(c.stderr, "switchboard %s: unknown verb %q\n\n", group.name, args[0])
+	c.groupUsage(group, c.stderr)
+	return exitUsage
+}
+
+func (c *cli) groupUsage(group command, w io.Writer) {
+	fmt.Fprintf(w, "usage: switchboard %s <verb> [flags]\n\n%s\n\nverbs:\n", group.name, group.summary)
+	for _, sub := range group.subs {
+		synopsis := sub.name
+		if sub.args != "" {
+			synopsis += " " + sub.args
+		}
+		fmt.Fprintf(w, "  switchboard %s %-18s %s\n", group.name, synopsis, sub.summary)
+	}
+	fmt.Fprintf(w, "\nRun \"switchboard %s <verb> -h\" for that verb's flags.\n", group.name)
 }
 
 // run dispatches argv (without the program name) and returns the process exit code.
@@ -102,10 +174,11 @@ func (c *cli) run(args []string) int {
 		c.usage(c.stderr)
 		return exitUsage
 	}
-	for _, cmd := range commands() {
-		if cmd.name == name {
-			return cmd.run(c, args[1:])
+	if cmd, ok := lookup(name); ok {
+		if len(cmd.subs) > 0 {
+			return c.runGroup(cmd, args[1:])
 		}
+		return cmd.run(c, args[1:])
 	}
 	fmt.Fprintf(c.stderr, "switchboard: unknown command %q\n\n", name)
 	c.usage(c.stderr)
@@ -118,11 +191,21 @@ func (c *cli) usage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "usage:")
 	for _, cmd := range commands() {
+		if cmd.hidden {
+			continue
+		}
 		synopsis := cmd.name
 		if cmd.args != "" {
 			synopsis += " " + cmd.args
 		}
 		fmt.Fprintf(w, "  switchboard %-22s %s\n", synopsis, cmd.summary)
+		for _, sub := range cmd.subs {
+			subSyn := cmd.name + " " + sub.name
+			if sub.args != "" {
+				subSyn += " " + sub.args
+			}
+			fmt.Fprintf(w, "  switchboard %-22s %s\n", subSyn, sub.summary)
+		}
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, `Run "switchboard <command> -h" for that command's flags.`)
@@ -133,13 +216,26 @@ func cmdHelp(c *cli, args []string) int {
 		c.usage(c.stdout)
 		return exitOK
 	}
-	for _, cmd := range commands() {
-		if cmd.name == args[0] {
-			return cmd.run(c, []string{"-h"})
+	cmd, ok := lookup(args[0])
+	if !ok {
+		fmt.Fprintf(c.stderr, "switchboard: unknown command %q\n\n", args[0])
+		c.usage(c.stderr)
+		return exitUsage
+	}
+	if len(cmd.subs) == 0 {
+		return cmd.run(c, []string{"-h"})
+	}
+	if len(args) == 1 {
+		c.groupUsage(cmd, c.stdout)
+		return exitOK
+	}
+	for _, sub := range cmd.subs {
+		if sub.name == args[1] {
+			return sub.run(c, []string{"-h"})
 		}
 	}
-	fmt.Fprintf(c.stderr, "switchboard: unknown command %q\n\n", args[0])
-	c.usage(c.stderr)
+	fmt.Fprintf(c.stderr, "switchboard %s: unknown verb %q\n\n", cmd.name, args[1])
+	c.groupUsage(cmd, c.stderr)
 	return exitUsage
 }
 
@@ -219,6 +315,24 @@ func (c *cli) printVerbUsage(fs *flag.FlagSet, w io.Writer) {
 		fs.PrintDefaults()
 		fs.SetOutput(out)
 	}
+}
+
+// confirm reads one line and reports whether it is an explicit yes. Anything else — "n", empty,
+// EOF from a non-interactive stdin — is no, so a destructive verb piped input it did not expect
+// declines rather than proceeding. Scripts pass -y instead.
+func (c *cli) confirm() bool {
+	if c.stdin == nil {
+		return false
+	}
+	line, err := bufio.NewReader(c.stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
 }
 
 // fail reports a runtime failure in the conventional "program: error" shape.

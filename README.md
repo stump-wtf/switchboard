@@ -119,13 +119,14 @@ go run ./cmd/switchboard login http://127.0.0.1:8080
 
 # 2. Register: one call vends agent + endpoint + queue + webhook, and prints the credential
 #    ONCE — with a ready-to-paste .mcp.json block. (--json prints the raw API response.)
-go run ./cmd/switchboard vend my-agent --queue inbox
+go run ./cmd/switchboard endpoint vend my-agent --queue inbox
 ```
 
 The CLI (and any API client) authenticates with an OPERATOR OAuth grant — the same
 authorization-code + PKCE flow MCP clients use, with `resource = <base>/api` — so there is no
-static shared API token: auth is OAuth everywhere (ADR-0019/ADR-0023). `switchboard help`
-lists every verb (`login`, `vend`, `endpoints`, `agents`, `status`, `logout`, `version`).
+static shared API token: auth is OAuth everywhere (ADR-0019/ADR-0023). Verbs are grouped under
+the resource they manage — `endpoint list` / `endpoint vend` / `endpoint revoke`, `agent list` —
+alongside the session verbs `login`, `status`, `logout`, `version`; `switchboard help` lists them.
 Prefer a browser? The Endpoints view offers a one-step quick vend at `/endpoints/quick`.
 
 Point the agent's MCP client at `mcp_url` with `token` as the bearer credential,

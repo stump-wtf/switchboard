@@ -44,10 +44,15 @@ type apiHandler struct {
 	st   *store.Store
 	base string // cfg.BaseURL, no trailing slash
 	log  *slog.Logger
+	// endpointRevoked tears down a revoked endpoint's live MCP sessions. It is the SAME hook the
+	// web UI's revoke and the expiry reaper ring: revoking over the API must not leave an agent
+	// holding an open stream on a credential that no longer exists. Nil is tolerated (tests that
+	// build the API without an MCP handler) and simply skips the teardown.
+	endpointRevoked func(endpointID string)
 }
 
-func newAPIHandler(st *store.Store, baseURL string, log *slog.Logger) *apiHandler {
-	return &apiHandler{st: st, base: strings.TrimRight(baseURL, "/"), log: log}
+func newAPIHandler(st *store.Store, baseURL string, log *slog.Logger, onEndpointRevoked func(string)) *apiHandler {
+	return &apiHandler{st: st, base: strings.TrimRight(baseURL, "/"), log: log, endpointRevoked: onEndpointRevoked}
 }
 
 // operatorKey is the API context key carrying the resolved operator principal.
@@ -96,6 +101,7 @@ func (a *apiHandler) Routes() chi.Router {
 	r.Use(a.oauthGuard, maxBytes(64<<10))
 	r.Post("/endpoints", a.VendEndpoint)
 	r.Get("/endpoints", a.ListEndpoints)
+	r.Post("/endpoints/{ref}/revoke", a.RevokeEndpoint)
 	r.Get("/agents", a.ListAgents)
 	return r
 }
@@ -139,6 +145,9 @@ type agentOut struct {
 }
 
 type endpointOut struct {
+	// ID is the endpoint's stable identifier. Slug is the friendly handle an operator reads and
+	// types; ID is what the web UI's own routes use. Both address an endpoint on the revoke route.
+	ID        string   `json:"id"`
 	Slug      string   `json:"slug"`
 	AgentName string   `json:"agent_name"`
 	State     string   `json:"state"`
@@ -247,7 +256,7 @@ func (a *apiHandler) ListEndpoints(w http.ResponseWriter, r *http.Request) {
 	out := make([]endpointOut, 0, len(cards))
 	for _, c := range cards {
 		e := endpointOut{
-			Slug: c.Slug, AgentName: c.AgentName, State: c.State,
+			ID: c.ID, Slug: c.Slug, AgentName: c.AgentName, State: c.State,
 			Queues: c.ScopeQueues, Verbs: c.ScopeVerbs,
 		}
 		if c.ExpiresAt != nil {
@@ -272,6 +281,57 @@ func (a *apiHandler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		out = append(out, agentOut{ID: ag.ID, Name: ag.Name, Description: ag.Description})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// RevokeEndpoint kills one endpoint: its stored credential stops authenticating and its live MCP
+// sessions are torn down immediately. {ref} is the slug an operator reads off `endpoint list`, or
+// the endpoint id — both are accepted because the web UI addresses endpoints by id and a human
+// addresses them by name, and making the caller convert between the two is a papercut with no
+// security value (the lookup is scoped to the operator's own endpoints either way).
+//
+// Revocation is terminal and there is no un-revoke: SPEC-0007 says a changed scope means a new
+// endpoint, not an edited one. Re-revoking an already-revoked endpoint is therefore reported as a
+// conflict rather than a success, so a script cannot mistake "it was already dead" for "I killed
+// it just now" — the two mean different things when you are rotating a leaked credential.
+//
+// Governing: SPEC-0007 REQ "Revoke = Kill the Endpoint"; ADR-0008.
+func (a *apiHandler) RevokeEndpoint(w http.ResponseWriter, r *http.Request) {
+	human, _ := operatorFromContext(r.Context())
+	ref := chi.URLParam(r, "ref")
+
+	cards, err := a.st.ListEndpointCards(r.Context(), human.ID)
+	if err != nil {
+		a.fail(w, "revoke endpoint", err)
+		return
+	}
+	var found *store.EndpointCard
+	for i, c := range cards {
+		if c.Slug == ref || c.ID == ref {
+			found = &cards[i]
+			break
+		}
+	}
+	if found == nil {
+		// Unknown and another operator's endpoints are the same answer: the caller learns nothing
+		// about endpoints that are not theirs.
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "no endpoint by that name or id belongs to you"})
+		return
+	}
+	if found.State != "active" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "endpoint is already " + found.State, "slug": found.Slug, "state": found.State})
+		return
+	}
+	if err := a.st.RevokeEndpoint(r.Context(), found.ID, human.ID); err != nil {
+		a.fail(w, "revoke endpoint", err)
+		return
+	}
+	if a.endpointRevoked != nil {
+		a.endpointRevoked(found.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": found.ID, "slug": found.Slug, "agent_name": found.AgentName, "state": "revoked"})
 }
 
 func (a *apiHandler) fail(w http.ResponseWriter, what string, err error) {

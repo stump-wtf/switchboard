@@ -374,7 +374,7 @@ func newRouter(d routerDeps) chi.Router {
 	// everything else: its bearer is an operator OAuth grant (resource = base + "/api") resolved
 	// to the signed-in human. No static token — the CLI performs the OAuth flow gh-style.
 	// Governing: ADR-0023 REQ "Registration Vends the Whole Happy Path"; ADR-0019.
-	r.Mount("/api/v1", newAPIHandler(d.st, d.cfg.BaseURL, d.log).Routes())
+	r.Mount("/api/v1", newAPIHandler(d.st, d.cfg.BaseURL, d.log, apiRevokeHook(d)).Routes())
 
 	// Native A2A task RPC surface (ADR-0021; SPEC-0018) mounted per vended endpoint at
 	// /a2a/{endpoint}. A2A-flag-gated (ADR-0023): hidden unless SWITCHBOARD_A2A=1. It is a SECOND wire protocol over the same authorized relationship the MCP
@@ -568,6 +568,16 @@ func newRouter(d routerDeps) chi.Router {
 func staticHandler() http.Handler {
 	staticSub, _ := fs.Sub(switchboard.StaticFS, "static")
 	return http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))
+}
+
+// apiRevokeHook gives the operator API the same session teardown the web UI's revoke and the expiry
+// reaper use. Nil when there is no MCP handler wired (route-table tests build the router without
+// one), in which case revocation still commits and only the live-stream teardown is skipped.
+func apiRevokeHook(d routerDeps) func(string) {
+	if d.mcp == nil {
+		return nil
+	}
+	return d.mcp.CloseEndpointSessions
 }
 
 // secureHeaders sets defensive response headers on every route (SPEC-0001/0005/0006/0007/0008/0012).

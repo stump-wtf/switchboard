@@ -10,10 +10,17 @@ The CLI talks to the **operator API** at `/api/v1`, and both ride the same OAuth
 everything else in switchboard (ADR-0019). There is no separate API key, no shared static
 token, and no second credential universe.
 
+Verbs are grouped under the resource they manage, so the shape is
+`switchboard <resource> <verb>`:
+
 ```
 switchboard help
-switchboard <command> -h      # every command documents its flags
+switchboard endpoint          # the verbs this resource has
+switchboard endpoint revoke -h   # one verb's flags
 ```
+
+The pre-grouping spellings (`switchboard vend`, `endpoints`, `agents`) still work so existing
+scripts keep running, but they are no longer advertised — prefer the grouped form.
 
 ## Logging in (gh-style)
 
@@ -47,7 +54,7 @@ again. `switchboard status` shows where you are logged in and when the access to
 ## Vending the happy path
 
 ```
-switchboard vend my-agent --queue inbox
+switchboard endpoint vend my-agent --queue inbox
 ```
 
 One call registers the agent, vends its scoped endpoint (MCP URL + bearer credential), and
@@ -87,16 +94,41 @@ flags may come before or after the name.
 ## Listing what you own
 
 ```
-switchboard endpoints     # slug, agent, state, queues, expiry per vended endpoint
-switchboard agents        # your registered agents
-switchboard status        # where you are logged in, and whether the credentials are live
-switchboard logout        # forget the local credentials
-switchboard version       # the build version
+switchboard endpoint list   # slug, agent, state, queues, expiry per vended endpoint
+switchboard agent list      # your registered agents
+switchboard status          # where you are logged in, and whether the credentials are live
+switchboard logout          # forget the local credentials
+switchboard version         # the build version
 ```
 
-`endpoints` deliberately shows **no credentials** — tokens are revealed exactly once, at mint.
-Both listings take `--json`. `logout` removes the local file only; the grant itself expires on
-its own schedule, and switchboard has no revocation endpoint to call yet.
+`endpoint list` deliberately shows **no credentials** — tokens are revealed exactly once, at mint.
+Both listings take `--json`. `logout` removes the local file only; your operator *grant* expires on its own schedule, and
+switchboard has no RFC 7009 token-revocation endpoint to call yet. That is separate from revoking
+a vended endpoint, which is immediate — see below.
+
+## Revoking an endpoint
+
+```
+switchboard endpoint revoke my-agent-k3x9
+```
+
+Revoking kills the endpoint: its stored credential stops authenticating immediately and any live
+MCP session on it is torn down. Name it by the slug `endpoint list` prints, or by its id — both
+work. It asks before acting; `-y` skips the prompt for scripts, and `--json` prints the API
+response.
+
+This is the rotation path. **A leaked credential is only actually dead once its endpoint is
+revoked**, so reach for this the moment a token ends up somewhere it should not be — a log, a
+transcript, a pasted command. Revocation is terminal (SPEC-0007: a changed scope means a new
+endpoint, never an edited one), so the replacement is a fresh vend:
+
+```
+switchboard endpoint revoke leaky-agent-k3x9 -y
+switchboard endpoint vend leaky-agent --queue inbox
+```
+
+Re-revoking an already-revoked endpoint is a conflict rather than a success, so a rotation script
+cannot mistake "it was already dead" for "I killed it just now".
 
 Exit codes follow the usual convention: 0 on success, 1 when the deployment or the credentials
 refuse, 2 for a usage mistake (with the command's usage on stderr).
@@ -110,6 +142,7 @@ The CLI is a thin client over three OAuth-guarded endpoints, documented in the s
 |--------|------|------|
 | `POST` | `/api/v1/endpoints` | Vends agent + endpoint + queue + webhook in one call; the response carries the credential once, plus the ready-to-paste `mcp_json` wiring. |
 | `GET` | `/api/v1/endpoints` | Lists your vended endpoints (no credentials). |
+| `POST` | `/api/v1/endpoints/{slug\|id}/revoke` | Kills one endpoint: its credential stops authenticating and its live MCP sessions are torn down. `409` if it is already revoked, `404` if it is not yours. |
 | `GET` | `/api/v1/agents` | Lists your registered agents. |
 
 Any HTTP client that can complete the OAuth authorization-code + PKCE flow with
