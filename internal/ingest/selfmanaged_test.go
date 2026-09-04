@@ -514,3 +514,70 @@ func TestSelfManagedGiteaHubSignatureAccepted(t *testing.T) {
 		t.Fatalf("todo title = %q, want %q", title, want)
 	}
 }
+
+// A generic self-managed webhook carrying a forge event header must get a real title.
+//
+// This is the shape `switchboard endpoint vend` produces — it mints exactly one generic webhook —
+// so it is the ordinary way a forge ends up wired to a vended endpoint, not an edge case. The
+// title is what the doorbell says, so before this every Gitea delivery woke the agent with
+// "self-managed generic delivery": it knew something arrived, but not that an issue had been
+// assigned to it, and had to claim and unpack the payload to find out.
+func TestSummarizeSelfManagedTitleForgeOnGenericWebhook(t *testing.T) {
+	issue := []byte(`{"action":"assigned","repository":{"full_name":"stump.wtf/switchboard"},` +
+		`"issue":{"number":154,"title":"E2E: confirm the handoff lane"}}`)
+	pr := []byte(`{"action":"review_requested","repository":{"full_name":"stump.wtf/switchboard"},` +
+		`"pull_request":{"number":153,"title":"group verbs under their resource"}}`)
+
+	for _, tc := range []struct {
+		name, sourceType, event string
+		body                    []byte
+		want                    string
+	}{
+		{"generic webhook, gitea issue", "generic", "issues", issue,
+			"Issue #154 assigned in stump.wtf/switchboard — E2E: confirm the handoff lane"},
+		{"generic webhook, gitea pull request", "generic", "pull_request", pr,
+			"PR #153 review_requested in stump.wtf/switchboard — group verbs under their resource"},
+		// A declared forge source keeps behaving exactly as before.
+		{"gitea webhook, issue", "gitea", "issues", issue,
+			"Issue #154 assigned in stump.wtf/switchboard — E2E: confirm the handoff lane"},
+		// An event the summarizer has no special case for still names the repo, and the fallback
+		// label keeps a generic webhook distinguishable on the board.
+		{"generic webhook, unknown event", "generic", "release", issue,
+			"self-managed generic delivery release in stump.wtf/switchboard"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summarizeSelfManagedTitle(tc.sourceType, tc.event, tc.body); got != tc.want {
+				t.Errorf("summarizeSelfManagedTitle(%q, %q, …)\n got %q\nwant %q",
+					tc.sourceType, tc.event, got, tc.want)
+			}
+		})
+	}
+}
+
+// With no event header there is nothing to infer from, so the generic one-liner stands. A body
+// that is not JSON must not panic or produce a half-built title either.
+func TestSummarizeSelfManagedTitleFallbacks(t *testing.T) {
+	if got := summarizeSelfManagedTitle("generic", "", []byte(`{}`)); got != "self-managed generic delivery" {
+		t.Errorf("no event: got %q", got)
+	}
+	if got := summarizeSelfManagedTitle("generic", "issues", []byte("not json at all")); got == "" {
+		t.Error("unparseable body produced an empty title")
+	}
+}
+
+// selfManagedEvent prefers X-GitHub-Event but must still read Gitea's own header, which is the one
+// present when a Gitea webhook is pointed at a generic ingest URL.
+func TestSelfManagedEventReadsBothForgeHeaders(t *testing.T) {
+	for _, tc := range []struct{ name, header, want string }{
+		{"github header", "X-GitHub-Event", "issues"},
+		{"gitea header", "X-Gitea-Event", "issues"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/webhooks/w/abc", nil)
+			r.Header.Set(tc.header, "issues")
+			if got := selfManagedEvent(r); got != tc.want {
+				t.Errorf("selfManagedEvent = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

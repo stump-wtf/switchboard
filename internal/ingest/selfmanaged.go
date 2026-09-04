@@ -270,13 +270,38 @@ func selfManagedEvent(r *http.Request) string {
 // forge sources (gitea, github) share GitHub's payload shape, so they reuse summarizeForge — the
 // SAME summarizer the operator-configured receivers feed — and the board reads identically whether
 // a delivery arrived on /webhooks/gitea or on a vended self-managed URL. That also buys issue
-// events a real title, not just pull requests. Other source types keep the generic one-liner.
+// events a real title, not just pull requests.
+//
+// A "generic" webhook carrying a forge event header gets the same treatment, and that case is not
+// hypothetical: `endpoint vend` mints exactly one generic webhook, so the ordinary way to wire a
+// forge at a vended endpoint produces one. Titling those "self-managed generic delivery" is a real
+// cost, not a cosmetic one — the title is what the doorbell says, so an agent woken by an issue
+// assigned to it was told only that *something* arrived, and had to claim the todo and unpack the
+// payload to discover what. Every forge delivery to that endpoint looked identical.
+//
+// The event header is what makes this safe to infer rather than guess: X-Gitea-Event and
+// X-GitHub-Event are set by the forge itself, and nothing else sends them. A body that does not
+// parse as a forge payload still yields a title (summarizeForge falls back to "<label> <event>"),
+// so a mislabelled delivery degrades to today's behaviour instead of erroring. Trust is untouched:
+// this reads the body a token-trust delivery already stores, exactly as the gitea/github
+// self-managed path does, and titles are escaped at render.
+//
+// The inference is deliberately limited to "generic", which means "unlabelled". An explicitly
+// non-forge source type is taken at its word — a stripe webhook does not become a forge delivery
+// because a header looked like one.
 func summarizeSelfManagedTitle(sourceType, event string, body []byte) string {
-	if sourceType != "gitea" && sourceType != "github" {
-		return summarizeSelfManaged(sourceType)
-	}
 	if event == "" {
 		return summarizeSelfManaged(sourceType)
 	}
-	return summarizeForge(sourceType, event, body)
+	switch sourceType {
+	case "gitea", "github":
+		return summarizeForge(sourceType, event, body)
+	case "generic":
+		// Label the fallback with the source type so a generic webhook is still distinguishable on
+		// the board from one declared as a forge.
+		return summarizeForge(summarizeSelfManaged(sourceType), event, body)
+	}
+	// An explicitly non-forge source (stripe, slack, docker, ...) is taken at its word: its payload
+	// is not a forge payload, and a header that happens to look like one does not change that.
+	return summarizeSelfManaged(sourceType)
 }
