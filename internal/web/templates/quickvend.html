@@ -1,0 +1,78 @@
+{{define "content"}}
+{{/* The one-step quick vend (ADR-0023): the whole grant — agent name, queues, verbs, lifetime —
+     on a single page that mints and renders the one-time reveal inline on submit. The components
+     are the vend wizard's exact chipsets and lifetime choices (SPEC-0015); the mint is the same
+     executeVendOn path, so this page and the stepped wizard cannot drift. No JS required. */}}
+{{$v := .Quick}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">quick vend</h1>
+    <p class="sb-tagline">one page, one submit — the scoped credential, revealed once</p>
+  </div>
+</div>
+
+{{if .Reveal}}
+<div class="sb-card sb-reveal-inline">{{template "vend_reveal" .Reveal}}</div>
+<p class="sb-help" data-sb-quickvend-next><a href="/endpoints/quick">Vend another</a> · <a href="/endpoints">Back to endpoints</a></p>
+{{end}}
+
+{{if not .Reveal}}
+<section class="sb-wiz sb-quickvend" data-sb-quickvend aria-label="Quick vend">
+  {{if $v.Error}}<p class="sb-callout sb-callout--danger" role="alert" data-sb-quickvend-error>{{$v.Error}}</p>{{end}}
+
+  <form class="sb-vend sb-wiz__form" method="post" action="{{$v.ActionURL}}" data-sb-quickvend-form>
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+
+    <div class="sb-field">
+      <label for="sb-quick-name">Agent name</label>
+      <input id="sb-quick-name" class="sb-input" name="name" value="{{$v.Name}}" placeholder="e.g. release-bot" required autocomplete="off" data-sb-quickvend-name>
+      <p class="sb-help">the agent this scoped line belongs to</p>
+    </div>
+
+    <div class="sb-field">
+      {{if $v.QueueOptions}}
+      {{/* Queues the store already knows are one-click chips; the free-text field is only for
+           queues the chips do not list yet. A fresh deployment has no chips, so the field is
+           then simply "Queues". */}}
+      <span class="sb-label" id="sb-quick-queues-label">Scoped queues</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-quick-queues-label" data-sb-quickvend-queues>
+        {{range $v.QueueOptions}}<label class="sb-chip sb-chip--queue sb-chip--toggle"><input type="checkbox" name="queues" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+      </div>
+      <label for="sb-quick-queues-extra">Other queues</label>
+      <input id="sb-quick-queues-extra" class="sb-input" name="queues_extra" value="{{$v.ExtraQueues}}" placeholder="ops, deploys" autocomplete="off">
+      <p class="sb-help">comma-separated · queues the chips above do not list yet · at least one queue in total</p>
+      {{else}}
+      <label for="sb-quick-queues-extra">Queues</label>
+      <input id="sb-quick-queues-extra" class="sb-input" name="queues_extra" value="{{$v.ExtraQueues}}" placeholder="inbox, reviews" autocomplete="off">
+      <p class="sb-help">comma-separated · the todo queues this endpoint may work · at least one required</p>
+      {{end}}
+    </div>
+
+    <div class="sb-field">
+      <span class="sb-label" id="sb-quick-verbs-label">Allowed verbs</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-quick-verbs-label" data-sb-quickvend-verbs>
+        {{range $v.VerbOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="verbs" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+      </div>
+      <p class="sb-help">the drain verbs start checked; wider grants are a deliberate toggle</p>
+    </div>
+
+    <div class="sb-field">
+      <span class="sb-label" id="sb-quick-lifetime-label">Credential lifetime</span>
+      <div class="sb-wiz__choices" role="radiogroup" aria-labelledby="sb-quick-lifetime-label" data-sb-quickvend-lifetime>
+        <label class="sb-wiz__choice"><input type="radio" name="lifetime" value=""{{if eq $v.LifetimePreset ""}} checked{{end}}> until revoked</label>
+        {{range $v.LifetimePresets}}<label class="sb-wiz__choice"><input type="radio" name="lifetime" value="{{.Value}}"{{if eq $v.LifetimePreset .Value}} checked{{end}}> {{.Label}}</label>{{end}}
+        <label class="sb-wiz__choice"><input type="radio" name="lifetime" value="custom"{{if eq $v.LifetimePreset "custom"}} checked{{end}}> custom</label>
+      </div>
+      <input id="sb-quick-lifetime-custom" class="sb-input" name="lifetime_custom" value="{{$v.LifetimeCustom}}" placeholder="e.g. 90m, 12h, 14d, 4w" autocomplete="off" aria-label="Custom lifetime">
+      <p class="sb-help">empty = until revoked · expiry revokes the endpoint</p>
+    </div>
+
+    <div class="sb-vend__foot">
+      <button type="submit" class="sb-btn sb-btn--mono" data-sb-quickvend-submit>Vend endpoint →</button>
+    </div>
+  </form>
+
+  <p class="sb-help">Need personas, webhook ceilings, or step-by-step guidance? Use the <a href="/endpoints/vend">full wizard</a>.</p>
+</section>
+{{end}}
+{{end}}

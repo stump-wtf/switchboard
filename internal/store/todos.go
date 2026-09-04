@@ -180,7 +180,11 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 		// Sender gate (SPEC-0011): only a todo whose delivery event passed per-source
 		// verification is eligible for a channel push. Plain CreateTodo (no event, e.g. the dev
 		// helper) never rings the doorbell — those todos degrade to pull, losing nothing.
-		if e.Verified {
+		// EXCEPTION (ADR-0023, the basics): a token-trust SELF-MANAGED webhook is authenticated
+		// by its unguessable ingest URL (SPEC-0006 — the URL is the credential), so its
+		// deliveries ring the doorbell like verified ones do; an anonymous delivery never
+		// reaches this path with a token trust mode.
+		if e.Verified || e.TrustMode == "token" {
 			s.fireDoorbell(t)
 		}
 	}
@@ -264,8 +268,11 @@ func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpoi
 		s.fireTodoHook("created", ct.Todo)
 		s.notifyTodoReady(ctx, ct.Todo.EndpointID, ct.Todo.Queue)
 		// Sender gate (SPEC-0011): only a todo whose delivery event passed per-source verification
-		// is eligible for a channel push.
-		if e.Verified {
+		// is eligible for a channel push. EXCEPTION (ADR-0023, the basics): a token-trust
+		// SELF-MANAGED webhook is authenticated by its unguessable ingest URL (SPEC-0006 — the
+		// URL is the credential), so its deliveries ring the doorbell like verified ones; an
+		// anonymous (open) source never reaches this path carrying a token trust mode.
+		if e.Verified || e.TrustMode == "token" {
 			s.fireDoorbell(ct.Todo)
 		}
 	}

@@ -59,6 +59,27 @@ type Config struct {
 	// descriptor) in cleartext. Off by default. (SWITCHBOARD_PUSH_ALLOW_HTTP=1)
 	// Governing: SPEC-0019 REQ "Webhook Target Validation (SSRF Guard)".
 	PushAllowHTTP bool
+
+	// --- MVP capability gates (ADR-0023: the basics are the product; advanced surface hidden) ---
+
+	// PersonasEnabled gates the personas capability (named agent identities, the A2A Agent Card
+	// surface, and the persona slot in the vend wizard). Off by default — the MVP is the plain
+	// agent registration path, and personas are an advanced capability a deliberate flag flip
+	// brings back. (SWITCHBOARD_PERSONAS=1)
+	// Governing: ADR-0023 REQ "Feature Flags Hide Advanced Surfaces".
+	PersonasEnabled bool
+
+	// A2AEnabled gates the native A2A task RPC surface (/a2a/*), the A2A friend-request intake,
+	// and the public Agent Card route. Off by default — agents reach their todos over MCP; A2A is
+	// an advanced second protocol kept in the codebase behind the flag. (SWITCHBOARD_A2A=1)
+	// Governing: ADR-0023 REQ "Feature Flags Hide Advanced Surfaces".
+	A2AEnabled bool
+
+	// A2UIEnabled gates the A2UI resource surface (queue and todo detail rendered as
+	// application/a2ui+json). Off by default — A2UI is an advanced, A2UI-capable-host-only
+	// rendering of the same data the tools already serve. (SWITCHBOARD_A2UI=1)
+	// Governing: ADR-0023 REQ "Feature Flags Hide Advanced Surfaces".
+	A2UIEnabled bool
 }
 
 // FromEnv builds a Config from environment variables, applying defaults.
@@ -81,6 +102,9 @@ func FromEnv() Config {
 		DevLogin:            os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
 		FriendingEnabled:    os.Getenv("SWITCHBOARD_FRIENDING") == "1",
 		PushAllowHTTP:       os.Getenv("SWITCHBOARD_PUSH_ALLOW_HTTP") == "1",
+		PersonasEnabled:     os.Getenv("SWITCHBOARD_PERSONAS") == "1",
+		A2AEnabled:          os.Getenv("SWITCHBOARD_A2A") == "1",
+		A2UIEnabled:         os.Getenv("SWITCHBOARD_A2UI") == "1",
 	}
 }
 

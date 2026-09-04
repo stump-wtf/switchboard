@@ -19,9 +19,11 @@ info:
   description: |
     Inbound webhook ingestion and the local-only web UI for **switchboard**.
 
-    ## Two groups of endpoints
+    ## Three groups of endpoints
     - **Webhook ingestion** (`/webhooks/*`): providers POST here. Signed providers are
       verified-or-rejected (401, not persisted); the generic endpoint uses a shared-secret token (or open).
+    - **Operator API** (`/api/v1/*`): OAuth-guarded (operator grants) — register agents, vend
+      endpoints, list what you own. The `switchboard` CLI is its reference client.
     - **Web UI** (`/`, `/log`, `/providers`, `/settings`) + the SSE stream (`/events`):
       server-rendered HTML (html/template + HTMX) plus a `text/event-stream` for live updates.
 
@@ -54,6 +56,12 @@ tags:
     description: Live-update event stream (Server-Sent Events). Payload schema in asyncapi.yaml.
   - name: ops
     description: Health/readiness.
+  - name: operator-api
+    description: >-
+      The /api/v1 operator surface (ADR-0023): register agents and vend endpoints as the
+      signed-in human. Every request requires an OPERATOR OAuth bearer — an OAuth token minted
+      by the authorization-code + PKCE flow with resource = `<base>/api` (ADR-0019), which the
+      `switchboard` CLI obtains gh-style. There is no static API token.
 
 paths:
   /webhooks/{provider}:
@@ -377,6 +385,79 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
 
+  /api/v1/agents:
+    get:
+      tags: [operator-api]
+      operationId: listAgents
+      summary: List the authenticated operator's registered agents
+      security:
+        - operatorOAuth: []
+      responses:
+        '200':
+          description: The operator's agents, creation order unspecified.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AgentOut' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/endpoints:
+    post:
+      tags: [operator-api]
+      operationId: vendEndpoint
+      summary: Register an agent and vend its endpoint in one call
+      description: |
+        The ADR-0023 one-call mint: agent + scoped endpoint (MCP URL + bearer credential) +
+        queue + token-trust ingestion webhook, returned in one response. The credential appears
+        exactly once, here — it is never retrievable again (SPEC-0007).
+      security:
+        - operatorOAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VendEndpointIn' }
+      responses:
+        '201':
+          description: Vended — every credential the operator needs in one response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendEndpointOut' }
+        '400':
+          description: Invalid body or missing name.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    get:
+      tags: [operator-api]
+      operationId: listEndpoints
+      summary: List the authenticated operator's vended endpoints (never credentials)
+      security:
+        - operatorOAuth: []
+      responses:
+        '200':
+          description: The operator's vended endpoints. Tokens are NOT included — they are revealed once at mint.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EndpointOut' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
   /healthz:
     get:
       tags: [ops]
@@ -556,6 +637,76 @@ components:
         detail: { type: string }
         instance: { type: string }
 
+    VendEndpointIn:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: The agent name; the endpoint slug derives from it.
+          example: my-agent
+        queue:
+          type: string
+          default: inbox
+          description: The single scoped queue the endpoint drains and the webhook routes to.
+          example: inbox
+
+    VendEndpointOut:
+      type: object
+      required: [agent_name, slug, mcp_url, token, queue, verbs, webhook]
+      properties:
+        agent_name: { type: string, example: my-agent }
+        slug: { type: string, example: my-agent-k3x9 }
+        mcp_url: { type: string, format: uri, example: 'https://sb.example.com/mcp/my-agent-k3x9' }
+        token:
+          type: string
+          description: The vended endpoint bearer credential (sbk_…). Shown ONCE — store it now.
+        queue: { type: string, example: inbox }
+        verbs:
+          type: array
+          items: { type: string }
+          description: The endpoint's verb allowlist (drain + webhook + event verbs).
+        webhook: { $ref: '#/components/schemas/VendWebhookOut' }
+        mcp_json:
+          type: object
+          description: >-
+            The ready-to-paste `.mcp.json` stanza wiring an MCP client to `mcp_url` with `token`
+            embedded as the bearer — byte-identical to the web reveal's wiring. Present on every
+            successful vend.
+          additionalProperties: true
+        expires_at: { type: [string, "null"], format: date-time }
+
+    VendWebhookOut:
+      type: object
+      required: [webhook_id, ingest_url, trust_mode]
+      properties:
+        webhook_id: { type: string }
+        ingest_url: { type: string, format: uri }
+        trust_mode:
+          type: string
+          enum: [token]
+          description: Always token — the unguessable ingest URL is the credential (ADR-0003).
+
+    AgentOut:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string, example: my-agent }
+        description: { type: string }
+
+    EndpointOut:
+      type: object
+      description: A vended endpoint WITHOUT credentials — tokens are revealed once at mint (SPEC-0007).
+      required: [slug, agent_name, state, queues, verbs]
+      properties:
+        slug: { type: string, example: my-agent-k3x9 }
+        agent_name: { type: string, example: my-agent }
+        state: { type: string, enum: [active, revoked], example: active }
+        queues: { type: array, items: { type: string } }
+        verbs: { type: array, items: { type: string } }
+        expires_at: { type: [string, "null"], format: date-time }
+
   securitySchemes:
     # Documented for clarity only — these are per-provider signature headers, verified by the app
     # (ADR-0003), NOT bearer credentials the client obtains. UI/SSE endpoints have no in-app auth
@@ -580,6 +731,15 @@ components:
       in: query
       name: token
       description: Shared-secret token — authenticates the caller, not the body (ADR-0003).
+    operatorOAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: |
+        An OPERATOR OAuth grant (ADR-0019/ADR-0023): an opaque access token minted by the
+        authorization-code + PKCE flow with resource = `<base>/api`, bound to the signed-in human.
+        Endpoint-bound tokens and static sbk_ credentials do NOT resolve here. The `switchboard`
+        CLI performs this flow (gh-style) and stores the rotating pair locally.
 
 # No global security requirement: webhook auth is per-provider signature verification (above),
 # and UI/SSE/health endpoints are intentionally unauthenticated at the app layer (ADR-0001).

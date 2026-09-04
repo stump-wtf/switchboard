@@ -60,6 +60,38 @@ func newTestRouter(t *testing.T) chi.Router {
 	})
 }
 
+// newTestRouterA2A is newTestRouter with the A2A capability flag enabled, for tests of the
+// flag-gated advanced surface (agent card, friend intake, /a2a mount). Governing: ADR-0023.
+func newTestRouterA2A(t *testing.T) chi.Router {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{BaseURL: "https://sb.example.com", A2AEnabled: true}
+	st := store.New(nil)
+	authr, err := auth.New(context.Background(), cfg, st, log)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+	webh, err := web.New(st, cfg, log)
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	hub := ingest.NewHub()
+	mcph := mcpsrv.New(st, log)
+	t.Cleanup(mcph.Close)
+	return newRouter(routerDeps{
+		cfg:   cfg,
+		st:    st,
+		authr: authr,
+		webh:  webh,
+		ing:   ingest.New(st, hub, log, ingest.Config{}),
+		mcp:   mcph,
+		a2a:   a2a.New(st, log),
+		oauth: oauthsrv.New(st, cfg.BaseURL, log),
+		ping:  func(context.Context) error { return nil },
+		log:   log,
+	})
+}
+
 // sessionRoutes is the exact set of session-gated (RequireHuman) web routes — the SPEC-0012 screen
 // set plus the SPEC-0013 Board landing and the SSE stream. Anonymous requests MUST be redirected
 // to /login, and the set itself is asserted, so dropping a route from the RequireHuman group (or
@@ -68,6 +100,8 @@ var sessionRoutes = map[string]bool{
 	"GET /todos":                  true, // Todos view (SPEC-0013 durable-queue table)
 	"GET /todos/{id}":             true, // Todo detail drawer (fragment / standalone)
 	"GET /endpoints":              true, // Endpoints view (SPEC-0015 vended-endpoint cards)
+	"GET /endpoints/quick":        true, // one-step quick vend page (ADR-0023)
+	"POST /endpoints/quick":       true, // quick vend submit / mint + one-time reveal
 	"GET /endpoints/vend":         true, // vend wizard start (mints server-side step state)
 	"GET /endpoints/vend/persona": true, // legacy redirect to /endpoints/vend/agent
 	"GET /endpoints/vend/{step}":  true, // vend wizard step pages (SPEC-0015 wizard pattern)
@@ -144,10 +178,10 @@ var publicRoutes = map[string]bool{
 	"POST /auth/dev-login": true, // 404s unless SWITCHBOARD_DEV_LOGIN=1 (tested below)
 	"GET /healthz":         true, // liveness probe
 	"POST /dev/todos":      true, // 404s unless SWITCHBOARD_DEV_LOGIN=1 (dev loop helper)
-	// Public A2A Agent Card (SPEC-0009): discovery requires peers to read the card before any
-	// friendship exists; it grants nothing, exposes only owner-approved metadata, and 404s for any
-	// persona the owner has not marked discoverable.
-	"GET /a/{persona_id}/.well-known/agent-card.json": true,
+	// NOTE (ADR-0023): the A2A Agent Card and friend-intake routes are ADVANCED, flag-gated
+	// surface — registered only when SWITCHBOARD_A2A=1, so they are deliberately ABSENT from this
+	// default table. TestA2AAdvancedRoutesRegisterWhenEnabled asserts the flag-on table.
+
 	// Webhook receivers authenticate per-provider (HMAC/token; SPEC-0001), not via session.
 	"POST /webhooks/github":         true,
 	"POST /webhooks/gitea":          true,
@@ -164,6 +198,7 @@ var publicRoutes = map[string]bool{
 	// body is bounded; the metadata GETs read nothing from the store.
 	"GET /.well-known/oauth-authorization-server":              true,
 	"GET /.well-known/oauth-protected-resource/mcp/{endpoint}": true,
+	"GET /.well-known/oauth-protected-resource/api":            true, // operator API discovery (ADR-0023); static JSON, no store read
 	"POST /oauth/register":                                     true,
 	// The token endpoint is public like the rest of the AS surface: clients are public (no client
 	// secret), so the proof is PKCE possession on the code grant and the rotating refresh token on
@@ -173,7 +208,6 @@ var publicRoutes = map[string]bool{
 	// carried IN-BAND (ADR-0010/0011; SPEC-0010), not via a session cookie or bearer header —
 	// missing/invalid provenance → 401 with no pending edge. Not "ungoverned public": it is
 	// authenticated, just by signed provenance instead of a session.
-	"POST /a2a/friend-requests": true,
 }
 
 // routePath turns a chi route pattern into a concrete request path.
@@ -212,6 +246,13 @@ func TestEveryRouteClassifiedAndAnonymousRejected(t *testing.T) {
 			}
 		case strings.HasPrefix(route, "/mcp/"):
 			// Vended MCP surface (ADR-0017; SPEC-0014): bearer-credential auth, no Authorization header → 401.
+			rec := anonRequest(t, r, method, routePath(route))
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("%s: anonymous got %d, want 401", key, rec.Code)
+			}
+		case strings.HasPrefix(route, "/api/v1"):
+			// Operator API (ADR-0023): OAuth bearer auth (operator grants) with no Authorization header → 401,
+			// the same anonymous shape as the MCP surface.
 			rec := anonRequest(t, r, method, routePath(route))
 			if rec.Code != http.StatusUnauthorized {
 				t.Errorf("%s: anonymous got %d, want 401", key, rec.Code)
@@ -309,3 +350,103 @@ func TestDevLoginDisabledIs404(t *testing.T) {
 		t.Fatalf("POST /dev/todos with dev mode off: got %d, want 404", rec.Code)
 	}
 }
+
+// TestA2AAdvancedRoutesRegisterWhenEnabled pins the ADR-0023 feature-flag contract for the A2A
+// advanced surface: with the flag OFF (the default router above) the Agent Card and friend-intake
+// routes are ABSENT — 404, never a broken or half-open endpoint — and with SWITCHBOARD_A2A=1 the
+// same routes are registered. Governing: ADR-0023 REQ "Feature Flags Hide Advanced Surfaces".
+func TestA2AAdvancedRoutesRegisterWhenEnabled(t *testing.T) {
+	advanced := map[string]bool{
+		"GET /a/{persona_id}/.well-known/agent-card.json": true,
+		"POST /a2a/friend-requests":                       true,
+	}
+
+	absent := func(r chi.Router, key string) {
+		t.Helper()
+		method, path, _ := strings.Cut(key, " ")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s with flag off: got %d, want 404 (route must not exist)", key, rec.Code)
+		}
+	}
+	for key := range advanced {
+		absent(newTestRouter(t), key)
+	}
+
+	present := func(r chi.Router, key string) {
+		t.Helper()
+		found := false
+		err := chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+			if method+" "+route == key {
+				found = true
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk: %v", err)
+		}
+		if !found {
+			t.Errorf("%s with flag on: route missing from the router table", key)
+		}
+	}
+	for key := range advanced {
+		present(newTestRouterA2A(t), key)
+	}
+}
+
+// TestMachineAPIOAuthGuard pins the ADR-0023 operator-API auth contract: the /api/v1 tree is
+// always mounted, but only an OPERATOR OAuth bearer (a human-bound OAuth grant, ADR-0023) passes
+// the guard — missing, wrong, and static sbk_-shaped bearers are all 401 before any store access.
+// The vend happy path itself is covered DB-backed in mvp_e2e_test.go.
+func TestMachineAPIOAuthGuard(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{BaseURL: "https://sb.example.com"}
+	st := store.New(nil)
+	authr, err := auth.New(context.Background(), cfg, st, log)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+	webh, err := web.New(st, cfg, log)
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	hub := ingest.NewHub()
+	mcph := mcpsrv.New(st, log)
+	t.Cleanup(mcph.Close)
+	r := newRouter(routerDeps{
+		cfg:   cfg,
+		st:    st,
+		authr: authr,
+		webh:  webh,
+		ing:   ingest.New(st, hub, log, ingest.Config{}),
+		mcp:   mcph,
+		a2a:   a2a.New(st, log),
+		oauth: oauthsrv.New(st, cfg.BaseURL, log),
+		ping:  func(context.Context) error { return nil },
+		log:   log,
+	})
+
+	post := func(auth string) int {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/endpoints", strings.NewReader(`{"name":"x"}`))
+		if auth != "" {
+			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+		r.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := post(""); got != http.StatusUnauthorized {
+		t.Errorf("missing bearer: got %d, want 401", got)
+	}
+	if got := post("wrong-token"); got != http.StatusUnauthorized {
+		t.Errorf("wrong bearer: got %d, want 401", got)
+	}
+	if got := post("sbk_definitely-not-an-operator-grant"); got != http.StatusUnauthorized {
+		t.Errorf("static sbk_ bearer: got %d, want 401", got)
+	}
+}
+
+// (The valid-operator-grant happy path is covered DB-backed by TestMVPRegistrationToDoorbell; a
+// nil store here cannot serve it.)

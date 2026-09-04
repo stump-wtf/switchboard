@@ -2040,6 +2040,14 @@ pre code {
 .sb-vend-open {
   flex: none;
 }
+/* The page-head launcher group: quick vend beside the full wizard, wrapping with the head. */
+.sb-page-head__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  flex-wrap: wrap;
+}
 
 /* Endpoint cards grid. */
 .sb-cards {

@@ -107,6 +107,38 @@ the caller knows a secret, but unlike HMAC it can't attest the payload.
 3. **Provider config** — each provider's type, path/channel, secret status (`configured` / `missing` / `none-by-design` — never the secret itself), enable/disable toggle.
 4. **Settings** — retention policy (age + row cap), SSE reconnect behavior, general config.
 
+## The basics (ADR-0023 MVP): webhook → todo → doorbell
+
+The MVP is MCP/API-first. One call registers an agent and vends the whole loop —
+the agent endpoint, its scoped queue, and an ingestion webhook — and every verified
+delivery becomes a durable todo that rings the agent's live MCP session:
+
+```bash
+# 1. Log in as the operator (gh-style OAuth in your browser; credentials saved locally).
+go run ./cmd/switchboard login http://127.0.0.1:8080
+
+# 2. Register: one call vends agent + endpoint + queue + webhook, and prints the credential
+#    ONCE — with a ready-to-paste .mcp.json block. (--json prints the raw API response.)
+go run ./cmd/switchboard vend my-agent --queue inbox
+```
+
+The CLI (and any API client) authenticates with an OPERATOR OAuth grant — the same
+authorization-code + PKCE flow MCP clients use, with `resource = <base>/api` — so there is no
+static shared API token: auth is OAuth everywhere (ADR-0019/ADR-0023). `switchboard help`
+lists every verb (`login`, `vend`, `endpoints`, `agents`, `status`, `logout`, `version`).
+Prefer a browser? The Endpoints view offers a one-step quick vend at `/endpoints/quick`.
+
+Point the agent's MCP client at `mcp_url` with `token` as the bearer credential,
+point any producer at `ingest_url`, and done: deliveries become todos on `inbox`
+and the live session receives a `notifications/claude/channel` doorbell (a
+disconnected agent finds the todo on its next `list_todos`). The full loop is
+proven end to end in CI (`TestMVPRegistrationToDoorbell`).
+
+**Advanced capabilities are hidden by default** and stay in the codebase behind
+flags: personas (`SWITCHBOARD_PERSONAS=1`), the A2A protocol surface
+(`SWITCHBOARD_A2A=1`), and the A2UI resources (`SWITCHBOARD_A2UI=1`). Friending
+remains gated by `SWITCHBOARD_FRIENDING=1`. See ADR-0023.
+
 ## Running it
 
 Switchboard needs PostgreSQL. Point it at a database and run the service:

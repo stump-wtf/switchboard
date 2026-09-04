@@ -942,11 +942,11 @@ func TestRevokeFriendEdgeCascadesOAuth(t *testing.T) {
 		[]string{"https://c.example.com/cb"}); err != nil {
 		t.Fatalf("create oauth client: %v", err)
 	}
-	if _, err := s.CreateOAuthToken(ctx, "th-fc", "rh-fc", "cid-fc", ep.ID,
+	if _, err := s.CreateOAuthToken(ctx, "th-fc", "rh-fc", "cid-fc", ep.ID, "",
 		time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("create oauth token: %v", err)
 	}
-	if _, err := s.CreateOAuthCode(ctx, "ch-fc", "cid-fc", ep.ID, "chal-fc",
+	if _, err := s.CreateOAuthCode(ctx, "ch-fc", "cid-fc", ep.ID, "", "chal-fc",
 		"https://c.example.com/cb", time.Now().Add(5*time.Minute)); err != nil {
 		t.Fatalf("create oauth code: %v", err)
 	}

@@ -42,9 +42,11 @@ type authorizeView struct {
 	Workspace  string   // the deployed workspace host the client wants into
 	Principal  string   // the accountable principal (display name · email)
 	Initials   string   // principal avatar initials
-	AgentName  string   // the bound endpoint's agent
-	Slug       string   // the bound endpoint's public slug
-	Bullets    []string // scope bullets DERIVED from the endpoint's stored scope
+	Operator   bool     // true = operator grant (acts AS the signed-in human); false = endpoint grant
+	AgentName  string   // the bound endpoint's agent (endpoint grants only)
+	Slug       string   // the bound endpoint's public slug (endpoint grants only)
+	Resource   string   // the RFC 8707 resource indicator, round-tripped through the form
+	Bullets    []string // scope bullets DERIVED from the endpoint's stored scope (or the operator scope)
 
 	// Hidden form fields: the validated request round-trips through the consent form and is
 	// re-validated on POST, so the decision handler never trusts the rendered page.
@@ -55,14 +57,27 @@ type authorizeView struct {
 }
 
 // oauthAuthzRequest is a fully validated authorize request: a registered client, an exact-match
-// redirect URI, S256 PKCE material, and the one live vended endpoint (owned by the signed-in
-// human) the grant would attach to.
+// redirect URI, S256 PKCE material, and the one grant principal — either the live vended endpoint
+// (owned by the signed-in human) an MCP client connects through, or the signed-in human themselves
+// for an operator grant (the CLI/API shape, ADR-0023).
 type oauthAuthzRequest struct {
 	Client        store.OAuthClient
-	Endpoint      store.EndpointCard
+	Endpoint      store.EndpointCard // zero value on an operator grant
+	Operator      bool               // true = grant binds to the signed-in human, not an endpoint
+	Resource      string             // the RFC 8707 resource indicator ("" when absent)
 	RedirectURI   string
 	State         string
 	CodeChallenge string
+}
+
+// principalBinding returns the (endpointID, humanID) pair the grant stores: the endpoint's id for
+// an endpoint grant, or the consenting human's id for an operator grant. Exactly one is non-empty,
+// mirroring the schema's num_nonnulls constraint.
+func (req oauthAuthzRequest) principalBinding(human store.Human) (string, string) {
+	if req.Operator {
+		return "", human.ID
+	}
+	return req.Endpoint.ID, ""
 }
 
 // oauthAuthzError is a validation failure that is SAFE to return to the client via its (already
@@ -117,10 +132,12 @@ func (h *Handler) OAuthDecision(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	// The stored row is the consent record: this client, onto this endpoint, under this PKCE
+	// The stored row is the consent record: this client, onto this principal (the endpoint or, for
+	// an operator grant, the signed-in human themselves), under this PKCE
 	// challenge, redeemable at exactly this redirect URI, expiring on a clock consent cannot
 	// extend. Only the hash is persisted; the plaintext rides the redirect and dies there.
-	if _, err := h.store.CreateOAuthCode(r.Context(), codeHash, req.Client.ClientID, req.Endpoint.ID,
+	endpointID, humanID := req.principalBinding(human)
+	if _, err := h.store.CreateOAuthCode(r.Context(), codeHash, req.Client.ClientID, endpointID, humanID,
 		req.CodeChallenge, req.RedirectURI, time.Now().Add(oauthsrv.CodeTTL)); err != nil {
 		h.fail(w, err)
 		return
@@ -153,9 +170,11 @@ func (h *Handler) oauthConsent(w http.ResponseWriter, r *http.Request, human *st
 			Workspace:  h.workspaceHost(),
 			Principal:  principalLabel(human),
 			Initials:   initials(human),
+			Operator:   req.Operator,
 			AgentName:  req.Endpoint.AgentName,
 			Slug:       req.Endpoint.Slug,
-			Bullets:    scopeBullets(req.Endpoint.ScopeQueues, req.Endpoint.ScopeVerbs),
+			Resource:   req.Resource,
+			Bullets:    authorizeScopeBullets(req),
 
 			ClientID:      req.Client.ClientID,
 			RedirectURI:   req.RedirectURI,
@@ -231,28 +250,36 @@ func (h *Handler) parseAuthorizeRequest(r *http.Request, human *store.Human, par
 	}
 	req.CodeChallenge = challenge
 
-	// Endpoint binding: the RFC 8707 resource indicator (the MCP mount URL the client discovered)
-	// or a bare endpoint slug. The grant attaches to one existing vended endpoint or nothing.
-	slug := params.Get("endpoint")
-	if res := params.Get("resource"); slug == "" && res != "" {
-		slug = oauthsrv.SlugFromResource(h.cfg.BaseURL, res)
+	// Grant binding: an operator grant (resource = base + "/api") binds to the signed-in human
+	// themselves; anything else binds to the RFC 8707 resource indicator's (or bare endpoint
+	// slug's) one live vended endpoint owned by that human. The operator resource is exact-matched
+	// against the deployed base so a foreign origin can never be mistaken for it.
+	res := params.Get("resource")
+	req.Resource = res
+	if res != "" && res == strings.TrimRight(h.cfg.BaseURL, "/")+OperatorResourcePath {
+		req.Operator = true
+	} else {
+		slug := params.Get("endpoint")
+		if slug == "" && res != "" {
+			slug = oauthsrv.SlugFromResource(h.cfg.BaseURL, res)
+		}
+		if slug == "" || !oauthsrv.SlugOK(slug) {
+			return req, &oauthAuthzError{"invalid_target",
+				"the request must name a vended endpoint on this switchboard (resource or endpoint parameter)"}, ""
+		}
+		ep, err := h.store.EndpointBySlugOwned(r.Context(), slug, human.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			// Unknown, revoked, expired, or another principal's endpoint — uniformly the same error, so
+			// the response leaks nothing about which. Consent is the owner's alone (SPEC-0007).
+			return req, &oauthAuthzError{"invalid_target",
+				"no live vended endpoint by that name belongs to the signed-in operator"}, ""
+		}
+		if err != nil {
+			h.log.Error("oauth authorize: endpoint lookup", "err", err)
+			return req, nil, "the authorization request could not be validated — try again"
+		}
+		req.Endpoint = ep
 	}
-	if slug == "" || !oauthsrv.SlugOK(slug) {
-		return req, &oauthAuthzError{"invalid_target",
-			"the request must name a vended endpoint on this switchboard (resource or endpoint parameter)"}, ""
-	}
-	ep, err := h.store.EndpointBySlugOwned(r.Context(), slug, human.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		// Unknown, revoked, expired, or another principal's endpoint — uniformly the same error, so
-		// the response leaks nothing about which. Consent is the owner's alone (SPEC-0007).
-		return req, &oauthAuthzError{"invalid_target",
-			"no live vended endpoint by that name belongs to the signed-in operator"}, ""
-	}
-	if err != nil {
-		h.log.Error("oauth authorize: endpoint lookup", "err", err)
-		return req, nil, "the authorization request could not be validated — try again"
-	}
-	req.Endpoint = ep
 	return req, nil, ""
 }
 
@@ -321,6 +348,25 @@ func principalLabel(human *store.Human) string {
 	default:
 		return human.DisplayName
 	}
+}
+
+// OperatorResourcePath is the path suffix of the RFC 8707 resource indicator that requests an
+// OPERATOR grant: an OAuth token that acts AS the signed-in human (register agents, vend
+// endpoints) rather than a credential onto one vended endpoint. The CLI and the /api/v1 surface
+// are its only consumers (ADR-0023).
+const OperatorResourcePath = "/api"
+
+// authorizeScopeBullets derives the consent screen's capability bullets: the operator scope for an
+// operator grant, the bound endpoint's stored scope otherwise (via scopeBullets).
+func authorizeScopeBullets(req oauthAuthzRequest) []string {
+	if req.Operator {
+		return []string{
+			"register agents on this switchboard",
+			"vend endpoints and see each credential exactly once",
+			"list the endpoints you own",
+		}
+	}
+	return scopeBullets(req.Endpoint.ScopeQueues, req.Endpoint.ScopeVerbs)
 }
 
 // scopeBullets derives the consent screen's capability bullets from an endpoint's STORED

@@ -49,7 +49,7 @@ func (unusedTokenStore) RedeemOAuthCode(context.Context, string) (store.OAuthCod
 	panic("token store used in a registration test")
 }
 
-func (unusedTokenStore) CreateOAuthToken(context.Context, string, string, string, string, time.Time) (store.OAuthToken, error) {
+func (unusedTokenStore) CreateOAuthToken(context.Context, string, string, string, string, string, time.Time) (store.OAuthToken, error) {
 	panic("token store used in a registration test")
 }
 

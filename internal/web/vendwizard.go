@@ -254,7 +254,7 @@ func (h *Handler) VendStepSubmit(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, vendWizard.stepPath(missing), http.StatusSeeOther)
 			return
 		}
-		minted := h.executeVend(w, r, &human, vendSubmission{
+		minted := h.executeVendOn(w, r, &human, vendSubmission{
 			Name:               values.Get("name"),
 			PersonaID:          values.Get("persona"),
 			Queues:             values["queues"],
@@ -263,7 +263,7 @@ func (h *Handler) VendStepSubmit(w http.ResponseWriter, r *http.Request) {
 			WebhookMax:         webhookMaxFromValues(values),
 			WebhookSourceTypes: values["webhook_source_types"],
 			WebhookQueues:      values["webhook_queues"],
-		})
+		}, "endpoints")
 		if minted {
 			// The reveal is already on the wire, so only the server-side draft is dropped here (no
 			// cookie header can follow the body). The orphaned cookie is harmless: any later wizard

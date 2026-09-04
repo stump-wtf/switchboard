@@ -22,7 +22,7 @@ func TestOAuthTokenExpiryClampedToEndpoint(t *testing.T) {
 	// No endpoint expiry: the policy expiry sticks. (Truncated to microseconds — timestamptz
 	// resolution — so the round-trip compares exactly.)
 	policy := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
-	tok, err := s.CreateOAuthToken(ctx, "th-clamp-a", "rh-clamp-a", "cid-tok-1", ep.ID, policy)
+	tok, err := s.CreateOAuthToken(ctx, "th-clamp-a", "rh-clamp-a", "cid-tok-1", ep.ID, "", policy)
 	if err != nil {
 		t.Fatalf("create token: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestOAuthTokenExpiryClampedToEndpoint(t *testing.T) {
 		`UPDATE endpoints SET expires_at = $1 WHERE id = $2`, epExpiry, ep.ID); err != nil {
 		t.Fatalf("set endpoint expiry: %v", err)
 	}
-	tok, err = s.CreateOAuthToken(ctx, "th-clamp-b", "rh-clamp-b", "cid-tok-1", ep.ID, policy)
+	tok, err = s.CreateOAuthToken(ctx, "th-clamp-b", "rh-clamp-b", "cid-tok-1", ep.ID, "", policy)
 	if err != nil {
 		t.Fatalf("create clamped token: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestOAuthTokenIssuanceRefusesDeadEndpoint(t *testing.T) {
 	if err := s.RevokeEndpoint(ctx, ep.ID, h.ID); err != nil {
 		t.Fatalf("revoke endpoint: %v", err)
 	}
-	if _, err := s.CreateOAuthToken(ctx, "th-dead", "rh-dead", "cid-tok-2", ep.ID,
+	if _, err := s.CreateOAuthToken(ctx, "th-dead", "rh-dead", "cid-tok-2", ep.ID, "",
 		time.Now().Add(time.Hour)); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("issuance on revoked endpoint: err = %v, want ErrNotFound", err)
 	}
@@ -78,7 +78,7 @@ func TestEndpointByOAuthToken(t *testing.T) {
 	s, ctx := testStore(t)
 	_, ep := oauthCodeFixture(t, s, ctx, "pocket|tok3", "res-bot", "hash-tok-3", "res-bot-aa03", "cid-tok-3")
 
-	if _, err := s.CreateOAuthToken(ctx, "th-res", "rh-res", "cid-tok-3", ep.ID,
+	if _, err := s.CreateOAuthToken(ctx, "th-res", "rh-res", "cid-tok-3", ep.ID, "",
 		time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("create token: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestOAuthTokenRotation(t *testing.T) {
 	s, ctx := testStore(t)
 	_, ep := oauthCodeFixture(t, s, ctx, "pocket|tok4", "rot-bot", "hash-tok-4", "rot-bot-aa04", "cid-tok-4")
 
-	if _, err := s.CreateOAuthToken(ctx, "th-rot-1", "rh-rot-1", "cid-tok-4", ep.ID,
+	if _, err := s.CreateOAuthToken(ctx, "th-rot-1", "rh-rot-1", "cid-tok-4", ep.ID, "",
 		time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("create token: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestOAuthTokenRotationSingleWinner(t *testing.T) {
 	s, ctx := testStore(t)
 	_, ep := oauthCodeFixture(t, s, ctx, "pocket|tok5", "race-bot", "hash-tok-5", "race-bot-aa05", "cid-tok-5")
 
-	if _, err := s.CreateOAuthToken(ctx, "th-race", "rh-race", "cid-tok-5", ep.ID,
+	if _, err := s.CreateOAuthToken(ctx, "th-race", "rh-race", "cid-tok-5", ep.ID, "",
 		time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("create token: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestRefreshFailsAfterEndpointRevocation(t *testing.T) {
 	s, ctx := testStore(t)
 	h, ep := oauthCodeFixture(t, s, ctx, "pocket|tok6", "rev-bot", "hash-tok-6", "rev-bot-aa06", "cid-tok-6")
 
-	if _, err := s.CreateOAuthToken(ctx, "th-rev", "rh-rev", "cid-tok-6", ep.ID,
+	if _, err := s.CreateOAuthToken(ctx, "th-rev", "rh-rev", "cid-tok-6", ep.ID, "",
 		time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("create token: %v", err)
 	}
@@ -250,11 +250,11 @@ func TestRevokeEndpointCascadesOAuth(t *testing.T) {
 	s, ctx := testStore(t)
 	h, ep := oauthCodeFixture(t, s, ctx, "pocket|tok7", "casc-bot", "hash-tok-7", "casc-bot-aa07", "cid-tok-7")
 
-	if _, err := s.CreateOAuthToken(ctx, "th-casc", "rh-casc", "cid-tok-7", ep.ID,
+	if _, err := s.CreateOAuthToken(ctx, "th-casc", "rh-casc", "cid-tok-7", ep.ID, "",
 		time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("create token: %v", err)
 	}
-	if _, err := s.CreateOAuthCode(ctx, "ch-casc", "cid-tok-7", ep.ID, "chal",
+	if _, err := s.CreateOAuthCode(ctx, "ch-casc", "cid-tok-7", ep.ID, "", "chal",
 		"https://c.example.com/cb", time.Now().Add(5*time.Minute)); err != nil {
 		t.Fatalf("create code: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestExpireEndpointsCascadesOAuth(t *testing.T) {
 	s, ctx := testStore(t)
 	_, ep := oauthCodeFixture(t, s, ctx, "pocket|tok8", "exp-bot", "hash-tok-8", "exp-bot-aa08", "cid-tok-8")
 
-	if _, err := s.CreateOAuthToken(ctx, "th-exp", "rh-exp", "cid-tok-8", ep.ID,
+	if _, err := s.CreateOAuthToken(ctx, "th-exp", "rh-exp", "cid-tok-8", ep.ID, "",
 		time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("create token: %v", err)
 	}

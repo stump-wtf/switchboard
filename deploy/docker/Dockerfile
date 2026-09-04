@@ -20,7 +20,7 @@ FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags "-s -w" -o /out/switchboard ./cmd/switchboard
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/switchboard ./cmd/switchboard
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/switchboard /usr/local/bin/switchboard

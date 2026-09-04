@@ -52,12 +52,24 @@ const (
 	instructions = `Todos routed to you arrive as <channel source="switchboard"> doorbell events ` +
 		`(notifications/claude/channel) on this session's notification stream. The durable todo ` +
 		`queue is the record: a doorbell is only a hint, and a missed push is never a lost todo. ` +
-		`Use list_todos to see work, claim to take a todo (which sets a lease), then complete or fail it. ` +
-		`A2UI surfaces at switchboard://queue/{name}/a2ui and switchboard://todo/{id}/a2ui render ` +
+		`Use list_todos to see work, claim to take a todo (which sets a lease), then complete or fail it.`
+
+	// a2uiInstructions is appended only when the A2UI surface is registered (ADR-0023 flag): the
+	// instructions must never advertise a resource the session cannot read.
+	a2uiInstructions = ` A2UI surfaces at switchboard://queue/{name}/a2ui and switchboard://todo/{id}/a2ui render ` +
 		`the queue and per-todo detail as application/a2ui+json for hosts that support it. Both ` +
 		`accept an optional ?w=N width hint (ignored by these surfaces) so a host may append it ` +
 		`uniformly to any /a2ui URI.`
 )
+
+// sessionInstructions is the instructions block a new session receives: the doorbell contract,
+// plus the A2UI paragraph only while that surface is on.
+func (h *Handler) sessionInstructions() string {
+	if h.a2uiOn() {
+		return instructions + a2uiInstructions
+	}
+	return instructions
+}
 
 // EndpointStore is the slice of the store the auth middleware needs: resolution of BOTH credential
 // shapes — the static sbk_ bearer and the OAuth access token — plus the last-seen stamp. Both
@@ -138,6 +150,11 @@ type Handler struct {
 	// atomically so live sessions never race the install.
 	baseURL atomic.Pointer[string]
 
+	// a2uiEnabled gates the A2UI resource surface (ADR-0023: advanced capabilities are hidden by
+	// default). Nil until SetA2UIEnabled runs, which reads as off. Read at per-session registration
+	// time, so new sessions pick up a flip without racing live ones.
+	a2uiEnabled atomic.Pointer[bool]
+
 	idleTimeout time.Duration
 
 	// mu guards sessions and closed. sessions is the live Streamable HTTP session registry, keyed
@@ -174,6 +191,20 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 	h.wg.Add(1)
 	go h.janitor()
 	return h
+}
+
+// SetA2UIEnabled toggles the A2UI resource surface (ADR-0023: advanced capabilities are hidden by
+// default and a deliberate flag flip brings them back). Registration happens per session at
+// newServer time, so sessions established after the call see the resources; live ones are
+// untouched. Default off.
+func (h *Handler) SetA2UIEnabled(enabled bool) { h.a2uiEnabled.Store(&enabled) }
+
+// a2uiOn reads the gate; nil reads as off.
+func (h *Handler) a2uiOn() bool {
+	if p := h.a2uiEnabled.Load(); p != nil {
+		return *p
+	}
+	return false
 }
 
 // Routes returns the router to mount at /mcp. All Streamable HTTP methods (POST requests,
@@ -355,7 +386,7 @@ func (h *Handler) auth(next http.Handler) http.Handler {
 func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	srv := sdk.NewServer(&sdk.Implementation{Name: serverName, Version: serverVersion}, &sdk.ServerOptions{
 		Logger:       h.log,
-		Instructions: instructions,
+		Instructions: h.sessionInstructions(),
 		Capabilities: &sdk.ServerCapabilities{
 			Tools:        &sdk.ToolCapabilities{ListChanged: true},
 			Experimental: map[string]any{"claude/channel": map[string]any{}},

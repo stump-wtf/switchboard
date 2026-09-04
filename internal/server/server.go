@@ -72,11 +72,12 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Enable the SPEC-0013 Personas view by feature detection: the personas store and the well-known
-	// Agent Card route (registered below) are both wired in this Run, so the capability has landed and
-	// the rail entry + /personas routes come alive. Governing: SPEC-0013 REQ "Personas View"
-	// (capability-gated), design.md "Capability gating for Personas and Friends".
-	webh.SetPersonasEnabled(true)
+	// Enable the SPEC-0013 Personas view only when the capability flag is on (ADR-0023: personas
+	// are an advanced surface, hidden by default — the flag flip brings the rail entry, the
+	// /personas routes, and the vend wizard's persona slot back).
+	// Governing: SPEC-0013 REQ "Personas View" (capability-gated), ADR-0023 REQ "Feature Flags
+	// Hide Advanced Surfaces".
+	webh.SetPersonasEnabled(cfg.PersonasEnabled)
 	// Feed the web SSE hub from committed transitions (process-local publish hooks): todo
 	// lifecycle changes, newly accepted inbound events, and endpoint last-seen stamps become
 	// the SPEC-0013 typed event stream. Best-effort by design: the hub drops on full buffers
@@ -93,6 +94,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// The externally-reachable origin the webhook self-management verbs build ingest URLs from
 	// (SPEC-0006 create_webhook/rotate_webhook return an ingest_url).
 	mcph.SetBaseURL(cfg.BaseURL)
+	// ADR-0023: the A2UI resource surface is an advanced capability — registered on live sessions
+	// only when the flag is on; a default deployment's tools/list and resources/list never show it.
+	mcph.SetA2UIEnabled(cfg.A2UIEnabled)
 	// Same committed-transition publish source as the web SSE hub, one consumer per surface:
 	// the store's doorbell hook fans verified todo creations out to in-scope MCP sessions as
 	// notifications/claude/channel doorbells. Governing: SPEC-0014 REQ "Channels Push over the
@@ -172,6 +176,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 	r := newRouter(routerDeps{
 		st:    st,
+		cfg:   cfg,
 		authr: authr,
 		webh:  webh,
 		ing:   ing,
@@ -185,6 +190,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		ping:    pool.Ping,
 		log:     log,
 	})
+	// (The operator API is mounted inside newRouter — the route table's single owner.)
 
 	// The reaper also enforces vend-time credential lifetimes: an endpoint whose expires_at has
 	// passed is flipped to revoked in the store and its live MCP sessions are torn down through the
@@ -258,6 +264,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 // Run so tests can build the REAL route table (auth grouping included) without a database.
 type routerDeps struct {
 	st      *store.Store
+	cfg     config.Config // capability gates (ADR-0023): personas / A2A / A2UI / API token
 	authr   *auth.Authenticator
 	webh    *web.Handler
 	ing     *ingest.Ingest
@@ -319,7 +326,8 @@ func newRouter(d routerDeps) chi.Router {
 	})
 	r.Post("/dev/todos", d.ing.DevCreateTodo)
 
-	// Public A2A Agent Card endpoint (ADR-0009; SPEC-0009). This is a DELIBERATE public route — the
+	// Public A2A Agent Card endpoint (ADR-0009; SPEC-0009). A2A-flag-gated (ADR-0023: the whole
+	// A2A surface is advanced and hidden unless SWITCHBOARD_A2A=1). This is a DELIBERATE public route — the
 	// only one in the personas capability — registered outside auth.RequireHuman: A2A discovery
 	// requires peers to read a persona's card before any friendship exists, and the card grants
 	// nothing, exposing only owner-approved discovery metadata (name, description, derived skills,
@@ -328,7 +336,9 @@ func newRouter(d routerDeps) chi.Router {
 	// the read-only requirement, with a per-IP throttle and a default-src 'none' CSP set in the
 	// handler. Governing: SPEC-0009 REQ "Well-Known Card Endpoint", REQ "Discoverability Is
 	// Owner-Controlled", "Security Requirements → Authentication / Rate Limiting".
-	r.With(cardRL.middleware).Get("/a/{persona_id}/.well-known/agent-card.json", d.webh.AgentCard)
+	if d.cfg.A2AEnabled {
+		r.With(cardRL.middleware).Get("/a/{persona_id}/.well-known/agent-card.json", d.webh.AgentCard)
+	}
 
 	// OAuth authorization-server surface (ADR-0019; SPEC-0016): RFC 8414 AS metadata, RFC 9728
 	// protected-resource metadata per MCP mount, and RFC 7591 dynamic client registration. All three
@@ -346,6 +356,7 @@ func newRouter(d routerDeps) chi.Router {
 		or.Use(oauthRL.middleware)
 		or.Get(oauthsrv.ASMetadataPath, d.oauth.ASMetadata)
 		or.Get(oauthsrv.ProtectedResourcePrefix+"/mcp/{endpoint}", d.oauth.ProtectedResourceMetadata)
+		or.Get(oauthsrv.ProtectedResourcePrefix+"/api", d.oauth.OperatorResourceMetadata)
 		or.With(maxBytes(64<<10)).Post(oauthsrv.RegisterPath, d.oauth.Register)
 		// The token endpoint (SPEC-0016 REQ "Token Issuance And Refresh") is public like the rest of
 		// the AS surface: clients are public (no client secret), so the proof is PKCE possession on
@@ -359,15 +370,24 @@ func newRouter(d routerDeps) chi.Router {
 	// The handler is Run-wired (doorbell + revocation hooks) and passed in — never constructed here.
 	r.Mount("/mcp", d.mcp.Routes())
 
+	// The operator API (ADR-0023 registration-vends-everything) rides the same OAuth model as
+	// everything else: its bearer is an operator OAuth grant (resource = base + "/api") resolved
+	// to the signed-in human. No static token — the CLI performs the OAuth flow gh-style.
+	// Governing: ADR-0023 REQ "Registration Vends the Whole Happy Path"; ADR-0019.
+	r.Mount("/api/v1", newAPIHandler(d.st, d.cfg.BaseURL, d.log).Routes())
+
 	// Native A2A task RPC surface (ADR-0021; SPEC-0018) mounted per vended endpoint at
-	// /a2a/{endpoint}. It is a SECOND wire protocol over the same authorized relationship the MCP
+	// /a2a/{endpoint}. A2A-flag-gated (ADR-0023): hidden unless SWITCHBOARD_A2A=1. It is a SECOND wire protocol over the same authorized relationship the MCP
 	// surface serves: the same bearer credential, resolved the same way, gates both — an A2A caller
 	// without a valid vended-endpoint credential is rejected identically to an unauthenticated MCP
 	// call. Bearer auth, the 256 KiB body cap, and the security headers all live inside the package's
 	// own middleware stack. Governing: SPEC-0018 REQ "SendMessage Requires a Vended Endpoint".
-	r.Mount("/a2a", d.a2a.Routes())
+	if d.cfg.A2AEnabled {
+		r.Mount("/a2a", d.a2a.Routes())
+	}
 
-	// A2A friend-request intake (ADR-0010; SPEC-0010). Inbound only, and deliberately NOT
+	// A2A friend-request intake (ADR-0010; SPEC-0010). A2A-flag-gated (ADR-0023): hidden unless
+	// SWITCHBOARD_A2A=1. Inbound only, and deliberately NOT
 	// session-authenticated: the request carries the requesting human's OIDC-signed provenance
 	// in-band, and that token IS the credential — missing/invalid provenance → 401 with no pending
 	// edge (SPEC-0010 "Missing or invalid provenance is rejected"). This is why it sits outside the
@@ -379,10 +399,12 @@ func newRouter(d routerDeps) chi.Router {
 	// no per-request SSRF surface. Governing: SPEC-0010 "Security Requirements → Authentication,
 	// Rate Limiting, Request Body Size Limits".
 	friendRL := newRateLimiter(5, 10) // friend requests are low-frequency per source; burst 10
-	r.Group(func(fr chi.Router) {
-		fr.Use(friendRL.middleware, maxBytes(64<<10))
-		fr.Post("/a2a/friend-requests", d.friends.Intake)
-	})
+	if d.cfg.A2AEnabled {
+		r.Group(func(fr chi.Router) {
+			fr.Use(friendRL.middleware, maxBytes(64<<10))
+			fr.Post("/a2a/friend-requests", d.friends.Intake)
+		})
+	}
 
 	// Auth (OIDC RP against Pocket ID; ADR-0011). The login screen is the ONLY public web page
 	// (SPEC-0012 "Security Requirements → Authentication"; REQ "Screen Set and Routes": public GET /login).
@@ -440,6 +462,8 @@ func newRouter(d routerDeps) chi.Router {
 		// lifetime → confirm) — the confirm POST is the mint. POST /endpoints/vend remains the direct
 		// single-form mint path (same executeVend, same validation gates).
 		pr.Get("/endpoints", d.webh.Endpoints)
+		pr.Get("/endpoints/quick", d.webh.QuickVendStart)
+		pr.Post("/endpoints/quick", d.webh.QuickVendSubmit)
 		pr.Get("/endpoints/vend", d.webh.VendStart)
 		pr.Get("/endpoints/vend/persona", d.webh.VendLegacyPersonaRedirect)
 		pr.Get("/endpoints/vend/{step}", d.webh.VendStep)

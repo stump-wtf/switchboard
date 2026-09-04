@@ -255,8 +255,22 @@ func TestInsertBefore(t *testing.T) {
 
 // --- integration tests (real SDK over HTTP) ---
 
-// TestA2UIQueueResourceHappyPath: reading switchboard://queue/{queue}/a2ui returns a valid
-// application/a2ui+json payload listing pending todos.
+// a2uiSession is session() with the A2UI capability flag enabled (ADR-0023 default-off gate):
+// these tests exercise the gated surface, so they flip the flag on the very handler the test
+// server serves, then connect as usual.
+func a2uiSession(t *testing.T, ctx context.Context, f *fakeStore, queues, verbs []string) *sdk.ClientSession {
+	t.Helper()
+	token := vend(t, f, "agent-a-11111111", queues, verbs)
+	ts, h := newTestServerHandler(t, f)
+	h.SetA2UIEnabled(true)
+	cs, err := connect(t, ctx, ts.URL+"/mcp/agent-a-11111111", token)
+	if err != nil {
+		t.Fatalf("initialize handshake: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
+}
+
 func TestA2UIQueueResourceHappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -269,7 +283,7 @@ func TestA2UIQueueResourceHappyPath(t *testing.T) {
 	// A done todo must not appear in the pending-only view.
 	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_3", Queue: "reviews",
 		Title: "Already done", State: "done"})
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	res, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: "switchboard://queue/reviews/a2ui"})
 	if err != nil {
@@ -313,7 +327,7 @@ func TestA2UIResourceWidthHint(t *testing.T) {
 	f := newFakeStore()
 	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_1", Queue: "reviews",
 		Title: "Review PR #42", State: "pending", Payload: []byte(`{"pr":42}`)})
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	for _, uri := range []string{
 		"switchboard://queue/reviews/a2ui?w=120",
@@ -339,7 +353,7 @@ func TestA2UIQueueResourceEmptyQueue(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	res, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: "switchboard://queue/reviews/a2ui"})
 	if err != nil {
@@ -366,7 +380,7 @@ func TestA2UIQueueResourceForbiddenQueue(t *testing.T) {
 	f := newFakeStore()
 	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_1", Queue: "deploys",
 		Title: "deploy", State: "pending"})
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	_, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: "switchboard://queue/deploys/a2ui"})
 	if err == nil {
@@ -391,7 +405,7 @@ func TestA2UITodoResourceHappyPath(t *testing.T) {
 		Owner: "agent:ag-1", LeaseExpiresAt: &lease,
 		Payload: []byte(`{"repo":"switchboard","branch":"main"}`),
 	})
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	res, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: "switchboard://todo/td_99/a2ui"})
 	if err != nil {
@@ -428,7 +442,7 @@ func TestA2UITodoResourceNotFound(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	_, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: "switchboard://todo/nonexistent/a2ui"})
 	if err == nil {
@@ -447,7 +461,7 @@ func TestA2UITodoResourceStoreFailure(t *testing.T) {
 
 	f := newFakeStore()
 	f.failErr = errors.New("db is down")
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	_, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: "switchboard://todo/td_1/a2ui"})
 	if err == nil {
@@ -466,7 +480,7 @@ func TestA2UIResourceNotAdvertisedWithoutScope(t *testing.T) {
 
 	f := newFakeStore()
 	// Vend with only claim scope — no list_todos.
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"claim"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"claim"})
 
 	templates, err := cs.ListResourceTemplates(ctx, nil)
 	if err != nil {
@@ -486,7 +500,7 @@ func TestA2UIResourceAdvertisedWithScope(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	templates, err := cs.ListResourceTemplates(ctx, nil)
 	if err != nil {
@@ -519,7 +533,7 @@ func TestA2UIQueueResourceStoreFailure(t *testing.T) {
 
 	f := newFakeStore()
 	f.failErr = errors.New("db is down")
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	_, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: "switchboard://queue/reviews/a2ui"})
 	if err == nil {
@@ -536,7 +550,7 @@ func TestA2UIInstructionsMentionSurface(t *testing.T) {
 	defer cancel()
 
 	f := newFakeStore()
-	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
+	cs := a2uiSession(t, ctx, f, []string{"reviews"}, []string{"list_todos"})
 
 	init := cs.InitializeResult()
 	if !strings.Contains(init.Instructions, "a2ui") {
@@ -635,4 +649,36 @@ func sliceEq(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestA2UIHiddenWhenFlagOff pins the ADR-0023 default: with the capability flag left off, a session
+// with full list_todos scope sees NO a2ui resource templates, cannot read the a2ui surfaces, and is
+// not told about them in the instructions block — hidden, never half-open or falsely advertised.
+// Governing: ADR-0023 REQ "Feature Flags Hide Advanced Surfaces".
+func TestA2UIHiddenWhenFlagOff(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_1", Queue: "reviews",
+		Title: "Review PR #42", State: "pending"})
+	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos"}) // the flag is never flipped
+
+	templates, err := cs.ListResourceTemplates(ctx, nil)
+	if err != nil {
+		t.Fatalf("list resource templates: %v", err)
+	}
+	for _, rt := range templates.ResourceTemplates {
+		if strings.Contains(rt.URITemplate, "a2ui") {
+			t.Fatalf("A2UI template advertised with the flag off: %s", rt.URITemplate)
+		}
+	}
+	for _, uri := range []string{"switchboard://queue/reviews/a2ui", "switchboard://todo/td_1/a2ui"} {
+		if _, err := cs.ReadResource(ctx, &sdk.ReadResourceParams{URI: uri}); err == nil {
+			t.Fatalf("%s readable with the flag off", uri)
+		}
+	}
+	if init := cs.InitializeResult(); strings.Contains(init.Instructions, "a2ui") {
+		t.Fatalf("instructions advertise A2UI with the flag off: %q", init.Instructions)
+	}
 }

@@ -65,6 +65,10 @@ type a2uiPayload struct {
 // surfaces either, matching the read-parity contract the event-history resource established.
 // Governing: #102, SPEC-0006 REQ "Scope Enforcement at the Boundary".
 func (h *Handler) registerA2UIResources(srv *sdk.Server, ep store.AuthEndpoint) {
+	// ADR-0023: the A2UI surface is an advanced capability, hidden unless the operator flag is on.
+	if !h.a2uiOn() {
+		return
+	}
 	if !hasScope(ep.ScopeVerbs, "list_todos") {
 		return
 	}

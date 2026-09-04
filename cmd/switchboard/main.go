@@ -1,11 +1,22 @@
-// Command switchboard is the entrypoint for the Switchboard service.
+// Command switchboard is the single switchboard binary: the server AND the operator CLI.
 //
-//	switchboard serve     Run the central service: webhooks → verify → durable todo queue,
-//	                      the human web UI (OIDC login + vend), and the vended MCP endpoints
-//	                      served exclusively over Streamable HTTP (ADR-0017; SPEC-0014).
+//	switchboard [serve]    Run the central service: webhooks → verify → durable todo queue,
+//	                       the human web UI (OIDC login + vend), the operator API (/api/v1),
+//	                       and the vended MCP endpoints served exclusively over Streamable
+//	                       HTTP (ADR-0017; SPEC-0014). The default when no command is given;
+//	                       configured entirely from the environment (internal/config).
+//	switchboard login      Sign the operator in to a deployment over OAuth (authorization
+//	                       code + PKCE, loopback redirect — the gh pattern).
+//	switchboard vend       Register an agent and vend its endpoint, queue, and webhook in one call.
+//	switchboard endpoints  List the vended endpoints you own.
+//	switchboard agents     List your registered agents.
+//	switchboard status     Show where you are logged in and whether the credentials are live.
+//	switchboard logout     Forget the local operator credentials.
+//	switchboard version    Print the build version.
 //
-// Agents connect with nothing but the vended URL + bearer credential — there is no local binary,
-// subprocess, or stdio adapter. The design record is the source of truth:
+// Agents connect with nothing but the vended URL + bearer credential — there is no local
+// subprocess or stdio adapter. The operator CLI shares the same OAuth model as everything else
+// (ADR-0019/ADR-0023). The design record is the source of truth:
 // https://switchboard.stump.wtf/docs/
 package main
 
@@ -15,29 +26,31 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/server"
 )
 
-func main() {
-	cmd := "serve"
-	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		cmd = os.Args[1]
-	}
+// version is stamped at build time (go build -ldflags "-X main.version=…"); "dev" otherwise.
+var version = "dev"
 
-	switch cmd {
-	case "serve":
-		runServe()
-	default:
-		fmt.Fprintf(os.Stderr, "usage: switchboard [serve]\n")
-		os.Exit(2)
-	}
+func main() {
+	os.Exit(newCLI().run(os.Args[1:]))
 }
 
-func runServe() {
+// runServe runs the service. It takes no flags: configuration comes from the environment, so the
+// only arguments it honors are the help spellings.
+func runServe(c *cli, args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "-h", "--help", "help":
+			fmt.Fprint(c.stdout, serveUsage)
+			return exitOK
+		}
+		fmt.Fprintf(c.stderr, "switchboard serve: unexpected argument %q\n\n%s", args[0], serveUsage)
+		return exitUsage
+	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	cfg := config.FromEnv()
 
@@ -46,6 +59,15 @@ func runServe() {
 
 	if err := server.Run(ctx, cfg, log); err != nil {
 		log.Error("serve", "err", err)
-		os.Exit(1)
+		return exitFailure
 	}
+	return exitOK
 }
+
+const serveUsage = `usage: switchboard serve
+
+Run the switchboard service. serve takes no flags: every setting comes from
+the environment (SWITCHBOARD_DATABASE_URL, SWITCHBOARD_BASE_URL,
+SWITCHBOARD_ADDR, the SWITCHBOARD_OIDC_* client, the capability flags, …).
+See https://switchboard.stump.wtf/docs/ for the full list.
+`

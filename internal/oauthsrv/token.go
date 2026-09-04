@@ -42,7 +42,7 @@ const (
 // *store.Store satisfies it; tests substitute a fake.
 type TokenStore interface {
 	RedeemOAuthCode(ctx context.Context, codeHash string) (store.OAuthCode, error)
-	CreateOAuthToken(ctx context.Context, tokenHash, refreshHash, clientID, endpointID string, desiredExpiry time.Time) (store.OAuthToken, error)
+	CreateOAuthToken(ctx context.Context, tokenHash, refreshHash, clientID, endpointID, humanID string, desiredExpiry time.Time) (store.OAuthToken, error)
 	RotateOAuthToken(ctx context.Context, refreshHash, clientID, newTokenHash, newRefreshHash string, desiredExpiry time.Time) (store.OAuthToken, error)
 }
 
@@ -184,7 +184,7 @@ func (h *Handler) exchangeCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.issue(w, r, func(accessHash, refreshHash string) (store.OAuthToken, error) {
-		return h.tokens.CreateOAuthToken(r.Context(), accessHash, refreshHash, c.ClientID, c.EndpointID,
+		return h.tokens.CreateOAuthToken(r.Context(), accessHash, refreshHash, c.ClientID, c.EndpointID, c.HumanID,
 			time.Now().Add(AccessTokenTTL))
 	})
 }

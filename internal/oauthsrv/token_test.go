@@ -43,6 +43,7 @@ type fakeToken struct {
 	accessHash string
 	clientID   string
 	endpointID string
+	humanID    string
 	revoked    bool
 }
 
@@ -68,13 +69,13 @@ func (f *fakeTokenStore) RedeemOAuthCode(_ context.Context, codeHash string) (st
 	return *c, nil
 }
 
-func (f *fakeTokenStore) CreateOAuthToken(_ context.Context, tokenHash, refreshHash, clientID, endpointID string, desiredExpiry time.Time) (store.OAuthToken, error) {
+func (f *fakeTokenStore) CreateOAuthToken(_ context.Context, tokenHash, refreshHash, clientID, endpointID, humanID string, desiredExpiry time.Time) (store.OAuthToken, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.createLocked(tokenHash, refreshHash, clientID, endpointID, desiredExpiry)
+	return f.createLocked(tokenHash, refreshHash, clientID, endpointID, humanID, desiredExpiry)
 }
 
-func (f *fakeTokenStore) createLocked(tokenHash, refreshHash, clientID, endpointID string, desiredExpiry time.Time) (store.OAuthToken, error) {
+func (f *fakeTokenStore) createLocked(tokenHash, refreshHash, clientID, endpointID, humanID string, desiredExpiry time.Time) (store.OAuthToken, error) {
 	if endpointID != f.endpoint || f.endpoint == "" {
 		return store.OAuthToken{}, store.ErrNotFound
 	}
@@ -83,7 +84,7 @@ func (f *fakeTokenStore) createLocked(tokenHash, refreshHash, clientID, endpoint
 		expires = *f.epExpiry
 	}
 	f.tokens[refreshHash] = fakeToken{accessHash: tokenHash, clientID: clientID, endpointID: endpointID}
-	return store.OAuthToken{ID: "tok-" + refreshHash[:8], ClientID: clientID, EndpointID: endpointID,
+	return store.OAuthToken{ID: "tok-" + refreshHash[:8], ClientID: clientID, EndpointID: endpointID, HumanID: humanID,
 		ExpiresAt: expires, CreatedAt: time.Now()}, nil
 }
 
@@ -96,7 +97,7 @@ func (f *fakeTokenStore) RotateOAuthToken(_ context.Context, refreshHash, client
 	}
 	t.revoked = true
 	f.tokens[refreshHash] = t
-	return f.createLocked(newTokenHash, newRefreshHash, clientID, t.endpointID, desiredExpiry)
+	return f.createLocked(newTokenHash, newRefreshHash, clientID, t.endpointID, t.humanID, desiredExpiry)
 }
 
 // unusedClientStore panics on any use: token-endpoint tests must never reach registration.

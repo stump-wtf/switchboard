@@ -1,8 +1,11 @@
 # switchboard — local dev entry points. `make ci` runs the gate you can reproduce before a PR.
 .PHONY: build run fmt vet lint test tidy ci
 
+# The build version `switchboard version` reports: the git describe, or VERSION=… on the make line.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 build:  ## Compile the switchboard binary (assets embedded)
-	go build -o bin/switchboard ./cmd/switchboard
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/switchboard ./cmd/switchboard
 
 run: build  ## Build and run
 	./bin/switchboard

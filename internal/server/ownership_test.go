@@ -27,6 +27,7 @@ import (
 	"github.com/joestump/switchboard/internal/config"
 	"github.com/joestump/switchboard/internal/db"
 	"github.com/joestump/switchboard/internal/ingest"
+	"github.com/joestump/switchboard/internal/oauthsrv"
 	"github.com/joestump/switchboard/internal/store"
 	"github.com/joestump/switchboard/internal/web"
 )
@@ -100,7 +101,9 @@ func newDBRouterOpts(t *testing.T, withReceiverEndpoint bool) (chi.Router, *stor
 	}
 	st := store.New(pool)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := config.Config{BaseURL: "https://sb.example.com"}
+	// The DB-backed suites exercise the personas + A2A advanced surfaces, so they opt into the
+	// ADR-0023 capability flags explicitly (the production default is off).
+	cfg := config.Config{BaseURL: "https://sb.example.com", PersonasEnabled: true, A2AEnabled: true}
 	authr, err := auth.New(ctx, cfg, st, log)
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
@@ -124,9 +127,13 @@ func newDBRouterOpts(t *testing.T, withReceiverEndpoint bool) (chi.Router, *stor
 
 	hub := ingest.NewHub()
 	r := newRouter(routerDeps{
+		cfg:   cfg,
 		st:    st,
 		authr: authr,
 		webh:  webh,
+		// The AS surface (token endpoint included) is part of the real route table: the operator
+		// grant tests exchange codes and rotate refresh tokens through it.
+		oauth: oauthsrv.New(st, cfg.BaseURL, log),
 		ing:   ingest.New(st, hub, log, ingest.Config{LegacyEndpointID: legacyEP.ID}),
 		ping:  pool.Ping,
 		log:   log,

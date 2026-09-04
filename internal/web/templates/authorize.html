@@ -26,8 +26,13 @@
 <section class="sb-wiz sb-oauth" data-sb-oauth-consent aria-label="Authorize access">
   <div class="sb-oauth__bars" aria-hidden="true"><span></span><span></span><span></span></div>
   <h2 class="sb-oauth__title">authorize access</h2>
+  {{if $a.Operator}}
+  <p class="sb-oauth__ask"><strong data-sb-oauth-client>{{$a.ClientName}}</strong> wants to act as you on
+    your switchboard workspace</p>
+  {{else}}
   <p class="sb-oauth__ask"><strong data-sb-oauth-client>{{$a.ClientName}}</strong> wants to connect to
     your switchboard workspace over MCP</p>
+  {{end}}
   <p class="sb-oauth__principal" data-sb-oauth-principal>
     <span class="sb-avatar sb-oauth__avatar" aria-hidden="true">{{$a.Initials}}</span>
     <span>{{$a.Principal}}</span>
@@ -35,11 +40,19 @@
 
   <dl class="sb-wiz__summary sb-oauth__binding">
     <div class="sb-epcard__row"><dt class="sb-microlabel">Workspace</dt><dd data-sb-oauth-workspace>{{$a.Workspace}}</dd></div>
+    {{if $a.Operator}}
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Grant</dt><dd data-sb-oauth-endpoint>operator · {{$a.Principal}}</dd></div>
+    {{else}}
     <div class="sb-epcard__row"><dt class="sb-microlabel">Endpoint</dt><dd data-sb-oauth-endpoint>{{$a.AgentName}} · <code class="sb-code">/mcp/{{$a.Slug}}</code></dd></div>
+    {{end}}
   </dl>
 
   <div class="sb-oauth__scope" data-sb-oauth-scope>
+    {{if $a.Operator}}
+    <p class="sb-microlabel">this will allow the client to</p>
+    {{else}}
     <p class="sb-microlabel">this will allow the agent to</p>
+    {{end}}
     <ul class="sb-oauth__bullets">
       {{range $a.Bullets}}<li class="sb-oauth__bullet" data-sb-oauth-bullet><span class="sb-oauth__check" aria-hidden="true">✓</span> {{.}}</li>{{end}}
     </ul>
@@ -55,6 +68,7 @@
     <input type="hidden" name="redirect_uri" value="{{$a.RedirectURI}}">
     <input type="hidden" name="state" value="{{$a.State}}">
     <input type="hidden" name="code_challenge" value="{{$a.CodeChallenge}}">
+    <input type="hidden" name="resource" value="{{$a.Resource}}">
     <input type="hidden" name="endpoint" value="{{$a.Slug}}">
     <div class="sb-vend__foot">
       <button type="submit" name="decision" value="deny" class="sb-btn sb-btn--secondary" data-sb-oauth-deny>Deny</button>

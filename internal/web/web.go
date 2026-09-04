@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -26,6 +25,7 @@ import (
 	switchboard "github.com/joestump/switchboard"
 	"github.com/joestump/switchboard/internal/auth"
 	"github.com/joestump/switchboard/internal/config"
+	"github.com/joestump/switchboard/internal/mcp"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -36,7 +36,7 @@ var tmplFS embed.FS
 // Startup parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
 // "Application Shell And Navigation" (providers joins the IA).
-var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "providers", "authorize", "connect"}
+var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "quickvend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "providers", "authorize", "connect"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -189,6 +189,7 @@ type view struct {
 	PersonasEnabled bool               // gates the persona chip on cards + the wizard's persona step select
 	Reveal          *revealView        // set on a successful vend to render the one-time credential reveal inline
 	Vend            *vendStepView      // the active vend-wizard step page (templates/vend.html)
+	Quick           *quickVendView     // the one-step quick-vend page (templates/quickvend.html; ADR-0023)
 	RevokeConfirm   *revokeConfirmView // the revoke confirm page (templates/revoke.html)
 
 	// Personas view + wizard (SPEC-0015 REQ "Personas View And Wizard"): cards, and the active
@@ -667,32 +668,21 @@ func providerTag(source string) string {
 // Governing: SPEC-0014 REQ "HTTP Wiring Is the Only Wiring" (scenario "Vend reveal shows HTTP
 // wiring"), SPEC-0012 REQ "Vend Flow and One-Time Credential Reveal".
 func buildMCPJSON(baseURL, slug, token string) string {
-	mcpURL := mcpEndpointURL(baseURL, slug)
-	m := map[string]any{"mcpServers": map[string]any{"switchboard": map[string]any{
-		"type":    "http",
-		"url":     mcpURL,
-		"headers": map[string]string{"Authorization": "Bearer " + token},
-	}}}
-	b, _ := json.MarshalIndent(m, "", "  ")
-	return string(b)
+	return mcp.ClientConfigJSON(baseURL, slug, token)
 }
 
 // buildMCPJSONURLOnly renders the URL-only .mcp.json variant the reveal offers for OAuth-capable
 // clients: same Streamable-HTTP endpoint, no embedded credential — the client discovers the
 // authorization server from the endpoint's RFC 9728 metadata and signs the human in through the
 // OAuth flow instead of carrying a static bearer. Governing: SPEC-0015 REQ "Endpoints View And
-// Vend Wizard" (URL-only variant), SPEC-0016 (protected-resource discovery), ADR-0019.
+// Vend Wizard", SPEC-0016. Both renderers live in internal/mcp so the operator API's vend response
+// (ADR-0023) carries byte-identical wiring.
 func buildMCPJSONURLOnly(baseURL, slug string) string {
-	m := map[string]any{"mcpServers": map[string]any{"switchboard": map[string]any{
-		"type": "http",
-		"url":  mcpEndpointURL(baseURL, slug),
-	}}}
-	b, _ := json.MarshalIndent(m, "", "  ")
-	return string(b)
+	return mcp.ClientConfigJSONURLOnly(baseURL, slug)
 }
 
 // mcpEndpointURL is the minted endpoint's Streamable-HTTP URL — the same value the reveal shows as
 // its standalone "MCP endpoint URL" field and embeds in the .mcp.json wiring (SPEC-0014).
 func mcpEndpointURL(baseURL, slug string) string {
-	return strings.TrimRight(baseURL, "/") + "/mcp/" + slug
+	return mcp.EndpointURL(baseURL, slug)
 }

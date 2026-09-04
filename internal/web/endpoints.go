@@ -259,7 +259,7 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 			webhookMax = n
 		}
 	}
-	h.executeVend(w, r, &human, vendSubmission{
+	h.executeVendOn(w, r, &human, vendSubmission{
 		Name:               strings.TrimSpace(r.FormValue("name")),
 		PersonaID:          personaID,
 		Queues:             multiValues(r, "queues"),
@@ -268,7 +268,7 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 		WebhookMax:         webhookMax,
 		WebhookSourceTypes: multiValues(r, "webhook_source_types"),
 		WebhookQueues:      multiValues(r, "webhook_queues"),
-	})
+	}, "endpoints")
 }
 
 // executeVend is the one mint path: it validates the submission (scope gate + lifetime BEFORE any
@@ -278,7 +278,9 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 // that answer alone, so a failed confirm never destroys the operator's entered state).
 // Governing: SPEC-0007 (scope validation, hash at rest), SPEC-0016 REQ "Credential Lifetime",
 // SPEC-0014 (HTTP wiring reveal).
-func (h *Handler) executeVend(w http.ResponseWriter, r *http.Request, human *store.Human, sub vendSubmission) bool {
+// executeVendOn is executeVend with the caller choosing the page the mint renders on: the
+// Endpoints view (the wizard and the direct POST) or the one-step quick-vend page.
+func (h *Handler) executeVendOn(w http.ResponseWriter, r *http.Request, human *store.Human, sub vendSubmission, renderOn string) bool {
 	// Scope validation is a hard gate: no name, no queue, or no verb → reject before minting anything.
 	if sub.Name == "" || len(sub.Queues) == 0 || len(sub.Verbs) == 0 {
 		http.Error(w, "name, at least one queue, and at least one verb are required", http.StatusBadRequest)
@@ -348,7 +350,7 @@ func (h *Handler) executeVend(w http.ResponseWriter, r *http.Request, human *sto
 	if sh.DBConnected {
 		cards = h.endpointCards(r, human)
 	}
-	h.render(w, "endpoints", view{
+	h.render(w, renderOn, view{
 		Title: "Endpoint vended", Human: human, CSRF: auth.CSRFFromContext(r.Context()),
 		Shell: sh, EndpointCards: cards, PersonasEnabled: h.personasEnabled,
 		Reveal: &reveal,

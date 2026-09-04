@@ -168,7 +168,7 @@ func TestAgentCardHidesNonDiscoverableAndUnknown(t *testing.T) {
 // TestAgentCardIsReadOnly: a state-changing method against the card path is rejected (405), since the
 // route is registered GET-only. Governing: SPEC-0009 REQ "Well-Known Card Endpoint" (read-only).
 func TestAgentCardIsReadOnly(t *testing.T) {
-	r := newTestRouter(t) // no DB needed: the router rejects the method before any handler runs
+	r := newTestRouterA2A(t) // no DB needed: the router rejects the method before any handler runs
 	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, httptest.NewRequest(m, cardPath("00000000-0000-0000-0000-000000000000"), nil))

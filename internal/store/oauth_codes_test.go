@@ -41,7 +41,7 @@ func TestOAuthCodeSingleUse(t *testing.T) {
 	s, ctx := testStore(t)
 	_, ep := oauthCodeFixture(t, s, ctx, "pocket|code1", "code-bot", "hash-code-1", "code-bot-aa11", "cid-code-1")
 
-	created, err := s.CreateOAuthCode(ctx, "codehash-1", "cid-code-1", ep.ID, "challenge-1",
+	created, err := s.CreateOAuthCode(ctx, "codehash-1", "cid-code-1", ep.ID, "", "challenge-1",
 		"https://c.example.com/cb", time.Now().Add(5*time.Minute))
 	if err != nil {
 		t.Fatalf("create code: %v", err)
@@ -74,7 +74,7 @@ func TestOAuthCodeReplayRevokesTokens(t *testing.T) {
 	s, ctx := testStore(t)
 	_, ep := oauthCodeFixture(t, s, ctx, "pocket|code2", "replay-bot", "hash-code-2", "replay-bot-bb22", "cid-code-2")
 
-	if _, err := s.CreateOAuthCode(ctx, "codehash-2", "cid-code-2", ep.ID, "chal",
+	if _, err := s.CreateOAuthCode(ctx, "codehash-2", "cid-code-2", ep.ID, "", "chal",
 		"https://c.example.com/cb", time.Now().Add(5*time.Minute)); err != nil {
 		t.Fatalf("create code: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestOAuthCodeExpiryAndUnknown(t *testing.T) {
 	s, ctx := testStore(t)
 	_, ep := oauthCodeFixture(t, s, ctx, "pocket|code3", "stale-bot", "hash-code-3", "stale-bot-cc33", "cid-code-3")
 
-	if _, err := s.CreateOAuthCode(ctx, "codehash-3", "cid-code-3", ep.ID, "chal",
+	if _, err := s.CreateOAuthCode(ctx, "codehash-3", "cid-code-3", ep.ID, "", "chal",
 		"https://c.example.com/cb", time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("create code: %v", err)
 	}

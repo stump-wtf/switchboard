@@ -78,7 +78,8 @@ func (s *Store) OAuthClientByClientID(ctx context.Context, clientID string) (OAu
 type OAuthCode struct {
 	ID            string
 	ClientID      string
-	EndpointID    string
+	EndpointID    string // set on an agent grant (the MCP shape); HumanID is empty
+	HumanID       string // set on an operator grant (the CLI/API shape); EndpointID is empty
 	PKCEChallenge string
 	RedirectURI   string
 	ExpiresAt     time.Time
@@ -113,15 +114,17 @@ func (s *Store) EndpointBySlugOwned(ctx context.Context, slug, ownerHumanID stri
 
 // CreateOAuthCode persists an approved consent as a single-use authorization code row. The caller
 // (the consent POST) mints the plaintext and hands over only its hash; expiry is fixed at write
-// time so a code can never be extended after the human said yes.
-func (s *Store) CreateOAuthCode(ctx context.Context, codeHash, clientID, endpointID, pkceChallenge, redirectURI string, expiresAt time.Time) (OAuthCode, error) {
+// time so a code can never be extended after the human said yes. The grant binds to exactly one
+// principal: endpointID for an agent grant (the MCP shape) or humanID for an operator grant (the
+// CLI/API shape) — the caller sets exactly one, mirroring the schema's CHECK constraint.
+func (s *Store) CreateOAuthCode(ctx context.Context, codeHash, clientID, endpointID, humanID, pkceChallenge, redirectURI string, expiresAt time.Time) (OAuthCode, error) {
 	var c OAuthCode
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO oauth_codes (code_hash, client_id, endpoint_id, pkce_challenge, redirect_uri, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id::text, client_id, endpoint_id::text, pkce_challenge, redirect_uri, expires_at, used_at`,
-		codeHash, clientID, endpointID, pkceChallenge, redirectURI, expiresAt,
-	).Scan(&c.ID, &c.ClientID, &c.EndpointID, &c.PKCEChallenge, &c.RedirectURI, &c.ExpiresAt, &c.UsedAt)
+		INSERT INTO oauth_codes (code_hash, client_id, endpoint_id, human_id, pkce_challenge, redirect_uri, expires_at)
+		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7)
+		RETURNING id::text, client_id, COALESCE(endpoint_id::text, ''), COALESCE(human_id::text, ''), pkce_challenge, redirect_uri, expires_at, used_at`,
+		codeHash, clientID, endpointID, humanID, pkceChallenge, redirectURI, expiresAt,
+	).Scan(&c.ID, &c.ClientID, &c.EndpointID, &c.HumanID, &c.PKCEChallenge, &c.RedirectURI, &c.ExpiresAt, &c.UsedAt)
 	if err != nil {
 		return OAuthCode{}, fmt.Errorf("store: create oauth code: %w", err)
 	}
@@ -154,9 +157,9 @@ func (s *Store) RedeemOAuthCode(ctx context.Context, codeHash string) (OAuthCode
 	err = tx.QueryRow(ctx, `
 		UPDATE oauth_codes SET used_at = now()
 		WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()
-		RETURNING id::text, client_id, endpoint_id::text, pkce_challenge, redirect_uri, expires_at, used_at`,
+		RETURNING id::text, client_id, COALESCE(endpoint_id::text, ''), COALESCE(human_id::text, ''), pkce_challenge, redirect_uri, expires_at, used_at`,
 		codeHash,
-	).Scan(&c.ID, &c.ClientID, &c.EndpointID, &c.PKCEChallenge, &c.RedirectURI, &c.ExpiresAt, &c.UsedAt)
+	).Scan(&c.ID, &c.ClientID, &c.EndpointID, &c.HumanID, &c.PKCEChallenge, &c.RedirectURI, &c.ExpiresAt, &c.UsedAt)
 	if err == nil {
 		if err := tx.Commit(ctx); err != nil {
 			return OAuthCode{}, fmt.Errorf("store: redeem code commit: %w", err)
@@ -169,12 +172,13 @@ func (s *Store) RedeemOAuthCode(ctx context.Context, codeHash string) (OAuthCode
 
 	// No spendable row. Distinguish replay (row exists, already used) from unknown/expired, and on
 	// replay revoke the grant's tokens before reporting it.
-	var clientID, endpointID string
+	var clientID, endpointID, humanID string
 	var usedAt *time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT client_id, endpoint_id::text, used_at FROM oauth_codes WHERE code_hash = $1`,
+		SELECT client_id, COALESCE(endpoint_id::text, ''), COALESCE(human_id::text, ''), used_at
+		FROM oauth_codes WHERE code_hash = $1`,
 		codeHash,
-	).Scan(&clientID, &endpointID, &usedAt)
+	).Scan(&clientID, &endpointID, &humanID, &usedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OAuthCode{}, ErrNotFound
 	}
@@ -187,8 +191,10 @@ func (s *Store) RedeemOAuthCode(ctx context.Context, codeHash string) (OAuthCode
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE oauth_tokens SET revoked_at = now()
-		WHERE client_id = $1 AND endpoint_id = $2 AND revoked_at IS NULL`,
-		clientID, endpointID); err != nil {
+		WHERE client_id = $1
+		  AND COALESCE(endpoint_id::text, '') = $2 AND COALESCE(human_id::text, '') = $3
+		  AND revoked_at IS NULL`,
+		clientID, endpointID, humanID); err != nil {
 		return OAuthCode{}, fmt.Errorf("store: revoke replayed grant: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

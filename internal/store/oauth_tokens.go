@@ -25,35 +25,43 @@ import (
 type OAuthToken struct {
 	ID         string
 	ClientID   string
-	EndpointID string
+	EndpointID string // set on an agent grant; HumanID is empty
+	HumanID    string // set on an operator grant; EndpointID is empty
 	ExpiresAt  time.Time
 	CreatedAt  time.Time
 }
 
-// CreateOAuthToken mints a token row for a LIVE endpoint, clamping the access expiry to the
-// endpoint's own expires_at in the same statement — the endpoint read, the clamp, and the insert
-// are one atomic write, so a revoke racing the exchange can never produce a token that outlives
-// its endpoint. desiredExpiry is the token-endpoint policy expiry (now + access TTL); the stored
-// expiry is min(desiredExpiry, endpoints.expires_at). A dead endpoint (revoked, expired, or
-// deleted) inserts nothing and reports ErrNotFound. Governing: SPEC-0016 REQ "Token Issuance And
-// Refresh" ("Access tokens SHALL carry an expiry no later than the endpoint's own expiry").
-func (s *Store) CreateOAuthToken(ctx context.Context, tokenHash, refreshHash, clientID, endpointID string, desiredExpiry time.Time) (OAuthToken, error) {
-	return createOAuthToken(ctx, s.pool, tokenHash, refreshHash, clientID, endpointID, desiredExpiry)
+// CreateOAuthToken mints a token row. An agent grant (endpointID set) clamps the access expiry to
+// the endpoint's own expires_at in the same statement — the endpoint read, the clamp, and the
+// insert are one atomic write, so a revoke racing the exchange can never produce a token that
+// outlives its endpoint, and a dead endpoint inserts nothing (ErrNotFound). An operator grant
+// (humanID set) clamps nothing: the human is the principal and the grant lives until revoked.
+// desiredExpiry is the token-endpoint policy expiry (now + access TTL). Governing: SPEC-0016 REQ
+// "Token Issuance And Refresh" ("Access tokens SHALL carry an expiry no later than the endpoint's
+// own expiry").
+func (s *Store) CreateOAuthToken(ctx context.Context, tokenHash, refreshHash, clientID, endpointID, humanID string, desiredExpiry time.Time) (OAuthToken, error) {
+	return createOAuthToken(ctx, s.pool, tokenHash, refreshHash, clientID, endpointID, humanID, desiredExpiry)
 }
 
 // createOAuthToken is the querier-based core of CreateOAuthToken, shared with the refresh
-// rotation so the mint runs inside the rotation's transaction.
-func createOAuthToken(ctx context.Context, q querier, tokenHash, refreshHash, clientID, endpointID string, desiredExpiry time.Time) (OAuthToken, error) {
+// rotation so the mint runs inside the rotation's transaction. Exactly one of endpointID/humanID
+// is non-empty; the UNION's other branch matches no row, so the insert resolves to one principal
+// row — the schema's num_nonnulls CHECK is the backstop.
+func createOAuthToken(ctx context.Context, q querier, tokenHash, refreshHash, clientID, endpointID, humanID string, desiredExpiry time.Time) (OAuthToken, error) {
 	var tok OAuthToken
 	err := q.QueryRow(ctx, `
-		INSERT INTO oauth_tokens (token_hash, refresh_hash, client_id, endpoint_id, expires_at)
-		SELECT $1, $2, $3, e.id, LEAST($4::timestamptz, COALESCE(e.expires_at, $4::timestamptz))
+		INSERT INTO oauth_tokens (token_hash, refresh_hash, client_id, endpoint_id, human_id, expires_at)
+		SELECT $1, $2, $3, e.id, NULL::uuid, LEAST($4::timestamptz, COALESCE(e.expires_at, $4::timestamptz))
 		FROM endpoints e
-		WHERE e.id = $5 AND e.state = 'active'
+		WHERE $5 = '' AND e.id = NULLIF($6, '')::uuid AND e.state = 'active'
 		  AND (e.expires_at IS NULL OR e.expires_at > now())
-		RETURNING id::text, client_id, endpoint_id::text, expires_at, created_at`,
-		tokenHash, refreshHash, clientID, desiredExpiry, endpointID,
-	).Scan(&tok.ID, &tok.ClientID, &tok.EndpointID, &tok.ExpiresAt, &tok.CreatedAt)
+		UNION ALL
+		SELECT $1, $2, $3, NULL::uuid, hu.id, $4::timestamptz
+		FROM humans hu
+		WHERE $6 = '' AND hu.id = NULLIF($5, '')::uuid
+		RETURNING id::text, client_id, COALESCE(endpoint_id::text, ''), COALESCE(human_id::text, ''), expires_at, created_at`,
+		tokenHash, refreshHash, clientID, desiredExpiry, humanID, endpointID,
+	).Scan(&tok.ID, &tok.ClientID, &tok.EndpointID, &tok.HumanID, &tok.ExpiresAt, &tok.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OAuthToken{}, ErrNotFound
 	}
@@ -79,13 +87,13 @@ func (s *Store) RotateOAuthToken(ctx context.Context, refreshHash, clientID, new
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
-	var endpointID string
+	var endpointID, humanID string
 	err = tx.QueryRow(ctx, `
 		UPDATE oauth_tokens SET revoked_at = now()
 		WHERE refresh_hash = $1 AND client_id = $2 AND revoked_at IS NULL
-		RETURNING endpoint_id::text`,
+		RETURNING COALESCE(endpoint_id::text, ''), COALESCE(human_id::text, '')`,
 		refreshHash, clientID,
-	).Scan(&endpointID)
+	).Scan(&endpointID, &humanID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Unknown, already rotated, or another client's refresh — uniformly not found, nothing spent.
 		return OAuthToken{}, ErrNotFound
@@ -94,7 +102,7 @@ func (s *Store) RotateOAuthToken(ctx context.Context, refreshHash, clientID, new
 		return OAuthToken{}, fmt.Errorf("store: rotate token revoke: %w", err)
 	}
 
-	tok, err := createOAuthToken(ctx, tx, newTokenHash, newRefreshHash, clientID, endpointID, desiredExpiry)
+	tok, err := createOAuthToken(ctx, tx, newTokenHash, newRefreshHash, clientID, endpointID, humanID, desiredExpiry)
 	if errors.Is(err, ErrNotFound) {
 		// Endpoint dead: commit the revocation of the presented pair (refresh cannot recover
 		// access, and the spent token must not remain presentable), then refuse the grant.
@@ -139,6 +147,35 @@ func (s *Store) EndpointByOAuthToken(ctx context.Context, tokenHash string) (Aut
 		return AuthEndpoint{}, fmt.Errorf("store: endpoint by oauth token: %w", err)
 	}
 	return a, nil
+}
+
+// HumanByOAuthToken resolves the human principal from a presented operator-grant access-token
+// hash — the /api/v1 bearer resolution for tokens minted by an operator OAuth grant (the CLI's
+// login, ADR-0023). Requires a live token (unexpired, unrevoked), stamping last_used_at in the
+// same statement; every failure mode is uniformly ErrNotFound. Endpoint-bound tokens do not
+// resolve here — the operator API is a human surface, never an agent one. Governing: ADR-0019
+// (same token model), ADR-0023 (operator API rides it).
+func (s *Store) HumanByOAuthToken(ctx context.Context, tokenHash string) (Human, error) {
+	if s == nil || s.pool == nil {
+		// A nil-backed Store (route-table tests) resolves nothing — fail closed.
+		return Human{}, ErrNotFound
+	}
+	var h Human
+	err := s.pool.QueryRow(ctx, `
+		UPDATE oauth_tokens t SET last_used_at = now()
+		FROM humans hu
+		WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND t.expires_at > now()
+		  AND hu.id = t.human_id
+		RETURNING hu.id::text, hu.oidc_subject, hu.display_name, hu.email, hu.created_at`,
+		tokenHash,
+	).Scan(&h.ID, &h.OIDCSubject, &h.DisplayName, &h.Email, &h.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Human{}, ErrNotFound
+	}
+	if err != nil {
+		return Human{}, fmt.Errorf("store: human by oauth token: %w", err)
+	}
+	return h, nil
 }
 
 // revokeEndpointOAuth is the OAuth half of the revocation cascade, run inside the SAME transaction

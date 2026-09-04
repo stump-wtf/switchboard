@@ -10,9 +10,13 @@
     <h1 class="sb-page-title">vended mcp endpoints</h1>
     <p class="sb-tagline">humans are the accountable principals · each endpoint is a scoped, revocable capability · revoke = kill the endpoint</p>
   </div>
-  {{/* Wizard launcher: a plain link — the wizard is routed pages with server-side state, so there
-       is nothing to progressively enhance here (SPEC-0015 REQ "Wizard Interaction Pattern"). */}}
-  <a class="sb-btn sb-vend-open" href="/endpoints/vend">+ vend endpoint</a>
+  {{/* Launchers: plain links — the wizard is routed pages with server-side state, and the
+       one-step quick vend (ADR-0023) is a single form, so there is nothing to progressively
+       enhance here (SPEC-0015 REQ "Wizard Interaction Pattern"). */}}
+  <div class="sb-page-head__actions">
+    <a class="sb-btn sb-btn--secondary sb-vend-open" href="/endpoints/quick" data-sb-quickvend-open>quick vend</a>
+    <a class="sb-btn sb-vend-open" href="/endpoints/vend">+ vend endpoint</a>
+  </div>
 </div>
 
 {{if .Reveal}}<div class="sb-card sb-reveal-inline">{{template "vend_reveal" .Reveal}}</div>{{end}}

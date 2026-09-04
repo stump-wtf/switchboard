@@ -93,6 +93,7 @@ func friendRouter(t *testing.T, fs friendIntakeStore, v provenanceVerifier) chi.
 	mcph := mcpsrv.New(st, log)
 	t.Cleanup(mcph.Close)
 	return newRouter(routerDeps{
+		cfg:     config.Config{A2AEnabled: true},
 		st:      st,
 		authr:   authr,
 		webh:    webh,

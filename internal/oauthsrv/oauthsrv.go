@@ -149,6 +149,19 @@ func (h *Handler) ProtectedResourceMetadata(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// OperatorResourceMetadata serves the RFC 9728 document for the operator API resource
+// (<base>/api): the discovery pointer the CLI (cmd/switchboard) reads to find the authorization
+// server for its gh-style login (ADR-0023). Static like its MCP-mount sibling — no store lookup.
+func (h *Handler) OperatorResourceMetadata(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"resource":                 h.base + "/api",
+		"authorization_servers":    []string{h.base},
+		"bearer_methods_supported": []string{"header"},
+		"resource_name":            "switchboard operator API",
+		"scopes_supported":         []string{"operator"},
+	})
+}
+
 // registerRequest is the RFC 7591 client-metadata subset switchboard honors. Unknown members are
 // ignored per the RFC; members that would contradict the ADR-0019 profile (confidential clients,
 // foreign grant types) are rejected rather than silently rewritten.
