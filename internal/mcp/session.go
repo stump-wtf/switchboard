@@ -58,6 +58,16 @@ type mcpSession struct {
 	inflight atomic.Int64
 	// lastSeen is the unix-nano timestamp of the last completed request, for idle expiry.
 	lastSeen atomic.Int64
+
+	// doorbellFails counts CONSECUTIVE failed doorbell writes, reset by any success. A single
+	// failure is routine — the agent simply has no stream open at that instant — but a session
+	// that has never once accepted a push is a deaf consumer, and that state is otherwise
+	// indistinguishable from a healthy one from the outside: the session is connected and
+	// initialized, the queue is filling, and the agent does nothing. This is what makes it sayable.
+	doorbellFails atomic.Int64
+	// doorbellWarned records whether the deaf-consumer warning has already been emitted for the
+	// current failure run, so the log carries one line per broken session rather than one per push.
+	doorbellWarned atomic.Bool
 }
 
 // connCapturingTransport wraps the SDK transport so the Connection handed to the SDK server is

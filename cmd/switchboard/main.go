@@ -51,7 +51,7 @@ func runServe(c *cli, args []string) int {
 		fmt.Fprintf(c.stderr, "switchboard serve: unexpected argument %q\n\n%s", args[0], serveUsage)
 		return exitUsage
 	}
-	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: config.LogLevel()}))
 	cfg := config.FromEnv()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -68,6 +68,7 @@ const serveUsage = `usage: switchboard serve
 
 Run the switchboard service. serve takes no flags: every setting comes from
 the environment (SWITCHBOARD_DATABASE_URL, SWITCHBOARD_BASE_URL,
+SWITCHBOARD_LOG_LEVEL,
 SWITCHBOARD_ADDR, the SWITCHBOARD_OIDC_* client, the capability flags, …).
 See https://switchboard.stump.wtf/docs/ for the full list.
 `

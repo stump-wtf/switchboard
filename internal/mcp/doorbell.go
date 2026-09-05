@@ -30,6 +30,11 @@ const (
 	// subscriber — never blocks the publisher — because the queue is the ledger and the push is
 	// only a doorbell (SPEC-0011 scenario "Slow subscriber is dropped, not blocked").
 	doorbellBuffer = 16
+
+	// doorbellDeafThreshold is how many CONSECUTIVE failed writes make a session worth warning
+	// about. Low enough to surface a genuinely deaf consumer within seconds of it mattering, high
+	// enough that an agent reconnecting between two pushes does not trip it.
+	doorbellDeafThreshold = 3
 )
 
 // PublishTodoReady rings ONE eligible session's doorbell for a committed, push-eligible todo. The
@@ -130,8 +135,22 @@ func (h *Handler) pump(s *mcpSession) {
 			// Expected whenever the agent holds no open notification stream: the push is only a
 			// hint, so it is logged and dropped, and the todo stays pending for the pull loop.
 			h.log.Debug("mcp doorbell dropped", "slug", s.slug, "todo_id", t.ID, "err", err)
+			// One failure is routine. A session that has failed every push in a row is a deaf
+			// consumer — attached, initialized, and receiving nothing — which is the failure this
+			// warning exists to make visible. Emitted once per failure run, not once per push, so a
+			// busy queue cannot turn it into a flood.
+			if n := s.doorbellFails.Add(1); n >= doorbellDeafThreshold && s.doorbellWarned.CompareAndSwap(false, true) {
+				h.log.Warn("mcp doorbell undeliverable — consumer attached but receiving nothing",
+					"slug", s.slug, "session", s.id, "consecutive_failures", n, "err", err)
+			}
 		} else {
 			h.log.Debug("mcp doorbell delivered", "slug", s.slug, "todo_id", t.ID, "queue", t.Queue)
+			// Recovered: reset the run so a later outage warns again rather than staying silent
+			// because it already warned once in this session's lifetime.
+			if s.doorbellFails.Swap(0) >= doorbellDeafThreshold {
+				h.log.Info("mcp doorbell recovered", "slug", s.slug, "session", s.id)
+			}
+			s.doorbellWarned.Store(false)
 		}
 	}
 }

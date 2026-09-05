@@ -7,15 +7,20 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
 	"github.com/joestump/switchboard/internal/store"
 )
@@ -623,4 +628,116 @@ func TestUnicastDoorbellStillNeverCrossesEndpoints(t *testing.T) {
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
+}
+
+// --- deaf-consumer visibility ---
+
+// A session that is attached and initialized but cannot receive is indistinguishable from a healthy
+// one from every external signal: the session is connected, the queue fills, and the agent does
+// nothing. Diagnosing one instance of that cost most of a working session, because both outcomes of
+// a push were Debug-only. This asserts the warning that makes it sayable — and that it is emitted
+// ONCE per failure run, not once per push, so a busy queue cannot turn it into a flood.
+func TestDoorbellWarnsOnceWhenAConsumerIsPersistentlyDeaf(t *testing.T) {
+	var buf syncBuffer
+	h := New(&fakeStore{byHash: map[string]store.AuthEndpoint{}},
+		slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(h.Close)
+
+	s := &mcpSession{
+		id: "sess-deaf", endpointID: "ep-1", slug: "deaf-agent-1234",
+		queues: map[string]bool{"forge": true}, doorbells: make(chan store.Todo, doorbellBuffer),
+		conn: failingConn{},
+	}
+	h.wg.Add(1)
+	go h.pump(s)
+
+	for i := 0; i < doorbellDeafThreshold+5; i++ {
+		s.doorbells <- store.Todo{EndpointID: "ep-1", ID: "td", Queue: "forge", Title: "work"}
+	}
+	close(s.doorbells)
+	out := waitForLog(t, &buf, "doorbell undeliverable")
+	if n := strings.Count(out, "doorbell undeliverable"); n != 1 {
+		t.Fatalf("warned %d times, want exactly 1 — one line per broken session, not per push\n%s", n, out)
+	}
+	for _, want := range []string{"deaf-agent-1234", "sess-deaf", "consecutive_failures"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("warning is missing %q — it must name which consumer is deaf\n%s", want, out)
+		}
+	}
+}
+
+// A single failure is routine (the agent simply has no stream open at that instant) and must stay
+// quiet, or the warning is noise and gets ignored.
+func TestDoorbellDoesNotWarnOnAnIsolatedFailure(t *testing.T) {
+	var buf syncBuffer
+	h := New(&fakeStore{byHash: map[string]store.AuthEndpoint{}},
+		slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(h.Close)
+
+	s := &mcpSession{
+		id: "sess-blip", endpointID: "ep-1", slug: "blippy-1234",
+		queues: map[string]bool{"forge": true}, doorbells: make(chan store.Todo, doorbellBuffer),
+		conn: failingConn{},
+	}
+	h.wg.Add(1)
+	go h.pump(s)
+	s.doorbells <- store.Todo{EndpointID: "ep-1", ID: "td", Queue: "forge", Title: "work"}
+	close(s.doorbells)
+	// Give the pump time to drain and (wrongly) warn, so the assertion is meaningful rather than
+	// just winning a race.
+	waitForLog(t, &buf, "doorbell dropped")
+	time.Sleep(100 * time.Millisecond)
+	if strings.Contains(buf.String(), "doorbell undeliverable") {
+		t.Fatalf("warned on a single failure; that is routine and must stay at Debug\n%s", buf.String())
+	}
+}
+
+// --- helpers for the deaf-consumer tests ---
+
+// syncBuffer is a bytes.Buffer safe for the pump goroutine to write into while the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// failingConn is a Connection whose every Write fails, standing in for the real condition: a
+// session that is attached and initialized but holds no notification stream, so the transport
+// rejects the push.
+type failingConn struct{}
+
+func (failingConn) Read(context.Context) (jsonrpc.Message, error) {
+	return nil, errors.New("failingConn: no reads")
+}
+func (failingConn) Write(context.Context, jsonrpc.Message) error {
+	return errors.New("no open notification stream")
+}
+func (failingConn) Close() error      { return nil }
+func (failingConn) SessionID() string { return "sess-failing" }
+
+// waitForLog blocks until want appears in buf, or fails the test. The pump runs on its own
+// goroutine and h.wg cannot be waited on here — it also tracks the handler's janitor, which lives
+// until Close.
+func waitForLog(t *testing.T, buf *syncBuffer, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if out := buf.String(); strings.Contains(out, want) {
+			return out
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q in the log; got:\n%s", want, buf.String())
+	return ""
 }
