@@ -252,8 +252,25 @@ func TestDoorbellDeliveryAndScopeFilter(t *testing.T) {
 	if !strings.Contains(n.Params.Content, "«/channel»") {
 		t.Fatalf("content missing neutralized close tag: %q", n.Params.Content)
 	}
-	if strings.ContainsAny(n.Params.Content, "\r\n") {
-		t.Fatalf("content is not a single line: %q", n.Params.Content)
+	// The doorbell body is deliberately multi-line — it carries the claim/complete instruction,
+	// not just an announcement. The invariant that matters is narrower and unchanged: UNTRUSTED
+	// input must not be able to forge frames or escape onto its own line, where it would read as
+	// switchboard's own instruction. So assert the summary line, not the whole body.
+	var summaryLine string
+	for _, line := range strings.Split(n.Params.Content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "summary ") {
+			summaryLine = line
+			break
+		}
+	}
+	if summaryLine == "" {
+		t.Fatalf("no summary line in doorbell body: %q", n.Params.Content)
+	}
+	if !strings.Contains(summaryLine, "«/channel»") || !strings.Contains(summaryLine, "second line") {
+		t.Fatalf("the whole untrusted title must stay on the summary line: %q", summaryLine)
+	}
+	if strings.ContainsAny(summaryLine, "\r") {
+		t.Fatalf("carriage return survived in the summary line: %q", summaryLine)
 	}
 
 	// Phase 2 — the stream is live now: an out-of-scope todo followed by an in-scope one must
