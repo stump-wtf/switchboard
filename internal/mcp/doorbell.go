@@ -219,9 +219,10 @@ func neutralize(s string) string {
 }
 
 // channelNotification builds the doorbell JSON-RPC notification for a ready todo. content is a
-// one-line summary; meta carries snake_case routing identifiers only (todo_id and queue always;
-// kind and source when present). The notification carries no lease and inlines no payload or
-// secret values — the agent claims through the durable verbs.
+// multi-line doorbell prompt (see doorbellPrompt) carrying the lifecycle instruction; meta carries
+// snake_case routing identifiers only (todo_id and queue always; kind and source when present).
+// The notification carries no lease and inlines no payload or secret values — the agent claims
+// through the durable verbs.
 // Governing: SPEC-0011 REQ "Push Notification Shape".
 func channelNotification(t store.Todo) (*jsonrpc.Request, error) {
 	meta := map[string]string{
