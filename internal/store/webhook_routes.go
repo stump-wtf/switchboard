@@ -103,26 +103,52 @@ func (s *Store) ListWebhookRoutes(ctx context.Context, webhookID string) ([]Webh
 //
 // A target that fails the re-check is skipped silently rather than failing the delivery: the other
 // targets' work is still valid, and a revoked friendship is a normal end state, not an error the
-// producer can act on. The owner endpoint is seeded unconditionally — a webhook's deliveries always
-// belong to the endpoint that owns it, and the receiver has already resolved that endpoint to accept
-// the request at all.
+// producer can act on.
+//
+// The OWNER endpoint gets the identical liveness re-check, and that is not symmetry for its own
+// sake. It used to be seeded unconditionally, on the reasoning that "the receiver has already
+// resolved that endpoint to accept the request at all" — but the receiver resolves the webhook by
+// its ingest TOKEN (GetWebhookByToken), and that lookup has never touched endpoint state. So a
+// revoked owner kept minting todos on every delivery, forever: an endpoint revoked on 2026-08-22
+// had accumulated 1,130 pending rows by 2026-09-06, none of which any session could ever claim,
+// because revoking the credential is exactly what makes them unclaimable. Silent, unbounded, and
+// with no off switch short of deleting the webhook.
+//
+// When the owner is dead and no live route remains, the target set is empty and the receiver's
+// existing misconfiguration branch answers 503 — which is the honest reply. A webhook whose owner
+// was revoked IS misconfigured; telling the producer beats accepting deliveries into a hole.
 //
 // Governing: ADR-0022, ADR-0010, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)",
 // SPEC-0010 REQ "Per-Direction, Revocable, Non-Transitive Edges".
 func (s *Store) ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error) {
-	// The owner endpoint is always a target. Explicit routes may add more. De-dup preserving the
-	// owner first so the first todo is always the owner's (stable ordering aids testing).
+	// The owner endpoint is a target while it is still live. Explicit routes may add more. De-dup
+	// preserving the owner first so the first todo is always the owner's (stable ordering aids
+	// testing).
 	//
-	// An UNRESOLVABLE owner (empty id) is skipped rather than seeded: seeding it would return a
-	// one-element slice holding "", which reads as a target to every caller and only fails much
-	// later, inside createTodo, as a 500 on a delivery the contract says must be a 503. The empty
-	// return this function documents has to actually be reachable for the caller's misconfiguration
-	// branch to mean anything.
+	// An UNRESOLVABLE owner — empty id, or one that no longer passes the liveness re-check — is
+	// skipped rather than seeded. Seeding an empty id would return a one-element slice holding "",
+	// which reads as a target to every caller and only fails much later, inside createTodo, as a
+	// 500 on a delivery the contract says must be a 503. The empty return this function documents
+	// has to actually be reachable for the caller's misconfiguration branch to mean anything.
 	seen := map[string]struct{}{}
 	var out []string
 	if ownerEndpointID != "" {
-		seen[ownerEndpointID] = struct{}{}
-		out = append(out, ownerEndpointID)
+		var live bool
+		// Same predicate the routes below use, for the same reason: expiry is checked directly
+		// rather than trusting the state flag, because ExpireEndpoints only flips the row on a 30s
+		// reaper tick and delivery must not be routable in that window.
+		if err := s.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM endpoints
+				WHERE id = $1 AND state = 'active'
+				  AND (expires_at IS NULL OR expires_at > now())
+			)`, ownerEndpointID).Scan(&live); err != nil {
+			return nil, fmt.Errorf("store: resolve webhook owner liveness: %w", err)
+		}
+		if live {
+			seen[ownerEndpointID] = struct{}{}
+			out = append(out, ownerEndpointID)
+		}
 	}
 	// The route survives only while BOTH of its underlying facts still hold. Expressed as one
 	// statement so the check is atomic with the read and cannot drift from it:

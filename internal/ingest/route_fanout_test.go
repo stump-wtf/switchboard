@@ -548,3 +548,77 @@ func TestRouteFanOutSurvivesDeletedRouteTarget(t *testing.T) {
 		t.Fatal("todos exist pinned to an endpoint that no longer exists")
 	}
 }
+
+// A webhook whose OWNER endpoint has been revoked must stop minting todos for it.
+//
+// Route targets were re-checked for liveness on every delivery; the owner was seeded
+// unconditionally, on the reasoning that the receiver had already resolved it to accept the request
+// at all. It has not — the receiver resolves the webhook by its ingest TOKEN, and that lookup has
+// never touched endpoint state. So a revoked owner kept collecting work forever, and because
+// revoking the credential is precisely what makes those todos unclaimable, nothing could ever drain
+// them: an endpoint revoked on 2026-08-22 had accumulated 1,130 pending rows by 2026-09-06. Silent,
+// and unbounded.
+//
+// The delivery is not refused while a live route remains — the surviving tenant's work is still
+// valid. The revoke happens BETWEEN two deliveries so the test observes the transition rather than a
+// fixture that was never live.
+// Governing: ADR-0022; SPEC-0007 REQ "Instant, Total Revocation"; SPEC-0001 REQ "Deterministic
+// Route Fan-Out (Token-Free)".
+func TestRouteFanOutStopsAtARevokedOwner(t *testing.T) {
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
+	st := store.New(pool)
+	const secret = "whsec_revoked_owner"
+	ownerHuman, owner, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "fanout-revoked-owner", secret)
+	targetHuman, target := seedEndpoint(t, st, ctx, "surviving-target", []string{"reviews"})
+	grantFriendEdge(t, st, ctx, "revoked-owner", ownerHuman.ID, targetHuman.ID)
+	if err := st.AddWebhookRoute(ctx, wh.ID, target.ID, ownerHuman.ID); err != nil {
+		t.Fatalf("add webhook route: %v", err)
+	}
+
+	deliver := func(delivery string) ([]acceptedTodo, int) {
+		t.Helper()
+		body := `{"action":"opened","delivery":"` + delivery + `"}`
+		return fanOut202(t, postSelfManaged(ing, "fanout-revoked-owner", body, map[string]string{
+			"X-GitHub-Delivery": delivery, "X-Hub-Signature-256": githubSig(secret, body)}))
+	}
+
+	before, _ := deliver("guid-owner-live")
+	if len(before) != 2 {
+		t.Fatalf("pre-revoke fan-out = %d todos, want 2 (owner + routed target)", len(before))
+	}
+
+	if err := st.RevokeEndpoint(ctx, owner.ID, ownerHuman.ID); err != nil {
+		t.Fatalf("revoke webhook owner: %v", err)
+	}
+
+	targets, err := st.ResolveWebhookTargets(ctx, wh.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("resolve targets after owner revoke: %v", err)
+	}
+	if len(targets) != 1 || targets[0] != target.ID {
+		t.Fatalf("resolved targets after owner revoke = %+v, want just the live route target %q "+
+			"— a revoked owner cannot drain anything, so routing to it mints undrainable work",
+			targets, target.ID)
+	}
+
+	// Ingestion is not wedged: the surviving tenant still gets its work, and only its work.
+	after, created := deliver("guid-owner-revoked")
+	if len(after) != 1 || created != 1 {
+		t.Fatalf("post-revoke fan-out = %d todos (%d created), want 1/1 to the live target: %+v",
+			len(after), created, after)
+	}
+	if after[0].EndpointID != target.ID {
+		t.Fatalf("post-revoke todo endpoint_id = %q, want the live target %q", after[0].EndpointID, target.ID)
+	}
+	// Nothing new accrued on the dead owner. Its pre-revoke todo is dead-lettered by the revocation
+	// cascade, so the assertion is on rows CREATED after the revoke, not on the total.
+	var stranded int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM todos WHERE endpoint_id = $1 AND state = 'pending'`, owner.ID,
+	).Scan(&stranded); err != nil {
+		t.Fatalf("count owner todos: %v", err)
+	}
+	if stranded != 0 {
+		t.Fatalf("revoked owner has %d pending todos after a later delivery, want 0", stranded)
+	}
+}
