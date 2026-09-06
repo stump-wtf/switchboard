@@ -20,9 +20,11 @@ func TestPingHealthy(t *testing.T) {
 
 func TestBoardStats(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "board-stats", "reviews")
+	me := ownerOf(t, s, ctx, ep)
 
 	// Empty database: every tile is zero, and VerifiedPct's divide-by-zero guard holds.
-	b, err := s.BoardStats(ctx)
+	b, err := s.BoardStats(ctx, me)
 	if err != nil {
 		t.Fatalf("board stats (empty): %v", err)
 	}
@@ -30,25 +32,22 @@ func TestBoardStats(t *testing.T) {
 		t.Fatalf("empty db stats = %+v, want all zeros", b)
 	}
 
-	// Seed: three todos created today (one claimed), three events today (two signed, one open).
+	// Seed three deliveries as event+todo PAIRS (two signed, one open). The pairing is load-bearing
+	// now, not incidental: an event reaches these tiles only through a todo this human owns, so
+	// three bare InsertEvents — which is what this fixture used to do — are owned by nobody and
+	// counted for nobody. Attributing them is the fix, not a workaround.
+	var claimID string
 	for i, key := range []string{"e1", "e2", "e3"} {
 		mode, verified := "signed", true
 		if i == 2 {
 			mode, verified = "open", false
 		}
-		if _, err := s.InsertEvent(ctx, EventInput{
+		_, td, _, err := s.CreateEventTodo(ctx, EventInput{
 			Source: "github", Family: "webhook", EventType: "push",
 			ExternalID: key, TrustMode: mode, Verified: verified,
-		}); err != nil {
-			t.Fatalf("seed event %s: %v", key, err)
-		}
-	}
-	ep := seedEndpoint(t, s, ctx, "board-stats", "reviews")
-	var claimID string
-	for i := 0; i < 3; i++ {
-		td, created, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "reviews", Title: "todo"})
-		if err != nil || !created {
-			t.Fatalf("seed todo %d: created=%v err=%v", i, created, err)
+		}, CreateTodoParams{EndpointID: ep, Queue: "reviews", Title: "todo", IdempotencyKey: key})
+		if err != nil {
+			t.Fatalf("seed delivery %s: %v", key, err)
 		}
 		claimID = td.ID
 	}
@@ -56,7 +55,18 @@ func TestBoardStats(t *testing.T) {
 		t.Fatalf("claim seed todo: %v", err)
 	}
 
-	b, err = s.BoardStats(ctx)
+	// A SECOND human's board must not move any tile above. This is the regression the tiles
+	// themselves needed: counts leak just as surely as rows, and nothing in a number looks like
+	// somebody else's data.
+	other := seedEndpoint(t, s, ctx, "board-stats-other", "reviews")
+	if _, _, _, err := s.CreateEventTodo(ctx, EventInput{
+		Source: "github", Family: "webhook", EventType: "push",
+		ExternalID: "other-1", TrustMode: "signed", Verified: true,
+	}, CreateTodoParams{EndpointID: other, Queue: "reviews", Title: "not yours", IdempotencyKey: "other-1"}); err != nil {
+		t.Fatalf("seed other human delivery: %v", err)
+	}
+
+	b, err = s.BoardStats(ctx, me)
 	if err != nil {
 		t.Fatalf("board stats (seeded): %v", err)
 	}
@@ -69,15 +79,17 @@ func TestBoardStats(t *testing.T) {
 		EventsPerMin:  3,
 	}
 	if b != want {
-		t.Fatalf("seeded stats = %+v, want %+v", b, want)
+		t.Fatalf("seeded stats = %+v, want %+v (the other human's delivery must not count)", b, want)
 	}
 }
 
 func TestRecentEvents(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "recent-events", "q")
+	me := ownerOf(t, s, ctx, ep)
 
 	// Empty feed is empty, not an error.
-	evs, err := s.RecentEvents(ctx, 12)
+	evs, err := s.RecentEvents(ctx, me, 12)
 	if err != nil {
 		t.Fatalf("recent events (empty): %v", err)
 	}
@@ -85,6 +97,8 @@ func TestRecentEvents(t *testing.T) {
 		t.Fatalf("empty db returned %d events", len(evs))
 	}
 
+	// Seeded as event+todo pairs: the feed shows a human their OWN deliveries, and an event is
+	// theirs only through a todo they own.
 	seed := []EventInput{
 		{Source: "github", Family: "webhook", EventType: "push", ExternalID: "g1", TrustMode: "signed", Verified: true},
 		{Source: "stripe", Family: "webhook", EventType: "invoice.paid", ExternalID: "s1", TrustMode: "token", Verified: true},
@@ -92,15 +106,24 @@ func TestRecentEvents(t *testing.T) {
 	}
 	ids := make([]int64, 0, len(seed))
 	for _, e := range seed {
-		id, err := s.InsertEvent(ctx, e)
+		id, _, _, err := s.CreateEventTodo(ctx, e,
+			CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: e.ExternalID})
 		if err != nil {
 			t.Fatalf("seed %s: %v", e.Source, err)
 		}
 		ids = append(ids, id)
 	}
 
+	// Another human's delivery never appears in this feed, at any limit.
+	other := seedEndpoint(t, s, ctx, "recent-events-other", "q")
+	if _, _, _, err := s.CreateEventTodo(ctx,
+		EventInput{Source: "gitea", Family: "webhook", EventType: "pull_request", ExternalID: "o1", TrustMode: "signed", Verified: true},
+		CreateTodoParams{EndpointID: other, Queue: "q", Title: "not yours", IdempotencyKey: "o1"}); err != nil {
+		t.Fatalf("seed other human delivery: %v", err)
+	}
+
 	// Newest first, limit respected.
-	evs, err = s.RecentEvents(ctx, 2)
+	evs, err = s.RecentEvents(ctx, me, 2)
 	if err != nil {
 		t.Fatalf("recent events: %v", err)
 	}
@@ -124,11 +147,16 @@ func TestRecentEvents(t *testing.T) {
 	if _, err := s.InsertEvent(ctx, seed[0]); err != nil {
 		t.Fatalf("duplicate insert: %v", err)
 	}
-	evs, err = s.RecentEvents(ctx, 12)
+	evs, err = s.RecentEvents(ctx, me, 12)
 	if err != nil {
 		t.Fatalf("recent events after dup: %v", err)
 	}
 	if len(evs) != 3 {
-		t.Fatalf("duplicate delivery changed feed length: %d", len(evs))
+		t.Fatalf("feed length = %d, want 3 (the other human's delivery must not appear)", len(evs))
+	}
+	for _, e := range evs {
+		if e.Source == "gitea" {
+			t.Fatalf("another human's delivery surfaced in the feed: %+v", e)
+		}
 	}
 }

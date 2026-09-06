@@ -27,11 +27,25 @@
 // SPEC-0012 hub in sse.go is UNCHANGED: same lossy fan-out, same reload-renders-DB-truth guarantee
 // — a dropped frame stales a lane, never state.
 //
-// Ownership routing (SPEC-0012 — the stream is scoped to the human's own data): endpoint_seen has
-// a real ownership edge (endpoint → agent → owner_human_id) and publishes scoped. Lane, todo, and
-// counts frames do NOT: in today's schema a queue is a plain name with no owning human and every
-// authenticated human operates the same single-tenant board, so those frames publish with Owner ""
-// (all authenticated subscribers). Event.Owner remains the scoping seam.
+// Ownership routing (SPEC-0012 — the stream is scoped to the human's own data). Every frame that
+// carries persisted content now publishes scoped, via the same ownership edge endpoint_seen has
+// always used: endpoint → agent → owner_human_id.
+//
+// This file used to say the opposite, and said it as a justification: "a queue is a plain name with
+// no owning human and every authenticated human operates the same single-tenant board, so those
+// frames publish with Owner ”". The premise was about QUEUES; the frames carry TODOS, which have
+// had an owning human all along. So the board broadcast every tenant's lane cards, todo rows and
+// counts to every connected browser — a push leak, needing no navigation to trigger. Six humans
+// held accounts. Fixed by resolving each todo's owner and rendering counts per subscribed human.
+//
+// STILL UNSCOPED, deliberately and documented: the three pre-persistence in-flight frames
+// (lane_received / lane_rejected / lane_deduped). They fire from ingest.Instrument BEFORE any todo
+// exists, so there is no ownership edge to resolve yet — the Instrument interface is handed only
+// (provider, eventType, trust, key). They carry no payload and no todo content, but they do
+// disclose that a delivery arrived and from which provider. Narrowing them needs the ingest
+// instrument to pass the resolved webhook, which is a separate change (see #176).
+//
+// Event.Owner remains the scoping seam.
 package web
 
 import (
@@ -264,6 +278,21 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 		return
 	}
 	h.enqueueLive(func(ctx context.Context) {
+		// Resolve the owning human FIRST. Every fragment below carries this todo's content — lane
+		// card, table row, toast — so a frame we cannot attribute must not be published at all.
+		// Failing closed here is the whole point: the previous behaviour was to publish anyway,
+		// unowned, which the hub reads as "route to every authenticated subscriber".
+		owner, err := h.ownerOfTodo(ctx, t)
+		// With no store there is no tenancy to enforce: humans, endpoints and todos all live in
+		// the database, so a storeless handler has nobody to leak BETWEEN. Real transitions only
+		// ever arrive from store hooks, which cannot fire without a store, so this branch is
+		// reachable only from render/escaping tests. It is scoped to h.store == nil deliberately —
+		// a store that is present but yields no owner still fails closed below.
+		if h.store != nil && (err != nil || owner == "") {
+			h.log.Warn("live todo transition: unattributable, not published",
+				"todo", t.ID, "endpoint", t.EndpointID, "err", err)
+			return
+		}
 		var payload strings.Builder
 		if frag, err := h.renderFragment("lane_move", h.laneMoveForTodo(ctx, t, name)); err == nil {
 			payload.WriteString(frag)
@@ -277,7 +306,7 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 		// row swap is skipped and a reload renders truth. Governing: SPEC-0015 REQ "Todos View And
 		// Drawer" (SSE row updates preserved).
 		if h.store != nil {
-			if it, err := h.store.GetTodoItem(ctx, t.ID); err == nil {
+			if it, err := h.store.GetTodoItem(ctx, owner, t.ID); err == nil {
 				trow := h.todoRowFromItem(ctx, it, true, name == "todo_resurfaced")
 				// Creation and re-surface may address a row the open table never rendered (a new
 				// todo, or one that had left the current filter), where an id-targeted OOB swap
@@ -303,10 +332,24 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 			}
 		}
 		if payload.Len() > 0 {
-			h.events.Publish(Event{Name: name, Data: payload.String()})
+			h.events.Publish(Event{Name: name, Data: payload.String(), Owner: owner})
 		}
 		h.publishCounts(ctx)
 	})
+}
+
+// ownerOfTodo resolves the human a todo belongs to, via the endpoint → agent → owner_human_id edge
+// that endpoint_seen has always used. It is the routing key for every content-carrying live frame.
+//
+// A todo with no endpoint belongs to nobody, and the caller must treat that as "do not publish"
+// rather than "publish to everyone" — an unowned row is an ingestion bug, and broadcasting it is
+// the exact failure this file used to have. Returns "" with no error in that case so the caller's
+// `owner == ""` guard catches it alongside a real lookup failure.
+func (h *Handler) ownerOfTodo(ctx context.Context, t store.Todo) (string, error) {
+	if h.store == nil || t.EndpointID == "" {
+		return "", nil
+	}
+	return h.store.EndpointOwner(ctx, t.EndpointID)
 }
 
 // laneMoveForTodo expresses one committed todo transition as lane movement. Creation removes the
@@ -441,25 +484,39 @@ func (h *Handler) toastFor(ctx context.Context, name string, t store.Todo) *toas
 	return nil
 }
 
-// publishCounts re-renders the count bundle (tiles + rail count + LIVE pill + lane counts) from
-// the database and publishes it as a counts event. Store errors are logged, never published:
-// subscribers just keep their last numbers and a reload renders truth.
+// publishCounts re-renders the count bundle (tiles + rail count + LIVE pill + lane counts) and
+// publishes it, ONCE PER SUBSCRIBED HUMAN, each frame carrying only that human's numbers. Store
+// errors are logged, never published: subscribers just keep their last numbers and a reload
+// renders truth.
+//
+// It used to render one bundle from global counts and broadcast it. Counts are a disclosure in
+// their own right — a tile reading "412 today" on a board showing four rows tells the viewer a
+// great deal about the other tenants — so the render moved inside the per-human loop rather than
+// the publish. The loop is bounded by CONNECTED humans (single digits in practice), not by the
+// humans table, and does nothing at all when nobody is watching.
 func (h *Handler) publishCounts(ctx context.Context) {
 	if h.store == nil {
 		return
 	}
-	stats, err := h.store.BoardStats(ctx)
+	for _, human := range h.events.humans() {
+		h.publishCountsFor(ctx, human)
+	}
+}
+
+// publishCountsFor renders and publishes the counts bundle for exactly one human.
+func (h *Handler) publishCountsFor(ctx context.Context, human string) {
+	stats, err := h.store.BoardStats(ctx, human)
 	if err != nil {
 		h.log.Error("live counts stats", "err", err)
 		return
 	}
-	buckets, err := h.store.EventBuckets(ctx, activityBuckets)
+	buckets, err := h.store.EventBuckets(ctx, human, activityBuckets)
 	if err != nil {
 		h.log.Error("live counts buckets", "err", err)
 	}
 	// The Todos view filter-pill counts and the board lane-header counts ride the same counts
 	// frame (OOB spans ignored on pages that don't render them).
-	todos, err := h.store.TodoCounts(ctx)
+	todos, err := h.store.TodoCounts(ctx, human)
 	if err != nil {
 		h.log.Error("live counts todo counts", "err", err)
 	}
@@ -472,7 +529,7 @@ func (h *Handler) publishCounts(ctx context.Context) {
 		h.log.Error("render counts fragment", "err", err)
 		return
 	}
-	h.events.Publish(Event{Name: "counts", Data: frag})
+	h.events.Publish(Event{Name: "counts", Data: frag, Owner: human})
 }
 
 // laneCountsFrom derives the lane-header counts from the per-state todo counts: verified holds the
@@ -563,7 +620,13 @@ func (h *Handler) laneCardFromTodo(ctx context.Context, t store.Todo) laneCard {
 		At:         t.CreatedAt,
 	}
 	if t.EventID != nil && h.store != nil {
-		if e, err := h.store.EventByID(ctx, *t.EventID); err == nil {
+		// Scoped by the todo's own owner: this is the trust-mode chip for a card that is already
+		// this human's, so it can never widen what the card shows.
+		owner, oerr := h.ownerOfTodo(ctx, t)
+		if oerr != nil {
+			owner = ""
+		}
+		if e, err := h.store.EventByID(ctx, owner, *t.EventID); err == nil {
 			card.TrustMode = e.TrustMode
 			if card.Kind == "" {
 				card.Kind = e.EventType

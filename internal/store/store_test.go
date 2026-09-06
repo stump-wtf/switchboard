@@ -336,3 +336,16 @@ func TestClaimNextSkipLocked(t *testing.T) {
 		t.Fatalf("claimed %d, want 3", got)
 	}
 }
+
+// ownerOf resolves the human who owns an endpoint, for the operator reads that are now
+// tenant-scoped. Most fixtures here mint a fresh human per seedEndpoint call, so a test that
+// seeds one endpoint and reads "its" board asks for the owner rather than threading it through
+// every helper signature.
+func ownerOf(t *testing.T, s *Store, ctx context.Context, endpointID string) string {
+	t.Helper()
+	owner, err := s.EndpointOwner(ctx, endpointID)
+	if err != nil {
+		t.Fatalf("owner of endpoint %s: %v", endpointID, err)
+	}
+	return owner
+}
