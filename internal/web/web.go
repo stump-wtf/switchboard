@@ -197,19 +197,6 @@ type view struct {
 	Personas   *personasView
 	PersonaWiz *personaWizStepView
 
-	// Providers view (SPEC-0017 REQ "Providers View"/"Provider Catalog"/"Provider Lifecycle").
-	Providers *providersPanelView // families + catalog panel
-	// ProviderReveal renders the post-rotate one-time secret reveal inline on the page (no-JS
-	// fallback, mirroring the vend flow's Reveal); the HTMX path gets the modal fragment instead.
-	ProviderReveal *providerRevealView
-	// ProviderConfirm renders the lifecycle confirmation inline on the page (no-JS fallback for
-	// the overlay confirmation modal).
-	ProviderConfirm *providerConfirmView
-	// Connect wizard (SPEC-0017 REQ "Connect Provider Wizard"; templates/connect.html): the active
-	// step page, or the completion page with the copyable URL + one-time token reveal.
-	Connect     *connectStepView
-	ConnectDone *connectDoneView
-
 	// OAuth consent screen (SPEC-0016 REQ "Authorization Code Flow With Consent"): the
 	// "authorize access" surface (templates/authorize.html) or its dead-end error state.
 	Authorize *authorizeView
