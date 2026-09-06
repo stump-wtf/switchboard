@@ -78,6 +78,13 @@ type providersPanelView struct {
 	Available   []catalogCard
 	CSRF        string
 	Total       int // connected-line count (the view-head aside)
+	// IsOperator gates every administrative affordance the templates render: the page-level
+	// "+ connect provider" button and the catalog cards' "connect →" links. Both point at
+	// /providers/connect, which SEEDS a registry row, so showing them to a non-operator advertises
+	// the create path to exactly the humans the allowlist excludes — and the routes then 404,
+	// which reads as a broken page rather than a boundary. The gate is enforced on the routes
+	// regardless; this keeps the UI honest about what it offers.
+	IsOperator bool
 }
 
 // providerConfirmView feeds the shared lifecycle confirmation modal (disable / rotate / remove).
@@ -236,9 +243,6 @@ func providersPanel(adapters []store.Adapter, health map[string]store.ProviderHe
 	}
 }
 
-// loadProvidersPanel reads the registry + per-source health and builds the panel. A health-read
-// failure degrades to idle stats (logged) rather than failing the page; a registry-read failure is
-// returned — the view is ABOUT the registry, rendering without it would misrepresent state.
 // isOperator reports whether this human may administer the instance-wide provider registry.
 //
 // The registry is not tenant-owned — `adapters` has no owner column, because an operator-configured
@@ -270,7 +274,14 @@ func (h *Handler) isOperator(human store.Human) bool {
 func (h *Handler) loadProvidersPanel(r *http.Request, human store.Human) (providersPanelView, error) {
 	csrf := auth.CSRFFromContext(r.Context())
 	if !h.isOperator(human) {
-		return providersPanel(nil, nil, csrf), nil
+		// Neither configured rows NOR the connectable catalog. The connectable cards link into
+		// /providers/connect, which SEEDS a registry row — so rendering them to a non-operator
+		// advertises the create path to exactly the humans the allowlist exists to exclude.
+		// The `Available` catalog is untouched: it is a static "here is what this software can
+		// talk to" list with no link into the wizard and no fact about this deployment.
+		panel := providersPanel(nil, nil, csrf)
+		panel.Connectable = nil
+		return panel, nil // IsOperator stays false: no connect affordances render
 	}
 	adapters, err := h.store.ListProviders(r.Context())
 	if err != nil {
@@ -281,7 +292,9 @@ func (h *Handler) loadProvidersPanel(r *http.Request, human store.Human) (provid
 		h.log.Warn("providers health", "err", err)
 		health = nil
 	}
-	return providersPanel(adapters, health, csrf), nil
+	panel := providersPanel(adapters, health, csrf)
+	panel.IsOperator = true
+	return panel, nil
 }
 
 // requireOperator answers a non-operator's provider request with 404 and reports false.

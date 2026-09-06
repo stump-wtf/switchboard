@@ -14,7 +14,7 @@
     {{if .Providers}}<span class="sb-muted sb-mono">{{.Providers.Total}} connected</span>{{end}}
     {{/* Wizard launcher: a plain link — the connect wizard is routed pages with server-side state
          (SPEC-0017 REQ "Connect Provider Wizard"; SPEC-0015 wizard pattern). */}}
-    <a class="sb-btn sb-btn--mono" href="/providers/connect" data-sb-connect-start>+ connect provider</a>
+    {{if and .Providers .Providers.IsOperator}}<a class="sb-btn sb-btn--mono" href="/providers/connect" data-sb-connect-start>+ connect provider</a>{{end}}
   </div>
 </div>
 {{if .ProviderReveal}}

@@ -321,4 +321,4 @@ func TestLogoutRevokesSessionAndClearsCookie(t *testing.T) {
 // testOperatorSubjects are the fixture identities allowed to administer the instance-wide provider
 // registry. Kept as one list so a new provider test opts in by using one of these subjects rather
 // than by widening the gate.
-var testOperatorSubjects = []string{"prov-op", "test|connie", "test|otto", "test|quinn"}
+var testOperatorSubjects = []string{"prov-op", "test|connie", "test|otto", "test|quinn", "test|vera"}
