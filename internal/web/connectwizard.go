@@ -206,6 +206,13 @@ func firstIncompleteConnectStep(values url.Values) string {
 // from a catalog card's connect link) and a redirect to the source step. Requires human.
 // Governing: SPEC-0017 REQ "Connect Provider Wizard"; SPEC-0015 REQ "Wizard Interaction Pattern".
 func (h *Handler) ConnectStart(w http.ResponseWriter, r *http.Request) {
+	// The wizard's terminal step SEEDS a registry row, so the whole flow is an administrative
+	// path to the instance-wide provider registry and carries the same gate as the lifecycle
+	// actions. Gating only the final submit would leave the earlier steps as a working directory
+	// of what this deployment can ingest. Governing: SPEC-0017 REQ "Provider Lifecycle".
+	if !h.requireOperator(w, r) {
+		return
+	}
 	token, values, err := h.wizardBegin(w, connectWizard)
 	if err != nil {
 		h.fail(w, err)
@@ -229,6 +236,13 @@ func (h *Handler) ConnectStart(w http.ResponseWriter, r *http.Request) {
 // cleared, cold deep link) restarts the flow; an off-path slug (the draft branched away from it)
 // bounces to the first incomplete step instead of rendering a half-truth. Requires human.
 func (h *Handler) ConnectStep(w http.ResponseWriter, r *http.Request) {
+	// The wizard's terminal step SEEDS a registry row, so the whole flow is an administrative
+	// path to the instance-wide provider registry and carries the same gate as the lifecycle
+	// actions. Gating only the final submit would leave the earlier steps as a working directory
+	// of what this deployment can ingest. Governing: SPEC-0017 REQ "Provider Lifecycle".
+	if !h.requireOperator(w, r) {
+		return
+	}
 	human, _ := auth.FromContext(r.Context())
 	slug := chi.URLParam(r, "step")
 	if connectWizard.index(slug) < 0 {
@@ -267,6 +281,13 @@ func onConnectPath(slug string, values url.Values) bool {
 // Requires human + CSRF (the enclosing route group). Governing: SPEC-0017 REQ "Connect Provider
 // Wizard"; SPEC-0015 REQ "Wizard Interaction Pattern".
 func (h *Handler) ConnectStepSubmit(w http.ResponseWriter, r *http.Request) {
+	// The wizard's terminal step SEEDS a registry row, so the whole flow is an administrative
+	// path to the instance-wide provider registry and carries the same gate as the lifecycle
+	// actions. Gating only the final submit would leave the earlier steps as a working directory
+	// of what this deployment can ingest. Governing: SPEC-0017 REQ "Provider Lifecycle".
+	if !h.requireOperator(w, r) {
+		return
+	}
 	human, _ := auth.FromContext(r.Context())
 	slug := chi.URLParam(r, "step")
 	if connectWizard.index(slug) < 0 {

@@ -36,8 +36,14 @@ func sampleAdapters() []store.Adapter {
 	}
 }
 
+// providersView renders the page as an OPERATOR. The administrative affordances (the view-head
+// "+ connect provider" button and the catalog cards' connect links) render only for an operator,
+// so a render test that forgot this flag would be asserting the non-operator page and quietly stop
+// covering the surface it names. A non-operator's render is covered end-to-end by
+// TestProviderAdminRoutesRefuseNonOperators, which drives the real router.
 func providersView(h *Handler, adapters []store.Adapter, health map[string]store.ProviderHealth) view {
 	panel := providersPanel(adapters, health, "tok")
+	panel.IsOperator = true
 	return view{
 		Title: "Providers", Human: testHuman(), CSRF: "tok",
 		Shell:     shell{Active: "providers", DBConnected: true, Initials: "JS"},

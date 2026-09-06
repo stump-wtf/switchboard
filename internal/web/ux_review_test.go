@@ -123,7 +123,9 @@ func TestLowercaseHeadingsAndCTAs(t *testing.T) {
 	if body := renderPage(t, h, "friends", view{Title: "friends · agent-to-agent", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "friends", DBConnected: true, Initials: "JS"}}); !strings.Contains(body, "+ add friend") {
 		t.Error("friends: missing lowercase CTA '+ add friend'")
 	}
-	if body := renderPage(t, h, "providers", view{Title: "providers", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "providers", DBConnected: true, Initials: "JS"}}); !strings.Contains(body, "+ connect provider") {
+	// The provider CTA is operator-only (SPEC-0017 lifecycle gate), so this renders the operator
+	// view — the check is about the CTA's wording, not about who may see it.
+	if body := renderPage(t, h, "providers", providersView(h, nil, nil)); !strings.Contains(body, "+ connect provider") {
 		t.Error("providers: missing lowercase CTA '+ connect provider'")
 	}
 }
