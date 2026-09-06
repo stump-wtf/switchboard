@@ -19,6 +19,27 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// ownedByHuman is the tenant predicate every operator read below carries, kept as one constant so
+// the six of them cannot drift apart. It walks the ownership chain a todo actually has —
+// todos.endpoint_id → endpoints.agent_id → agents.owner_human_id — which is the same chain
+// ListEndpointCards has always used ("strictly by owner_human_id so one operator can never see
+// another's endpoints", agents.go).
+//
+// These reads used to carry no tenant predicate at all. Endpoints was scoped; the Board never was,
+// so every signed-in human saw and could mutate every other human's todos, counts and raw payloads
+// — for seven weeks, across six real accounts, until an invited user reported seeing someone else's
+// webhooks. The MCP surface was never affected: it is endpoint-scoped by construction (ADR-0022),
+// and it is only the operator web reads that bypassed the model.
+//
+// A todo with a NULL endpoint_id belongs to nobody and is therefore visible to nobody. That is
+// deliberate: an unowned row is an ingestion bug, and defaulting it to "everyone" is exactly the
+// failure being fixed here. The JOIN (not LEFT JOIN) enforces it.
+//
+// Governing: SPEC-0007 REQ "Human as Accountable Principal"; SPEC-0013 (operator board).
+const ownedByHuman = `
+		JOIN endpoints ep ON ep.id = t.endpoint_id
+		JOIN agents    ag ON ag.id = ep.agent_id AND ag.owner_human_id = `
+
 // TodoCounts are the per-state todo counts backing the Todos view filter pills (All / Pending /
 // Claimed / Done / Failed), each rendered live from the database.
 //
@@ -36,16 +57,18 @@ type TodoCounts struct {
 	Failed  int
 }
 
-// TodoCounts returns the filter-pill counts in one round trip.
-func (s *Store) TodoCounts(ctx context.Context) (TodoCounts, error) {
+// TodoCounts returns the filter-pill counts for ONE human's todos in one round trip. The counts
+// are as tenant-scoped as the table they summarise: a count is a disclosure too, and a pill
+// reading "412 pending" on a board showing four rows tells the viewer plenty about everyone else.
+func (s *Store) TodoCounts(ctx context.Context, ownerHumanID string) (TodoCounts, error) {
 	var c TodoCounts
 	err := s.pool.QueryRow(ctx, `
 		SELECT count(*),
-			count(*) FILTER (WHERE state = 'pending'),
-			count(*) FILTER (WHERE state = 'claimed'),
-			count(*) FILTER (WHERE state = 'done'),
-			count(*) FILTER (WHERE state = 'failed')
-		FROM todos`,
+			count(*) FILTER (WHERE t.state = 'pending'),
+			count(*) FILTER (WHERE t.state = 'claimed'),
+			count(*) FILTER (WHERE t.state = 'done'),
+			count(*) FILTER (WHERE t.state = 'failed')
+		FROM todos t`+ownedByHuman+`$1`, ownerHumanID,
 	).Scan(&c.All, &c.Pending, &c.Claimed, &c.Done, &c.Failed)
 	if err != nil {
 		return TodoCounts{}, fmt.Errorf("todo counts: %w", err)
@@ -86,7 +109,7 @@ func scanTodoItem(row pgx.Row) (TodoItem, error) {
 // state (filter pill) and/or a case-insensitive substring over id, source, and kind (search). An
 // empty filter lists all states; an empty query applies no text filter. The limit is clamped.
 // Governing: SPEC-0013 REQ "Todos View — Durable Queue".
-func (s *Store) ListTodoItems(ctx context.Context, filter, query string, limit int) ([]TodoItem, error) {
+func (s *Store) ListTodoItems(ctx context.Context, ownerHumanID, filter, query string, limit int) ([]TodoItem, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
@@ -95,15 +118,15 @@ func (s *Store) ListTodoItems(ctx context.Context, filter, query string, limit i
 			COALESCE(e.trust_mode, 'queue') AS trust_mode,
 			(SELECT count(*) FROM events ev
 			   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key)::int AS dedup_count
-		FROM todos t
+		FROM todos t`+ownedByHuman+`$1
 		LEFT JOIN events e ON e.id = t.event_id
-		WHERE ($1 = '' OR t.state = $1)
-			AND ($2 = ''
-				OR t.id ILIKE '%' || $2 || '%'
-				OR COALESCE(t.source, '') ILIKE '%' || $2 || '%'
-				OR COALESCE(t.kind, '') ILIKE '%' || $2 || '%')
+		WHERE ($2 = '' OR t.state = $2)
+			AND ($3 = ''
+				OR t.id ILIKE '%' || $3 || '%'
+				OR COALESCE(t.source, '') ILIKE '%' || $3 || '%'
+				OR COALESCE(t.kind, '') ILIKE '%' || $3 || '%')
 		ORDER BY t.created_at DESC
-		LIMIT $3`, filter, query, limit)
+		LIMIT $4`, ownerHumanID, filter, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list todo items: %w", err)
 	}
@@ -122,17 +145,23 @@ func (s *Store) ListTodoItems(ctx context.Context, filter, query string, limit i
 	return out, nil
 }
 
-// GetTodoItem returns one enriched todo (trust mode + dedup count) for the detail drawer, or
-// ErrNotFound. Governing: SPEC-0013 REQ "Todo Detail Drawer".
-func (s *Store) GetTodoItem(ctx context.Context, id string) (TodoItem, error) {
+// GetTodoItem returns one enriched todo (trust mode + dedup count) for the detail drawer, scoped to
+// the human who owns it, or ErrNotFound.
+//
+// Another human's todo is ErrNotFound, NOT a permission error, and the difference matters: a 403
+// confirms the id exists, which turns the drawer into an oracle for enumerating other tenants' work
+// even once the body is withheld. Indistinguishable-from-absent is the only answer that leaks
+// nothing. Governing: SPEC-0013 REQ "Todo Detail Drawer"; SPEC-0007 REQ "Human as Accountable
+// Principal".
+func (s *Store) GetTodoItem(ctx context.Context, ownerHumanID, id string) (TodoItem, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT `+todoColsT+`,
 			COALESCE(e.trust_mode, 'queue') AS trust_mode,
 			(SELECT count(*) FROM events ev
 			   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key)::int AS dedup_count
-		FROM todos t
+		FROM todos t`+ownedByHuman+`$1
 		LEFT JOIN events e ON e.id = t.event_id
-		WHERE t.id = $1`, id)
+		WHERE t.id = $2`, ownerHumanID, id)
 	it, err := scanTodoItem(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return TodoItem{}, ErrNotFound

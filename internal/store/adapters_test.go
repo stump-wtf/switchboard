@@ -353,7 +353,7 @@ func TestRemoveProviderKeepsEventsAndTodos(t *testing.T) {
 	}
 
 	// History survives: the ingested event and its todo remain queryable by the source name.
-	events, err := s.RecentEvents(ctx, 10)
+	events, err := s.RecentEvents(ctx, ownerOf(t, s, ctx, ep), 10)
 	if err != nil {
 		t.Fatalf("recent events: %v", err)
 	}

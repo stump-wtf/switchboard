@@ -291,7 +291,11 @@ func scrapeHXCSRF(t *testing.T, body string) string {
 // wire order; the taxonomy check pins that nothing untyped rode along.
 func TestSignedWebhookCrossesTheBoardOverSSE(t *testing.T) {
 	r, st, ctx, legacyEP := newLiveBoardRouter(t)
-	_, token := mintSession(t, st, ctx, "board-live-op", "Op", "op@example.com")
+	// Subscribe as the human who OWNS the receiver's endpoint. Live frames are routed to the
+	// owning tenant now, so a session for anyone else legitimately receives nothing — that is the
+	// behaviour under test elsewhere, not a fixture detail to work around here. The subject
+	// matches newLiveBoardRouter's receiver owner, and mintSession upserts on it.
+	_, token := mintSession(t, st, ctx, "board-live-operator", "Board Operator", "board-op@example.com")
 	ts := httptest.NewServer(r)
 	t.Cleanup(ts.Close)
 
@@ -443,7 +447,7 @@ func TestSignedWebhookCrossesTheBoardOverSSE(t *testing.T) {
 // durable frame follows.
 func TestRejectedCallerTransientCardOverSSE(t *testing.T) {
 	r, st, ctx, _ := newLiveBoardRouter(t)
-	_, token := mintSession(t, st, ctx, "board-rej-op", "Op", "op@example.com")
+	rejOp, token := mintSession(t, st, ctx, "board-rej-op", "Op", "op@example.com")
 	ts := httptest.NewServer(r)
 	t.Cleanup(ts.Close)
 
@@ -490,7 +494,7 @@ func TestRejectedCallerTransientCardOverSSE(t *testing.T) {
 
 	// Nothing persisted behind the transient surface (SPEC-0001 rejection doctrine): no todo, no
 	// durable frame.
-	counts, err := st.TodoCounts(ctx)
+	counts, err := st.TodoCounts(ctx, rejOp.ID)
 	if err != nil {
 		t.Fatalf("TodoCounts: %v", err)
 	}

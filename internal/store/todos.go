@@ -575,18 +575,36 @@ func (s *Store) RetryTodo(ctx context.Context, endpointID, id string) (Todo, err
 	return t, err
 }
 
-// RetryTodoAnyEndpoint is the OPERATOR-ONLY variant of RetryTodo (the Board's "Retry now" action,
+// operatorOwns is the tenant predicate the OperatorOwned mutations below carry. It is a correlated
+// EXISTS rather than a join because these are UPDATEs on `todos` and the predicate has to constrain
+// the row being written, not a projection of it.
+//
+// These are the paths that used to be named …AnyEndpoint, and the old name described the old
+// behaviour exactly: the doc said "the operator can see and act on every todo regardless of
+// tenant". That was true when Switchboard had one operator. With six it meant any signed-in human
+// could claim, complete, fail, retry or release anyone else's work from the Board. The rename is
+// part of the fix — the name is what made the call sites look correct.
+//
+// The agent-facing siblings (ClaimTodo, CompleteTodo, …) are unchanged: they take an endpointID and
+// were always scoped. Only the human-session paths were open.
+// Governing: SPEC-0007 REQ "Human as Accountable Principal"; ADR-0022.
+const operatorOwns = `
+			AND EXISTS (SELECT 1 FROM endpoints ep
+			              JOIN agents ag ON ag.id = ep.agent_id
+			             WHERE ep.id = todos.endpoint_id AND ag.owner_human_id = `
+
+// RetryTodoOperatorOwned is the OPERATOR-ONLY variant of RetryTodo (the Board's "Retry now" action,
 // authenticated by the human session rather than an endpoint credential). The agent path MUST use
 // RetryTodo. Governing: ADR-0022, SPEC-0003 lifecycle failed → pending.
-func (s *Store) RetryTodoAnyEndpoint(ctx context.Context, id string) (Todo, error) {
+func (s *Store) RetryTodoOperatorOwned(ctx context.Context, ownerHumanID, id string) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, attempt=0,
 			result=NULL, claimed_at=NULL, completed_at=NULL, next_retry_at=NULL, updated_at=now()
-		WHERE id=$1 AND state='failed'
-		RETURNING `+todoCols, id)
+		WHERE id=$1 AND state='failed'`+operatorOwns+`$2)
+		RETURNING `+todoCols, id, ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, "", id)
+		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
 	if err == nil {
 		s.fireTodoHook("pending", t)
@@ -599,7 +617,7 @@ func (s *Store) RetryTodoAnyEndpoint(ctx context.Context, id string) (Todo, erro
 // release; it clears owner and lease but does NOT consume or reset attempts (unlike fail/retry).
 // endpointID is the tenant scope (ADR-0022): the owner check alone is not a tenant boundary (owner
 // is a free-form string), so the UPDATE is additionally constrained to a row this endpoint owns.
-// The operator path is ReleaseTodoAnyEndpoint. Returns ErrConflict if the todo exists within this
+// The operator path is ReleaseTodoOperatorOwned. Returns ErrConflict if the todo exists within this
 // endpoint but is not a live claim owned by owner, ErrNotFound if absent or foreign.
 // Governing: SPEC-0013 REQ "Todo Detail Drawer" (Release), SPEC-0003 lease semantics.
 func (s *Store) ReleaseTodo(ctx context.Context, endpointID, id, owner string) (Todo, error) {
@@ -620,17 +638,17 @@ func (s *Store) ReleaseTodo(ctx context.Context, endpointID, id, owner string) (
 	return t, err
 }
 
-// ReleaseTodoAnyEndpoint is the OPERATOR-ONLY variant of ReleaseTodo (the Board's Release action,
+// ReleaseTodoOperatorOwned is the OPERATOR-ONLY variant of ReleaseTodo (the Board's Release action,
 // authenticated by the human session rather than an endpoint credential). The agent path MUST use
 // ReleaseTodo. Governing: ADR-0022, SPEC-0013 REQ "Todo Detail Drawer" (Release).
-func (s *Store) ReleaseTodoAnyEndpoint(ctx context.Context, id, owner string) (Todo, error) {
+func (s *Store) ReleaseTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2
-		RETURNING `+todoCols, id, owner)
+		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$3)
+		RETURNING `+todoCols, id, owner, ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, "", id)
+		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
 	if err == nil {
 		s.fireTodoHook("pending", t)
@@ -749,12 +767,12 @@ func (s *Store) GetTodo(ctx context.Context, endpointID, id string) (Todo, error
 	return t, err
 }
 
-// GetTodoAnyEndpoint returns one todo by id without endpoint-scoping. This is the OPERATOR-ONLY
-// path (the Board UI's detail drawer, retention, reaper diagnostics): the operator can see and
-// act on every todo regardless of tenant. The agent-facing path MUST use GetTodo, which enforces
-// the endpoint scope. Governing: ADR-0022.
-func (s *Store) GetTodoAnyEndpoint(ctx context.Context, id string) (Todo, error) {
-	row := s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos WHERE id = $1`, id)
+// GetTodoOperatorOwned returns one todo by id from the Board, scoped to the human who owns it.
+// Another human's todo is ErrNotFound, not a permission error — see GetTodoItem for why the
+// distinction is load-bearing. The agent-facing path MUST use GetTodo, which enforces the endpoint
+// scope. Governing: ADR-0022; SPEC-0007 REQ "Human as Accountable Principal".
+func (s *Store) GetTodoOperatorOwned(ctx context.Context, ownerHumanID, id string) (Todo, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos WHERE id = $1`+operatorOwns+`$2)`, id, ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ErrNotFound
@@ -762,11 +780,11 @@ func (s *Store) GetTodoAnyEndpoint(ctx context.Context, id string) (Todo, error)
 	return t, err
 }
 
-// ClaimTodoAnyEndpoint is the OPERATOR-ONLY variant of ClaimTodo that resolves the endpoint from
+// ClaimTodoOperatorOwned is the OPERATOR-ONLY variant of ClaimTodo that resolves the endpoint from
 // the todo row instead of requiring it up front (the Board's Claim action is authenticated by the
 // human session, not by an endpoint credential). The agent path MUST use ClaimTodo. Governing:
 // ADR-0022, SPEC-0003 claim-under-lease semantics.
-func (s *Store) ClaimTodoAnyEndpoint(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
+func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='claimed', owner=$2, lease_expires_at=now()+$3::interval,
 			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
@@ -774,11 +792,11 @@ func (s *Store) ClaimTodoAnyEndpoint(ctx context.Context, id, owner string, ttl 
 			AND (state='pending'
 				OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 				OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
-					AND attempt < max_attempts))
-		RETURNING `+todoCols, id, owner, ttl.String())
+					AND attempt < max_attempts))`+operatorOwns+`$4)
+		RETURNING `+todoCols, id, owner, ttl.String(), ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, "", id)
+		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
 	if err == nil {
 		s.fireTodoHook("claimed", t)
@@ -786,16 +804,16 @@ func (s *Store) ClaimTodoAnyEndpoint(ctx context.Context, id, owner string, ttl 
 	return t, err
 }
 
-// CompleteTodoAnyEndpoint is the OPERATOR-ONLY variant of CompleteTodo. The agent path MUST use
+// CompleteTodoOperatorOwned is the OPERATOR-ONLY variant of CompleteTodo. The agent path MUST use
 // CompleteTodo. Governing: ADR-0022, ADR-0007 complete.
-func (s *Store) CompleteTodoAnyEndpoint(ctx context.Context, id, owner string, result []byte) (Todo, error) {
+func (s *Store) CompleteTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='done', result=$3, completed_at=now(), updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2
-		RETURNING `+todoCols, id, owner, result)
+		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$4)
+		RETURNING `+todoCols, id, owner, result, ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, "", id)
+		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
 	if err == nil {
 		s.fireTodoHook("done", t)
@@ -803,9 +821,9 @@ func (s *Store) CompleteTodoAnyEndpoint(ctx context.Context, id, owner string, r
 	return t, err
 }
 
-// FailTodoAnyEndpoint is the OPERATOR-ONLY variant of FailTodo. The agent path MUST use FailTodo.
+// FailTodoOperatorOwned is the OPERATOR-ONLY variant of FailTodo. The agent path MUST use FailTodo.
 // Governing: ADR-0022, SPEC-0003 fail.
-func (s *Store) FailTodoAnyEndpoint(ctx context.Context, id, owner string, result []byte) (Todo, error) {
+func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET
 			state = 'failed',
@@ -813,12 +831,12 @@ func (s *Store) FailTodoAnyEndpoint(ctx context.Context, id, owner string, resul
 				ELSE now() + make_interval(secs =>
 					LEAST($4::float8 * power(2, GREATEST(attempt, 1) - 1), $5::float8)) END,
 			lease_expires_at = NULL, result = $3, updated_at = now()
-		WHERE id=$1 AND state='claimed' AND owner=$2
+		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$6)
 		RETURNING `+todoCols, id, owner, result,
-		retryBackoffBase.Seconds(), retryBackoffCap.Seconds())
+		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, "", id)
+		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
 	if err == nil {
 		s.fireTodoHook(t.State, t)
@@ -826,16 +844,16 @@ func (s *Store) FailTodoAnyEndpoint(ctx context.Context, id, owner string, resul
 	return t, err
 }
 
-// HeartbeatTodoAnyEndpoint is the OPERATOR-ONLY variant of HeartbeatTodo. The agent path MUST use
+// HeartbeatTodoOperatorOwned is the OPERATOR-ONLY variant of HeartbeatTodo. The agent path MUST use
 // HeartbeatTodo. Governing: ADR-0022, SPEC-0003 heartbeat.
-func (s *Store) HeartbeatTodoAnyEndpoint(ctx context.Context, id, owner string, ttl time.Duration) (Todo, error) {
+func (s *Store) HeartbeatTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2
-		RETURNING `+todoCols, id, owner, ttl.String())
+		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$4)
+		RETURNING `+todoCols, id, owner, ttl.String(), ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, "", id)
+		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
 	return t, err
 }
@@ -887,9 +905,21 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 // minted. Probing globally made this function a cross-tenant existence oracle — endpoint B could
 // call ClaimTodo with a guessed id and read the returned error to learn whether endpoint A owned
 // it (ErrConflict = "exists", ErrNotFound = "does not"), leaking the membership of A's id space
-// through a path that correctly refused to return the row itself. An empty endpointID means the
-// caller is an operator twin (*AnyEndpoint), which legitimately sees every tenant and wants the
-// global probe. Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
+// through a path that correctly refused to return the row itself.
+//
+// The OPERATOR paths must not use this one. They used to: the carve-out here said an empty
+// endpointID meant "an operator twin, which legitimately sees every tenant and wants the global
+// probe", which was true of a single-operator instance and false the moment there were six. It
+// left every Board action a cross-tenant existence oracle even after the UPDATE itself was
+// scoped — the row was correctly refused and the error still confirmed it existed. They use
+// classifyMissForHuman instead.
+//
+// The global probe still has callers: the A2A state primitives in todos_a2a.go (CancelTodo,
+// RejectTodo and the two interrupt transitions). Those are not a live leak today — nothing outside
+// the store package calls them yet, they are built ahead of the A2A handler — but they MUST take a
+// tenant scope before that handler lands, or they reintroduce this oracle on a new surface. Tracked
+// on #176.
+// Governing: ADR-0022, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
 func (s *Store) classifyMiss(ctx context.Context, endpointID, id string) error {
 	var exists bool
 	var err error
@@ -901,6 +931,29 @@ func (s *Store) classifyMiss(ctx context.Context, endpointID, id string) error {
 			`SELECT EXISTS(SELECT 1 FROM todos WHERE id=$1 AND endpoint_id=$2)`, id, endpointID).Scan(&exists)
 	}
 	if err != nil {
+		return err
+	}
+	if exists {
+		return ErrConflict
+	}
+	return ErrNotFound
+}
+
+// classifyMissForHuman is classifyMiss for the operator (human-session) paths: same
+// present-but-wrong-state vs absent distinction, with the existence probe narrowed to the todos
+// that human owns.
+//
+// Scoping the probe is not belt-and-braces on top of the scoped UPDATE — it is the half that
+// closes the oracle. A scoped UPDATE alone still answers "conflict" for another tenant's live
+// todo, and "conflict" vs "not found" is exactly the one bit an attacker needs to enumerate
+// another tenant's ids. Governing: SPEC-0007 REQ "Human as Accountable Principal"; ADR-0022.
+func (s *Store) classifyMissForHuman(ctx context.Context, ownerHumanID, id string) error {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM todos t
+		                JOIN endpoints ep ON ep.id = t.endpoint_id
+		                JOIN agents    ag ON ag.id = ep.agent_id AND ag.owner_human_id = $2
+		               WHERE t.id = $1)`, id, ownerHumanID).Scan(&exists); err != nil {
 		return err
 	}
 	if exists {

@@ -254,7 +254,7 @@ func (h *Handler) buildShell(ctx context.Context, active string, human *store.Hu
 			}
 		}
 	}
-	stats, err := h.store.BoardStats(ctx)
+	stats, err := h.store.BoardStats(ctx, human.ID)
 	if err != nil {
 		h.log.Warn("shell board stats", "err", err)
 		return sh, store.BoardStats{}
@@ -310,7 +310,7 @@ func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 		// One durable-queue read partitions into the two persisted lanes, newest first, capped per
 		// lane. Errors are suppressed to a log so the Board still renders its shell; the lanes show
 		// their empty states.
-		items, err := h.store.ListTodoItems(r.Context(), "", "", boardLaneQuery)
+		items, err := h.store.ListTodoItems(r.Context(), human.ID, "", "", boardLaneQuery)
 		if err != nil {
 			h.log.Warn("board lane todos", "err", err)
 		}
@@ -327,12 +327,12 @@ func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		counts, err := h.store.TodoCounts(r.Context())
+		counts, err := h.store.TodoCounts(r.Context(), human.ID)
 		if err != nil {
 			h.log.Warn("board lane counts", "err", err)
 		}
 		lanes.Counts = laneCountsFrom(counts)
-		buckets, err := h.store.EventBuckets(r.Context(), activityBuckets)
+		buckets, err := h.store.EventBuckets(r.Context(), human.ID, activityBuckets)
 		if err != nil {
 			h.log.Warn("board event buckets", "err", err)
 		}
@@ -356,7 +356,7 @@ const boardLaneQuery = 60
 // (the UI implements no lifecycle rules of its own).
 func (h *Handler) ClaimTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.ClaimTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
+	t, err := h.store.ClaimTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
 	// respondTodoAction picks the fragment by HTMX target: the Board card's Claim (default) gets
 	// the OOB lane movement, while the Todos table and drawer get their own refreshed fragments.
 	// On a lost race the SSE stage update tells the operator who won; no internal detail leaks.
