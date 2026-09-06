@@ -256,6 +256,9 @@ func (s *Store) RevokeFriendEdge(ctx context.Context, edgeID, ownerHumanID strin
 			edge.EndpointID); err != nil {
 			return FriendEdge{}, err
 		}
+		if err := deadLetterEndpointTodos(ctx, tx, []string{edge.EndpointID}); err != nil {
+			return FriendEdge{}, err
+		}
 		if err := revokeEndpointOAuth(ctx, tx, []string{edge.EndpointID}); err != nil {
 			return FriendEdge{}, err
 		}

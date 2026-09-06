@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -726,5 +727,64 @@ func TestCreateEndpointNilWebhookCeilingPersistsEmptyArrays(t *testing.T) {
 	}
 	if queues == nil || len(queues) != 0 {
 		t.Errorf("webhook_queues = %#v, want an empty (non-NULL) array", queues)
+	}
+}
+
+// Revoking an endpoint must retire the work routed to it, not leave it pending forever.
+//
+// A revoked endpoint's credential no longer authenticates, so no session can claim its todos —
+// they are undrainable by construction. Left pending they accumulate at the OLD end of the table
+// and, because the doorbell sweep is oldest-first, absorb the entire heartbeat budget while live
+// endpoints go unrung; the symptom is silent, since a ring with no session logs nothing. In
+// production 1,442 such rows did exactly that (#169). Governing: SPEC-0007 REQ "Instant, Total
+// Revocation"; SPEC-0016 REQ "Revocation Cascade".
+func TestRevokeEndpointDeadLettersItsPendingTodos(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := mustHuman(t, s, ctx, "pocket|dl-owner", "Owner")
+	ag := mustAgent(t, s, ctx, owner.ID, "dl-bot")
+	doomed := mustEndpoint(t, s, ctx, ag.ID, "dl-hash-1")
+	survivor := mustEndpoint(t, s, ctx, ag.ID, "dl-hash-2")
+
+	seed := func(ep, title string) Todo {
+		t.Helper()
+		td, _, err := s.CreateTodo(ctx, CreateTodoParams{
+			EndpointID: ep, Queue: "forge", Title: title, Source: "test",
+		})
+		if err != nil {
+			t.Fatalf("seed %s: %v", title, err)
+		}
+		return td
+	}
+	dead := seed(doomed.ID, "routed to the endpoint about to die")
+	live := seed(survivor.ID, "routed elsewhere and must be untouched")
+
+	if err := s.RevokeEndpoint(ctx, doomed.ID, owner.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	var state string
+	var nextRetry *time.Time
+	var result []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT state, next_retry_at, result FROM todos WHERE id = $1`, dead.ID,
+	).Scan(&state, &nextRetry, &result); err != nil {
+		t.Fatalf("read revoked endpoint's todo: %v", err)
+	}
+	if state != "failed" {
+		t.Fatalf("todo on a revoked endpoint is %q, want failed — pending is undrainable garbage that starves the sweep", state)
+	}
+	if nextRetry != nil {
+		t.Fatal("a revoked endpoint's todo must dead-letter, not schedule a retry it can never serve")
+	}
+	if !strings.Contains(string(result), "endpoint_revoked") {
+		t.Fatalf("result must say why the todo died, got %s", result)
+	}
+
+	// The cascade is endpoint-scoped: a sibling endpoint's work is not collateral.
+	if err := s.pool.QueryRow(ctx, `SELECT state FROM todos WHERE id = $1`, live.ID).Scan(&state); err != nil {
+		t.Fatalf("read surviving endpoint's todo: %v", err)
+	}
+	if state != "pending" {
+		t.Fatalf("sibling endpoint's todo is %q, want pending — the cascade over-reached", state)
 	}
 }
