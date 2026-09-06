@@ -1012,7 +1012,11 @@ const (
 )
 
 // RingUnclaimed returns pending todos whose doorbell is due to be repeated, marking them rung in
-// the same statement so two sweeps cannot select the same row. The caller publishes them.
+// the same statement so two sweeps only rarely select the same row: the lock step re-checks ids
+// picked under an earlier snapshot rather than re-running the eligibility predicates at lock time,
+// so a concurrent ring committing between the snapshot and the FOR UPDATE can double-ring once.
+// That narrowed, best-effort exclusivity is acceptable — the system is best-effort and the
+// doorbell is a hint.
 //
 // The sweep round-robins across endpoints: each todo is ranked within its OWN endpoint's backlog
 // and the pick orders by that rank first, so every endpoint contributes its best candidate before
