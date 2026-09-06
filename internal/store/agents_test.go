@@ -758,6 +758,15 @@ func TestRevokeEndpointDeadLettersItsPendingTodos(t *testing.T) {
 	dead := seed(doomed.ID, "routed to the endpoint about to die")
 	live := seed(survivor.ID, "routed elsewhere and must be untouched")
 
+	// A2A interrupt states are non-terminal but unrecoverable once the credential dies: never
+	// rung (the sweep rings pending only), never reaped, not cancelable, never pruned by
+	// retention. They must dead-letter with the rest or they strand forever.
+	interrupted := seed(doomed.ID, "paused on the client when the endpoint died")
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE todos SET state = 'input-required' WHERE id = $1`, interrupted.ID); err != nil {
+		t.Fatalf("park in input-required: %v", err)
+	}
+
 	if err := s.RevokeEndpoint(ctx, doomed.ID, owner.ID); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
@@ -778,6 +787,15 @@ func TestRevokeEndpointDeadLettersItsPendingTodos(t *testing.T) {
 	}
 	if !strings.Contains(string(result), "endpoint_revoked") {
 		t.Fatalf("result must say why the todo died, got %s", result)
+	}
+
+	if err := s.pool.QueryRow(ctx,
+		`SELECT state FROM todos WHERE id = $1`, interrupted.ID,
+	).Scan(&state); err != nil {
+		t.Fatalf("read interrupted todo: %v", err)
+	}
+	if state != "failed" {
+		t.Fatalf("interrupt-state todo on a revoked endpoint is %q, want failed — it strands forever otherwise", state)
 	}
 
 	// The cascade is endpoint-scoped: a sibling endpoint's work is not collateral.

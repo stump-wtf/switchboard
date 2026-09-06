@@ -28,4 +28,4 @@ SET state            = 'failed',
 FROM endpoints ep
 WHERE ep.id = t.endpoint_id
   AND ep.state = 'revoked'
-  AND t.state IN ('pending', 'claimed');
+  AND t.state IN ('pending', 'claimed', 'input-required', 'auth-required');
