@@ -44,7 +44,7 @@ func TestTodoCountsByState(t *testing.T) {
 		t.Fatalf("fail: %v", err)
 	}
 
-	c, err := s.TodoCounts(ctx)
+	c, err := s.TodoCounts(ctx, ownerOf(t, s, ctx, ep))
 	if err != nil {
 		t.Fatalf("counts: %v", err)
 	}
@@ -66,17 +66,17 @@ func TestListTodoItemsFilterAndSearch(t *testing.T) {
 	}
 
 	// No filter, no query: both.
-	all, err := s.ListTodoItems(ctx, "", "", 50)
+	all, err := s.ListTodoItems(ctx, ownerOf(t, s, ctx, ep), "", "", 50)
 	if err != nil || len(all) != 2 {
 		t.Fatalf("list all: n=%d err=%v", len(all), err)
 	}
 	// Search by source.
-	hits, err := s.ListTodoItems(ctx, "", "stripe", 50)
+	hits, err := s.ListTodoItems(ctx, ownerOf(t, s, ctx, ep), "", "stripe", 50)
 	if err != nil || len(hits) != 1 || hits[0].Source != "stripe" {
 		t.Fatalf("search stripe: %+v err=%v", hits, err)
 	}
 	// Search by event kind substring.
-	byKind, _ := s.ListTodoItems(ctx, "", "invoice", 50)
+	byKind, _ := s.ListTodoItems(ctx, ownerOf(t, s, ctx, ep), "", "invoice", 50)
 	if len(byKind) != 1 || byKind[0].Kind != "invoice.paid" {
 		t.Fatalf("search kind: %+v", byKind)
 	}
@@ -84,11 +84,11 @@ func TestListTodoItemsFilterAndSearch(t *testing.T) {
 	if _, err := s.ClaimTodo(ctx, ep, hits[0].ID, "op:h", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	pending, _ := s.ListTodoItems(ctx, "pending", "", 50)
+	pending, _ := s.ListTodoItems(ctx, ownerOf(t, s, ctx, ep), "pending", "", 50)
 	if len(pending) != 1 || pending[0].Source != "github" {
 		t.Fatalf("pending filter: %+v", pending)
 	}
-	claimed, _ := s.ListTodoItems(ctx, "claimed", "", 50)
+	claimed, _ := s.ListTodoItems(ctx, ownerOf(t, s, ctx, ep), "claimed", "", 50)
 	if len(claimed) != 1 || claimed[0].State != "claimed" {
 		t.Fatalf("claimed filter: %+v", claimed)
 	}
@@ -117,7 +117,7 @@ func TestTodoItemTrustModeAndDedupCount(t *testing.T) {
 		t.Fatalf("second delivery should have deduped the todo, not created a new one")
 	}
 
-	it, err := s.GetTodoItem(ctx, td.ID)
+	it, err := s.GetTodoItem(ctx, ownerOf(t, s, ctx, ep), td.ID)
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestTodoItemTrustModeAndDedupCount(t *testing.T) {
 	}
 
 	// The second delivery's event has no todo of its own and must be flagged deduped in the feed.
-	events, err := s.RecentEvents(ctx, 8)
+	events, err := s.RecentEvents(ctx, ownerOf(t, s, ctx, ep), 8)
 	if err != nil {
 		t.Fatalf("recent events: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestTodoItemTrustModeAndDedupCount(t *testing.T) {
 
 	// An event-less todo reads as the queue trust mode.
 	plain, _, _ := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q2", Source: "cron", Title: "t", IdempotencyKey: "plain"})
-	pit, _ := s.GetTodoItem(ctx, plain.ID)
+	pit, _ := s.GetTodoItem(ctx, ownerOf(t, s, ctx, ep), plain.ID)
 	if pit.TrustMode != "queue" {
 		t.Fatalf("event-less trust mode = %q, want queue", pit.TrustMode)
 	}

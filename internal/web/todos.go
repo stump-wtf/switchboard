@@ -129,11 +129,11 @@ func (h *Handler) Todos(w http.ResponseWriter, r *http.Request) {
 	)
 	if sh.DBConnected {
 		var err error
-		if counts, err = h.store.TodoCounts(r.Context()); err != nil {
+		if counts, err = h.store.TodoCounts(r.Context(), human.ID); err != nil {
 			// Suppressed to a log so the view still renders (degraded pill counts); a reload recovers.
 			h.log.Warn("todos counts", "err", err)
 		}
-		items, err := h.store.ListTodoItems(r.Context(), filterState(filter), query, todoListCap)
+		items, err := h.store.ListTodoItems(r.Context(), human.ID, filterState(filter), query, todoListCap)
 		if err != nil {
 			h.log.Warn("todos list", "err", err)
 		}
@@ -167,7 +167,7 @@ func (h *Handler) Todos(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) TodoDrawer(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	id := chi.URLParam(r, "id")
-	it, err := h.store.GetTodoItem(r.Context(), id)
+	it, err := h.store.GetTodoItem(r.Context(), human.ID, id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -199,7 +199,7 @@ func (h *Handler) TodoDrawer(w http.ResponseWriter, r *http.Request) {
 // Governing: SPEC-0015 REQ "Todos View And Drawer" (actions preserved), SPEC-0003 complete.
 func (h *Handler) CompleteTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.CompleteTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
+	t, err := h.store.CompleteTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
 	h.respondTodoAction(w, r, "CompleteTodo", t, err)
 }
 
@@ -207,13 +207,15 @@ func (h *Handler) CompleteTodo(w http.ResponseWriter, r *http.Request) {
 // POST /todos/{id}/fail.
 func (h *Handler) FailTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.FailTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
+	t, err := h.store.FailTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
 	h.respondTodoAction(w, r, "FailTodo", t, err)
 }
 
 // RetryTodo re-queues a dead-lettered (failed) todo now. POST /todos/{id}/retry.
 func (h *Handler) RetryTodo(w http.ResponseWriter, r *http.Request) {
-	t, err := h.store.RetryTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"))
+	// Retry took no human at all — it was the one action that did not even name the caller.
+	human, _ := auth.FromContext(r.Context())
+	t, err := h.store.RetryTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"))
 	h.respondTodoAction(w, r, "RetryTodo", t, err)
 }
 
@@ -222,7 +224,7 @@ func (h *Handler) RetryTodo(w http.ResponseWriter, r *http.Request) {
 // REQ "Visibility Window, Lease, Heartbeat".
 func (h *Handler) ExtendTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.HeartbeatTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
+	t, err := h.store.HeartbeatTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"), "op:"+human.ID, operatorLeaseTTL)
 	h.respondTodoAction(w, r, "ExtendTodo", t, err)
 }
 
@@ -230,7 +232,7 @@ func (h *Handler) ExtendTodo(w http.ResponseWriter, r *http.Request) {
 // POST /todos/{id}/release. Governing: SPEC-0015 REQ "Todos View And Drawer" (Release).
 func (h *Handler) ReleaseTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.ReleaseTodoAnyEndpoint(r.Context(), chi.URLParam(r, "id"), "op:"+human.ID)
+	t, err := h.store.ReleaseTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"), "op:"+human.ID)
 	h.respondTodoAction(w, r, "ReleaseTodo", t, err)
 }
 
@@ -256,11 +258,15 @@ func (h *Handler) respondTodoAction(w http.ResponseWriter, r *http.Request, hand
 		return
 	}
 	ctx := r.Context()
+	// The re-render reads back the row we just mutated, so it carries the same tenant scope the
+	// mutation did — otherwise a successful action on your OWN todo could still render through an
+	// unscoped read, and the scoping would be one refactor away from being decorative.
+	human, _ := auth.FromContext(ctx)
 	target := r.Header.Get("HX-Target")
 	var frag string
 	switch {
 	case target == "sb-overlay":
-		it, err := h.store.GetTodoItem(ctx, t.ID)
+		it, err := h.store.GetTodoItem(ctx, human.ID, t.ID)
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -271,7 +277,7 @@ func (h *Handler) respondTodoAction(w http.ResponseWriter, r *http.Request, hand
 			return
 		}
 	case strings.HasPrefix(target, "sb-tr-"):
-		it, err := h.store.GetTodoItem(ctx, t.ID)
+		it, err := h.store.GetTodoItem(ctx, human.ID, t.ID)
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -364,7 +370,8 @@ func (h *Handler) buildDrawer(ctx context.Context, it store.TodoItem, csrf strin
 	}
 	// The originating event's received-at anchors the timeline's first step ("received/verified").
 	if it.EventID != nil {
-		if e, err := h.store.EventByID(ctx, *it.EventID); err == nil {
+		human, _ := auth.FromContext(ctx)
+		if e, err := h.store.EventByID(ctx, human.ID, *it.EventID); err == nil {
 			dv.ReceivedAt = e.ReceivedAt
 		} else {
 			h.log.Warn("drawer event lookup", "todo", it.ID, "event", *it.EventID, "err", err)

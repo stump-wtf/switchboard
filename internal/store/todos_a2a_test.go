@@ -138,11 +138,11 @@ func TestRejectedIsDistinctFromFailed(t *testing.T) {
 		t.Fatalf("claim rejected should conflict, got %v", err)
 	}
 	// …and the explicit operator RetryTodo (which only re-enqueues 'failed') refuses it.
-	if _, err := s.RetryTodoAnyEndpoint(ctx, td.ID); !errors.Is(err, ErrConflict) {
+	if _, err := s.RetryTodoOperatorOwned(ctx, ownerOf(t, s, ctx, ep), td.ID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("RetryTodo on rejected should conflict (only failed is retryable), got %v", err)
 	}
 	// Re-fetch confirms it is still 'rejected' — nothing moved it.
-	got, err := s.GetTodoAnyEndpoint(ctx, td.ID)
+	got, err := s.GetTodoOperatorOwned(ctx, ownerOf(t, s, ctx, ep), td.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 		t.Fatalf("cancel: owner=%q lease=%v retry=%v; want all cleared", c.Owner, c.LeaseExpiresAt, c.NextRetryAt)
 	}
 	// Terminal and distinct from failed: not retryable, not re-claimable, not requeued.
-	if _, err := s.RetryTodoAnyEndpoint(ctx, pend.ID); !errors.Is(err, ErrConflict) {
+	if _, err := s.RetryTodoOperatorOwned(ctx, ownerOf(t, s, ctx, ep), pend.ID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("RetryTodo on canceled should conflict, got %v", err)
 	}
 	if _, err := s.ClaimTodo(ctx, ep, pend.ID, "w", time.Hour); !errors.Is(err, ErrConflict) {
@@ -244,7 +244,7 @@ func TestCancelTerminalAndDistinctFromFailed(t *testing.T) {
 		if _, err := s.ClaimTodo(ctx, ep, dl.ID, "w", time.Hour); err != nil {
 			t.Fatalf("claim4 %d: %v", i, err)
 		}
-		if _, err := s.FailTodoAnyEndpoint(ctx, dl.ID, "w", nil); err != nil {
+		if _, err := s.FailTodoOperatorOwned(ctx, ownerOf(t, s, ctx, ep), dl.ID, "w", nil); err != nil {
 			t.Fatalf("fail4 %d: %v", i, err)
 		}
 		if i < 4 {

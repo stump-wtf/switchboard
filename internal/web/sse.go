@@ -94,6 +94,29 @@ func (h *EventHub) subscribe(human, session string) (<-chan Event, func(), error
 	return sub.ch, cancel, nil
 }
 
+// humans returns the distinct human ids that currently hold a stream, so a per-human render loop
+// costs one pass per CONNECTED human rather than per row in the humans table — and costs nothing
+// at all when nobody is watching.
+//
+// A human with three tabs open appears once; Publish fans the single frame to all three streams.
+func (h *EventHub) humans() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := make(map[string]struct{}, len(h.subs))
+	out := make([]string, 0, len(h.subs))
+	for _, s := range h.subs {
+		if s.human == "" {
+			continue
+		}
+		if _, dup := seen[s.human]; dup {
+			continue
+		}
+		seen[s.human] = struct{}{}
+		out = append(out, s.human)
+	}
+	return out
+}
+
 // Publish fans an event out to its audience: every subscriber for an unowned frame, only the
 // owning human's streams for an Owner-scoped one. Never blocks: a full buffer drops the event
 // (SPEC-0012 — a missed event costs a swap, never state; reload renders DB truth).

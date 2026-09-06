@@ -37,7 +37,13 @@ func postWebhook(t *testing.T, r chi.Router, path, token, body string) *httptest
 var revealSecretRe = regexp.MustCompile(`aria-labelledby="sb-prreveal-secret-label">([0-9a-f]{64})<`)
 
 func TestProvidersLifecycleFlow(t *testing.T) {
-	r, st, ctx, _ := newReceiverDBRouter(t)
+	r, st, ctx, legacyEP := newReceiverDBRouter(t)
+	// The operator reads below are tenant-scoped now, so they need the human who owns the
+	// receiver's endpoint — the same principal whose board these events would appear on.
+	receiverOwner, err := st.EndpointOwner(ctx, legacyEP.ID)
+	if err != nil {
+		t.Fatalf("receiver endpoint owner: %v", err)
+	}
 	_, token := mintSession(t, st, ctx, "prov-op", "Prov Op", "prov@example.com")
 
 	// A token provider with a known held secret, as the boot env import would seed it.
@@ -78,7 +84,7 @@ func TestProvidersLifecycleFlow(t *testing.T) {
 		t.Fatalf("ingest after disable: %d, want 403", rec.Code)
 	}
 	// …while existing events and todos remain queryable.
-	events, err := st.RecentEvents(ctx, 10)
+	events, err := st.RecentEvents(ctx, receiverOwner, 10)
 	if err != nil {
 		t.Fatalf("recent events: %v", err)
 	}
@@ -137,7 +143,7 @@ func TestProvidersLifecycleFlow(t *testing.T) {
 	if body := getAs(t, r, token, "/providers").Body.String(); strings.Contains(body, `id="sb-pr-homelab"`) {
 		t.Fatal("removed provider must leave the view")
 	}
-	events, err = st.RecentEvents(ctx, 10)
+	events, err = st.RecentEvents(ctx, receiverOwner, 10)
 	if err != nil {
 		t.Fatalf("recent events after remove: %v", err)
 	}
@@ -150,7 +156,7 @@ func TestProvidersLifecycleFlow(t *testing.T) {
 	if !sawHomelab {
 		t.Fatal("removal must NOT delete previously ingested events")
 	}
-	counts, err := st.TodoCounts(ctx)
+	counts, err := st.TodoCounts(ctx, receiverOwner)
 	if err != nil {
 		t.Fatalf("todo counts: %v", err)
 	}

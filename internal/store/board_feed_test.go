@@ -65,7 +65,7 @@ func TestRecentEventsJoinTodoLifecycle(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 
-	events, err := s.RecentEvents(ctx, 8)
+	events, err := s.RecentEvents(ctx, ownerOf(t, s, ctx, ep), 8)
 	if err != nil {
 		t.Fatalf("recent events: %v", err)
 	}
@@ -77,11 +77,11 @@ func TestRecentEventsJoinTodoLifecycle(t *testing.T) {
 		t.Fatalf("todo join wrong: %+v", e)
 	}
 
-	byID, err := s.EventByID(ctx, e.ID)
+	byID, err := s.EventByID(ctx, ownerOf(t, s, ctx, ep), e.ID)
 	if err != nil || byID.Source != "github" || byID.EventType != "push" {
 		t.Fatalf("event by id: %+v %v", byID, err)
 	}
-	if _, err := s.EventByID(ctx, 999999); err != ErrNotFound {
+	if _, err := s.EventByID(ctx, ownerOf(t, s, ctx, ep), 999999); err != ErrNotFound {
 		t.Fatalf("missing event err = %v, want ErrNotFound", err)
 	}
 }
@@ -89,10 +89,17 @@ func TestRecentEventsJoinTodoLifecycle(t *testing.T) {
 func TestEventBuckets(t *testing.T) {
 	s, ctx := testStore(t)
 
-	if _, err := s.InsertEvent(ctx, EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "b1", TrustMode: "signed", Payload: []byte(`{}`)}); err != nil {
+	// The event needs a todo for the buckets to attribute it: an event belongs to a human only
+	// through the todos it produced (see eventOwnedByHuman), so a bare InsertEvent is owned by
+	// nobody and counted for nobody. That is the intended shape, not a test workaround — an
+	// unattributable delivery used to be counted for EVERYONE.
+	ep := seedEndpoint(t, s, ctx, "event-buckets", "q")
+	if _, _, _, err := s.CreateEventTodo(ctx,
+		EventInput{Source: "github", Family: "webhook", EventType: "push", ExternalID: "b1", TrustMode: "signed", Payload: []byte(`{}`)},
+		CreateTodoParams{EndpointID: ep, Queue: "q", Title: "t", IdempotencyKey: "b1"}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	buckets, err := s.EventBuckets(ctx, 24)
+	buckets, err := s.EventBuckets(ctx, ownerOf(t, s, ctx, ep), 24)
 	if err != nil {
 		t.Fatalf("buckets: %v", err)
 	}
