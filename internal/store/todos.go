@@ -1029,6 +1029,19 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			SELECT id FROM todos
 			WHERE state = 'pending'
 			  AND ring_attempts < $1
+			  -- Sender gate (SPEC-0011): only a todo whose delivery event exists AND passed
+			  -- per-source verification — or came from a token-trust self-managed webhook,
+			  -- whose credential is the unguessable ingest URL (SPEC-0006) — is ever
+			  -- doorbell-eligible. The gate must live in the wakeup query, not the publisher,
+			  -- so it cannot be bypassed: the reaper republishes through the same path a fresh
+			  -- delivery uses, and the create path deliberately withholds the doorbell from
+			  -- unverified (open-trust) and event-less todos, which degrade to pull. This is
+			  -- the same predicate the create path applies when deciding whether to ring (see
+			  -- the CreateEventTodos gates above); PendingDoorbellTodos, the pull read, is
+			  -- deliberately stricter (e.verified only) since a human-driven pull should only
+			  -- surface verified deliveries.
+			  AND event_id IS NOT NULL
+			  AND EXISTS (SELECT 1 FROM events e WHERE e.id = todos.event_id AND (e.verified OR e.trust_mode = 'token'))
 			  AND (
 			    -- Never rung by this mechanism: wait out the first backoff from creation, so a
 			    -- todo whose original doorbell is still in flight is not immediately doubled.

@@ -8,6 +8,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -31,14 +32,30 @@ func age(t *testing.T, s *Store, ctx context.Context, id string, createdAgo time
 	}
 }
 
+// seedRingingTodo enqueues a todo the way the ingest path does — through CreateEventTodos, so it
+// carries a delivery event with a trust mode. RingUnclaimed only rings doorbell-eligible rows
+// (SPEC-0011 sender gate), so a sweep test must seed the event, not the bare todo.
+func seedRingingTodo(t *testing.T, s *Store, ctx context.Context, ep, title string, verified bool, trustMode string) Todo {
+	t.Helper()
+	uniq := fmt.Sprintf("ring-%s-%d", title, time.Now().UnixNano())
+	_, out, err := s.CreateEventTodos(ctx, EventInput{
+		Source: "test-source", Family: "webhook", EventType: "ping",
+		ExternalID: uniq, TrustMode: trustMode, Verified: verified,
+	}, []string{ep}, CreateTodoParams{Queue: "forge", Title: title, Source: "test"})
+	if err != nil {
+		t.Fatalf("seed todo (%s): %v", title, err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("seed todo (%s): %d rows", title, len(out))
+	}
+	return out[0].Todo
+}
+
 func TestRingUnclaimedRepeatsAnUnpickedDoorbell(t *testing.T) {
 	s, ctx := testStore(t)
 	ep := seedEndpoint(t, s, ctx, "ring", "forge")
 
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "forge", Title: "unpicked", Source: "test"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	td := seedRingingTodo(t, s, ctx, ep, "unpicked", true, "signed")
 
 	// Freshly created: still inside the first backoff, so it must NOT be rung — a todo whose
 	// original doorbell may still be in flight must not be immediately doubled.
@@ -61,14 +78,57 @@ func TestRingUnclaimedRepeatsAnUnpickedDoorbell(t *testing.T) {
 	}
 }
 
+// Token-trust self-managed webhooks authenticate by the unguessable ingest URL (SPEC-0006), so
+// their deliveries ring the doorbell like verified ones — the reaper must re-ring them too.
+func TestRingUnclaimedRepeatsTokenTrustDoorbell(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "ring", "forge")
+
+	td := seedRingingTodo(t, s, ctx, ep, "token-delivery", false, "token")
+	age(t, s, ctx, td.ID, 10*time.Minute, 0, nil)
+
+	got, err := s.RingUnclaimed(ctx)
+	if err != nil {
+		t.Fatalf("ring: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != td.ID {
+		t.Fatalf("expected the token-trust todo to be rung, got %d rows", len(got))
+	}
+}
+
+// Sender gate (SPEC-0011): the reaper republishes through the same path a fresh delivery uses, so
+// it must withhold exactly what the create path withholds — unverified (open-trust) deliveries and
+// event-less todos degrade to pull, because the todo title is attacker-reachable text and verified
+// attribution is the gate (ADR-0013). The gate lives in the wakeup SQL so it cannot be bypassed.
+func TestRingUnclaimedNeverRingsUnverifiedOrEventlessTodos(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "ring", "forge")
+	long := 24 * time.Hour
+
+	open := seedRingingTodo(t, s, ctx, ep, "unverified open delivery", false, "open")
+	age(t, s, ctx, open.ID, 48*time.Hour, 0, &long)
+
+	eventless, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "forge",
+		Title: "created without an event", Source: "test"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	age(t, s, ctx, eventless.ID, 48*time.Hour, 0, &long)
+
+	got, err := s.RingUnclaimed(ctx)
+	if err != nil {
+		t.Fatalf("ring: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("rang %d todos that must degrade to pull: %v", len(got), got)
+	}
+}
+
 // A todo nobody wants must stop costing model turns. Five doorbells over ~7h is the budget.
 func TestRingUnclaimedStopsAtTheAttemptCap(t *testing.T) {
 	s, ctx := testStore(t)
 	ep := seedEndpoint(t, s, ctx, "ring", "forge")
-	td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "forge", Title: "nobody wants this", Source: "test"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	td := seedRingingTodo(t, s, ctx, ep, "nobody wants this", true, "signed")
 	long := 24 * time.Hour
 	age(t, s, ctx, td.ID, 48*time.Hour, ringMaxAttempts, &long)
 
@@ -84,13 +144,13 @@ func TestRingUnclaimedIgnoresClaimedAndDoneTodos(t *testing.T) {
 	ep := seedEndpoint(t, s, ctx, "ring", "forge")
 	long := 24 * time.Hour
 
-	claimed, _, _ := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "forge", Title: "in hand", Source: "test"})
+	claimed := seedRingingTodo(t, s, ctx, ep, "in hand", true, "signed")
 	age(t, s, ctx, claimed.ID, 48*time.Hour, 0, &long)
 	if _, err := s.ClaimTodo(ctx, ep, claimed.ID, "agent:x", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 
-	done, _, _ := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "forge", Title: "finished", Source: "test"})
+	done := seedRingingTodo(t, s, ctx, ep, "finished", true, "signed")
 	age(t, s, ctx, done.ID, 48*time.Hour, 0, &long)
 	if _, err := s.ClaimTodo(ctx, ep, done.ID, "agent:x", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
@@ -117,11 +177,7 @@ func TestRingUnclaimedIsCappedPerSweep(t *testing.T) {
 	ep := seedEndpoint(t, s, ctx, "ring", "forge")
 	long := 24 * time.Hour
 	for i := 0; i < ringSweepLimit*3; i++ {
-		td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "forge",
-			Title: "backlog", Source: "test"})
-		if err != nil {
-			t.Fatalf("create: %v", err)
-		}
+		td := seedRingingTodo(t, s, ctx, ep, fmt.Sprintf("backlog-%d", i), true, "signed")
 		age(t, s, ctx, td.ID, 48*time.Hour, 1, &long)
 	}
 	got, err := s.RingUnclaimed(ctx)
