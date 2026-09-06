@@ -2,7 +2,7 @@
 status: draft
 date: 2026-09-06
 implements: [ADR-0024]
-related: [SPEC-0001, SPEC-0007]
+related: [SPEC-0001, SPEC-0004]
 ---
 
 # SPEC-0020: Event Routing
@@ -10,7 +10,7 @@ related: [SPEC-0001, SPEC-0007]
 ## Graph Edges
 
 - **Implements:** [ADR-0024](../../../adrs/ADR-0024-event-routing-deterministic-and-llm.md) — deterministic jq routing rules with an optional bounded LLM triage stage
-- **Related:** [SPEC-0001](../webhook-ingestion/spec.md) — the push-ingestion pipeline routing slots into; [SPEC-0007](../persistence/spec.md) — todo durability contract routing must preserve
+- **Related:** [SPEC-0001](../webhook-ingestion/spec.md) — the push-ingestion pipeline routing slots into; [SPEC-0004](../persistence/spec.md) — todo durability contract routing must preserve
 
 ## Overview
 
@@ -52,7 +52,7 @@ A `drop` action MUST consume the delivery's dedup slot (the event row persists w
 
 ### Requirement: LLM Triage Stage (Opt-In, Bounded)
 
-An endpoint MAY configure an LLM triage stage. When configured and no deterministic rule matches, the router MUST be invoked with a compact projection of the event (source, kind, title, size, actor, and routing-relevant fields — full payload text only if the endpoint explicitly enables it) plus the endpoint's granted queues with owner-written descriptions, and MUST return a structured answer of `{queue, confidence, reason}`. The router MUST be constrained to answering with a queue in the endpoint's granted set; any other answer MUST be treated as an error. The stage MUST fall back to the webhook's default action when the answer's confidence is below the endpoint's configured threshold, on timeout, on budget exhaustion, or on any error.
+An endpoint MAY configure an LLM triage stage. When configured and no deterministic rule matches, the router MUST be invoked with a compact projection of the event (source, kind, title, size, actor, and routing-relevant fields — full payload text only if the endpoint explicitly enables it) plus the endpoint's granted queues with owner-written descriptions, and MUST return a structured answer of `{queue, confidence, reason}`. The router MUST be constrained to answering with a queue in the endpoint's granted set; any other answer MUST be treated as an error. The stage MUST fall back to the webhook's default action when the answer's confidence is below the endpoint's configured threshold, on timeout, on budget exhaustion, or on any error. The `llm_triage` config itself MUST be validated at save time with the same granted-set constraint as rule actions: a triage queue outside the endpoint's granted set MUST be rejected when saved.
 
 #### Scenario: Hallucinated queue cannot route
 

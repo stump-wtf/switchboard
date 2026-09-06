@@ -26,7 +26,7 @@ Ingestion today is linear: verify → normalize → derive idempotency key → c
 ### Routing slot: after idempotency, before todo creation
 
 **Choice**: the router runs inside the ingestion pipeline immediately after the idempotency key is derived and before any todo write.
-**Rationale**: the dedup contract ([SPEC-0007](../persistence/spec.md)) is defined on (endpoint, idempotency key) and must not depend on routing outcomes; running routing after dedup would let a redelivery of a dropped event skip its drop rule. Routing reads the normalized event; it never re-derives identity.
+**Rationale**: the dedup contract ([SPEC-0003](../todo-queue/spec.md)) is defined on (endpoint, idempotency key) and must not depend on routing outcomes; running routing after dedup would let a redelivery of a dropped event skip its drop rule. Routing reads the normalized event; it never re-derives identity.
 **Alternatives considered**:
 - Routing at claim time (workers filter their queue): scatters policy across consumers, breaks the todo-is-a-promise invariant, and cannot drop silently.
 - Routing in the producer: rejected at ADR level — producers stay dumb.
