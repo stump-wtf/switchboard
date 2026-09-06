@@ -33,8 +33,8 @@
 //
 // This file used to say the opposite, and said it as a justification: "a queue is a plain name with
 // no owning human and every authenticated human operates the same single-tenant board, so those
-// frames publish with Owner ”". The premise was about QUEUES; the frames carry TODOS, which have
-// had an owning human all along. So the board broadcast every tenant's lane cards, todo rows and
+// frames publish with an empty Owner". The premise was about QUEUES; the frames carry TODOS,
+// which have had an owning human all along. So the board broadcast every tenant's lane cards, todo rows and
 // counts to every connected browser — a push leak, needing no navigation to trigger. Six humans
 // held accounts. Fixed by resolving each todo's owner and rendering counts per subscribed human.
 //
