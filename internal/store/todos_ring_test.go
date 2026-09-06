@@ -232,3 +232,60 @@ func TestRingUnclaimedSkipsRevokedEndpoints(t *testing.T) {
 		t.Fatalf("expected the live endpoint's todo, got %s", got[0].Title)
 	}
 }
+
+// One endpoint's backlog must not starve another's.
+//
+// Sibling failure to the revoked-endpoint bug above, and the one that outlived it: the sweep was
+// globally oldest-first, so the endpoint with the deepest backlog took every slot. In production
+// one active endpoint holding 179 rows absorbed the whole budget while two other live endpoints —
+// one of them holding a PR review someone had actually asked for — sat at zero rings.
+func TestRingUnclaimedRoundRobinsAcrossEndpoints(t *testing.T) {
+	s, ctx := testStore(t)
+	hog := seedEndpoint(t, s, ctx, "deep-backlog", "forge")
+	quiet := seedEndpoint(t, s, ctx, "one-real-job", "forge")
+	long := 24 * time.Hour
+
+	// The hog's rows are older, so oldest-first would take every slot before reaching the other.
+	for i := 0; i < ringSweepLimit*3; i++ {
+		td := seedRingingTodo(t, s, ctx, hog, fmt.Sprintf("backlog-%d", i), true, "signed")
+		age(t, s, ctx, td.ID, 72*time.Hour, 1, &long)
+	}
+	waiting := seedRingingTodo(t, s, ctx, quiet, "the one someone is waiting on", true, "signed")
+	age(t, s, ctx, waiting.ID, time.Hour, 1, &long)
+
+	got, err := s.RingUnclaimed(ctx)
+	if err != nil {
+		t.Fatalf("ring: %v", err)
+	}
+	if len(got) != ringSweepLimit {
+		t.Fatalf("swept %d todos, want the full budget of %d", len(got), ringSweepLimit)
+	}
+	var sawQuiet bool
+	for _, r := range got {
+		if r.ID == waiting.ID {
+			sawQuiet = true
+		}
+	}
+	if !sawQuiet {
+		t.Fatal("the quiet endpoint's only todo was starved by the backlogged endpoint")
+	}
+}
+
+// Fairness must not cost throughput: when one endpoint is alone in having work, it still gets the
+// whole budget. A naive one-per-endpoint round robin would drain a real backlog at 1 todo/sweep.
+func TestRingUnclaimedUsesFullBudgetForASingleEndpoint(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "sole", "forge")
+	long := 24 * time.Hour
+	for i := 0; i < ringSweepLimit*2; i++ {
+		td := seedRingingTodo(t, s, ctx, ep, fmt.Sprintf("solo-%d", i), true, "signed")
+		age(t, s, ctx, td.ID, 48*time.Hour, 1, &long)
+	}
+	got, err := s.RingUnclaimed(ctx)
+	if err != nil {
+		t.Fatalf("ring: %v", err)
+	}
+	if len(got) != ringSweepLimit {
+		t.Fatalf("swept %d todos for a sole endpoint, want the full budget of %d", len(got), ringSweepLimit)
+	}
+}

@@ -1014,10 +1014,16 @@ const (
 // RingUnclaimed returns pending todos whose doorbell is due to be repeated, marking them rung in
 // the same statement so two sweeps cannot select the same row. The caller publishes them.
 //
+// The sweep round-robins across endpoints: each todo is ranked within its OWN endpoint's backlog
+// and the pick orders by that rank first, so every endpoint contributes its best candidate before
+// any endpoint contributes its second. A single deep backlog can no longer absorb the whole budget
+// and starve the endpoint someone is actually waiting on, while an endpoint alone in having work
+// still gets the full budget (the higher ranks are all it has to offer).
+//
 // Only todos on an ACTIVE endpoint are candidates. A revoked endpoint's rows are undrainable by
 // construction — the credential no longer authenticates, so no session can ever exist to receive
-// the push — and because the sweep is oldest-first and globally ordered, they are also the OLDEST
-// rows in the table. Without this join the entire ring budget is spent on work nobody can ever do:
+// the push — and because older endpoints hold the oldest rows, an unguarded sweep reaches for them
+// first. Without this join the entire ring budget is spent on work nobody can ever do:
 // observed in production with 1,442 pending rows across two revoked endpoints absorbing every
 // sweep while live endpoints, holding the work someone had actually asked for, were never reached.
 // The symptom was silent — each ring resolved to no session, so PublishTodoReady returned early
@@ -1033,9 +1039,26 @@ const (
 // (Tenant Isolation)" background-sweep exemption; SPEC-0011 REQ "Best-Effort Lossy Delivery".
 func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 	rows, err := s.pool.Query(ctx, `
-		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
-		WHERE id IN (
-			SELECT t.id FROM todos t
+		WITH ranked AS (
+			SELECT t.id,
+			       t.last_ringed_at,
+			       t.created_at,
+			       -- Rank within each endpoint's own backlog. Ordering the pick by this rank
+			       -- first is what makes the sweep round-robin: every endpoint contributes its
+			       -- best candidate before any endpoint contributes its second. A single
+			       -- endpoint sitting on hundreds of rows can no longer absorb the whole budget
+			       -- and starve the endpoint someone is actually waiting on — while an endpoint
+			       -- that is alone in having work still gets the full budget, because the higher
+			       -- ranks are all it has to offer.
+			       row_number() OVER (
+			         PARTITION BY t.endpoint_id
+			         ORDER BY t.last_ringed_at NULLS FIRST, t.created_at
+			       ) AS rn
+			FROM todos t
+			-- A revoked endpoint's credential no longer authenticates, so no session can ever
+			-- receive its pushes. Its todos are undrainable by construction, and because
+			-- revocation happens to old endpoints they are also the oldest rows in the table —
+			-- exactly the rows a globally oldest-first sweep reaches for. Excluded at the source.
 			JOIN endpoints ep ON ep.id = t.endpoint_id AND ep.state = 'active'
 			WHERE t.state = 'pending'
 			  AND t.ring_attempts < $1
@@ -1065,9 +1088,20 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			      END
 			    )
 			  )
-			ORDER BY t.last_ringed_at NULLS FIRST, t.created_at
-			FOR UPDATE OF t SKIP LOCKED
+		),
+		picked AS (
+			SELECT id FROM ranked
+			ORDER BY rn, last_ringed_at NULLS FIRST, created_at
 			LIMIT $7
+		)
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		WHERE id IN (
+			-- Re-select through a plain scan so SKIP LOCKED still applies: a window function
+			-- cannot be combined with FOR UPDATE, and dropping the lock would let two sweeps
+			-- (or two instances) ring the same todo twice. Re-check the claim guard at lock
+			-- time so a todo claimed between the pick and the lock is not rung anyway.
+			SELECT id FROM todos WHERE id IN (SELECT id FROM picked) AND state = 'pending'
+			FOR UPDATE SKIP LOCKED
 		)
 		RETURNING `+todoCols,
 		ringMaxAttempts,
