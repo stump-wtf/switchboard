@@ -103,7 +103,14 @@ func newDBRouterOpts(t *testing.T, withReceiverEndpoint bool) (chi.Router, *stor
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// The DB-backed suites exercise the personas + A2A advanced surfaces, so they opt into the
 	// ADR-0023 capability flags explicitly (the production default is off).
-	cfg := config.Config{BaseURL: "https://sb.example.com", PersonasEnabled: true, A2AEnabled: true}
+	// The provider registry is instance-wide and gated on cfg.OperatorSubjects, which matches
+	// NOBODY when empty. Tests that administer providers mint a session under one of these
+	// subjects; every other fixture human is deliberately a non-operator, so a handler that
+	// forgets the gate shows up as a test that suddenly passes for the wrong human.
+	cfg := config.Config{
+		BaseURL: "https://sb.example.com", PersonasEnabled: true, A2AEnabled: true,
+		OperatorSubjects: testOperatorSubjects,
+	}
 	authr, err := auth.New(ctx, cfg, st, log)
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
@@ -310,3 +317,8 @@ func TestLogoutRevokesSessionAndClearsCookie(t *testing.T) {
 		t.Fatalf("replayed cookie after logout: got %d → %q, want 302 → /login", rec.Code, rec.Header().Get("Location"))
 	}
 }
+
+// testOperatorSubjects are the fixture identities allowed to administer the instance-wide provider
+// registry. Kept as one list so a new provider test opts in by using one of these subjects rather
+// than by widening the gate.
+var testOperatorSubjects = []string{"prov-op", "test|connie", "test|otto", "test|quinn"}

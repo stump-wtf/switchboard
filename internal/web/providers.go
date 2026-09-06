@@ -239,7 +239,39 @@ func providersPanel(adapters []store.Adapter, health map[string]store.ProviderHe
 // loadProvidersPanel reads the registry + per-source health and builds the panel. A health-read
 // failure degrades to idle stats (logged) rather than failing the page; a registry-read failure is
 // returned — the view is ABOUT the registry, rendering without it would misrepresent state.
-func (h *Handler) loadProvidersPanel(r *http.Request) (providersPanelView, error) {
+// isOperator reports whether this human may administer the instance-wide provider registry.
+//
+// The registry is not tenant-owned — `adapters` has no owner column, because an operator-configured
+// receiver is a property of the deployment, seeded from the server's own environment. Every other
+// operator surface is scoped by owner_human_id; this one has no owner to scope by, so it is gated
+// by identity against cfg.OperatorSubjects.
+//
+// An empty allowlist matches nobody. That is the point: this gate replaced a surface that was open
+// to every signed-in human, where "every signed-in human" meant anyone the instance had invited
+// could read the configured receivers and REMOVE another tenant's provider outright.
+// Governing: SPEC-0017 REQ "Provider Lifecycle"; SPEC-0007 REQ "Human as Accountable Principal".
+func (h *Handler) isOperator(human store.Human) bool {
+	if human.OIDCSubject == "" {
+		return false
+	}
+	for _, s := range h.cfg.OperatorSubjects {
+		if s == human.OIDCSubject {
+			return true
+		}
+	}
+	return false
+}
+
+// loadProvidersPanel builds the Providers panel for one human. A NON-operator gets the static
+// catalog only — no configured rows, no health, no lifecycle controls — because the configured list
+// names this deployment's receivers and their ingest paths, which is somebody else's configuration
+// to everyone but the operator. The catalog itself is static honesty ("here is what you could
+// connect") and carries nothing about the instance, so it renders for everyone.
+func (h *Handler) loadProvidersPanel(r *http.Request, human store.Human) (providersPanelView, error) {
+	csrf := auth.CSRFFromContext(r.Context())
+	if !h.isOperator(human) {
+		return providersPanel(nil, nil, csrf), nil
+	}
 	adapters, err := h.store.ListProviders(r.Context())
 	if err != nil {
 		return providersPanelView{}, err
@@ -249,7 +281,21 @@ func (h *Handler) loadProvidersPanel(r *http.Request) (providersPanelView, error
 		h.log.Warn("providers health", "err", err)
 		health = nil
 	}
-	return providersPanel(adapters, health, auth.CSRFFromContext(r.Context())), nil
+	return providersPanel(adapters, health, csrf), nil
+}
+
+// requireOperator answers a non-operator's provider request with 404 and reports false.
+//
+// 404, not 403: a 403 would confirm the named provider exists on this instance, which is the same
+// existence oracle the todo drawer avoids. To a non-operator the provider registry is simply not
+// there. Governing: SPEC-0017 REQ "Provider Lifecycle".
+func (h *Handler) requireOperator(w http.ResponseWriter, r *http.Request) bool {
+	human, _ := auth.FromContext(r.Context())
+	if h.isOperator(human) {
+		return true
+	}
+	http.Error(w, "not found", http.StatusNotFound)
+	return false
 }
 
 // Providers renders the Providers view: family sections with trust chips and health over the
@@ -261,7 +307,7 @@ func (h *Handler) Providers(w http.ResponseWriter, r *http.Request) {
 	sh, _ := h.buildShell(r.Context(), "providers", &human)
 	var panel providersPanelView
 	if sh.DBConnected {
-		p, err := h.loadProvidersPanel(r)
+		p, err := h.loadProvidersPanel(r, human)
 		if err != nil {
 			// Degraded render: the shell shows the disconnect; the panel shows its empty state.
 			h.log.Warn("providers list", "err", err)
@@ -318,6 +364,9 @@ func providerConfirmCopy(action, name string) (title, body, button string, ok bo
 // kinds hold no rotatable secret (409). Requires human.
 // Governing: SPEC-0017 REQ "Provider Lifecycle" (confirmation before destructive actions).
 func (h *Handler) ProviderConfirmModal(w http.ResponseWriter, r *http.Request) {
+	if !h.requireOperator(w, r) {
+		return
+	}
 	name := chi.URLParam(r, "name")
 	action := chi.URLParam(r, "action")
 	title, body, button, ok := providerConfirmCopy(action, name)
@@ -343,7 +392,7 @@ func (h *Handler) ProviderConfirmModal(w http.ResponseWriter, r *http.Request) {
 		// inline on the full page instead of returning a bare overlay fragment.
 		human, _ := auth.FromContext(r.Context())
 		sh, _ := h.buildShell(r.Context(), "providers", &human)
-		panel, err := h.loadProvidersPanel(r)
+		panel, err := h.loadProvidersPanel(r, human)
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -375,12 +424,18 @@ func providerRotatable(a store.Adapter) bool {
 // ingested stays queryable. Requires human + CSRF. Governing: SPEC-0017 REQ "Provider Lifecycle"
 // (scenario "Disable stops the line").
 func (h *Handler) DisableProvider(w http.ResponseWriter, r *http.Request) {
+	if !h.requireOperator(w, r) {
+		return
+	}
 	h.setProviderEnabled(w, r, false)
 }
 
 // EnableProvider restores a disabled line (POST /providers/{name}/enable). Requires human + CSRF.
 // Governing: SPEC-0017 REQ "Provider Lifecycle" (re-enable).
 func (h *Handler) EnableProvider(w http.ResponseWriter, r *http.Request) {
+	if !h.requireOperator(w, r) {
+		return
+	}
 	h.setProviderEnabled(w, r, true)
 }
 
@@ -403,6 +458,9 @@ func (h *Handler) setProviderEnabled(w http.ResponseWriter, r *http.Request, ena
 // kinds are refused (409). Requires human + CSRF. Governing: SPEC-0017 REQ "Provider Lifecycle"
 // (rotate for token/signed webhook kinds), ADR-0020 (secrets through the envelope, revealed once).
 func (h *Handler) RotateProvider(w http.ResponseWriter, r *http.Request) {
+	if !h.requireOperator(w, r) {
+		return
+	}
 	name := chi.URLParam(r, "name")
 	a, err := h.store.GetAdapter(r.Context(), name)
 	if err != nil {
@@ -432,7 +490,7 @@ func (h *Handler) RotateProvider(w http.ResponseWriter, r *http.Request) {
 		// one-time plaintext (mirrors the vend flow's inline reveal).
 		human, _ := auth.FromContext(r.Context())
 		sh, _ := h.buildShell(r.Context(), "providers", &human)
-		panel, err := h.loadProvidersPanel(r)
+		panel, err := h.loadProvidersPanel(r, human)
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -450,7 +508,8 @@ func (h *Handler) RotateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reveal replaces the confirm modal in the overlay; the panel refreshes OOB alongside it
 	// so the line's updated stamp reflects immediately.
-	if panel, err := h.loadProvidersPanel(r); err == nil {
+	revealer, _ := auth.FromContext(r.Context())
+	if panel, err := h.loadProvidersPanel(r, revealer); err == nil {
 		if pf, err := h.renderFragment("providers_panel_oob", panel); err == nil {
 			frag += pf
 		} else {
@@ -466,6 +525,9 @@ func (h *Handler) RotateProvider(w http.ResponseWriter, r *http.Request) {
 // deleted — the store's delete touches only the registry row. Requires human + CSRF.
 // Governing: SPEC-0017 REQ "Provider Lifecycle" (removal requires confirmation and keeps history).
 func (h *Handler) RemoveProvider(w http.ResponseWriter, r *http.Request) {
+	if !h.requireOperator(w, r) {
+		return
+	}
 	name := chi.URLParam(r, "name")
 	if err := h.store.RemoveProvider(r.Context(), name); err != nil {
 		h.notFoundOr(w, err)
@@ -482,7 +544,8 @@ func (h *Handler) respondProviderAction(w http.ResponseWriter, r *http.Request, 
 		http.Redirect(w, r, "/providers", http.StatusSeeOther)
 		return
 	}
-	panel, err := h.loadProvidersPanel(r)
+	actor, _ := auth.FromContext(r.Context())
+	panel, err := h.loadProvidersPanel(r, actor)
 	if err != nil {
 		h.fail(w, err)
 		return
