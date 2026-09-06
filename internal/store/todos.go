@@ -1156,7 +1156,7 @@ func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []strin
 			),
 			updated_at = now(),
 			completed_at = now()
-		WHERE endpoint_id = ANY($1::uuid[]) AND state IN ('pending', 'claimed')`,
+		WHERE endpoint_id = ANY($1::uuid[]) AND state IN ('pending', 'claimed', 'input-required', 'auth-required')`,
 		endpointIDs); err != nil {
 		return fmt.Errorf("store: dead-letter endpoint todos: %w", err)
 	}
