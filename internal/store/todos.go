@@ -1121,3 +1121,40 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 	}
 	return out, rows.Err()
 }
+
+// deadLetterEndpointTodos is the todo half of the revocation cascade, run inside the SAME
+// transaction that kills the endpoint rows (RevokeEndpoint, ExpireEndpoints, RevokeFriendEdge).
+//
+// A revoked endpoint's credential no longer authenticates, so no session can ever claim its
+// pending work again: those todos are undrainable by construction. Left pending they are not
+// merely untidy — they are load-bearing garbage. They accumulate at the OLD end of the table (an
+// endpoint is revoked after a life of receiving work), so every oldest-first sweep reaches for
+// them first, and a doorbell that resolves to no session logs nothing at all. In production 1,442
+// such rows silently absorbed the entire heartbeat budget while live endpoints holding real work
+// were never rung (#169).
+//
+// They dead-letter rather than retry: next_retry_at stays NULL because there is no future in which
+// this endpoint drains them. The result records why, so the row explains itself to whoever finds it.
+// Governing: SPEC-0007 REQ "Instant, Total Revocation"; SPEC-0016 REQ "Revocation Cascade".
+func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []string) error {
+	if len(endpointIDs) == 0 {
+		return nil
+	}
+	if _, err := q.Exec(ctx, `
+		UPDATE todos SET
+			state = 'failed',
+			next_retry_at = NULL,
+			lease_expires_at = NULL,
+			owner = NULL,
+			result = jsonb_build_object(
+				'error', 'endpoint_revoked',
+				'detail', 'the endpoint this todo was routed to was revoked; no session can claim it'
+			),
+			updated_at = now(),
+			completed_at = now()
+		WHERE endpoint_id = ANY($1::uuid[]) AND state IN ('pending', 'claimed')`,
+		endpointIDs); err != nil {
+		return fmt.Errorf("store: dead-letter endpoint todos: %w", err)
+	}
+	return nil
+}
