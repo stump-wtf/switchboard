@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/joestump/switchboard/internal/store"
 )
 
 // fakeReapStore scripts ExpireEndpoints results per call and records everything; the todo-lease
@@ -24,12 +26,25 @@ import (
 type fakeReapStore struct {
 	mu      sync.Mutex
 	calls   int
-	expired [][]string // expired[i] returned on call i (nil past the end)
-	errs    []error    // errs[i] returned on call i (nil past the end)
+	expired [][]string     // expired[i] returned on call i (nil past the end)
+	ring    [][]store.Todo // ring[i] returned by RingUnclaimed on call i
+	errs    []error        // errs[i] returned on call i (nil past the end)
 }
 
 func (f *fakeReapStore) ReapExpired(ctx context.Context) (int64, error)       { return 0, nil }
 func (f *fakeReapStore) RequeueDueRetries(ctx context.Context) (int64, error) { return 0, nil }
+
+// rung is what the heartbeat sweep hands back for re-publishing, scripted per call.
+func (f *fakeReapStore) RingUnclaimed(ctx context.Context) ([]store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.ring) == 0 {
+		return nil, nil
+	}
+	out := f.ring[0]
+	f.ring = f.ring[1:]
+	return out, nil
+}
 
 func (f *fakeReapStore) ExpireEndpoints(ctx context.Context) ([]string, error) {
 	f.mu.Lock()
@@ -70,11 +85,11 @@ func (c *closeRecorder) snapshot() []string {
 }
 
 // startReaper runs reaper in a goroutine and returns a channel closed when it exits.
-func startReaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions func(string), interval time.Duration) <-chan struct{} {
+func startReaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions func(string), ringFn func(store.Todo), interval time.Duration) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		reaper(ctx, st, log, closeSessions, interval)
+		reaper(ctx, st, log, closeSessions, ringFn, interval)
 	}()
 	return done
 }
@@ -89,7 +104,7 @@ func TestReaperClosesSessionsForExpiredEndpoints(t *testing.T) {
 	rec := &closeRecorder{}
 	log := slog.New(slog.NewTextHandler(&syncBuffer{}, nil))
 
-	done := startReaper(ctx, fake, log, rec.close, 2*time.Millisecond)
+	done := startReaper(ctx, fake, log, rec.close, nil, 2*time.Millisecond)
 	waitFor(t, func() bool { return len(rec.snapshot()) >= 2 }, "reaper never closed sessions for the expired endpoints")
 	waitFor(t, func() bool { return fake.count() >= 3 }, "reaper stopped ticking after an expiry sweep")
 
@@ -120,7 +135,7 @@ func TestReaperSurvivesExpirySweepErrors(t *testing.T) {
 	var buf syncBuffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 
-	done := startReaper(ctx, fake, log, rec.close, 2*time.Millisecond)
+	done := startReaper(ctx, fake, log, rec.close, nil, 2*time.Millisecond)
 	waitFor(t, func() bool { return len(rec.snapshot()) >= 1 }, "reaper never recovered after a failed expiry sweep")
 	cancel()
 	<-done
@@ -141,7 +156,7 @@ func TestReaperNilCloseSessionsIsSafe(t *testing.T) {
 	fake := &fakeReapStore{expired: [][]string{{"ep-1"}}}
 	log := slog.New(slog.NewTextHandler(&syncBuffer{}, nil))
 
-	done := startReaper(ctx, fake, log, nil, 2*time.Millisecond)
+	done := startReaper(ctx, fake, log, nil, nil, 2*time.Millisecond)
 	waitFor(t, func() bool { return fake.count() >= 2 }, "reaper with nil closeSessions stopped ticking")
 	cancel()
 	<-done

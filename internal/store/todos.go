@@ -964,3 +964,103 @@ func insertEvent(ctx context.Context, q querier, e EventInput) (EventSummary, bo
 	}
 	return ev, true, nil
 }
+
+// Doorbell heartbeat
+//
+// A doorbell is a hint and the queue is the ledger (ADR-0013) — but under push-only delivery that
+// promise was only half true. A push that arrived while every worker was mid-turn, or was dropped
+// by a transport fault, or landed during a restart, was never repeated, so the todo sat pending
+// forever with nothing to surface it again. Fifty rows accumulated exactly that way, every one of
+// them work somebody asked for.
+//
+// This is the other half: pending rows that nobody claimed get rung again, on a widening interval,
+// a bounded number of times.
+//
+// @joestump-agent 09/06/2026 - Added after the push path was fixed and the backlog it had already
+// created turned out to have no way to drain itself.
+
+// ringBackoff is the delay before the Nth re-ring of an unclaimed todo (1-based: attempt 1 has
+// already happened at creation). It widens so a todo nobody wants costs a handful of pushes rather
+// than one per sweep forever, and stops entirely at ringMaxAttempts.
+//
+// Chosen against how these consumers actually behave: a worker mid-turn on a PR review is busy for
+// minutes, not seconds, so the first retry waits long enough to outlast an ordinary turn instead of
+// arriving while the same worker is still head-down.
+func ringBackoff(attempt int) time.Duration {
+	switch {
+	case attempt <= 1:
+		return 5 * time.Minute
+	case attempt == 2:
+		return 20 * time.Minute
+	case attempt == 3:
+		return time.Hour
+	default:
+		return 6 * time.Hour
+	}
+}
+
+const (
+	// ringMaxAttempts bounds re-ringing. After this many pushes the row stays pending and visible
+	// on the board but stops costing a model turn: if five doorbells over seven hours have not got
+	// it picked up, a sixth is not the answer and something else is wrong.
+	ringMaxAttempts = 5
+
+	// ringSweepLimit caps how many todos one sweep re-rings. A backlog is exactly when this matters
+	// — waking every worker for fifty rows at once is a token bomb, and each push costs a model
+	// turn. Oldest-first ordering means a small limit still drains steadily.
+	ringSweepLimit = 3
+)
+
+// RingUnclaimed returns pending todos whose doorbell is due to be repeated, marking them rung in
+// the same statement so two sweeps cannot select the same row. The caller publishes them.
+//
+// DELIBERATELY NOT endpoint-scoped, for the same reason as RequeueDueRetries: it is a system-wide
+// maintenance sweep on a timer with no authenticated caller to scope to. It moves no row between
+// tenants and reads nothing out to anyone — each returned row carries its own endpoint_id, and the
+// publish path filters on that, so the tenant boundary is enforced where the work is delivered and
+// claimed rather than where it ages.
+//
+// Governing: ADR-0013 (queue is the ledger, push is a hint); SPEC-0003 REQ "Endpoint Ownership
+// (Tenant Isolation)" background-sweep exemption; SPEC-0011 REQ "Best-Effort Lossy Delivery".
+func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
+	rows, err := s.pool.Query(ctx, `
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		WHERE id IN (
+			SELECT id FROM todos
+			WHERE state = 'pending'
+			  AND ring_attempts < $1
+			  AND (
+			    -- Never rung by this mechanism: wait out the first backoff from creation, so a
+			    -- todo whose original doorbell is still in flight is not immediately doubled.
+			    (last_ringed_at IS NULL AND created_at < now() - $2::interval)
+			    OR last_ringed_at < now() - (
+			      CASE ring_attempts
+			        WHEN 1 THEN $3::interval
+			        WHEN 2 THEN $4::interval
+			        WHEN 3 THEN $5::interval
+			        ELSE $6::interval
+			      END
+			    )
+			  )
+			ORDER BY last_ringed_at NULLS FIRST, created_at
+			FOR UPDATE SKIP LOCKED
+			LIMIT $7
+		)
+		RETURNING `+todoCols,
+		ringMaxAttempts,
+		ringBackoff(1), ringBackoff(2), ringBackoff(3), ringBackoff(4), ringBackoff(5),
+		ringSweepLimit)
+	if err != nil {
+		return nil, fmt.Errorf("store: ring unclaimed: %w", err)
+	}
+	defer rows.Close()
+	var out []Todo
+	for rows.Next() {
+		t, err := scanTodo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
