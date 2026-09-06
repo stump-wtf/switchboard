@@ -39,6 +39,15 @@ func EventVerbs() []string {
 	return []string{"list_webhook_events", "get_webhook_event", "replay_webhook_event", "list_providers"}
 }
 
+// AllVerbs returns the full verb set a vend can grant: every drain, webhook, and event verb
+// concatenated in display order. Call sites that need the composed grant (the vend wizard's
+// endpoint API, the OAuth consent screen) enumerate this instead of concatenating the three
+// families by hand, so the composition cannot drift between them. Governing: SPEC-0006 REQ
+// "Todo Drain Verbs", REQ "Webhook Self-Management"; SPEC-0014 REQ "Agent Tool Surface over MCP".
+func AllVerbs() []string {
+	return append(append(append([]string{}, DrainVerbs()...), WebhookVerbs()...), EventVerbs()...)
+}
+
 // verbSet builds the membership map the scope guard consults from an ordered verb list.
 func verbSet(verbs []string) map[string]bool {
 	m := make(map[string]bool, len(verbs))

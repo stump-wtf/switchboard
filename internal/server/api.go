@@ -178,10 +178,10 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		in.Queue = "inbox"
 	}
 
-	// The basics scope: the full todo-drain surface (the core scope an endpoint exists to carry)
-	// plus webhook self-management and the event history, so the vended loop needs no second call.
-	verbs := append(append([]string{}, mcp.DrainVerbs()...), mcp.WebhookVerbs()...)
-	verbs = append(verbs, mcp.EventVerbs()...)
+	// The basics scope: mcp.AllVerbs() — the full todo-drain surface (the core scope an endpoint
+	// exists to carry) plus webhook self-management and the event history — so the vended loop
+	// needs no second call. Governing: SPEC-0006 REQ "Todo Drain Verbs".
+	verbs := mcp.AllVerbs()
 
 	token, hash, prefix, err := cred.Mint()
 	if err != nil {

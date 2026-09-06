@@ -415,7 +415,7 @@ func scopeBullets(queues, verbs []string) []string {
 		bullets = append(bullets, "inspect event history & providers ("+strings.Join(events, " · ")+")")
 	}
 	// Anything outside the known families renders as itself — truthful, never embellished.
-	known := append(append(mcp.DrainVerbs(), mcp.WebhookVerbs()...), mcp.EventVerbs()...)
+	known := mcp.AllVerbs()
 	for _, v := range verbs {
 		if !slices.Contains(known, v) {
 			bullets = append(bullets, v)

@@ -40,15 +40,13 @@ type vendVerbOption struct {
 // start unchecked so wider grants are always a deliberate toggle. The server re-validates the
 // submission. Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard" (verbs step).
 func vendVerbOptions() []vendVerbOption {
-	var opts []vendVerbOption
+	core := map[string]bool{}
 	for _, v := range mcp.DrainVerbs() {
-		opts = append(opts, vendVerbOption{Name: v, Checked: true})
+		core[v] = true
 	}
-	for _, v := range mcp.WebhookVerbs() {
-		opts = append(opts, vendVerbOption{Name: v})
-	}
-	for _, v := range mcp.EventVerbs() {
-		opts = append(opts, vendVerbOption{Name: v})
+	var opts []vendVerbOption
+	for _, v := range mcp.AllVerbs() {
+		opts = append(opts, vendVerbOption{Name: v, Checked: core[v]})
 	}
 	return opts
 }
