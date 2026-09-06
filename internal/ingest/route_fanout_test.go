@@ -25,9 +25,6 @@ package ingest
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
-	"net/http"
 	"testing"
 	"time"
 
@@ -411,13 +408,11 @@ func TestRouteFanOutIsTokenFreeAndUnsteerable(t *testing.T) {
 // would silently drop the delivery on the floor; answering 500 would misreport a configuration
 // problem as a server fault.
 //
-// Two layers are asserted. The store contract: ResolveWebhookTargets returns an EMPTY slice — not a
-// one-element slice holding "" — when the owner is unresolvable and no explicit routes exist, so
-// the receiver's misconfiguration branch is actually reachable. The handler contract: an
-// operator-configured receiver with no owning endpoint answers 503 and persists neither event nor
-// todo. (That receiver is the reachable instance of "no owning endpoint" today; the self-managed
-// path's owner is FK-guaranteed, so its 503 branch is unreachable through HTTP by construction —
-// which is exactly why the store-level assertion is here too.)
+// Store contract: ResolveWebhookTargets returns an EMPTY slice — not a one-element slice holding
+// "" — when the owner is unresolvable and no explicit routes exist, so a receiver's
+// misconfiguration branch is actually reachable rather than 500-ing deep in createTodo. (The
+// handler-level 503 assertion rode the deleted shared receivers; the self-managed path's owner is
+// FK-guaranteed, so its no-owner branch is unreachable through HTTP by construction.)
 // Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
 func TestRouteFanOutEmptyTargetSetIsRefused(t *testing.T) {
 	pool, ctx := ingestTestPool(t)
@@ -433,27 +428,6 @@ func TestRouteFanOutEmptyTargetSetIsRefused(t *testing.T) {
 	if len(targets) != 0 {
 		t.Fatalf("targets with an unresolvable owner and no routes = %+v, want empty "+
 			"(a placeholder target would 500 deep in createTodo instead of 503-ing)", targets)
-	}
-
-	// Handler contract: an operator-configured receiver with no owning endpoint refuses the
-	// delivery. Built without testIngestDeps precisely so LegacyEndpointID stays unset.
-	ing := New(st, NewHub(), slog.New(slog.NewTextHandler(io.Discard, nil)), Config{GitHubSecret: secret})
-	body := `{"action":"opened","number":5}`
-	rec := post(t, ing.GitHub, "/webhooks/github", body, map[string]string{
-		"X-Hub-Signature-256": sign(secret, []byte(body)),
-		"X-GitHub-Event":      "pull_request",
-		"X-GitHub-Delivery":   "guid-empty",
-		"Content-Type":        "application/json",
-	})
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("receiver with no owning endpoint: got %d, want 503 (body %s)", rec.Code, rec.Body.String())
-	}
-	// Nothing persisted — the delivery was refused, not absorbed.
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM events WHERE external_id LIKE '%guid-empty%'`); n != 0 {
-		t.Fatalf("events after a refused delivery = %d, want 0", n)
-	}
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 0 {
-		t.Fatalf("todos after a refused delivery = %d, want 0", n)
 	}
 }
 

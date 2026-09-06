@@ -140,41 +140,14 @@ func seedEndpoint(t *testing.T, st *store.Store, ctx context.Context, label stri
 // legacyReceiverQueues are the queues the operator-configured receivers target across this package's
 // accept-path tests. The seeded legacy endpoint is scoped to all of them so one fixture serves every
 // receiver.
-var legacyReceiverQueues = []string{"reviews", "stripe", "slack", "builds", "wizq", "regq", "lan", "dockerhub", "homelab", "wizard"}
-
-// seedLegacyEndpoint mints the operator-designated endpoint that owns todos minted by the
-// OPERATOR-CONFIGURED receivers (/webhooks/github, /webhooks/stripe, /webhooks/slack,
-// /webhooks/generic/{name}), and returns its id for Config.LegacyEndpointID.
-//
-// Those receivers are configured by an operator rather than vended to an agent, so nothing in their
-// configuration names a tenant — Ingest.legacyEndpoint answers 503 and persists NOTHING when the id
-// is unset. Without this fixture every accept-path test below would get a 503 instead of a 202, so
-// the seed is what keeps them testing ingestion rather than testing the misconfiguration branch.
-// INTERIM alongside Config.LegacyEndpointID itself; both die with those receivers in PR 2.
-// Governing: ADR-0022.
-func seedLegacyEndpoint(t *testing.T, st *store.Store, ctx context.Context) string {
-	t.Helper()
-	_, ep := seedEndpoint(t, st, ctx, "legacy", legacyReceiverQueues)
-	return ep.ID
-}
-
-// testIngestDeps builds an Ingest against the real store, with a hub whose publishes the test can
-// observe, the pool for row-count asserts, and the id of the seeded legacy endpoint that owns every
-// todo the operator-configured receivers mint.
-//
-// The endpoint id is returned, not hidden, because hub fan-out is now endpoint-scoped: Hub.Subscribe
-// takes the owning endpoint and a subscription with the wrong (or empty) endpoint matches NOTHING.
-// A test that subscribed without it would drain zero todos and pass vacuously while asserting
-// nothing at all. Governing: ADR-0022, SPEC-0011 REQ "Scope-Filtered Fan-Out".
 func testIngestDeps(t *testing.T, cfg Config) (*Ingest, *Hub, *pgxpool.Pool, context.Context, string) {
 	t.Helper()
 	pool, ctx := ingestTestPool(t)
 	st := store.New(pool)
 	hub := NewHub()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	endpointID := seedLegacyEndpoint(t, st, ctx)
-	cfg.LegacyEndpointID = endpointID
-	return New(st, hub, log, cfg), hub, pool, ctx, endpointID
+	_, ep := seedEndpoint(t, st, ctx, "deps", []string{"reviews"})
+	return New(st, hub, log, cfg), hub, pool, ctx, ep.ID
 }
 
 // post drives a handler with the given raw body and headers, returning the recorder.
@@ -288,201 +261,6 @@ func drainHub(ch <-chan store.Todo) int {
 	}
 }
 
-// A GitHub redelivery (same X-GitHub-Delivery GUID) collapses onto the existing non-terminal todo:
-// the second delivery returns that todo, creates no duplicate todo or event, and publishes to the
-// hub only for the first (newly-created) delivery. A distinct delivery id creates a distinct todo.
-// Governing: SPEC-0001 scenario "Redelivery of the same webhook creates one todo",
-// scenario "Distinct deliveries create distinct todos", REQ "Enqueue Accepted Delivery as Todo".
-func TestGitHubRedeliveryDedup(t *testing.T) {
-	const secret = "s3cr3t"
-	ing, hub, pool, ctx, endpointID := testIngestDeps(t, Config{GitHubSecret: secret})
-	// Subscribe as the endpoint that OWNS these todos. Passing the real id is load-bearing: the hub
-	// filters on owning endpoint before queue (ADR-0022), so a subscription with the wrong or empty
-	// id would match nothing and every drainHub assertion below would read 0 and pass vacuously.
-	ch, cancel := hub.Subscribe(endpointID, []string{"reviews"})
-	defer cancel()
-
-	body := `{"action":"opened","pull_request":{"number":1,"title":"One"},"repository":{"full_name":"joestump/switchboard"}}`
-	headers := func(delivery string) map[string]string {
-		return map[string]string{
-			"X-Hub-Signature-256": sign(secret, []byte(body)),
-			"X-GitHub-Event":      "pull_request",
-			"X-GitHub-Delivery":   delivery,
-			"Content-Type":        "application/json",
-		}
-	}
-
-	// First delivery: event + todo created, published to the hub, 202 {id, queue}.
-	id1, queue := accepted202(t, post(t, ing.GitHub, "/webhooks/github", body, headers("guid-1")))
-	if queue != "reviews" {
-		t.Fatalf("queue = %q, want reviews (default GitHub queue)", queue)
-	}
-
-	// Redelivery of the SAME delivery GUID: returns the existing todo, creates nothing new.
-	id2, _ := accepted202(t, post(t, ing.GitHub, "/webhooks/github", body, headers("guid-1")))
-	if id2 != id1 {
-		t.Fatalf("redelivery must return the existing todo: got %s, want %s", id2, id1)
-	}
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 1 {
-		t.Fatalf("redelivery must not create a duplicate todo: %d rows", n)
-	}
-	// Events dedup on (source, external_id): still exactly one event row.
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM events`); n != 1 {
-		t.Fatalf("redelivery must not create a duplicate event: %d rows", n)
-	}
-	// The todo references the persisted event.
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos WHERE event_id IS NOT NULL`); n != 1 {
-		t.Fatal("todo must reference the persisted event")
-	}
-	// Hub was nudged exactly once — only the newly-created todo publishes.
-	if n := drainHub(ch); n != 1 {
-		t.Fatalf("hub publishes = %d, want 1 (publish only when newly created)", n)
-	}
-
-	// A DISTINCT delivery id derives a distinct key and creates its own todo.
-	id3, _ := accepted202(t, post(t, ing.GitHub, "/webhooks/github", body, headers("guid-2")))
-	if id3 == id1 {
-		t.Fatal("distinct delivery ids must create distinct todos")
-	}
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 2 {
-		t.Fatalf("distinct delivery should add a todo: %d rows, want 2", n)
-	}
-	if n := drainHub(ch); n != 1 {
-		t.Fatalf("hub publishes for distinct delivery = %d, want 1", n)
-	}
-}
-
-// The Gitea receiver rides the same HMAC scheme as GitHub but keys off its own headers
-// (X-Gitea-Event / X-Gitea-Delivery) and defaults to the "gitea" queue: a verified delivery
-// persists event + todo atomically, a redelivered GUID collapses onto the existing todo, and a
-// distinct GUID mints a new one. Governing: SPEC-0001 REQ "Signed Webhook Verification", REQ
-// "Idempotency Key Extraction and Dedup"; SPEC-0002/0004 REQ atomic ingestion.
-func TestGiteaRedeliveryDedup(t *testing.T) {
-	const secret = "s3cr3t"
-	ing, hub, pool, ctx, endpointID := testIngestDeps(t, Config{GiteaSecret: secret})
-	ch, cancel := hub.Subscribe(endpointID, []string{"gitea"})
-	defer cancel()
-
-	body := `{"action":"opened","issue":{"number":96,"title":"Live list"},"repository":{"full_name":"stump.wtf/switchboard"}}`
-	headers := func(delivery string) map[string]string {
-		return map[string]string{
-			"X-Hub-Signature-256": sign(secret, []byte(body)),
-			"X-Gitea-Event":       "issues",
-			"X-Gitea-Delivery":    delivery,
-			"Content-Type":        "application/json",
-		}
-	}
-
-	// First delivery: event + todo created on the default gitea queue, published, 202 {id, queue}.
-	id1, queue := accepted202(t, post(t, ing.Gitea, "/webhooks/gitea", body, headers("guid-1")))
-	if queue != "gitea" {
-		t.Fatalf("queue = %q, want gitea (default Gitea queue)", queue)
-	}
-	if n := drainHub(ch); n != 1 {
-		t.Fatalf("hub publishes = %d, want 1", n)
-	}
-
-	// Redelivery of the SAME delivery GUID: returns the existing todo, creates nothing new.
-	id2, _ := accepted202(t, post(t, ing.Gitea, "/webhooks/gitea", body, headers("guid-1")))
-	if id2 != id1 {
-		t.Fatalf("redelivery must return the existing todo: got %s, want %s", id2, id1)
-	}
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 1 {
-		t.Fatalf("redelivery must not create a duplicate todo: %d rows", n)
-	}
-	if n := drainHub(ch); n != 0 {
-		t.Fatalf("redelivery must not publish: %d", n)
-	}
-
-	// A DISTINCT delivery id derives a distinct key and creates its own todo.
-	id3, _ := accepted202(t, post(t, ing.Gitea, "/webhooks/gitea", body, headers("guid-2")))
-	if id3 == id1 {
-		t.Fatal("distinct delivery ids must create distinct todos")
-	}
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 2 {
-		t.Fatalf("distinct delivery should add a todo: %d rows, want 2", n)
-	}
-}
-
-// A GitHub delivery with NO X-GitHub-Delivery header still derives a key (sha256 of the body), so
-// identical redeliveries without the GUID still collapse to one todo instead of bypassing dedup
-// with a NULL key. Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup" (body-hash
-// fallback where the provider supplies no delivery id).
-func TestGitHubMissingDeliveryIDFallsBackToBodyHash(t *testing.T) {
-	const secret = "s3cr3t"
-	ing, _, pool, ctx, _ := testIngestDeps(t, Config{GitHubSecret: secret})
-
-	body := `{"action":"opened"}`
-	headers := map[string]string{
-		"X-Hub-Signature-256": sign(secret, []byte(body)),
-		"X-GitHub-Event":      "ping",
-	}
-	id1, _ := accepted202(t, post(t, ing.GitHub, "/webhooks/github", body, headers))
-	id2, _ := accepted202(t, post(t, ing.GitHub, "/webhooks/github", body, headers))
-	if id2 != id1 {
-		t.Fatalf("same body without a delivery id must dedup: %s vs %s", id1, id2)
-	}
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 1 {
-		t.Fatalf("todos = %d, want 1", n)
-	}
-	// The persisted key is the body-hash fallback, never empty/NULL.
-	var key string
-	if err := pool.QueryRow(ctx, `SELECT idempotency_key FROM todos`).Scan(&key); err != nil {
-		t.Fatalf("read idempotency_key: %v", err)
-	}
-	if !strings.HasPrefix(key, "sha256:") {
-		t.Fatalf("idempotency_key = %q, want sha256 body-hash fallback", key)
-	}
-}
-
-// The generic (token) endpoint has no provider delivery id, so identical redeliveries dedup on the
-// body hash; the todo lands in the provider's configured queue. Extends the token-mode path without
-// regressing verification. Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup",
-// REQ "Enqueue Accepted Delivery as Todo" (queue selection per provider config).
-func TestGenericTokenRedeliveryDedup(t *testing.T) {
-	ing, hub, pool, ctx, endpointID := testIngestDeps(t, Config{
-		Generic: map[string]GenericProvider{
-			"dockerhub": {Mode: "token", Token: "tok", Queue: "builds"},
-		},
-	})
-	// Endpoint-scoped subscription (see TestGitHubRedeliveryDedup): the owning endpoint is what makes
-	// the drainHub counts below mean anything.
-	ch, cancel := hub.Subscribe(endpointID, []string{"builds"})
-	defer cancel()
-
-	body := `{"push_data":{"tag":"latest"}}`
-	headers := map[string]string{"X-Webhook-Token": "tok"}
-	deliver := func(payload string) *httptest.ResponseRecorder {
-		rec := httptest.NewRecorder()
-		ing.Generic(rec, genericRequest("dockerhub", payload, headers, ""))
-		return rec
-	}
-
-	id1, queue := accepted202(t, deliver(body))
-	if queue != "builds" {
-		t.Fatalf("queue = %q, want builds (provider-configured queue)", queue)
-	}
-	id2, _ := accepted202(t, deliver(body))
-	if id2 != id1 {
-		t.Fatalf("identical generic redelivery must dedup on body hash: %s vs %s", id1, id2)
-	}
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 1 {
-		t.Fatalf("todos = %d, want 1", n)
-	}
-	if n := countRows(t, ctx, pool, `SELECT count(*) FROM events`); n != 1 {
-		t.Fatalf("events = %d, want 1", n)
-	}
-	if n := drainHub(ch); n != 1 {
-		t.Fatalf("hub publishes = %d, want 1", n)
-	}
-
-	// A different body derives a different key → a second todo.
-	id3, _ := accepted202(t, deliver(`{"push_data":{"tag":"v2"}}`))
-	if id3 == id1 {
-		t.Fatal("distinct bodies must create distinct todos")
-	}
-}
-
 // grantFriendEdge records an APPROVED friend edge from fromHuman to toHuman, so a cross-human
 // webhook route between them is genuinely authorized.
 //
@@ -523,5 +301,15 @@ func grantFriendEdge(t *testing.T, st *store.Store, ctx context.Context, label, 
 		CredentialHash: "friendhash-" + label, CredentialPrefix: "sbk_fr", Slug: slug,
 	}); err != nil {
 		t.Fatalf("approve friend edge (%s): %v", label, err)
+	}
+}
+
+// decode unmarshals a receiver response body into out, failing the test on bad JSON. The accept
+// shape is JSON on every surface (success and rejection alike), so one helper serves all callers.
+// Governing: SPEC-0001 REQ "Error Handling Standards".
+func decode(t *testing.T, body []byte, out any) {
+	t.Helper()
+	if err := json.Unmarshal(body, out); err != nil {
+		t.Fatalf("decode response body: %v (%s)", err, body)
 	}
 }

@@ -447,15 +447,11 @@ func TestVerifyGitea(t *testing.T) {
 	}
 }
 
-// summarizeSelfManagedTitle produces forge-aware titles for gitea payloads, reusing the SAME
-// summarizer the operator-configured /webhooks/gitea receiver uses so one delivery reads
-// identically on the board whichever path carried it.
+// summarizeSelfManagedTitle produces forge-aware titles for gitea payloads — the single gitea
+// summarizer since the operator-configured receivers were stripped (issue #181).
 func TestSummarizeSelfManagedTitleGitea(t *testing.T) {
 	pr := `{"action":"opened","pull_request":{"number":7,"title":"Fix login","user":{"login":"bob"}},"repository":{"full_name":"stump.wtf/switchboard"}}`
 	got := summarizeSelfManagedTitle("gitea", "pull_request", []byte(pr))
-	if want := summarizeGitea("pull_request", []byte(pr)); got != want {
-		t.Fatalf("gitea PR title = %q, want %q (parity with the operator-configured receiver)", got, want)
-	}
 	if want := "PR #7 opened in stump.wtf/switchboard — Fix login"; got != want {
 		t.Fatalf("gitea PR title = %q, want %q", got, want)
 	}
