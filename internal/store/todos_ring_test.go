@@ -188,3 +188,47 @@ func TestRingUnclaimedIsCappedPerSweep(t *testing.T) {
 		t.Fatalf("swept %d todos, want the cap of %d — an unbounded sweep is a token bomb", len(got), ringSweepLimit)
 	}
 }
+
+// The heartbeat must never spend its budget on a revoked endpoint.
+//
+// A revoked endpoint's todos are undrainable by construction — the credential no longer
+// authenticates, so no session can ever receive the push — and because the sweep is oldest-first
+// and globally ordered, they are also the OLDEST rows in the table. In production 1,442 pending
+// rows across two revoked endpoints absorbed every sweep while the live endpoints holding real
+// work were never reached, and the symptom was silent: each ring resolved to no session, so the
+// publish returned early and logged neither a delivery nor a drop.
+func TestRingUnclaimedSkipsRevokedEndpoints(t *testing.T) {
+	s, ctx := testStore(t)
+	dead := seedEndpoint(t, s, ctx, "revoked-ep", "forge")
+	live := seedEndpoint(t, s, ctx, "live-ep", "forge")
+	long := 24 * time.Hour
+
+	// The revoked endpoint's rows are OLDER, so oldest-first ordering would pick them first.
+	for i := 0; i < ringSweepLimit*2; i++ {
+		td := seedRingingTodo(t, s, ctx, dead, "undrainable", true, "signed")
+		age(t, s, ctx, td.ID, 72*time.Hour, 1, &long)
+	}
+	liveTodo := seedRingingTodo(t, s, ctx, live, "real work someone asked for", true, "signed")
+	age(t, s, ctx, liveTodo.ID, time.Hour, 1, &long)
+
+	// Revoke directly: RevokeEndpoint needs the owning human, which this fixture does not model.
+	if _, err := s.pool.Exec(ctx, `UPDATE endpoints SET state='revoked' WHERE id=$1`, dead); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	got, err := s.RingUnclaimed(ctx)
+	if err != nil {
+		t.Fatalf("ring: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("the live endpoint's todo was never reached")
+	}
+	for _, r := range got {
+		if r.EndpointID == dead {
+			t.Fatalf("rang a todo on a revoked endpoint: %s (%s)", r.ID, r.Title)
+		}
+	}
+	if got[0].ID != liveTodo.ID {
+		t.Fatalf("expected the live endpoint's todo, got %s", got[0].Title)
+	}
+}

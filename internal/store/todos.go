@@ -1014,6 +1014,15 @@ const (
 // RingUnclaimed returns pending todos whose doorbell is due to be repeated, marking them rung in
 // the same statement so two sweeps cannot select the same row. The caller publishes them.
 //
+// Only todos on an ACTIVE endpoint are candidates. A revoked endpoint's rows are undrainable by
+// construction — the credential no longer authenticates, so no session can ever exist to receive
+// the push — and because the sweep is oldest-first and globally ordered, they are also the OLDEST
+// rows in the table. Without this join the entire ring budget is spent on work nobody can ever do:
+// observed in production with 1,442 pending rows across two revoked endpoints absorbing every
+// sweep while live endpoints, holding the work someone had actually asked for, were never reached.
+// The symptom was silent — each ring resolved to no session, so PublishTodoReady returned early
+// and logged neither a delivery nor a drop.
+//
 // DELIBERATELY NOT endpoint-scoped, for the same reason as RequeueDueRetries: it is a system-wide
 // maintenance sweep on a timer with no authenticated caller to scope to. It moves no row between
 // tenants and reads nothing out to anyone — each returned row carries its own endpoint_id, and the
@@ -1026,9 +1035,10 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
 		WHERE id IN (
-			SELECT id FROM todos
-			WHERE state = 'pending'
-			  AND ring_attempts < $1
+			SELECT t.id FROM todos t
+			JOIN endpoints ep ON ep.id = t.endpoint_id AND ep.state = 'active'
+			WHERE t.state = 'pending'
+			  AND t.ring_attempts < $1
 			  -- Sender gate (SPEC-0011): only a todo whose delivery event exists AND passed
 			  -- per-source verification — or came from a token-trust self-managed webhook,
 			  -- whose credential is the unguessable ingest URL (SPEC-0006) — is ever
@@ -1040,14 +1050,14 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			  -- the CreateEventTodos gates above); PendingDoorbellTodos, the pull read, is
 			  -- deliberately stricter (e.verified only) since a human-driven pull should only
 			  -- surface verified deliveries.
-			  AND event_id IS NOT NULL
-			  AND EXISTS (SELECT 1 FROM events e WHERE e.id = todos.event_id AND (e.verified OR e.trust_mode = 'token'))
+			  AND t.event_id IS NOT NULL
+			  AND EXISTS (SELECT 1 FROM events ev WHERE ev.id = t.event_id AND (ev.verified OR ev.trust_mode = 'token'))
 			  AND (
 			    -- Never rung by this mechanism: wait out the first backoff from creation, so a
 			    -- todo whose original doorbell is still in flight is not immediately doubled.
-			    (last_ringed_at IS NULL AND created_at < now() - $2::interval)
-			    OR last_ringed_at < now() - (
-			      CASE ring_attempts
+			    (t.last_ringed_at IS NULL AND t.created_at < now() - $2::interval)
+			    OR t.last_ringed_at < now() - (
+			      CASE t.ring_attempts
 			        WHEN 1 THEN $3::interval
 			        WHEN 2 THEN $4::interval
 			        WHEN 3 THEN $5::interval
@@ -1055,8 +1065,8 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			      END
 			    )
 			  )
-			ORDER BY last_ringed_at NULLS FIRST, created_at
-			FOR UPDATE SKIP LOCKED
+			ORDER BY t.last_ringed_at NULLS FIRST, t.created_at
+			FOR UPDATE OF t SKIP LOCKED
 			LIMIT $7
 		)
 		RETURNING `+todoCols,
