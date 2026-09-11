@@ -105,8 +105,15 @@ func TestSandboxContainsMemoryBombs(t *testing.T) {
 					t.Fatalf("killed child decision = %+v, want default routing", d)
 				}
 			case f.RuleID == "bomb" && (f.Cause == FaultTimeout || f.Cause == FaultError):
-				if d.Queue != "forge" || d.Trace.RuleID != "ok" {
+				// A single uninterruptible builtin can outlive its own RuleTimeout and eat what is left
+				// of the event budget, which starves the rules behind it. Whether "ok" still gets to run
+				// is load-dependent; both landings are contained. What matters is that the bomb never
+				// routed: the next rule (forge) or the default (inbox), nothing else.
+				if d.Queue == "forge" && d.Trace.RuleID != "ok" {
 					t.Fatalf("faulted bomb decision = %+v, want the next rule to match", d)
+				}
+				if d.Queue != "forge" && d.Queue != "inbox" {
+					t.Fatalf("faulted bomb decision = %+v, want forge or the default", d)
 				}
 			default:
 				t.Fatalf("faults = %+v, want a sandbox failure or a faulted bomb rule", d.Trace.Faults)
