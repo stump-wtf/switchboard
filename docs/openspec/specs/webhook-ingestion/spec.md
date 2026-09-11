@@ -96,6 +96,47 @@ receiver MUST NOT fabricate a replay window.
 - **THEN** it is accepted regardless of age (GitHub does not sign a timestamp) and no freshness
   window is applied
 
+### Requirement: Cairn Signed Deliveries
+
+A self-managed webhook of source type `cairn` is `signed`. It MUST verify cairn's outbound
+`artifact.created` deliveries (cairn ADR-0017 / SPEC-0012) as follows.
+
+1. **Signature.** `X-Cairn-Signature: sha256=<hex>` MUST equal the HMAC-SHA256 of the **raw request
+   body** under the minted secret, compared in constant time.
+2. **Replay defenses.** Cairn signs no timestamp header, so replay defenses MUST come from the signed
+   body:
+   - It MUST carry a non-empty `event_id`, which MUST be the delivery's idempotency key
+     (`<webhook-id>:<event_id>`).
+   - It MUST carry a `created_at` (RFC 3339) within the replay tolerance of now, in either direction
+     (default 300 seconds).
+3. **Event-id header.** The unsigned `X-Cairn-Event-Id` header, when present, MUST equal the signed
+   `event_id`.
+
+Failing any check MUST return HTTP 401 and persist nothing. The event's `event_type` MUST be the
+signed body's `kind`. The todo title MUST name the kind, the artifact title, and the share type.
+
+#### Scenario: Tampered cairn body is rejected
+
+- **WHEN** a cairn delivery's body is altered after signing
+- **THEN** the response is HTTP 401 and no event or todo is persisted
+
+#### Scenario: Replay after the window is rejected
+
+- **WHEN** a correctly signed cairn delivery arrives whose signed `created_at` is outside the replay
+  tolerance
+- **THEN** the response is HTTP 401 and nothing is persisted
+
+#### Scenario: Replay inside the window collapses
+
+- **WHEN** an identical signed cairn delivery is replayed within the window
+- **THEN** it derives the same idempotency key from the signed `event_id` and collapses onto the
+  original todo
+
+#### Scenario: Forged event-id header cannot mint a fresh dedup key
+
+- **WHEN** a captured cairn delivery is replayed with a different `X-Cairn-Event-Id` header
+- **THEN** the response is HTTP 401 and nothing is persisted
+
 ### Requirement: Shared-Secret Token Authentication for Unsigned Webhooks
 
 For webhook providers with no signing scheme (Docker Hub, homelab/self-hosted senders) served via
@@ -236,6 +277,13 @@ Routing is deterministic and **token-free**: once a route exists,
 every delivery fans out server-side without any agent spending model tokens on a `create_for` call.
 Routes are populated by human-approved actions (friending, a future routing verb) — never by a
 per-delivery agent decision.
+
+After the target set is resolved and before anything is written, the webhook's routing rules
+([SPEC-0020](../event-routing/spec.md)) choose the queue and MAY narrow the delivery to a subset of
+those targets. They MAY also drop it: the event is persisted with its trace, no todo is created, and
+the response is HTTP 202 with `{"todos": [], "created": 0, "dropped": true}`. Rules MUST NOT add a
+target. The top-level `id`/`queue` name the first target's todo, which is the owner's unless a rule
+narrowed the owner out.
 
 #### Scenario: Single delivery, two routes, two todos
 

@@ -17,7 +17,9 @@ job: draining the durable todo queue (`list_todos`, `claim`, `complete`, `fail`,
 `heartbeat`), self-managing its own ingestion sources within a human-vended ceiling
 (`create_webhook`, `list_webhooks`, `rotate_webhook`, `delete_webhook`), and deciding which
 endpoints those sources deliver to (`add_webhook_route`, `list_webhook_routes`,
-`remove_webhook_route`).
+`remove_webhook_route`), and routing each delivery with jq rules (`list_webhook_rules`,
+`set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`, `move_webhook_rule`,
+`remove_webhook_rule`, `test_webhook_rules`; [SPEC-0020](../event-routing/spec.md)).
 
 Every request is authenticated by a bearer credential that resolves to an endpoint and its immutable
 scope (`internal/agentapi/agentapi.go`). Scope is enforced at the boundary: a verb outside the
@@ -132,6 +134,11 @@ MUST NOT return it on any later call. `list_webhooks` MUST return webhook metada
 (max, allowed source types, allowed queues, used) and MUST NOT return secret values. `delete_webhook`
 MUST tear down the webhook.
 
+The trust mode MUST be derived by switchboard from the source type, never supplied by the agent.
+`github`, `gitea`, `stripe`, `slack`, and `cairn` are `signed`: switchboard mints and holds an HMAC
+secret, and cairn deliveries additionally carry signed replay defenses
+([SPEC-0001](../webhook-ingestion/spec.md) REQ "Cairn Signed Deliveries"). `generic` is `token`.
+
 #### Scenario: Create beyond the count ceiling is refused
 
 - **WHEN** an endpoint at its max webhook count calls `create_webhook`
@@ -218,6 +225,45 @@ whose friendship was later revoked remains visible and removable by the webhook'
 - **WHEN** `add_webhook_route` is called twice with the same webhook and target
 - **THEN** both calls MUST succeed and exactly one route MUST exist; the resolved target set MUST
   contain the target once
+
+### Requirement: Webhook Routing Rules
+
+The surface MUST expose these verbs as members of the webhook verb family, so they are enumerated by
+the vend and consent screens with the rest of that family:
+
+- `list_webhook_rules`
+- `set_webhook_rules`
+- `add_webhook_rule`
+- `update_webhook_rule`
+- `move_webhook_rule`
+- `remove_webhook_rule`
+- `test_webhook_rules`
+
+Each verb MUST be gated by the endpoint's verb allowlist (`forbidden` outside it) and by **human**
+ownership of the webhook. The ownership check follows the route verbs: unknown, malformed, and
+another human's webhook ids MUST all return an identical `not_found`.
+
+Saving rules MUST validate the whole list against the webhook's grant: its target queue, its owning
+endpoint's allowed webhook queues, and its live delivery targets. A failed validation MUST leave the
+previous list in force. A rule MUST only ever narrow a delivery to targets the webhook already has;
+adding a target remains `add_webhook_route`'s job.
+
+`test_webhook_rules` MUST NOT persist anything. It MUST reach stored events only on the named
+webhook.
+
+Rule semantics, error codes, and the dry-run contract are specified in
+[SPEC-0020](../event-routing/spec.md) REQ "Rule Management Tools" and REQ "Routing Dry-Run".
+
+#### Scenario: Rule verbs outside the allowlist are refused
+
+- **WHEN** an endpoint whose allowlist lacks `set_webhook_rules` calls it
+- **THEN** the server MUST respond `forbidden` and MUST NOT change any rule
+
+#### Scenario: A rule cannot reach another human's endpoint
+
+- **WHEN** an agent saves a rule on its own webhook whose action names an endpoint owned by another
+  human
+- **THEN** the server MUST respond `forbidden` and MUST NOT change the rule list
 
 ### Requirement: Switchboard Owns Secrets, Verification, and Idempotency
 

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-06
 decision-makers: [joestump, joestump-agent]
 governs: [SPEC-0020]
@@ -60,6 +60,69 @@ Events that route to **drop** still persist their event row (dedup slot spent, d
 ### Confirmation
 
 SPEC-0020 scenarios cover: first-match-wins ordering, compile-time rule validation, drop semantics with dedup-slot persistence, LLM constrained-output enforcement, hallucinated-queue and low-confidence fallback, budget exhaustion, and the guarantee that an LLM answer naming a non-granted queue is treated as an error, never a route. The routing trace (matched rule or LLM decision) is asserted on every routed event.
+
+## Implementation Status
+
+Option (C) stands as the decision. It is being delivered in two phases.
+
+**Phase 1 — the deterministic stage — is implemented.**
+
+* Each self-managed webhook stores an ordered rule list and an optional default action
+  (`endpoint_webhooks.routing_rules` / `default_action`, migration `0018_event_routing.sql`).
+  An empty list with a NULL default routes exactly as before.
+* Routing runs in the self-managed receiver after verification, idempotency-key derivation, and
+  fan-out target resolution, and before any write. The decision's trace is persisted on the event
+  (`events.routing_trace`, alongside the new `events.webhook_id`) and on every todo it produced
+  (`todos.routing_trace`). It is surfaced by `list_webhook_events`, `get_webhook_event`, and every
+  todo verb.
+* A `drop` records the event and spends its dedup slot, with no todo and no doorbell. A
+  redelivery of a dropped event stays dropped.
+* Agents manage rules over MCP: `list_webhook_rules`, `set_webhook_rules`, `add_webhook_rule`,
+  `update_webhook_rule`, `move_webhook_rule`, `remove_webhook_rule`. The `test_webhook_rules`
+  dry-run evaluates saved or candidate rules against a sample payload or one of the webhook's
+  stored events.
+* Cairn is a first-class `signed` source type. Its deliveries are verified by the
+  `X-Cairn-Signature` HMAC. Replay defenses come from the signed body's `event_id` (the idempotency
+  key) and `created_at` (the replay window).
+
+**Phase 2 — LLM triage — is not built.** The LLM router, its per-endpoint budgets, and the
+`llm` trace stage remain as decided above and specified in SPEC-0020. That work is a follow-up. Until
+it ships, an unmatched event always takes the deterministic default.
+
+Two decisions were made during implementation.
+
+**jq evaluates out of process.** gojq bounds time — it checks its context between steps — but not
+memory. Three cases defeat it:
+
+* `"x" * 1e9` is a single uninterruptible allocation.
+* A short pipe chain of `(. + .)` doubles a value per step faster than any timeout notices.
+* Serializing or comparing a structure full of shared references is exponential inside one builtin
+  call.
+
+No jq subset that stays useful for routing closes all three, and Switchboard is multi-tenant, so one
+tenant's rule must not be able to take the process down for everyone.
+
+The receiver therefore re-executes its own binary as a child process:
+
+* The child gets an empty environment, so no DSN and no keys.
+* A watchdog inside the child exits it once `/memory/classes/total:bytes` passes its limit
+  (128 MiB).
+* The parent kills the child at a hard deadline of the event budget plus 750 ms.
+* At most two children run at once. A delivery that cannot get a slot within a second routes by
+  default with a `sandbox_busy` fault.
+
+The child returns only the index of the matching rule plus any faults. The parent applies the
+action from its **own** configuration and grant, so a misbehaving child can name a rule but never a
+destination. Webhooks with no rules never start a child.
+
+**Actions may narrow fan-out, never widen it.** A `queue` action may carry `endpoints`, a subset of
+the webhook's existing, live, authorized delivery targets (its owner plus
+[ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md) routes). The subset is validated at save and
+intersected again at delivery. A rule can pick which of those endpoints receive a delivery; only
+`add_webhook_route`, with its own ownership and friendship checks, can add one. This is how agent
+handoff works from a single producer. Cairn signs every outbound target with one secret, while
+Switchboard mints a secret per signed webhook, so the working shape is **one** cairn webhook routed
+to every pool, with rules choosing the pool.
 
 ## More Information
 
