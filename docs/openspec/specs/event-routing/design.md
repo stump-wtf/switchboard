@@ -109,7 +109,7 @@ Evaluation bounds: 50 ms per rule and 250 ms per event. Limits: 32 rules, 4096-b
 - **Input:** `{rules, envelope input}` on stdin.
 - **Work:** the child builds the envelope, runs `routing.Match`, and writes `switchboard-routing-match-v1\n{rule_index?, faults?}`.
 - **Memory:** a watchdog in the child exits it (code 3) when `/memory/classes/total:bytes` exceeds 128 MiB.
-- **Deadline:** the parent kills it at the event budget + 750 ms.
+- **Deadline:** the parent kills it at the event budget + 1750 ms (2 s in all).
 - **Concurrency:** at most two children run. A delivery waits up to one second for a slot, then routes by default with `sandbox_busy`.
 - **Failure:** any other failure routes by default with `sandbox_failure`.
 
@@ -188,6 +188,29 @@ Ownership is checked at the human, as the ADR-0022 route verbs do. Mutations are
 
 **Rationale.** Endpoints are agent-self-managed ([ADR-0012](../../../adrs/ADR-0012-agents-self-manage-webhooks.md)); rules are webhook config, so they ride the same surface and auth. The switchboard REST API and CLI have no webhook-management surface to mirror.
 
+### Work orders and difficulty lanes ([ADR-0025](../../../adrs/ADR-0025-handoff-work-orders-and-difficulty-lanes.md))
+
+**Topology.** A router endpoint (scoped to no lane) owns one signed ingress webhook per producer — each Gitea org, GitHub, cairn — and routes to one pool endpoint per lane, each scoped to exactly its lane queue (`triage`, `lane-local`, `lane-zai-flash`, `lane-zai`, `lane-hyper`, `lane-vision`, `hold`). All of a lane's workers connect to that lane's endpoint.
+
+**Why not one shared lanes endpoint.** A session's queues are its endpoint's scope, and doorbells are unicast round-robin across an endpoint's sessions, so a shared endpoint would ring a Qwen worker for a GLM todo while the GLM worker sleeps.
+
+**Exclusive delivery.** `exclusive: true` picks the first target whose scope grants the queue. Target order is made deterministic in `ResolveWebhookTargets` (`ORDER BY granted_at, target_endpoint_id`, owner first), which also decides the executing identity when two endpoints share a lane. Packs therefore carry queue names, not endpoint ids, and a missing lane endpoint fails the save.
+
+**Subjects in Go, not jq.** `routing.SubjectOf` parses the issue or cairn artifact from the verified body. It feeds `.issue`, the once key, and the work order, none of which may depend on tenant-written expressions.
+
+**The once table.** Gitea label changes arrive as `issues` / `issue_label`, action `label_updated`, with no record of which label moved and a fresh delivery id each time. Per-delivery dedup cannot stop a second label event from re-running a work order. `routing_once (webhook_id, once_key, event_id, created_at)` with primary key `(webhook_id, once_key)` is claimed with `INSERT … ON CONFLICT DO UPDATE … RETURNING event_id` in the delivery's transaction:
+
+- a different claiming event means repeat;
+- the same event on a redelivery reports its existing todos;
+- `event_id` is not a foreign key, because event retention must not release a claim.
+
+**Params.** `endpoint_webhooks.routing_params` is bound as `$params`, so allowlists sit beside the rules and are changed only by the owner-gated verbs.
+
+**Alternatives considered.**
+- Endpoint ids in actions (deployment-specific packs).
+- Label-based trust (client-asserted).
+- A dynamic queue computed by jq (unvalidated at save).
+
 ## Architecture
 
 ```mermaid
@@ -223,10 +246,13 @@ sequenceDiagram
 
 Additive migration `0018_event_routing.sql`. Existing webhooks behave identically until an owner saves rules. Rollback = reset `routing_rules` to `[]` and `default_action` to NULL. The trace and webhook-id columns are inert to older readers.
 
+Additive migration `0019_handoff_lanes.sql` (ADR-0025) adds `endpoint_webhooks.routing_params`, `todos.work_order`, and the `routing_once` table; nothing reads `routing_once` unless a rule asks for `once`.
+
 Operational note: endpoints vended before this change hold the verb list of their day. They need the seven rule verbs added to `scope_verbs`, and `cairn` added to `webhook_source_types`, to use this surface.
 
 ## Open Questions
 
 - Shadowed-rule linting in `set_webhook_rules` (warn when a rule can never match) — cheap and useful; deferred.
-- Should cairn emit `data.metadata` (e.g. `handoff_to`, `review_requested`) and `tags`? The envelope already passes them through; today the title-prefix convention stands in. Producer-side, tracked in cairn.
+- Cairn's labels contract (`data.labels`, `data.on_behalf_of`) is being added producer-side; `.artifact` already passes `labels`, `on_behalf_of`, `tags`, and `metadata` through. Whether cairn derives `on_behalf_of` server-side or lets any caller set it decides how much the fleet pack's on-behalf-of check is worth.
+- Re-running a completed work order in the same lane: at-most-once keys never expire today. A deliberate release verb (or a TTL) may be wanted once lanes see real use.
 - Dynamic destinations (a rule whose action queue is computed from the payload, constrained to the grant) — not built; one static rule per destination keeps every destination validated at save.

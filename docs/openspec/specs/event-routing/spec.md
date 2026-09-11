@@ -1,7 +1,7 @@
 ---
 status: implemented
 date: 2026-09-06
-implements: [ADR-0024]
+implements: [ADR-0024, ADR-0025]
 related: [SPEC-0001, SPEC-0004, SPEC-0006]
 ---
 
@@ -10,11 +10,14 @@ related: [SPEC-0001, SPEC-0004, SPEC-0006]
 ## Graph Edges
 
 - **Implements:** [ADR-0024](../../../adrs/ADR-0024-event-routing-deterministic-and-llm.md) — deterministic jq routing rules with an optional bounded LLM triage stage
+- **Implements:** [ADR-0025](../../../adrs/ADR-0025-handoff-work-orders-and-difficulty-lanes.md) — handoff work orders and difficulty lanes: verified-provenance trust, exclusive delivery, at-most-once work orders
 - **Related:** [SPEC-0001](../webhook-ingestion/spec.md) — the push-ingestion pipeline routing slots into; [SPEC-0004](../persistence/spec.md) — todo durability contract routing must preserve; [SPEC-0006](../agent-tools/spec.md) — the agent verb surface the rule tools join
 
 ## Overview
 
 Event routing is the stage of webhook ingestion that decides, per verified delivery, **where (or whether)** the resulting todo lands. Each self-managed webhook carries an ordered list of routing rules. A rule is a jq filter over a normalized routing envelope, with an action of `queue` (optionally narrowed to some of the webhook's delivery targets) or `drop`. Rules are evaluated first-match-wins and terminated by an explicit default. Routing runs after verification, idempotency-key derivation, and fan-out target resolution, and before any write. The dedup contract is untouched by any routing outcome, including drop.
+
+Actions can also make a delivery a **work order** (ADR-0025): delivered to exactly one lane endpoint, at most once per subject and queue, carrying a switchboard-authored description of the task. Only deliveries whose verified provenance passes owner-set allowlists should reach a work-order lane.
 
 **Implementation status.** The deterministic stage (every requirement below not marked *Phase 2*) is implemented. The LLM triage stage and its cost bounds are decided (ADR-0024) but **Phase 2 — not yet implemented**. Until they ship, an unmatched event always takes the deterministic default.
 
@@ -35,7 +38,8 @@ Rules MUST evaluate against a single JSON document, the routing envelope, built 
 | `.size` | the payload size in bytes |
 | `.headers` | the **sanitized** request headers (as persisted), names lower-cased |
 | `.payload` | the body parsed as exactly one JSON value, or `null`; integers that fit int64 stay exact |
-| `.artifact` | `cairn` sources only, `null` otherwise: `event_id`, `kind`, `created_at`, `id`, `url`, `title`, `share_type`, `channel`, `model`, `actor_id`, `expires_at`, `tags`, `metadata` (absent fields are `null`) |
+| `.artifact` | `cairn` sources only, `null` otherwise: `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id`, `on_behalf_of`, `expires_at`, `labels`, `tags`, `metadata` (absent fields are `null`) |
+| `.issue` | a Gitea/GitHub `issues` event only, `null` otherwise (pull requests included): `provider`, `action`, `event_type`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels` (names), `label`, `body_size`, `label_event`, `key` — see "Issue Envelope Projection" |
 
 #### Scenario: A forged header does not change a verified cairn kind
 
@@ -48,7 +52,8 @@ Each webhook MUST evaluate its ordered rule list first-match-wins, terminated by
 
 - **Rule shape.** A rule is `{id, name?, expr, action}`.
 - **Match.** A rule matches when the **first** output of `expr` is jq-truthy: anything except `false` and `null`. A filter that emits no output MUST NOT match.
-- **Action.** Exactly one of `{"queue": <name>, "endpoints"?: [<endpoint id>, …]}` or `{"drop": true}`.
+- **Action.** Exactly one of `{"queue": <name>, "endpoints"?: [<endpoint id>, …], "exclusive"?: bool, "once"?: bool, "work_order"?: bool}` or `{"drop": true}`. The three flags are valid only with `queue`.
+- **Params.** Every expression is evaluated with the webhook's `params` bound as `$params` (see "Rule Parameters").
 - **Determinism.** Evaluation MUST be pure: the same envelope and rule list MUST always produce the same route, unless a rule faults.
 - **Faults.** A rule that errors (`error`), times out (`timeout`), no longer compiles (`compile_error`), or is not reached before the event budget is spent (`budget_exhausted`) MUST be treated as no-match and recorded on the trace. It MUST NOT fail the delivery.
 - **Budgets.** Each rule MUST be bounded by a 50 ms timeout, and the whole list by a 250 ms per-event budget.
@@ -78,10 +83,10 @@ Rule lists MUST be validated in full when saved, while the webhook row is locked
 
 A save MUST be rejected, naming the offending rule by index, id, and name, when any of the following holds:
 
-- **Limits exceeded.** At most 32 rules; `id` of 1–64 characters of `[A-Za-z0-9_-]`, unique; `name` ≤ 128 bytes; `expr` ≤ 4096 bytes; ≤ 16 endpoints per action.
+- **Limits exceeded.** At most 32 rules; `id` of 1–64 characters of `[A-Za-z0-9_-]`, unique; `name` ≤ 128 bytes; `expr` ≤ 4096 bytes; ≤ 16 endpoints per action; `params` ≤ 16 KiB encoded (`invalid_params`).
 - **Bad expression.** An expression does not parse or compile (`invalid_expression`), or uses a forbidden function (`forbidden_function`).
-- **Malformed action.** An action is not exactly one of queue or drop, or has `endpoints` on a drop (`invalid_rule`).
-- **Unreachable target.** A queue is outside the grant's queues, or an endpoint is not a grant endpoint (`not_granted`).
+- **Malformed action.** An action is not exactly one of queue or drop, or has `endpoints`, `exclusive`, `once`, or `work_order` on a drop (`invalid_rule`).
+- **Unreachable target.** A queue is outside the grant's queues, an endpoint is not a grant endpoint, or an `exclusive` action has no candidate target whose scope includes its queue (`not_granted`).
 
 A rejected save MUST leave the previous rule list in force. A webhook MUST always have a defined default: the configured `default_action`, or the webhook's target queue on every target when none is set.
 
@@ -100,8 +105,10 @@ A rejected save MUST leave the previous rule list in force. A webhook MUST alway
 The grant MUST be recomputed for every delivery and every matched action re-applied against it:
 
 - A `queue` action with no `endpoints` delivers to every live target.
-- With `endpoints`, it delivers to the intersection of `endpoints` and the live targets, in target (owner-first) order.
-- A matched rule whose queue is no longer granted, or whose endpoint intersection is empty, MUST take the default with cause `rule_not_granted`, and MUST NOT fall through to later rules.
+- With `endpoints`, it delivers to the intersection of `endpoints` and the live targets, in target order.
+- Target order MUST be deterministic: the owning endpoint first, then routed endpoints ordered by route `granted_at`, then target endpoint id.
+- With `exclusive`, it delivers to exactly one of those candidates (see "Exclusive Delivery").
+- A matched rule whose queue is no longer granted, whose endpoint intersection is empty, or whose `exclusive` delivery finds no scoped candidate, MUST take the default with cause `rule_not_granted`, and MUST NOT fall through to later rules.
 - A configured default that is no longer reachable MUST fall back to the webhook's target queue on every target, with cause `default_not_granted`.
 
 #### Scenario: A revoked route beats a saved rule
@@ -128,11 +135,12 @@ A `drop` MUST persist the event row with its idempotency key, `webhook_id`, and 
 Every routed event MUST record how it was routed:
 
 ```
-{stage: "rule" | "default", cause?, rule_index?, rule_id?, rule_name?, action, faults?: [{rule_index, rule_id?, cause, detail?}]}
+{stage: "rule" | "default", cause?, rule_index?, rule_id?, rule_name?, action, faults?: [{rule_index, rule_id?, cause, detail?}], once_key?}
 ```
 
 - `cause` applies to the `default` stage and is one of `no_match_default`, `rule_not_granted`, or `default_not_granted`.
 - A sandbox-level fault uses `rule_index: -1`.
+- `once_key` is present when a `once` action claimed (or found claimed) a key. When the key was already claimed by an earlier delivery, the stored event trace MUST additionally carry `"once": "repeat"`.
 
 The trace MUST be written atomically with the event (`events.routing_trace`) and with each todo the delivery produced (`todos.routing_trace`). It MUST be visible in event history (`list_webhook_events`, `get_webhook_event`) and on todos returned by the todo verbs (`routing`).
 
@@ -149,14 +157,15 @@ The agent surface MUST expose `list_webhook_rules`, `set_webhook_rules`, `add_we
 
 - Every verb is gated by the endpoint's verb allowlist.
 - Every verb requires the calling endpoint's **human** to own the webhook. Unknown, malformed, and another human's webhook ids MUST all return `not_found`, and the three MUST be indistinguishable.
-- Validation failures MUST surface routing's code verbatim (`invalid_expression`, `forbidden_function`, `invalid_rule`, `too_many_rules`), except `not_granted`, which MUST surface as `forbidden`.
+- Validation failures MUST surface routing's code verbatim (`invalid_expression`, `forbidden_function`, `invalid_rule`, `too_many_rules`, `invalid_params`), except `not_granted`, which MUST surface as `forbidden`.
 - `update_webhook_rule` and `move_webhook_rule` on an unknown rule id MUST return `rule_not_found`. `remove_webhook_rule` on an absent rule MUST succeed.
 
 **Behavior.**
 
 - Rule ids MUST be minted when omitted.
 - Every mutation MUST be a read-modify-validate-write under a row lock.
-- Every result MUST return the full rule list, the default, and the current grant (`queues`, `endpoints`).
+- Every result MUST return the full rule list, the default, the params, and the current grant (`queues`, `endpoints`).
+- `set_webhook_rules` MUST replace rules, default, and params together; omitting `params` clears them. The other mutations MUST preserve the stored params.
 
 #### Scenario: Another human's webhook is opaque
 
@@ -170,9 +179,9 @@ The surface MUST expose `test_webhook_rules`. It routes, without persisting anyt
 - a sample `payload`, with optional `headers`, treated as a delivery that passed the webhook's verification;
 - the `event_id` of an event that arrived **on that webhook**.
 
-It MUST use the saved rules, or candidate `rules` plus an optional candidate `default_action`. Candidates MUST be validated exactly as a save and MUST NOT be saved. The dry-run MUST use the same router as the receiver.
+It MUST use the saved rules, or candidate `rules` plus an optional candidate `default_action`, and the saved params or candidate `params`. Candidates MUST be validated exactly as a save and MUST NOT be saved. The dry-run MUST use the same router as the receiver.
 
-It MUST return the `decision` (`drop`, `queue`, `endpoints`), the `trace`, and the evaluated `envelope`, unless `omit_envelope` is set. An `event_id` from any other webhook MUST return `not_found`. Supplying both or neither input MUST return `invalid_argument`.
+It MUST return the `decision` (`drop`, `queue`, `endpoints` — for an exclusive action, the single chosen endpoint), the `trace`, and the evaluated `envelope`, unless `omit_envelope` is set. When the decision is a `once` action it MUST return the `once_key` it would claim; whether that key is already claimed is only known at delivery. When the decision is a `work_order` action it MUST return the `work_order` a todo would carry. An `event_id` from any other webhook MUST return `not_found`. Supplying both or neither input MUST return `invalid_argument`.
 
 #### Scenario: Candidate rules are tried, not saved
 
@@ -183,6 +192,120 @@ It MUST return the `decision` (`drop`, `queue`, `endpoints`), the `trace`, and t
 
 - **WHEN** an owner names, in a dry-run of their webhook, an event id recorded on a different tenant's webhook
 - **THEN** the server responds `not_found` and returns nothing of that event
+
+### Requirement: Rule Parameters
+
+A webhook's routing configuration MAY carry `params`, a JSON object that MUST be bound as `$params` in every rule expression; unset params MUST bind as an empty object. `$params` MUST be the only variable an expression can reference. Params MUST be at most 16 KiB encoded, MUST be stored with the rules (`endpoint_webhooks.routing_params`), and MUST be changeable only through the owner-gated rule verbs — never by delivery content. Params MUST be passed to the sandbox child with the rules.
+
+#### Scenario: An allowlist lives beside the rules, out of the payload's reach
+
+- **WHEN** a rule checks `.issue.author` against `$params.trusted_humans` and a delivery's body claims any identity at all
+- **THEN** only the owner-saved params decide membership; nothing in the delivery can add to them
+
+#### Scenario: Missing params fail closed
+
+- **WHEN** a rule list that depends on `$params` allowlists is saved without params
+- **THEN** allowlist checks evaluate against null and no delivery passes them
+
+### Requirement: Issue Envelope Projection
+
+For a delivery whose webhook source is `gitea`, `github`, or `generic` and whose forge event header (`X-Gitea-Event`, else `X-GitHub-Event`) is `issues`, the envelope MUST carry `.issue`, parsed by switchboard from the body (not by a rule):
+
+- `provider` — the source for `gitea`/`github`; for `generic`, `gitea` when `X-Gitea-Event` is present, else `github`;
+- `action` (raw: `opened`, `reopened`, `edited`, `labeled`, `label_updated`, …), `event_type` (`X-Gitea-Event-Type` when present, else `issues`);
+- `repo` (`repository.full_name`), `number`, `title`, `url` (`issue.html_url`), `state`;
+- `author` (`issue.user.login`), `sender` (`sender.login`);
+- `labels` — the issue's label names; `label` — GitHub's changed label for `labeled`/`unlabeled`, else `null`;
+- `body_size` (bytes), `label_event` (true for `labeled`, `unlabeled`, `label_updated`, `label_cleared`), `key` (`provider:owner/repo#number`).
+
+`.issue` MUST be `null` for every other delivery, including pull requests (a top-level `pull_request` or a non-null `issue.pull_request`) and bodies that do not parse.
+
+#### Scenario: Gitea and GitHub label events read alike
+
+- **WHEN** Gitea delivers `X-Gitea-Event: issues`, `X-Gitea-Event-Type: issue_label`, action `label_updated`, and GitHub delivers `issues` / `labeled` for the same kind of change
+- **THEN** both expose `.issue.label_event == true`, the issue's current `.issue.labels`, and the labeler in `.issue.sender`
+
+#### Scenario: A pull request is not an issue
+
+- **WHEN** Gitea delivers a `pull_request` label event
+- **THEN** `.issue` is `null`
+
+### Requirement: Cairn Handoff Fields
+
+For `cairn` sources, `.artifact` MUST additionally expose `labels` (cairn's flat string label map, passed through), `on_behalf_of`, and `handle` (`mcp://cairn/<id>`, or `null` without an id). These depend on the cairn labels contract (`data.labels`, `data.on_behalf_of` on `artifact.created`, bundles included); until cairn emits them they are `null`.
+
+#### Scenario: A handoff's lane is readable, its authority is not
+
+- **WHEN** a cairn delivery carries `data.labels.lane: "local"`
+- **THEN** `.artifact.labels.lane` is `"local"`, and nothing in `.artifact.labels` affects `.verified` or `.artifact.actor_id`
+
+### Requirement: Exclusive Delivery
+
+A `queue` action with `exclusive: true` MUST deliver to exactly one target: the first candidate, in target order, whose endpoint `scope_queues` include the action's queue. Candidates are the action's `endpoints` intersected with the live targets, or every live target. The grant MUST carry each target's scope queues, read from switchboard state. Save-time validation MUST reject an exclusive action with no scoped candidate (`not_granted`), and evaluation MUST apply "Evaluation-Time Grant Enforcement" when none remains.
+
+#### Scenario: Two identities scoped to one lane
+
+- **WHEN** two routed endpoints are both scoped to `lane-zai-flash` and an exclusive rule routes there
+- **THEN** exactly one todo is minted, on the endpoint routed first, and the same endpoint is chosen for every delivery
+
+#### Scenario: The router is never the executor
+
+- **WHEN** the owning endpoint's scope does not include the lane queue
+- **THEN** the owner is skipped and the lane's routed endpoint receives the todo
+
+### Requirement: At-Most-Once Work Orders
+
+A `queue` action with `once: true` MUST claim `(webhook_id, once_key)` in `routing_once` inside the delivery's transaction, where `once_key` is `once:` + hex SHA-256 of the delivery subject's key and the decided queue joined by a NUL byte. Subject keys are `provider:owner/repo#number` for an issue and `cairn:<id>` for a cairn artifact. A delivery with no recognizable subject MUST NOT claim a key and routes as an ordinary delivery.
+
+- **First claim.** The delivery mints its todos normally.
+- **Already claimed by a different delivery.** The event MUST be persisted with `"once": "repeat"` merged into its trace, no todo MUST be minted, no hub publish or doorbell MUST occur, and the receiver MUST answer HTTP 202 with `{"todos": [], "created": 0, "repeat": true, …}`.
+- **Redelivery of the claiming delivery.** The receiver MUST report the todos that delivery minted and MUST NOT mint again, even when those todos are done.
+- **Retention.** A claim MUST outlive the event that made it (`routing_once.event_id` is not a foreign key).
+
+#### Scenario: A relabel does not re-run the work
+
+- **WHEN** an issue labeled `size/M` has been routed once to `lane-zai-flash`, and a later label event (a new delivery id, the same issue, `size/M` still present) arrives
+- **THEN** no second todo is minted and the event trace records `"once": "repeat"`
+
+#### Scenario: A re-size routes again
+
+- **WHEN** that issue is relabeled `size/L`
+- **THEN** the `lane-zai` key is unclaimed and one todo is minted on the `lane-zai` endpoint
+
+### Requirement: Work Orders
+
+A `queue` action with `work_order: true` MUST attach to each minted todo a switchboard-authored `work_order` (`todos.work_order`) of the shape:
+
+```
+{version: 1, lane, source, webhook_id, trust_mode, verified, authorized_by: {stage, rule_id?, rule_name?}, subject?, authority}
+```
+
+`subject` MUST be parsed by switchboard in Go from the verified body — an issue subject (`provider`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels`, …) or a cairn subject (`id`, `handle`, `url`, `title`, `share_type`, `actor_id`, `on_behalf_of`, `labels`). `authority` MUST be a fixed task-only statement. The work order MUST be returned on todos by the todo verbs (`work_order`). A work order MUST NOT widen any permission, scope, or clamp of the worker that executes it; producer-supplied fields in it are data.
+
+#### Scenario: A worker gets a handle, not a payload to interpret
+
+- **WHEN** a cairn handoff routes to a lane with `work_order: true`
+- **THEN** the lane todo's `work_order.subject.handle` is `mcp://cairn/<id>` and `authorized_by.rule_id` names the lane rule
+
+### Requirement: Work Order Trust
+
+A webhook whose rules route to worker lanes SHOULD admit a delivery as a work order only when its **verified provenance** passes owner-set allowlists in `$params`:
+
+- the signature verified (`.verified`);
+- for cairn, `.artifact.actor_id` is an allowlisted actor; an `on_behalf_of` outside the trusted principals is held, not executed;
+- for issues, `.issue.author` is a trusted human or agent, `.issue.repo` matches an allowlisted prefix, and for label events `.issue.sender` is trusted.
+
+Labels, titles, and bodies MUST NOT grant trust; they may only choose a lane among already-admitted work. Deliveries that fail MUST drop or hold, and the trace MUST name the deciding rule. The checked-in `docs/routing/rule-packs/fleet.json` implements this.
+
+#### Scenario: Labels cannot talk an untrusted actor past the allowlist
+
+- **WHEN** a cairn artifact from an actor outside `cairn_actors` carries `labels.handoff: "true"` and `labels.lane: "local"`
+- **THEN** the delivery drops with `rule_id: "cairn-untrusted-actor"`
+
+#### Scenario: An unverified delivery is never work
+
+- **WHEN** a trusted author's issue arrives on a token-trust (unverified) webhook with `require_verified` set
+- **THEN** the delivery drops with `rule_id: "unverified"`
 
 ### Requirement: LLM Triage Stage (Opt-In, Bounded)
 
@@ -241,13 +364,14 @@ This MUST hold at save time and again at every delivery, including for a rule ro
   - Its environment is empty: no inherited DSN, OAuth secrets, or keys.
   - Its stderr is discarded.
   - A watchdog exits it when runtime-mapped memory exceeds its limit (default 128 MiB).
-  - The parent MUST kill it at a hard deadline (event budget + 750 ms).
+  - The parent MUST kill it at a hard deadline (event budget + 1750 ms, 2 s in all).
   - At most two children run concurrently. A delivery that cannot get a slot within one second MUST route by default with a `sandbox_busy` fault.
   - Any child failure MUST route by default with a `sandbox_failure` fault.
   - The child MUST return only the index of the matching rule and any faults, behind a protocol prefix. The parent MUST apply the action from its own configuration and grant, and MUST ignore an out-of-range index.
   - A webhook with no rules MUST NOT start a child.
 - **Egress control** *(Phase 2)*: enabling LLM triage is an explicit endpoint-owner decision naming a provider and model (via the runtime provider registry); full payload text is off by default and its enablement is recorded on the endpoint.
-- **No privilege escalation.** Routing never changes trust mode, verification results, or ownership. Dropped events keep their audit record.
+- **No privilege escalation.** Routing never changes trust mode, verification results, or ownership. Dropped events keep their audit record. A work order describes a task and grants no permission.
+- **Provenance over content.** Work-order admission MUST rest on switchboard-verified signatures and server-derived identities (forge logins, cairn's authenticated actor), evaluated against owner-set `$params`; producer-asserted labels and text never authorize work.
 - **Injection resistance.** Event content, including producer-controlled fields, is data inside the jq evaluation and any future LLM prompt. The trace is not echoed to producers.
 
 ## Accessibility Requirements

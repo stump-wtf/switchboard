@@ -24,6 +24,12 @@ verify → idempotency key → resolve targets → ROUTE (rules → default) →
 | `{"queue": "forge"}` | Create the todo in `forge` on **every** delivery target (owner + routes). |
 | `{"queue": "handoff", "endpoints": ["<id>"]}` | Create it only on those targets — a subset of the webhook's existing delivery targets. |
 | `{"drop": true}` | Record the event (visible in history, dedup slot spent) but create no todo and ring no doorbell. |
+| `{"queue": "lane-local", "exclusive": true}` | Create it on exactly **one** target: the first (owner first, then routes by grant time) whose endpoint scope includes the queue. |
+| `{"queue": "lane-local", "once": true}` | At most once per subject (issue or cairn artifact) per queue: later deliveries about it are recorded with `"once": "repeat"` and answer `{"repeat": true}`. |
+| `{"queue": "lane-local", "work_order": true}` | Attach a switchboard-authored `work_order` (lane, verified provenance, authorizing rule, subject) to each todo. |
+
+The last three combine, and are only valid with `queue`. They are what handoff lanes use — see
+[guide 08](08-handoff-lanes.md).
 
 A rule can only **narrow** where a delivery lands, never widen it. The queue must be the webhook's
 target queue or one of its owner's allowed webhook queues; every `endpoints` entry must already be a
@@ -52,10 +58,20 @@ and `.headers`.
 | `.size` | payload size in bytes |
 | `.headers` | sanitized request headers, **lower-cased** names (secrets read `«redacted»`) |
 | `.payload` | the body parsed as JSON, or `null` when it is not JSON |
-| `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `url`, `title`, `share_type`, `channel`, `model`, `actor_id`, `expires_at`, `tags`, `metadata` |
+| `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id`, `on_behalf_of`, `expires_at`, `labels`, `tags`, `metadata` |
+| `.issue` | Gitea/GitHub `issues` events only (`null` otherwise, pull requests included): `provider`, `action`, `event_type`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels` (names), `label` (GitHub's changed label), `body_size`, `label_event`, `key` |
+
+`.issue` reads the same on both forges: Gitea's label change (`issue_label`, action `label_updated`)
+and GitHub's (`labeled`) both set `.issue.label_event`, with the current labels in `.issue.labels`.
 
 The first output of your filter decides the match with jq truthiness: anything except `false` and
 `null` matches; a filter that outputs nothing does not.
+
+Rules can also read **`$params`**, an object you save alongside the rules (`set_webhook_rules`'s
+`params`, up to 16 KiB). Keep allowlists there instead of splicing names into every expression:
+`.issue.author as $a | any($params.trusted_humans[]; . == $a)`. Only the webhook owner's verbs
+change params — a delivery cannot. `set_webhook_rules` replaces params with the rules; omitting
+them clears them.
 
 Rules are sandboxed. `env`/`$ENV`, `input`/`inputs`, `input_filename`, `debug`, `stderr`, `halt`,
 `halt_error`, `now`, `localtime`, `strflocaltime`, and `import`/`include` are refused at save time.
@@ -148,5 +164,7 @@ Endpoints vended before routing shipped were granted the verb list of their day:
 rule verbs in their scope and `cairn` in their allowed source types. Re-vend the endpoint, or have an
 operator widen its `scope_verbs` and `webhook_source_types`.
 
-> Deeper detail: [ADR-0024 — Event routing](/decisions/ADR-0024-event-routing-deterministic-and-llm)
-> and the [event-routing spec](/specs/event-routing/spec).
+> Deeper detail: [ADR-0024 — Event routing](/decisions/ADR-0024-event-routing-deterministic-and-llm),
+> [ADR-0025 — Handoff work orders and difficulty lanes](/decisions/ADR-0025-handoff-work-orders-and-difficulty-lanes),
+> the [event-routing spec](/specs/event-routing/spec), and [guide 08](08-handoff-lanes.md) for the
+> lanes runbook.
