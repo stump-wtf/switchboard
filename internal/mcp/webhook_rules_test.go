@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/joestump/switchboard/internal/routing"
@@ -325,6 +326,35 @@ func TestWebhookRuleVerbsRequireScope(t *testing.T) {
 	cs := routeSession(t, ctx, f.st, f.slugA1, f.tokenA1) // route verbs only
 	callErr(t, ctx, cs, "list_webhook_rules", map[string]any{"webhook_id": f.webhookA}, codeForbidden)
 	callErr(t, ctx, cs, "set_webhook_rules", map[string]any{"webhook_id": f.webhookA, "rules": []any{}}, codeForbidden)
+}
+
+// A rule mutation must fit in ONE pooled connection. UpdateWebhookRouting holds a connection for its
+// whole transaction; anything inside mutate that reaches for the pool again (resolving the grant's
+// delivery targets did) blocks on itself here, and on a production-sized pool N concurrent rule
+// edits each hold one connection while waiting on another — wedging ingest along with them.
+func TestWebhookRuleMutationFitsOneConnection(t *testing.T) {
+	pool, ctx := routeTestPool(t)
+	f := newRouteFixture(t, ctx, pool)
+	cfg := pool.Config()
+	cfg.MaxConns = 1
+	one, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("one-connection pool: %v", err)
+	}
+	t.Cleanup(one.Close)
+	st := store.New(one)
+	_, token := mustEndpoint(t, ctx, st, f.agentA1, "rules-one-66666666", allRuleVerbs)
+	cs := ruleSession(t, ctx, st, "rules-one-66666666", token)
+
+	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var out webhookRulesOut
+	callOK(t, callCtx, cs, "add_webhook_rule", map[string]any{
+		"webhook_id": f.webhookA, "id": "one", "expr": "true", "action": map[string]any{"queue": "reviews"},
+	}, &out)
+	if !slices.Equal(ruleIDs(out), []string{"one"}) || !slices.Equal(out.Grant.Endpoints, []string{f.epA1}) {
+		t.Fatalf("add on a one-connection pool = %+v", out)
+	}
 }
 
 func TestTodoOutCarriesRoutingTrace(t *testing.T) {

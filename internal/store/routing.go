@@ -91,6 +91,10 @@ func (s *Store) WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHuma
 // validates the new configuration; any error it returns aborts the update and is returned unchanged,
 // leaving the previous configuration in force (SPEC-0020 scenario "Typo in a rule is rejected, not
 // silently inert").
+//
+// mutate runs while this transaction holds a pooled connection, so it MUST NOT touch the pool (any
+// Store read): on a pool of N connections, N concurrent updates would each hold one and block forever
+// acquiring another. Read what validation needs before calling.
 func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanID string,
 	mutate func(WebhookRouting) (routing.Config, error)) (WebhookRouting, error) {
 	if !isUUID(webhookID) || !isUUID(ownerHumanID) {

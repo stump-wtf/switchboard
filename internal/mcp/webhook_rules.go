@@ -30,6 +30,10 @@ package mcp
 // ADR-0012.
 //
 // @joestump-agent 09/11/2026 - Initial rule verbs and dry-run.
+//
+// @joestump-agent 09/11/2026 - mutateRules resolves delivery targets before the row lock; resolving
+// them inside UpdateWebhookRouting's transaction took a second pooled connection and deadlocked the
+// pool under concurrent rule edits.
 
 import (
 	"context"
@@ -354,6 +358,20 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 	if id == "" {
 		return nil, webhookRulesOut{}, &toolError{codeInvalidArgument, "webhook_id is required"}
 	}
+	// Resolve the grant's delivery targets BEFORE UpdateWebhookRouting takes its row lock. That
+	// transaction holds a pooled connection until it commits, so resolving targets from inside mutate
+	// needs a second one: N concurrent rule edits on an N-connection pool then each hold one and wait
+	// forever on another, and ingest wedges with them. Targets read a moment before the lock are as
+	// sound as targets read under it — the lock never covered webhook_routes or endpoint state — and
+	// every delivery re-applies the grant anyway. The queue ceiling still comes from the locked row.
+	pre, err := h.store.WebhookRoutingForHuman(ctx, id, ep.OwnerHumanID)
+	if err != nil {
+		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
+	}
+	targets, err := h.store.ResolveWebhookTargets(ctx, pre.WebhookID, pre.EndpointID)
+	if err != nil {
+		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
+	}
 	var g routing.Grant
 	wr, err := h.store.UpdateWebhookRouting(ctx, id, ep.OwnerHumanID, func(cur store.WebhookRouting) (routing.Config, error) {
 		next, err := change(cur.Config)
@@ -365,9 +383,7 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 				next.Rules[i].ID = routing.NewRuleID()
 			}
 		}
-		if g, err = h.routingGrant(ctx, cur); err != nil {
-			return routing.Config{}, err
-		}
+		g = routing.Grant{TargetQueue: cur.TargetQueue, Queues: cur.WebhookQueues, Endpoints: targets}
 		if err := routing.Validate(next, g); err != nil {
 			return routing.Config{}, err
 		}
