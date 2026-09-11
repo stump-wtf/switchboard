@@ -34,7 +34,7 @@ Several workers on one queue, on different provider accounts, are competing cons
 | `require_verified` | `true` (default): a delivery whose signature did not verify is never a work order. |
 | `trusted_humans` | Forge logins of trusted people. |
 | `trusted_agents` | Forge logins of trusted agent identities. |
-| `cairn_actors` | Cairn `actor_id`s allowed to hand off work, exactly as cairn records them: a `CAIRN_API_TOKENS` entry's actor, a PAT's owner, or the OIDC login (email or sub) for an MCP OAuth client. |
+| `cairn_actors` | Cairn `actor_id`s allowed to hand off work, exactly as cairn records them: a `CAIRN_API_TOKENS` entry's actor, a PAT's owner, or the OIDC login (email or sub) for an MCP OAuth client. The checked-in values match only static-token actors; a harness on a PAT records the owner's login, so replace them with the ids cairn actually records ([guide 08](../../guides/08-handoff-lanes.md), step 5) or every handoff drops. |
 | `repo_prefixes` | `owner/` or `owner/repo` prefixes whose issues may route. |
 
 Issue authors, and labelers on label events, must be in `trusted_humans ∪ trusted_agents`. Tags, labels, and cairn's `on_behalf_of` never grant trust. `on_behalf_of` is the MCP client's self-reported `name/version`, e.g. `claude-code/2.1.0`.

@@ -96,7 +96,17 @@ Take `docs/routing/rule-packs/fleet.json`, edit `params` for your identities and
 
 A save fails if any lane has no routed endpoint scoped to it. The exclusive rules refuse to validate rather than fan out.
 
-`cairn_actors` must hold the `actor_id` values cairn actually records. That is a static token's configured actor, a PAT's owner, or the OIDC login (email or sub) for an MCP OAuth client, which is not necessarily a forge login. To check, read the `actor_id` on a stored cairn event with `test_webhook_rules`.
+`cairn_actors` must hold the `actor_id` values cairn actually records. That is a static token's configured actor, a PAT's owner, or the OIDC login (email or sub) for an MCP OAuth client, which is not necessarily a forge login.
+
+**Do not install the checked-in values unchanged.** `fleet.json` lists `joestump-agent` and `joestump`, which only match the static `CAIRN_API_TOKENS` actors. A harness authenticating with a PAT records the PAT owner's login. As of 2026-09-11, every MCP client in the fleet (crush on any host, mcp-remote) records the human account's login, so the unedited pack drops every real handoff as `cairn-untrusted-actor`. It fails closed, so nothing opens up, but no handoff ever reaches a lane.
+
+Find the real ids before you install:
+
+- the `actor_id` on a stored cairn event, via `list_webhook_events` or `test_webhook_rules`; or
+- an operator query against cairn's database, aggregates only:
+  `SELECT actor_id, on_behalf_of, channel, count(*), max(created_at) FROM artifacts WHERE created_at > now() - interval '30 days' GROUP BY 1, 2, 3 ORDER BY 5 DESC;`
+
+A PAT authenticates as its owner, so cairn cannot tell one harness from another when they share an owner. To give an agent its own provenance, issue it an agent static token (`secret:actor:agent`), then list that actor too.
 
 ## 6. Dry-run before trusting it
 
@@ -132,7 +142,9 @@ Dedup is per webhook. If a per-identity pool hook still receives the same Issues
 
 Point each lane's workers at its lane endpoint and model. Each worker drains its endpoint with `claim_next`. Nobody works the `hold` endpoint; its todos are surfaced for Joe.
 
-A worker fails — never executes — a lane todo that has no `work_order`, or whose `work_order.verified` is not `true`.
+A worker fails, and never executes, a lane todo that has no `work_order`. It also fails one whose `work_order.verified` is not `true`, whose `authorized_by.rule_id` is empty, or whose `lane` is not the queue it drained.
+
+Those checks are the gate. Switchboard writes the work order only after signature verification and the owner's allowlists pass, and the producer cannot write it. Do not re-check `subject.actor_id`, `author`, or `sender` against a literal list inside the worker. A second copy of the allowlist in a prompt drifts from the router's `params`. It then refuses exactly the handoffs the router admitted, because cairn records a PAT owner's login rather than an agent name. Log those fields in the result; never gate on them.
 
 ## Changing an endpoint's scope
 
