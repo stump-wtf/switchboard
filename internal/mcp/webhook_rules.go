@@ -34,6 +34,10 @@ package mcp
 // @joestump-agent 09/11/2026 - mutateRules resolves delivery targets before the row lock; resolving
 // them inside UpdateWebhookRouting's transaction took a second pooled connection and deadlocked the
 // pool under concurrent rule edits.
+//
+// @joestump-agent 09/11/2026 - ADR-0025: params ($params), exclusive/once/work_order action flags,
+// per-target scopes in the grant (read before the lock, like targets), and a dry-run that previews
+// the once key and work order.
 
 import (
 	"context"
@@ -56,6 +60,9 @@ type actionIO struct {
 	Queue     string   `json:"queue,omitempty" jsonschema:"deliver to this queue (the webhook's target queue or one in its owner's allowed webhook queues)"`
 	Drop      bool     `json:"drop,omitempty" jsonschema:"true to record the delivery without creating a todo or ringing a doorbell"`
 	Endpoints []string `json:"endpoints,omitempty" jsonschema:"with queue only: deliver to just these of the webhook's delivery targets (see grant.endpoints); omitted means every target"`
+	Exclusive bool     `json:"exclusive,omitempty" jsonschema:"with queue only: deliver to exactly one target, the first (owner first, then routes by grant time) whose endpoint scope includes the queue"`
+	Once      bool     `json:"once,omitempty" jsonschema:"with queue only: at most one work order per subject (issue or cairn artifact) per queue; later deliveries about it are recorded but mint nothing"`
+	WorkOrder bool     `json:"work_order,omitempty" jsonschema:"with queue only: attach a switchboard-authored work order (lane, verified provenance, authorizing rule, subject) to each todo"`
 }
 
 type ruleIO struct {
@@ -71,12 +78,13 @@ type grantOut struct {
 }
 
 type webhookRulesOut struct {
-	WebhookID     string    `json:"webhook_id" jsonschema:"the webhook"`
-	SourceType    string    `json:"source_type" jsonschema:"the webhook's source type (the envelope's .source)"`
-	TargetQueue   string    `json:"target_queue" jsonschema:"the webhook's target queue"`
-	DefaultAction *actionIO `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omitted means the target queue on every target"`
-	Rules         []ruleIO  `json:"rules" jsonschema:"the rules, in evaluation order (first match wins)"`
-	Grant         grantOut  `json:"grant" jsonschema:"what actions may reach right now"`
+	WebhookID     string         `json:"webhook_id" jsonschema:"the webhook"`
+	SourceType    string         `json:"source_type" jsonschema:"the webhook's source type (the envelope's .source)"`
+	TargetQueue   string         `json:"target_queue" jsonschema:"the webhook's target queue"`
+	DefaultAction *actionIO      `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omitted means the target queue on every target"`
+	Rules         []ruleIO       `json:"rules" jsonschema:"the rules, in evaluation order (first match wins)"`
+	Params        map[string]any `json:"params,omitempty" jsonschema:"owner-set values rules read as $params (e.g. trusted-actor allowlists)"`
+	Grant         grantOut       `json:"grant" jsonschema:"what actions may reach right now"`
 }
 
 type webhookIDIn struct {
@@ -84,9 +92,10 @@ type webhookIDIn struct {
 }
 
 type setWebhookRulesIn struct {
-	WebhookID     string    `json:"webhook_id" jsonschema:"a webhook this endpoint's human owns"`
-	Rules         []ruleIO  `json:"rules" jsonschema:"the complete ordered rule list; replaces the current one atomically"`
-	DefaultAction *actionIO `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omit for the webhook's target queue"`
+	WebhookID     string         `json:"webhook_id" jsonschema:"a webhook this endpoint's human owns"`
+	Rules         []ruleIO       `json:"rules" jsonschema:"the complete ordered rule list; replaces the current one atomically"`
+	DefaultAction *actionIO      `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omit for the webhook's target queue"`
+	Params        map[string]any `json:"params,omitempty" jsonschema:"values bound as $params in every rule; replaces the current params (omit to clear)"`
 }
 
 type addWebhookRuleIn struct {
@@ -124,6 +133,7 @@ type testWebhookRulesIn struct {
 	Headers       map[string]string `json:"headers,omitempty" jsonschema:"sample request headers for a payload test (e.g. X-Gitea-Event)"`
 	Rules         []ruleIO          `json:"rules,omitempty" jsonschema:"candidate rules to try instead of the saved list (not saved)"`
 	DefaultAction *actionIO         `json:"default_action,omitempty" jsonschema:"candidate default, used only with rules"`
+	Params        map[string]any    `json:"params,omitempty" jsonschema:"candidate params to try instead of the saved ones (not saved)"`
 	OmitEnvelope  bool              `json:"omit_envelope,omitempty" jsonschema:"true to leave the evaluated envelope out of the result"`
 }
 
@@ -134,9 +144,11 @@ type decisionOut struct {
 }
 
 type testWebhookRulesOut struct {
-	Decision decisionOut    `json:"decision" jsonschema:"where the delivery would go"`
-	Trace    routing.Trace  `json:"trace" jsonschema:"the routing trace that would be recorded"`
-	Envelope map[string]any `json:"envelope,omitempty" jsonschema:"the JSON document the rules evaluated (write expressions against these paths)"`
+	Decision  decisionOut        `json:"decision" jsonschema:"where the delivery would go"`
+	Trace     routing.Trace      `json:"trace" jsonschema:"the routing trace that would be recorded"`
+	OnceKey   string             `json:"once_key,omitempty" jsonschema:"the at-most-once key a once action would claim (whether it is already claimed is only known at delivery)"`
+	WorkOrder *routing.WorkOrder `json:"work_order,omitempty" jsonschema:"the work order a work_order action would attach"`
+	Envelope  map[string]any     `json:"envelope,omitempty" jsonschema:"the JSON document the rules evaluated (write expressions against these paths)"`
 }
 
 // registerWebhookRuleTools installs the endpoint's allowlisted rule verbs.
@@ -148,7 +160,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "set_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "set_webhook_rules",
-			Description: "Replace a webhook's whole routing rule list (and default action) atomically. Each rule is a jq filter plus an action: {queue, endpoints?} or {drop: true}. First match wins. An invalid rule rejects the save and keeps the previous rules."},
+			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. An invalid rule rejects the save and keeps the previous configuration."},
 			h.setWebhookRulesTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
@@ -205,7 +217,7 @@ func (h *Handler) setWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[
 			rules = append(rules, fromRuleIO(r))
 		}
 		return h.mutateRules(ctx, ep, "set_webhook_rules", in.WebhookID, func(routing.Config) (routing.Config, error) {
-			return routing.Config{Rules: rules, Default: fromActionIO(in.DefaultAction)}, nil
+			return routing.Config{Rules: rules, Default: fromActionIO(in.DefaultAction), Params: in.Params}, nil
 		})
 	}
 }
@@ -294,10 +306,15 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 		}
 		cfg := wr.Config
 		if in.Rules != nil {
-			cfg = routing.Config{Default: fromActionIO(in.DefaultAction)}
+			cfg = routing.Config{Default: fromActionIO(in.DefaultAction), Params: wr.Config.Params}
 			for _, r := range in.Rules {
 				cfg.Rules = append(cfg.Rules, fromRuleIO(r))
 			}
+		}
+		if in.Params != nil {
+			cfg.Params = in.Params
+		}
+		if in.Rules != nil || in.Params != nil {
 			// Candidates are held to the same standard as a save, so a dry-run that passes is a save
 			// that will pass.
 			if err := routing.Validate(cfg, g); err != nil {
@@ -340,6 +357,15 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 			Decision: decisionOut{Drop: d.Drop, Queue: d.Queue, Endpoints: d.Endpoints},
 			Trace:    d.Trace,
 		}
+		subject := routing.SubjectOf(wr.SourceType, env.Headers, env.Body)
+		if d.Once && !d.Drop {
+			out.OnceKey = routing.OnceKey(subject, d.Queue)
+			out.Trace.OnceKey = out.OnceKey
+		}
+		if d.WorkOrder && !d.Drop {
+			wo := routing.BuildWorkOrder(d, env, subject)
+			out.WorkOrder = &wo
+		}
 		if !in.OmitEnvelope {
 			out.Envelope = routing.Envelope(env)
 		}
@@ -372,6 +398,10 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 	if err != nil {
 		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 	}
+	scopes, err := h.store.EndpointScopeQueues(ctx, targets) // also before the lock, for the same reason
+	if err != nil {
+		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
+	}
 	var g routing.Grant
 	wr, err := h.store.UpdateWebhookRouting(ctx, id, ep.OwnerHumanID, func(cur store.WebhookRouting) (routing.Config, error) {
 		next, err := change(cur.Config)
@@ -383,7 +413,7 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 				next.Rules[i].ID = routing.NewRuleID()
 			}
 		}
-		g = routing.Grant{TargetQueue: cur.TargetQueue, Queues: cur.WebhookQueues, Endpoints: targets}
+		g = routing.Grant{TargetQueue: cur.TargetQueue, Queues: cur.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
 		if err := routing.Validate(next, g); err != nil {
 			return routing.Config{}, err
 		}
@@ -402,7 +432,11 @@ func (h *Handler) routingGrant(ctx context.Context, wr store.WebhookRouting) (ro
 	if err != nil {
 		return routing.Grant{}, err
 	}
-	return routing.Grant{TargetQueue: wr.TargetQueue, Queues: wr.WebhookQueues, Endpoints: targets}, nil
+	scopes, err := h.store.EndpointScopeQueues(ctx, targets)
+	if err != nil {
+		return routing.Grant{}, err
+	}
+	return routing.Grant{TargetQueue: wr.TargetQueue, Queues: wr.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}, nil
 }
 
 // rulesRouter is the router dry-runs use: the same sandbox the receiver uses unless a test replaced it.
@@ -443,7 +477,8 @@ func fromActionIO(a *actionIO) *routing.Action {
 	if a == nil {
 		return nil
 	}
-	return &routing.Action{Queue: strings.TrimSpace(a.Queue), Drop: a.Drop, Endpoints: a.Endpoints}
+	return &routing.Action{Queue: strings.TrimSpace(a.Queue), Drop: a.Drop, Endpoints: a.Endpoints,
+		Exclusive: a.Exclusive, Once: a.Once, WorkOrder: a.WorkOrder}
 }
 
 func fromRuleIO(r ruleIO) routing.Rule {
@@ -451,14 +486,16 @@ func fromRuleIO(r ruleIO) routing.Rule {
 }
 
 func toActionIO(a routing.Action) actionIO {
-	return actionIO{Queue: a.Queue, Drop: a.Drop, Endpoints: a.Endpoints}
+	return actionIO{Queue: a.Queue, Drop: a.Drop, Endpoints: a.Endpoints,
+		Exclusive: a.Exclusive, Once: a.Once, WorkOrder: a.WorkOrder}
 }
 
 func rulesOut(wr store.WebhookRouting, g routing.Grant) webhookRulesOut {
 	out := webhookRulesOut{
 		WebhookID: wr.WebhookID, SourceType: wr.SourceType, TargetQueue: wr.TargetQueue,
-		Rules: make([]ruleIO, 0, len(wr.Config.Rules)),
-		Grant: grantOut{Queues: []string{g.TargetQueue}, Endpoints: nonNil(g.Endpoints)},
+		Rules:  make([]ruleIO, 0, len(wr.Config.Rules)),
+		Params: wr.Config.Params,
+		Grant:  grantOut{Queues: []string{g.TargetQueue}, Endpoints: nonNil(g.Endpoints)},
 	}
 	for _, q := range g.Queues {
 		if !slices.Contains(out.Grant.Queues, q) {

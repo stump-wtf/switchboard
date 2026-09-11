@@ -123,6 +123,8 @@ type ToolStore interface {
 	UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
 	ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error)
 	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
+	// EndpointScopeQueues feeds the grant's per-target scopes for exclusive delivery (ADR-0025).
+	EndpointScopeQueues(ctx context.Context, endpointIDs []string) (map[string][]string, error)
 	// SettingString backs replay target resolution (SPEC-0005 REQ "Replay Safety"): the
 	// `replay_default_target` fallback and the `replay_allowed_targets` allowlist both read here.
 	SettingString(ctx context.Context, key, def string) (string, error)
