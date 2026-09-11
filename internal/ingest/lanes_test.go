@@ -255,7 +255,7 @@ func TestLanesCairnHandoff(t *testing.T) {
 		t.Fatalf("work order: %v", err)
 	}
 	if wo.Subject == nil || wo.Subject.Handle != "mcp://cairn/hx7Qm2" || wo.Subject.ActorID != "joestump-agent" ||
-		wo.Subject.OnBehalfOf != "joestump" || wo.Lane != "lane-m" || wo.AuthorizedBy.RuleID != "cairn-lane-m" {
+		wo.Subject.OnBehalfOf != "claude-code/2.1.0" || wo.Lane != "lane-m" || wo.AuthorizedBy.RuleID != "cairn-lane-m" {
 		t.Fatalf("cairn work order = %+v", wo)
 	}
 

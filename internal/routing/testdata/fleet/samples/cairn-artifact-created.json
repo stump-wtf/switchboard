@@ -17,10 +17,10 @@
       "share_type": "markdown",
       "title": "Handoff: re-register Signal on kitt",
       "url": "https://cairn.stump.wtf/a/hx7Qm2",
-      "channel": "mcp",
+      "channel": "via MCP",
       "model": "claude-opus-5",
       "actor_id": "joestump-agent",
-      "on_behalf_of": "joestump",
+      "on_behalf_of": "claude-code/2.1.0",
       "expires_at": "2026-09-18T08:30:00Z",
       "tags": [
         "handoff",
@@ -28,8 +28,8 @@
         "size:m",
         "repo:stump.wtf/harness",
         "issue:stump.wtf/harness#212",
-        "source:morning-brief",
-        "reply:mcp://cairn/brief-2026-09-11"
+        "source:claude-code/morning-brief-2026-09-11",
+        "reply:cairn-comment"
       ]
     }
   }

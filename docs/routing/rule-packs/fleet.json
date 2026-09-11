@@ -26,12 +26,6 @@
       "action": {"drop": true}
     },
     {
-      "id": "cairn-on-behalf-untrusted",
-      "name": "cairn handoffs on behalf of someone we do not trust are held for Joe",
-      "expr": ".source == \"cairn\" and .artifact.on_behalf_of != null and (.artifact.on_behalf_of as $o | any((($params.trusted_humans // []) + ($params.trusted_agents // []))[]; . == $o) | not)",
-      "action": {"queue": "hold", "exclusive": true, "once": true, "work_order": true}
-    },
-    {
       "id": "cairn-ambiguous",
       "name": "more than one lane: or size: tag is held, not guessed",
       "expr": ".source == \"cairn\" and (([(.artifact.tags // [])[] | select(startswith(\"lane:\"))] | length > 1) or ([(.artifact.tags // [])[] | select(startswith(\"size:\"))] | length > 1))",

@@ -61,14 +61,14 @@ func TestSubjectOfForgeIssues(t *testing.T) {
 
 func TestSubjectOfCairn(t *testing.T) {
 	in := sampleInput(t, "cairn-artifact-created", map[string]any{"data": map[string]any{
-		"tags": []any{"handoff", "lane:m", 7, map[string]any{"x": 1}, "reply:mcp://cairn/brief-2026-09-11"},
+		"tags": []any{"handoff", "lane:m", 7, map[string]any{"x": 1}, "reply:cairn-comment"},
 	}})
 	s := SubjectOf(in.Source, in.Headers, in.Body)
 	if s == nil || s.Type != SubjectCairnArtifact || s.Handle != "mcp://cairn/hx7Qm2" || s.ActorID != "joestump-agent" ||
-		s.OnBehalfOf != "joestump" || s.Key() != "cairn:hx7Qm2" {
+		s.OnBehalfOf != "claude-code/2.1.0" || s.Key() != "cairn:hx7Qm2" {
 		t.Fatalf("cairn subject = %+v", s)
 	}
-	if !slices.Equal(s.Tags, []string{"handoff", "lane:m", "reply:mcp://cairn/brief-2026-09-11"}) {
+	if !slices.Equal(s.Tags, []string{"handoff", "lane:m", "reply:cairn-comment"}) {
 		t.Fatalf("cairn tags = %v, want only the string entries, in order", s.Tags)
 	}
 	untagged := sampleInput(t, "cairn-artifact-created", map[string]any{"data": map[string]any{"tags": nil}})
@@ -110,7 +110,7 @@ func TestBuildWorkOrder(t *testing.T) {
 	tags, _ := subject["tags"].([]any)
 	if m["version"] != float64(WorkOrderVersion) || m["lane"] != "lane-m" || m["verified"] != true ||
 		m["trust_mode"] != "signed" || subject["handle"] != "mcp://cairn/hx7Qm2" || subject["actor_id"] != "joestump-agent" ||
-		subject["on_behalf_of"] != "joestump" || len(tags) != 7 || auth["rule_id"] != "cairn-lane-m" {
+		subject["on_behalf_of"] != "claude-code/2.1.0" || len(tags) != 7 || auth["rule_id"] != "cairn-lane-m" {
 		t.Fatalf("work order = %s", raw)
 	}
 	// Semi-trust travels with every work order, verbatim.
@@ -146,7 +146,7 @@ func TestEnvelopeIssueAndCairnProjections(t *testing.T) {
 	for _, expr := range []string{
 		`.artifact.tags | index("handoff") != null`,
 		`[.artifact.tags[]? | select(startswith("lane:"))][0] == "lane:m"`,
-		`.artifact.on_behalf_of == "joestump" and .artifact.handle == "mcp://cairn/hx7Qm2" and .artifact.actor_id == "joestump-agent"`,
+		`.artifact.on_behalf_of == "claude-code/2.1.0" and .artifact.handle == "mcp://cairn/hx7Qm2" and .artifact.actor_id == "joestump-agent"`,
 		`.issue == null and .artifact.labels == null`,
 	} {
 		if !matches(t, cairn, expr) {

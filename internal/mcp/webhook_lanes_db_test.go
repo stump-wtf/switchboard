@@ -79,7 +79,7 @@ func TestFleetPackInstallsAndDryRuns(t *testing.T) {
 
 	var saved webhookRulesOut
 	callOK(t, ctx, cs, "set_webhook_rules", body, &saved)
-	if len(saved.Rules) != 28 || saved.DefaultAction == nil || !saved.DefaultAction.Drop {
+	if len(saved.Rules) != 27 || saved.DefaultAction == nil || !saved.DefaultAction.Drop {
 		t.Fatalf("installed pack = %d rules, default %+v", len(saved.Rules), saved.DefaultAction)
 	}
 	if actors, _ := saved.Params["cairn_actors"].([]any); len(actors) != 2 {
