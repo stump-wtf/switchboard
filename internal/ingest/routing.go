@@ -37,12 +37,18 @@ import (
 func (i *Ingest) SetRouter(r routing.Router) { i.router = r }
 
 // routeDelivery decides where a verified self-managed delivery lands. targets is the live, authorized
-// fan-out set (ResolveWebhookTargets); the grant is built from switchboard state only.
+// fan-out set (ResolveWebhookTargets); the grant — including each target's scope queues, which
+// exclusive delivery selects on — is built from switchboard state only. It also returns the envelope
+// input the decision was made on, for the work order.
 func (i *Ingest) routeDelivery(ctx context.Context, wh store.Webhook, targets []string, kind string,
-	verified bool, headers []byte, contentType string, body []byte) (routing.Decision, error) {
+	verified bool, headers []byte, contentType string, body []byte) (routing.Decision, routing.EnvelopeInput, error) {
 	rt, err := i.store.WebhookRoutingByID(ctx, wh.ID)
 	if err != nil {
-		return routing.Decision{}, err
+		return routing.Decision{}, routing.EnvelopeInput{}, err
+	}
+	scopes, err := i.store.EndpointScopeQueues(ctx, targets)
+	if err != nil {
+		return routing.Decision{}, routing.EnvelopeInput{}, err
 	}
 	var hdr map[string]string
 	_ = json.Unmarshal(headers, &hdr) // sanitizeHeaders always emits a flat string map
@@ -50,12 +56,12 @@ func (i *Ingest) routeDelivery(ctx context.Context, wh store.Webhook, targets []
 	if router == nil {
 		router = routing.Unavailable{}
 	}
-	return router.Route(ctx, rt.Config,
-		routing.Grant{TargetQueue: wh.TargetQueue, Queues: rt.WebhookQueues, Endpoints: targets},
-		routing.EnvelopeInput{
-			Source: wh.SourceType, Kind: kind, WebhookID: wh.ID, TrustMode: wh.TrustMode,
-			Verified: verified, ContentType: contentType, Headers: hdr, Body: body,
-		}), nil
+	in := routing.EnvelopeInput{
+		Source: wh.SourceType, Kind: kind, WebhookID: wh.ID, TrustMode: wh.TrustMode,
+		Verified: verified, ContentType: contentType, Headers: hdr, Body: body,
+	}
+	g := routing.Grant{TargetQueue: wh.TargetQueue, Queues: rt.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
+	return router.Route(ctx, rt.Config, g, in), in, nil
 }
 
 // cairnDelivery is the part of cairn's signed body the receiver itself depends on.

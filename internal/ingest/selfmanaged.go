@@ -154,11 +154,28 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// written with the event and every todo so each one can explain why it exists.
 	kind := routing.EventKind(wh.SourceType, r.Header.Get, body)
 	headers := sanitizeHeaders(r.Header)
-	decision, err := i.routeDelivery(r.Context(), wh, targets, kind, verified, headers, r.Header.Get("Content-Type"), body)
+	decision, envIn, err := i.routeDelivery(r.Context(), wh, targets, kind, verified, headers, r.Header.Get("Content-Type"), body)
 	if err != nil {
 		i.log.Error("self-managed webhook routing", "webhook", wh.ID, "err", err)
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+	// Work orders (ADR-0025). The subject — the issue or artifact this delivery is about — is parsed
+	// here in Go from the verified body, never taken from a rule: it keys at-most-once delivery and
+	// populates the work order, and neither may depend on tenant-written jq.
+	subject := routing.SubjectOf(wh.SourceType, envIn.Headers, body)
+	var onceKey string
+	if decision.Once && !decision.Drop {
+		onceKey = routing.OnceKey(subject, decision.Queue)
+		decision.Trace.OnceKey = onceKey
+	}
+	var workOrder []byte
+	if decision.WorkOrder && !decision.Drop {
+		if workOrder, err = json.Marshal(routing.BuildWorkOrder(decision, envIn, subject)); err != nil {
+			i.log.Error("self-managed webhook work order", "webhook", wh.ID, "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	trace, err := json.Marshal(decision.Trace)
 	if err != nil {
@@ -187,6 +204,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			Queue: decision.Queue, Source: wh.SourceType, Kind: "webhook",
 			Title:   summarizeSelfManagedTitle(wh.SourceType, selfManagedEvent(r), body),
 			Payload: body, IdempotencyKey: key, RoutingTrace: trace,
+			OnceKey: onceKey, WorkOrder: workOrder,
 		})
 	if err != nil {
 		i.log.Error("ingest self-managed delivery", "webhook", wh.ID, "err", err)
@@ -202,6 +220,18 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		i.observeDeduped(wh.SourceType, "webhook", wh.TrustMode, key)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"todos": []map[string]any{}, "created": 0, "dropped": true,
+			"verified": verified, "trust_mode": wh.TrustMode,
+		})
+		return
+	}
+	if len(todos) == 0 {
+		// A repeat work order: an earlier delivery about the same subject already claimed this
+		// (subject, queue), so this one is recorded (its event trace says "once":"repeat") and mints
+		// nothing — the relabel that re-routes an issue does not also re-run it. Governing: ADR-0025,
+		// SPEC-0020 REQ "At-Most-Once Work Orders".
+		i.observeDeduped(wh.SourceType, "webhook", wh.TrustMode, key)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"todos": []map[string]any{}, "created": 0, "repeat": true,
 			"verified": verified, "trust_mode": wh.TrustMode,
 		})
 		return
