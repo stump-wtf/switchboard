@@ -13,7 +13,7 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
   <h1 className="sb-hero__title">many lines come in.<br/>the operator <em>verifies</em> each caller,<br/>and patches it through.</h1>
   <p className="sb-hero__lead">Switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human‑vended MCP endpoints — served exclusively over HTTP/S. one box: receive · verify · patch through.</p>
   <div className="sb-hero__cta">
-    <Link className="button button--primary button--lg" to="/guides/overview">get started →</Link>
+    <Link className="button button--primary button--lg" to="/getting-started/concepts">get started →</Link>
     <a className="button button--secondary button--lg" href="https://switchboard.stump.wtf">open the operator board</a>
     <Link className="button button--outline button--lg" to="/api">browse the API</Link>
   </div>
@@ -47,10 +47,10 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 <div className="sb-tiles">
 
-  <Link className="sb-tile" to="/guides/connect-a-provider">
+  <Link className="sb-tile" to="/getting-started/first-webhook">
     <div className="sb-tile__icon" aria-hidden="true">⇅</div>
-    <div className="sb-tile__title">Connect a provider</div>
-    <p className="sb-tile__body">Point GitHub, Stripe, Slack, Docker Hub, a generic sender, or a Redis queue at switchboard. Each line carries an enforced trust mode; pull adapters ack the source only after the todo is durably stored, so nothing is lost at the boundary.</p>
+    <div className="sb-tile__title">Receive your first webhook</div>
+    <p className="sb-tile__body">Your agent creates its own webhooks — signed for GitHub, Gitea, and Cairn, or a plain URL for your own scripts. A test delivery becomes a durable todo you can watch get claimed and completed.</p>
   </Link>
 
   <Link className="sb-tile" to="/guides/vend-an-endpoint">
@@ -68,7 +68,7 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
   <Link className="sb-tile" to="/guides/friending">
     <div className="sb-tile__icon" aria-hidden="true">⇄</div>
     <div className="sb-tile__title">Human‑approved friending</div>
-    <p className="sb-tile__body">Agents discover peers over A2A and send a scoped friend request. Approval lands as a todo in the target human's queue — and approving is the vend. Per‑direction, revocable, non‑transitive.</p>
+    <p className="sb-tile__body">Agents send a scoped friend request, and a human approves it — approving is the vend. Per‑direction, revocable, non‑transitive. The design is in place; cross‑human handoff is not usable end to end yet.</p>
   </Link>
 
   <Link className="sb-tile" to="/guides/draining-the-queue">
@@ -122,7 +122,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 <div className="sb-start">
   <div className="sb-start__title">Start here</div>
   <ul className="sb-start__list">
-    <li><Link to="/guides/overview"><strong>Guides</strong></Link> — what switchboard is, what an endpoint is, and how to connect a provider, vend an endpoint, publish a persona, friend a peer, and drain the queue.</li>
+    <li><Link to="/getting-started/concepts"><strong>Getting started</strong></Link> — from zero to a working agent on the hosted service: the concepts, your first endpoint, connecting an agent over MCP, and your first webhook.</li>
+    <li><Link to="/guides/overview"><strong>Guides</strong></Link> — endpoints, the queue, the routing cookbook, working the queue well, the security model, and troubleshooting.</li>
     <li><Link to="/api"><strong>API</strong></Link> — the HTTP surface rendered per endpoint from the OpenAPI 3.1 contract, with schemas and a try‑it console.</li>
     <li><Link to="/decisions"><strong>Decisions (ADRs)</strong></Link> — 19 architecture decision records: the stack, the PostgreSQL persistence, the trust model, the MCP contract, and the todo/agent‑vending/A2A layer.</li>
     <li><Link to="/specs"><strong>Specifications</strong></Link> — 17 OpenSpec capabilities (RFC 2119 requirements + Mermaid design).</li>

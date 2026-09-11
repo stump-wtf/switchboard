@@ -4,6 +4,10 @@ title: Operator CLI and API
 
 # Operator CLI and API
 
+> The `switchboard` binary is not published for download. If you use the hosted service without a
+> build, everything below is also available in the web board's **Endpoints** view — see
+> [Sign in and vend your first endpoint](/getting-started/first-endpoint).
+
 One binary does everything. `switchboard serve` runs the service; the same binary is also the
 operator CLI — the way a human registers agents, vends endpoints, and inspects what they own.
 The CLI talks to the **operator API** at `/api/v1`, and both ride the same OAuth model as
@@ -69,7 +73,7 @@ This credential is shown ONCE and cannot be recovered — store it now.
   Bearer token  sbk_…
   Ingest URL    https://switchboard.example.com/webhooks/w/…
                 (any producer POSTs here; the unguessable URL is its credential)
-  Verbs         list_todos claim complete fail heartbeat create_webhook …
+  Verbs         list_todos claim claim_next complete fail heartbeat create_webhook …
   Expires       never (valid until revoked)
 
 Client wiring — paste into your MCP client's .mcp.json:
@@ -135,7 +139,7 @@ refuse, 2 for a usage mistake (with the command's usage on stderr).
 
 ## The API, for other clients
 
-The CLI is a thin client over three OAuth-guarded endpoints, documented in the site's
+The CLI is a thin client over four OAuth-guarded endpoints, documented in the site's
 [API reference](/api):
 
 | Method | Path | Does |

@@ -51,8 +51,11 @@ becomes a todo the agent surface can drain.
 
 ## Where to go next
 
-- New here? Start with [Connect a provider](/guides/connect-a-provider) to get events flowing, then
-  [Vend an endpoint](/guides/vend-an-endpoint) to let an agent drain them.
+- New here? Start with [Getting started](/getting-started/concepts): the concepts in five minutes,
+  then your first endpoint, a connected agent, and a real webhook turning into a todo.
+- Routing, triage, security, and fixes: the [routing cookbook](/guides/routing-cookbook),
+  [working the queue well](/guides/working-the-queue), the [security model](/guides/security-model),
+  and [troubleshooting](/guides/troubleshooting).
 - Want the HTTP contract? The [API reference](/api) renders every endpoint from the OpenAPI spec.
 - Want the *why*? The [Decisions (ADRs)](/decisions) and [Specifications](/specs) are the canonical,
   governed design record this whole system is built from.

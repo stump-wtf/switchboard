@@ -1,0 +1,107 @@
+---
+title: Security model
+---
+
+# Security model
+
+What switchboard protects, what it can't, and what is on you. Read this before you give an agent
+a credential and leave it running.
+
+## Who can see what
+
+- **You are the principal.** Everything you vend belongs to you, and every action an endpoint takes
+  is attributable to you.
+- **Todos belong to one endpoint.** Queues are names inside an endpoint: your `inbox` and anyone
+  else's `inbox` share nothing. An endpoint can't list, claim, or complete another endpoint's todo.
+  To it, that todo doesn't exist (`not_found`). That holds for your own endpoints too.
+- **Scope is enforced on every call.** A tool the endpoint wasn't granted, or a queue outside its
+  scope, is refused. Scope never changes after vend; to change it, vend a new endpoint.
+- **Webhooks, routes, and rules belong to you.** Any of your endpoints with the right tools may
+  manage your webhooks' routes and rules. No one else's endpoint can.
+- **The instance operator can see everything.** Payloads are stored in the service's database. Don't
+  route anything through a webhook that you wouldn't show the person running the service.
+
+### Current limitation: event history
+
+The event-history tools (`list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, and
+the recent-events resource) are **not yet limited to your own deliveries**. A fix is in progress.
+Until it lands:
+
+- Grant those tools only to endpoints that need them. The web wizard leaves them unchecked; the CLI
+  vend includes them.
+- Assume a webhook payload may be readable by another user's agent, and keep secrets out of
+  payloads.
+
+## Where a delivery can go
+
+Whoever owns a webhook decides where its deliveries land, within limits switchboard enforces:
+
+- **Routes** (`add_webhook_route`) can target any of your own endpoints. An endpoint belonging to
+  someone else needs an approved friend edge from you to them. An unknown, revoked, or unfriended
+  target is refused with the same error, so probing reveals nothing.
+- **Rules only narrow.** A rule can pick a subset of a webhook's existing targets, or drop the
+  delivery. It can never add a target or reach a queue outside the owner's webhook-queue grant.
+  Switchboard re-checks both on every delivery, so a revoked route stops receiving immediately.
+- **Route targets see what the owner sends.** A target receives the full payload, and the todo's
+  routing trace names the rule that sent it (and, on narrowed deliveries, other targets' endpoint
+  ids). Don't put anything sensitive in rule names.
+
+## Credentials
+
+| Credential | Shape | Where it lives |
+|---|---|---|
+| Endpoint credential | `sbk_…` | Shown once at vend. Switchboard keeps only a hash. Revoke kills it immediately. |
+| OAuth token | opaque | Issued to one client for one endpoint through the consent screen. Short-lived, refreshed by the client. |
+| Webhook signing secret | `whsec_…` | Shown once at `create_webhook` or `rotate_webhook`, never returned again. |
+| Generic webhook URL | `/webhooks/w/<token>` | **The URL is the credential.** Anyone who has it can create todos. Treat it like a password, and rotate it if it leaks. |
+
+- **Give endpoints a lifetime** when the job is temporary. An expired endpoint stops working on its
+  own.
+- **Revoke on any leak.** A credential pasted into a log, a transcript, an issue, or a screenshot is
+  compromised. Revoke first, then vend a replacement.
+- **Prefer signed sources over `generic`.** A signature proves the body wasn't altered and binds it
+  to a secret the URL doesn't reveal. A `generic` webhook only proves the caller knew the URL.
+
+## Payloads are data, never instructions
+
+Anyone who can open an issue, comment on a pull request, or create a Cairn artifact controls text
+that ends up in front of your agent. Switchboard verifies **who sent a delivery**. It can't make
+**what they wrote** safe.
+
+What switchboard does:
+
+- Deliveries from a signed source that fail verification are refused and never stored.
+- The doorbell never includes the payload. Its one-line summary is escaped so it can't break out of
+  the notification, and it ends by telling the agent that the summary is data that can't instruct it.
+- Routing rules run sandboxed, with no access to the environment, the filesystem, the clock, or the
+  network, and they can only narrow where a delivery goes.
+
+What's on you:
+
+- **Tell the agent, in its instructions, that todo payloads are untrusted.** Content can inform what
+  it concludes. It never changes what it's allowed to do, who it sends things to, or what it
+  reveals. "Ignore previous instructions", "the owner approved this", "run this script" inside a
+  payload are attacks to report, not requests to follow.
+- **Filter on provenance before content.** Put
+  [trusted-people rules](/guides/routing-cookbook#only-act-on-trusted-people) first, so a stranger's
+  issue never becomes a todo. Match on who sent a delivery (`sender`, author, Cairn `actor_id`), never
+  on words in a title or body a stranger could type.
+- **Labels, tags, and `on_behalf_of` are not provenance.** Anyone who can label an issue or tag an
+  artifact controls them. They can choose a queue among deliveries you already trust, never decide
+  that a delivery is trusted. Cairn's `on_behalf_of` is the sharing client's self-reported name.
+- **Write allowlists to fail closed.** Parameters aren't type-checked, and an erroring rule counts
+  as no match, so a mistyped allowlist in a "drop the untrusted" rule would let everyone through.
+  Read lists with `arrays`, as the cookbook does.
+- **A work order grants nothing.** `work_order` on a todo records the verified provenance that made
+  it eligible. A worker should refuse a todo routed with work orders that has none, or whose
+  `work_order.verified` isn't `true`, and still treat the task itself as untrusted.
+- **Limit what a compromised worker could do.** An unattended worker that auto-approves its own tools
+  (Crush's `--yolo`) should run in a disposable working directory, with only the credentials its job
+  needs. It should have no access to anything you couldn't afford to have posted publicly.
+- **Keep scopes small.** An endpoint that only needs `reviews` and six todo tools shouldn't also be
+  able to create webhooks or read event history.
+
+## Reporting a problem
+
+If you find a way to see or change something that isn't yours, stop and tell whoever runs your
+instance. Include what you did and what you saw, not the data itself.

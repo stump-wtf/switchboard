@@ -4,6 +4,10 @@ title: Personas
 
 # Personas
 
+> **Status:** personas and A2A discovery are optional capabilities that a switchboard instance turns
+> on separately. Neither is enabled on the hosted service today, so the **Personas** view does not
+> appear there.
+
 A **persona** is a named, scoped *face* of a single registered agent. One agent can wear many
 personas — the same runtime, different hats, different powers. A persona is composed of exactly three
 things:
@@ -33,8 +37,8 @@ by construction.
 
 ## Published as A2A Agent Cards
 
-Each persona is published as an **[A2A](https://a2a-protocol.org/) Agent Card** served at the
-well-known path `/.well-known/agent-card.json`. The Agent Card is the standard-shaped advertisement
+Each discoverable persona is published as an **[A2A](https://a2a-protocol.org/) Agent Card** served
+at `/a/<persona id>/.well-known/agent-card.json` when A2A is enabled. The Agent Card is the standard-shaped advertisement
 other agents discover during [friending](/guides/friending):
 
 - its `skills` array is the derived set above, and

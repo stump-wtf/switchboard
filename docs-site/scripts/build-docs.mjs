@@ -1,4 +1,5 @@
 // Generate docs-site/docs-generated/ from the repo's SDD-canonical design record at build time:
+//   docs/getting-started/NN-slug.md -> /getting-started (the zero-to-one path for hosted users)
 //   docs/guides/NN-slug.md         -> /guides      (user-facing usage guides)
 //   docs/adrs/                     -> /decisions   (ADRs, MADR)
 //   docs/openspec/specs/{cap}/     -> /specs       (OpenSpec spec.md + design.md pairs)
@@ -26,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SITE = join(__dirname, '..');
 const REPO = join(SITE, '..');
+const START_SRC = join(REPO, 'docs', 'getting-started');
 const GUIDES_SRC = join(REPO, 'docs', 'guides');
 const ADR_SRC = join(REPO, 'docs', 'adrs');
 const SPEC_SRC = join(REPO, 'docs', 'openspec', 'specs');
@@ -34,10 +36,11 @@ const REF_SRC = join(REPO, 'docs', 'reference');
 const OUT = join(SITE, 'docs-generated');
 const STATIC_REF = join(SITE, 'static', 'reference');
 
-const GITHUB = 'https://gitea.stump.rocks/stump.wtf/switchboard';
-const GITHUB_RAW = 'https://gitea.stump.rocks/stump.wtf/switchboard/raw/branch/main';
+// The source repository is private, so the published site links to nothing in it: a repo URL is a
+// dead link (or a login wall) for every reader of the public docs.
 
 // ---- discover sources ----
+const startFiles = readdirSync(START_SRC).filter((f) => /^\d+-.*\.md$/.test(f)).sort();
 const guideFiles = readdirSync(GUIDES_SRC).filter((f) => /^\d+-.*\.md$/.test(f)).sort();
 const adrFiles = readdirSync(ADR_SRC).filter((f) => /^ADR-\d+.*\.md$/.test(f)).sort();
 const capDirs = readdirSync(SPEC_SRC)
@@ -48,6 +51,7 @@ const designFiles = readdirSync(DESIGN_SRC).filter((f) => /^\d+-.*\.md$/.test(f)
 
 // ---- clean + scaffold ----
 rmSync(OUT, { recursive: true, force: true });
+mkdirSync(join(OUT, 'getting-started'), { recursive: true });
 mkdirSync(join(OUT, 'guides'), { recursive: true });
 mkdirSync(join(OUT, 'decisions'), { recursive: true });
 mkdirSync(join(OUT, 'specs'), { recursive: true });
@@ -70,9 +74,10 @@ function fmValue(fm, key) {
 function sanitizeMdx(s) {
   return s.replace(/<((?:https?):\/\/[^>\s]+)>/g, '[$1]($1)');
 }
-// docs/README.md (the design-index) has no page in the site; point at GitHub.
+// docs/README.md (the design-index) has no page in the site; the Decisions index is its published
+// equivalent.
 function rewriteRepoLinks(s) {
-  return s.replace(/\]\(\.\.\/README\.md([^)]*)\)/g, `](${GITHUB}/src/branch/main/docs/README.md$1)`);
+  return s.replace(/\]\(\.\.\/README\.md([^)]*)\)/g, '](/decisions)');
 }
 // Rewrite links to ADR / spec / reference source files onto their rendered site routes.
 // Patterns tolerate any relative prefix (../, ../../../, docs/, etc.).
@@ -83,8 +88,43 @@ function rewriteDesignLinks(s) {
     // ...openspec/specs/{cap}/spec.md -> /specs/{cap}/spec  (and design.md -> /specs/{cap}/design)
     .replace(/\]\([^)]*?openspec\/specs\/([a-z0-9-]+)\/(spec|design)\.md([^)]*)\)/g, '](/specs/$1/$2$3)')
     // ...reference/openapi.yaml -> /reference/openapi
-    .replace(/\]\([^)]*?reference\/(openapi|asyncapi)\.ya?ml([^)]*)\)/g, '](/reference/$1$2)');
+    .replace(/\]\([^)]*?reference\/(openapi|asyncapi)\.ya?ml([^)]*)\)/g, '](/reference/$1$2)')
+    // ...guides/08-handoff-lanes.md -> /guides/handoff-lanes (the emitted route drops the NN- prefix)
+    .replace(/\]\([^)]*?guides\/\d+-([a-z0-9-]+)\.md([^)]*)\)/g, '](/guides/$1$2)');
 }
+// A guide linking a sibling guide by filename (`08-handoff-lanes.md`, `./08-handoff-lanes.md`).
+function rewriteGuideSiblingLinks(s) {
+  return s.replace(/\]\((?:\.\/)?\d+-([a-z0-9-]+)\.md([^)]*)\)/g, '](/guides/$1$2)');
+}
+
+// ---- getting started (docs/getting-started/NN-slug.md) -> getting-started/ ----
+// The zero-to-one path for someone using the hosted service: concepts, first endpoint, connecting
+// an agent, first webhook, and how the sibling projects fit. Same shape and rewrites as the guides;
+// it sorts above them so a newcomer lands here first.
+for (const f of startFiles) {
+  const pos = parseInt(f.match(/^(\d+)-/)[1], 10);
+  const slug = f.replace(/^\d+-/, '').replace(/\.md$/, '');
+  const raw = readFileSync(join(START_SRC, f), 'utf8');
+  const { fm, body } = splitFrontmatter(raw);
+  const label = fmValue(fm, 'title') || slug;
+  const content = rewriteDesignLinks(rewriteRepoLinks(body));
+  writeFileSync(
+    join(OUT, 'getting-started', `${slug}.md`),
+    `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,
+  );
+}
+writeFileSync(
+  join(OUT, 'getting-started', '_category_.json'),
+  JSON.stringify(
+    {
+      label: 'Getting started',
+      position: 0,
+      link: { type: 'generated-index', slug: '/getting-started', title: 'Getting started', description: 'From zero to a working agent on the hosted service: the concepts, your first endpoint, connecting an agent over MCP, and your first webhook.' },
+    },
+    null,
+    2,
+  ),
+);
 
 // ---- user guides (docs/guides/NN-slug.md) -> guides/ ----
 // User-facing usage docs. Numeric filename prefix orders the sidebar and the emitted filename drops
@@ -97,7 +137,7 @@ for (const f of guideFiles) {
   const raw = readFileSync(join(GUIDES_SRC, f), 'utf8');
   const { fm, body } = splitFrontmatter(raw);
   const label = fmValue(fm, 'title') || slug;
-  const content = rewriteDesignLinks(rewriteRepoLinks(body));
+  const content = rewriteGuideSiblingLinks(rewriteDesignLinks(rewriteRepoLinks(body)));
   writeFileSync(
     join(OUT, 'guides', `${slug}.md`),
     `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,
@@ -109,7 +149,7 @@ writeFileSync(
     {
       label: 'Guides',
       position: 1,
-      link: { type: 'generated-index', slug: '/guides', title: 'Guides', description: 'How to use switchboard: connect a provider, vend an endpoint, publish a persona, friend a peer, and drain the durable todo queue.' },
+      link: { type: 'generated-index', slug: '/guides', title: 'Guides', description: 'How to use switchboard: vend endpoints, drain the durable todo queue, route events with jq rules, work the queue well, and keep it safe.' },
     },
     null,
     2,
@@ -269,8 +309,7 @@ for (const file of refFiles) {
   writeFileSync(
     join(OUT, 'reference', `${slug}.md`),
     `---\nsidebar_position: ${meta.pos}\ntitle: ${meta.title}\nformat: md\n---\n\n# ${meta.title}\n\n${meta.blurb}\n\n` +
-      `[⬇ Download the raw \`${file}\`](pathname:///docs/reference/${file}) · ` +
-      `[view on GitHub](${GITHUB}/src/branch/main/docs/reference/${file})\n\n` +
+      `[⬇ Download the raw \`${file}\`](pathname:///docs/reference/${file})\n\n` +
       `\`\`\`\`yaml\n${yaml}\n\`\`\`\`\n`,
   );
 }

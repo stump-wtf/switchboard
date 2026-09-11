@@ -1,13 +1,14 @@
 // @ts-check
 // Docusaurus config for the switchboard docs site.
-// Renders the user guides (docs/guides), ADRs (docs/adrs), OpenSpec specs (docs/openspec/specs),
-// design language (docs/design), and reference contracts (docs/reference) — transformed into
-// docs-generated/ by scripts/build-docs.mjs at build time — plus a per-endpoint HTTP API reference
-// generated from docs/reference/openapi.yaml by docusaurus-plugin-openapi-docs, all with mermaid
-// diagrams and the switchboard-era theme.
+// Renders getting started (docs/getting-started), the user guides (docs/guides), ADRs (docs/adrs),
+// OpenSpec specs (docs/openspec/specs), design language (docs/design), and reference contracts
+// (docs/reference) — transformed into docs-generated/ by scripts/build-docs.mjs at build time — plus
+// a per-endpoint HTTP API reference generated from docs/reference/openapi.yaml by
+// docusaurus-plugin-openapi-docs, all with mermaid diagrams and the switchboard-era theme.
 //
 // Served as compiled static files by the front Caddy at https://switchboard.stump.wtf/docs/
-// (baseUrl /docs/). Repo of record: gitea.stump.rocks/stump.wtf/switchboard.
+// (baseUrl /docs/). The site is public and the source repository is not, so nothing here links to
+// the repository.
 //
 // The marketing landing page is src/pages/index.mdx (a standalone page — NO docs sidebar). The
 // design-record docs (guides/decisions/specs/design/reference) mount at routeBasePath '/', and the
@@ -18,7 +19,6 @@ const { themes } = require('prism-react-renderer');
 
 const SITE_URL = process.env.DOCS_URL || 'https://switchboard.stump.wtf';
 const BASE_URL = '/docs/';
-const GITHUB_URL = 'https://gitea.stump.rocks/stump.wtf/switchboard';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -120,7 +120,7 @@ const config = {
           { to: '/specs', label: 'Specs', position: 'left' },
           { to: '/design', label: 'Design', position: 'left' },
           { to: '/prfaq', label: 'PRFAQ', position: 'left' },
-          { href: GITHUB_URL, label: 'GitHub', position: 'right' },
+          { href: 'https://switchboard.stump.wtf', label: 'Open the board', position: 'right' },
         ],
       },
       footer: {
@@ -129,7 +129,9 @@ const config = {
           {
             title: 'Use',
             items: [
+              { label: 'Getting started', to: '/getting-started/concepts' },
               { label: 'Guides', to: '/guides/overview' },
+              { label: 'Troubleshooting', to: '/guides/troubleshooting' },
               { label: 'API', to: '/api' },
             ],
           },
@@ -144,9 +146,10 @@ const config = {
             ],
           },
           {
-            title: 'Source',
+            title: 'Related',
             items: [
-              { label: 'GitHub', href: GITHUB_URL },
+              { label: 'Harness', href: 'https://stump-wtf.github.io/harness/' },
+              { label: 'Cairn', href: 'https://cairn.stump.wtf/docs/' },
             ],
           },
         ],

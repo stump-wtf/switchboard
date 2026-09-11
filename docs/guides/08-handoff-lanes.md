@@ -24,7 +24,7 @@ router endpoint (joestump-agent) ── router webhooks (fleet pack) ── rout
                                                                            └─▶ hold endpoint        (no workers)
 ```
 
-All work lanes run on **tars, as `joestump-agent`**. kitt (`joestump`) keeps review duty.
+All work lanes run under the agent identity (`joestump-agent` in this fleet); the human identity (`joestump`) keeps review duty.
 
 ## The trust model, in one paragraph
 
@@ -55,7 +55,8 @@ Every worker for a lane — on both providers — connects to that lane's endpoi
 
 `switchboard endpoint vend <lane> --queue <lane queue>` is enough for a pool: it scopes the endpoint to exactly that queue. It also mints a `generic` ingest webhook the pool will never use. Delete it with `delete_webhook` so nothing can deliver around the router.
 
-Worker credentials live in OpenBao at `secret/users/joestump-agent/switchboard`:
+Keep each lane's endpoint URL and credential in your secret store, one pair per lane, and hand them
+to that lane's workers through their environment:
 
 | Lane | Fields |
 |---|---|
@@ -65,7 +66,8 @@ Worker credentials live in OpenBao at `secret/users/joestump-agent/switchboard`:
 | `lane-vision` | `SWITCHBOARD_LANE_VISION_URL`, `SWITCHBOARD_LANE_VISION_API_KEY` |
 | `triage` | `SWITCHBOARD_TRIAGE_URL`, `SWITCHBOARD_TRIAGE_API_KEY` |
 
-`hold` has no worker and no credentials. The worker wiring itself lives in the dotfiles repo.
+`hold` has no worker and no credentials. Wiring a worker to its endpoint is covered in
+[Connect an agent over MCP](/getting-started/connect-an-agent).
 
 ## 3. Create the router webhooks and route them to the lanes
 
@@ -82,7 +84,7 @@ On the router endpoint:
 - **GitHub.** Create a webhook with the **Issues** event, the `ingest_url`, and the secret.
 - **Cairn.** Set `CAIRN_OUTBOUND_WEBHOOK_URLS` to the cairn router webhook's `ingest_url` and `CAIRN_OUTBOUND_WEBHOOK_SECRET` to its secret. Cairn signs every target with one secret, so there is exactly **one** cairn webhook.
 
-Keep secrets in OpenBao, never in files you commit.
+Keep secrets in a secret store, never in files you commit.
 
 ## 5. Install the fleet pack
 
@@ -151,7 +153,7 @@ Those checks are the gate. Switchboard writes the work order only after signatur
 Endpoint scope is immutable ([SPEC-0007](/specs/identity/spec): a changed scope means a new endpoint, never an edited one), and live MCP sessions snapshot scope when they connect. There is deliberately no verb that widens an existing endpoint. When an endpoint lacks a verb, a source type, or a webhook queue:
 
 1. **Re-vend** an endpoint with the scope you need: the web vend wizard for a multi-source, multi-queue webhook ceiling; `switchboard endpoint vend NAME --queue Q` for a single-queue pool (then delete its unused `generic` webhook).
-2. **Rotate** the consumer's credential to the new endpoint (for lane workers, the OpenBao fields above).
+2. **Rotate** the consumer's credential to the new endpoint (for lane workers, their per-lane URL and credential above).
 3. **Revoke** the old endpoint: `switchboard endpoint revoke SLUG|ID`.
 
 **Endpoints vended before the rule verbs existed** cannot call `set_webhook_rules` over MCP. Re-vend them. As an operator-only interim, write `endpoint_webhooks.routing_rules` directly with SQL — but only after validating the exact rules with the evaluator (`test_webhook_rules` on a rule-capable endpoint, or the Go evaluator against stored deliveries). SQL bypasses save-time validation. Before migration `0019` is deployed there is no `$params`, so an interim copy of a pack must use literal values (for the pool-review pack, the identity login written into both expressions).

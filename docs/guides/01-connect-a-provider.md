@@ -4,6 +4,11 @@ title: Connect a provider
 
 # Connect a provider
 
+> **Using the hosted service?** Providers are instance-wide and only the instance's operators can
+> connect them, so this page is operator reference. As a user, your agent creates its own webhooks
+> for GitHub, Gitea, Cairn, and your own scripts — see
+> [Receive your first webhook](/getting-started/first-webhook).
+
 A **provider** is an inbound line into switchboard. Every event enters through one, and every
 provider carries an **enforced trust mode** so an event's provenance is never in question. There are
 two families.
@@ -21,9 +26,14 @@ line is logged. A verified request persists with `verified=true`.
 
 | Provider | Header | Scheme | Replay window |
 |----------|--------|--------|---------------|
-| GitHub | `X-Hub-Signature-256` | HMAC-SHA256 over the raw body | n/a |
-| Stripe | `Stripe-Signature` | timestamp + HMAC-SHA256 over `"{t}.{body}"` | reject if older than ~300s |
-| Slack | `X-Slack-Signature` | HMAC-SHA256 over `"v0:{ts}:{body}"` | reject if older than ~300s |
+| GitHub | `X-Hub-Signature-256` | `sha256=` + HMAC-SHA256 over the raw body | n/a |
+| Gitea | `X-Hub-Signature-256` | `sha256=` + HMAC-SHA256 over the raw body | n/a |
+| Stripe | `Stripe-Signature` | timestamp + HMAC-SHA256 over `"{t}.{body}"` | reject if more than ~300s off |
+| Slack | `X-Slack-Signature` | HMAC-SHA256 over `"v0:{ts}:{body}"` | reject if more than ~300s off |
+
+Webhooks an agent creates for itself (`create_webhook`) accept the same schemes, and a `gitea` one
+also accepts Gitea's bare-hex `X-Gitea-Signature`. Those, and the `cairn` source, are covered in
+[Receive your first webhook](/getting-started/first-webhook).
 
 **To connect one:** enable the provider in the Providers view and set its signing secret (injected
 via environment/config, never committed). Point the sender at `POST /webhooks/{provider}` — see the

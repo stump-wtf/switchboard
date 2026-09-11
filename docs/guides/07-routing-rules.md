@@ -155,8 +155,9 @@ An artifact by `joestump-agent` tagged `["handoff", "lane:m"]` becomes one todo,
 pool only. The same tags from any other actor are recorded and dropped: tags choose a lane, they
 never grant trust.
 
-Cairn's `data.tags` comes from the cairn-handoff work; until cairn emits it, `.artifact.tags` is
-`null` and nothing routes as a handoff. Allowlist `.artifact.actor_id`, which cairn derives from the
+Cairn sends `data.tags` on `artifact.created` for artifacts created with tags. A Cairn that predates
+tags, or an artifact created without them, leaves `.artifact.tags` `null`, and nothing routes as a
+handoff. Allowlist `.artifact.actor_id`, which cairn derives from the
 authenticated caller. Never allowlist `.artifact.on_behalf_of`: it is the MCP client's self-reported
 `name/version` (e.g. `claude-code/2.1.0`), display text that any client can set.
 
