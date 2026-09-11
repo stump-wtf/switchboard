@@ -207,6 +207,11 @@ A webhook's routing configuration MAY carry `params`, a JSON object that MUST be
 - **WHEN** a rule list that depends on `$params` allowlists is saved without params
 - **THEN** allowlist checks evaluate against null and no delivery passes them
 
+#### Scenario: Mistyped params fail closed
+
+- **WHEN** an allowlist param is saved with the wrong shape (a string, number, or object instead of a list, or a list with non-string entries) — save-time validation does not type-check param values
+- **THEN** an allowlist rule MUST NOT fault on it, because a faulting rule degrades to no-match and would let every delivery past the check; the shipped packs guard each allowlist with `| arrays` (and `| strings` where entries feed string builtins), so a malformed allowlist admits no one
+
 ### Requirement: Issue Envelope Projection
 
 For a delivery whose webhook source is `gitea`, `github`, or `generic` and whose forge event header (`X-Gitea-Event`, else `X-GitHub-Event`) is `issues`, the envelope MUST carry `.issue`, parsed by switchboard from the body (not by a rule):

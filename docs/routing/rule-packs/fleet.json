@@ -22,7 +22,7 @@
     {
       "id": "cairn-untrusted-actor",
       "name": "cairn handoffs from actors outside cairn_actors",
-      "expr": ".source == \"cairn\" and ((.artifact.actor_id // \"\") as $a | any(($params.cairn_actors // [])[]; . == $a) | not)",
+      "expr": ".source == \"cairn\" and ((.artifact.actor_id // \"\") as $a | any((($params.cairn_actors // []) | arrays)[] | strings; . == $a) | not)",
       "action": {"drop": true}
     },
     {
@@ -94,7 +94,7 @@
     {
       "id": "repo-not-allowlisted",
       "name": "issues outside repo_prefixes",
-      "expr": ".issue.repo as $r | any(($params.repo_prefixes // [])[]; . as $p | $r | startswith($p)) | not",
+      "expr": ".issue.repo as $r | any((($params.repo_prefixes // []) | arrays)[] | strings; . as $p | $r | startswith($p)) | not",
       "action": {"drop": true}
     },
     {

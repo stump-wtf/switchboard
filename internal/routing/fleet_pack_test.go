@@ -217,6 +217,39 @@ func TestFleetPackFailsClosedWithoutParams(t *testing.T) {
 	}
 }
 
+// Save-time validation does not type-check params, so an allowlist saved with the wrong shape (a string
+// instead of a list, a non-string prefix) must fail closed too. A faulting rule degrades to no-match, so
+// a trust rule that faults would let every delivery past it: a mistyped allowlist may never route a
+// delivery to a lane that the same pack without that allowlist would not.
+func TestFleetPackFailsClosedWithMistypedParams(t *testing.T) {
+	g, _ := laneGrant()
+	cases := loadCases(t)
+	for _, key := range []string{"trusted_humans", "trusted_agents", "cairn_actors", "repo_prefixes"} {
+		// The bare string is the likely typo, so it names a real identity; the lists hold no valid entry.
+		for shape, bad := range map[string]any{
+			"string":              "joestump-agent",
+			"object":              map[string]any{"joestump-agent": true},
+			"number":              7,
+			"list of non-strings": []any{7, map[string]any{"x": 1}, nil},
+		} {
+			mistyped, missing := loadPack(t), loadPack(t)
+			mistyped.Params[key] = bad
+			delete(missing.Params, key)
+			for _, c := range cases {
+				in := caseInput(t, c)
+				got := InProcess{}.Route(context.Background(), mistyped, g, in)
+				if got.Drop || got.Queue == "hold" {
+					continue
+				}
+				if want := (InProcess{}).Route(context.Background(), missing, g, in); want.Drop || want.Queue != got.Queue {
+					t.Errorf("%s as %s: %s routed to %s (faults %+v); without %s it routes to %q (drop %v)",
+						key, shape, c.Name, got.Queue, got.Trace.Faults, key, want.Queue, want.Drop)
+				}
+			}
+		}
+	}
+}
+
 // When both identities have a pool endpoint scoped to the same lane, exactly one executes: the first
 // in route order, every time.
 func TestExclusiveDeliveryPicksOneIdentityDeterministically(t *testing.T) {

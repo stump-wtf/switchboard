@@ -4,7 +4,7 @@ A rule pack is a routing configuration checked into the repo so it can be review
 
 Governing: [ADR-0025](../../adrs/ADR-0025-handoff-work-orders-and-difficulty-lanes.md), [SPEC-0020](../../openspec/specs/event-routing/spec.md). Operator runbook: [guide 08](../../guides/08-handoff-lanes.md).
 
-**Changing params.** Call `set_webhook_rules` with the same `rules` and `default_action` and the new `params`. `set` replaces all three; omitting `params` clears them, and both packs then fail closed.
+**Changing params.** Call `set_webhook_rules` with the same `rules` and `default_action` and the new `params`. `set` replaces all three; omitting `params` clears them, and both packs then fail closed. Save-time validation does not type-check param values, so every allowlist is a JSON list of strings: a rule that faults degrades to no-match, which for a trust rule means *letting everything past it*. The fleet pack guards each allowlist with `| arrays` / `| strings`, so a mistyped one (`"cairn_actors": "joestump-agent"`) admits no one rather than everyone; `TestFleetPackFailsClosedWithMistypedParams` holds every allowlist to that. Write any new allowlist rule the same way.
 
 ## `fleet.json` — handoff work orders and difficulty lanes
 
