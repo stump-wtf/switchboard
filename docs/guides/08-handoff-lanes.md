@@ -102,7 +102,7 @@ A save fails if any lane has no routed endpoint scoped to it. The exclusive rule
 
 Find the real ids before you install:
 
-- the `actor_id` on a stored cairn event, via `list_webhook_events` or `test_webhook_rules`; or
+- the `actor_id` on a stored cairn event, via `get_webhook_event` (pull the event id from `list_webhook_events`' summaries) or `test_webhook_rules`; or
 - an operator query against cairn's database, aggregates only:
   `SELECT actor_id, on_behalf_of, channel, count(*), max(created_at) FROM artifacts WHERE created_at > now() - interval '30 days' GROUP BY 1, 2, 3 ORDER BY 5 DESC;`
 
