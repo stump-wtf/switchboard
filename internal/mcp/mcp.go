@@ -32,6 +32,7 @@ import (
 
 	"github.com/joestump/switchboard/internal/cred"
 	"github.com/joestump/switchboard/internal/oauthsrv"
+	"github.com/joestump/switchboard/internal/routing"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -115,6 +116,13 @@ type ToolStore interface {
 	WebhookOwnerEndpointForHuman(ctx context.Context, webhookID, ownerHumanID string) (string, error)
 	EndpointOwnerHuman(ctx context.Context, endpointID string) (string, error)
 	FriendEdgeAuthorizesDelivery(ctx context.Context, fromHumanID, toHumanID string) (bool, error)
+	// ADR-0024 routing rules (webhook_rules.go): read and read-modify-write a webhook's jq rules under
+	// human ownership, compute the grant from its live delivery targets, and scope a dry-run's stored
+	// event to the webhook it arrived on. Governing: ADR-0024, SPEC-0020.
+	WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHumanID string) (store.WebhookRouting, error)
+	UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
+	ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error)
+	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
 	// SettingString backs replay target resolution (SPEC-0005 REQ "Replay Safety"): the
 	// `replay_default_target` fallback and the `replay_allowed_targets` allowlist both read here.
 	SettingString(ctx context.Context, key, def string) (string, error)
@@ -156,6 +164,10 @@ type Handler struct {
 	// time, so new sessions pick up a flip without racing live ones.
 	a2uiEnabled atomic.Pointer[bool]
 
+	// router evaluates rules for test_webhook_rules — the same out-of-process sandbox the receiver
+	// uses (New installs it; tests swap in routing.InProcess). Governing: ADR-0024, SPEC-0020.
+	router atomic.Pointer[routing.Router]
+
 	idleTimeout time.Duration
 
 	// mu guards sessions and closed. sessions is the live Streamable HTTP session registry, keyed
@@ -194,6 +206,11 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 		sessions:    map[string]*mcpSession{},
 		doorbellRR:  map[string]uint64{},
 		done:        make(chan struct{}),
+	}
+	if sb, err := routing.NewSandbox(""); err == nil {
+		h.SetRouter(sb)
+	} else if log != nil {
+		log.Error("routing sandbox unavailable; test_webhook_rules will route by default", "err", err)
 	}
 	h.wg.Add(1)
 	go h.janitor()
@@ -409,6 +426,7 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	// The ADR-0022 routing verbs (add/list/remove_webhook_route) share the webhook verb family and
 	// the same allowlist-filtered registration (webhook_routes.go).
 	h.registerWebhookRouteTools(srv, ep)
+	h.registerWebhookRuleTools(srv, ep)
 	h.registerEventResources(srv, ep)
 	// The #102 A2UI resource surface (a2ui.go): queue and todo detail rendered as
 	// application/a2ui+json for A2UI-capable hosts.

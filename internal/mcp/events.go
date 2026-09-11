@@ -74,6 +74,8 @@ type eventSummaryOut struct {
 	Verified    bool   `json:"verified" jsonschema:"whether the delivery passed cryptographic verification (false for token/open/queue trust)"`
 	PayloadSize int    `json:"payload_size" jsonschema:"stored payload size in bytes"`
 	ReceivedAt  string `json:"received_at" jsonschema:"RFC 3339 receipt time"`
+	WebhookID   string `json:"webhook_id,omitempty" jsonschema:"the self-managed webhook the delivery arrived on, if any"`
+	Routing     any    `json:"routing,omitempty" jsonschema:"how the delivery was routed (SPEC-0020 trace); a drop shows action.drop=true"`
 }
 
 // eventDetailOut is the SPEC-0005 EventDetail shape: every summary field plus the full sanitized
@@ -93,6 +95,8 @@ type eventDetailOut struct {
 	SourceIP     string            `json:"source_ip,omitempty" jsonschema:"delivering client IP, if recorded"`
 	Headers      map[string]string `json:"headers" jsonschema:"sanitized request headers (signature/secret values redacted at ingest)"`
 	Payload      string            `json:"payload" jsonschema:"the stored raw payload body"`
+	WebhookID    string            `json:"webhook_id,omitempty" jsonschema:"the self-managed webhook the delivery arrived on, if any"`
+	Routing      any               `json:"routing,omitempty" jsonschema:"how the delivery was routed (SPEC-0020 trace); a drop shows action.drop=true"`
 }
 
 type listWebhookEventsIn struct {
@@ -411,6 +415,7 @@ func toEventSummaryOut(e store.EventHistoryItem) eventSummaryOut {
 		ID: e.ID, Provider: e.Provider, EventType: e.EventType, TrustMode: e.TrustMode,
 		Verified: e.Verified, PayloadSize: e.PayloadSize,
 		ReceivedAt: e.ReceivedAt.UTC().Format(time.RFC3339),
+		WebhookID:  e.WebhookID, Routing: decodeTrace(e.RoutingTrace),
 	}
 }
 
@@ -420,9 +425,10 @@ func toEventDetailOut(d store.EventHistoryDetail) eventDetailOut {
 		Verified: d.Verified, PayloadSize: d.PayloadSize,
 		ReceivedAt:   d.ReceivedAt.UTC().Format(time.RFC3339),
 		VerifyDetail: d.VerifyDetail, ExternalID: d.ExternalID, ContentType: d.ContentType,
-		SourceIP: d.SourceIP,
-		Headers:  map[string]string{},
-		Payload:  string(d.Payload),
+		SourceIP:  d.SourceIP,
+		Headers:   map[string]string{},
+		Payload:   string(d.Payload),
+		WebhookID: d.WebhookID, Routing: decodeTrace(d.RoutingTrace),
 	}
 	// Headers were persisted as a sanitized JSON object at ingest; a row that fails to parse
 	// yields an empty object rather than failing the read — the record itself is the contract.

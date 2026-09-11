@@ -26,11 +26,14 @@ func DrainVerbs() []string {
 // decide which endpoints a webhook's deliveries fan out to. Routing lives in this family because it
 // is webhook self-management — the routing verbs are gated by webhook ownership, and grouping them
 // here means the vend wizard and the OAuth consent screen (internal/web) enumerate them for free
-// rather than carrying a copy that could drift.
+// rather than carrying a copy that could drift. The ADR-0024 rule verbs follow for the same reason:
+// rules are webhook configuration, gated by webhook ownership.
 func WebhookVerbs() []string {
 	return []string{
 		"create_webhook", "list_webhooks", "rotate_webhook", "delete_webhook",
 		"add_webhook_route", "list_webhook_routes", "remove_webhook_route",
+		"list_webhook_rules", "set_webhook_rules", "add_webhook_rule", "update_webhook_rule",
+		"move_webhook_rule", "remove_webhook_rule", "test_webhook_rules",
 	}
 }
 

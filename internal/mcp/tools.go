@@ -74,6 +74,8 @@ type todoOut struct {
 	LeaseExpiresAt string `json:"lease_expires_at,omitempty" jsonschema:"RFC 3339 lease expiry while claimed"`
 	CreatedAt      string `json:"created_at" jsonschema:"RFC 3339 creation time"`
 	Payload        any    `json:"payload,omitempty" jsonschema:"the todo's JSON payload"`
+	// Governing: SPEC-0020 REQ "Routing Trace" — every todo explains why it exists.
+	Routing any `json:"routing,omitempty" jsonschema:"how the delivery that created this todo was routed: the matched rule or the default, with any rule faults"`
 }
 
 type listTodosIn struct {
@@ -345,7 +347,21 @@ func toOut(t store.Todo) todoOut {
 			out.Payload = v
 		}
 	}
+	out.Routing = decodeTrace(t.RoutingTrace)
 	return out
+}
+
+// decodeTrace renders a stored routing trace as structured JSON, or nil when there is none (or it
+// does not parse — the row is the contract, the trace an explanation).
+func decodeTrace(raw []byte) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil
+	}
+	return v
 }
 
 // owner is the acting identity recorded on claimed/completed todos (SPEC-0006: agent:<agent_id>).
