@@ -29,6 +29,10 @@ type EventHistoryItem struct {
 	Verified    bool
 	PayloadSize int
 	ReceivedAt  time.Time
+	// WebhookID is the self-managed webhook the delivery arrived on ("" otherwise); RoutingTrace is
+	// how it was routed (nil when it was not). Governing: SPEC-0020 REQ "Routing Trace".
+	WebhookID    string
+	RoutingTrace []byte
 }
 
 // EventHistoryDetail is the SPEC-0005 EventDetail projection: every summary field plus the full
@@ -110,7 +114,8 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	query := fmt.Sprintf(`
-		SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at
+		SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at,
+			COALESCE(webhook_id::text, ''), routing_trace
 		FROM events
 		%s
 		ORDER BY received_at DESC, id DESC
@@ -125,7 +130,7 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 	for rows.Next() {
 		var e EventHistoryItem
 		if err := rows.Scan(&e.ID, &e.Provider, &e.EventType, &e.TrustMode, &e.Verified,
-			&e.PayloadSize, &e.ReceivedAt); err != nil {
+			&e.PayloadSize, &e.ReceivedAt, &e.WebhookID, &e.RoutingTrace); err != nil {
 			return nil, fmt.Errorf("list event history scan: %w", err)
 		}
 		out = append(out, e)
@@ -136,17 +141,33 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 	return out, nil
 }
 
-// EventHistoryByID returns the full sanitized record for one event, or ErrNotFound.
-func (s *Store) EventHistoryByID(ctx context.Context, id int64) (EventHistoryDetail, error) {
+// eventDetailSelect is the EventHistoryDetail projection, shared by every single-event read so the
+// full-record shape cannot drift between them.
+const eventDetailSelect = `
+	SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at,
+		COALESCE(webhook_id::text, ''), routing_trace,
+		COALESCE(verify_detail, ''), COALESCE(external_id, ''), COALESCE(content_type, ''),
+		COALESCE(host(source_ip), ''), COALESCE(headers, '{}'::jsonb), COALESCE(payload, ''::bytea)
+	FROM events`
+
+func scanEventDetail(row pgx.Row) (EventHistoryDetail, error) {
 	var e EventHistoryDetail
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at,
-			COALESCE(verify_detail, ''), COALESCE(external_id, ''), COALESCE(content_type, ''),
-			COALESCE(host(source_ip), ''), COALESCE(headers, '{}'::jsonb), COALESCE(payload, ''::bytea)
-		FROM events WHERE id = $1`, id,
-	).Scan(&e.ID, &e.Provider, &e.EventType, &e.TrustMode, &e.Verified, &e.PayloadSize, &e.ReceivedAt,
+	err := row.Scan(&e.ID, &e.Provider, &e.EventType, &e.TrustMode, &e.Verified, &e.PayloadSize, &e.ReceivedAt,
+		&e.WebhookID, &e.RoutingTrace,
 		&e.VerifyDetail, &e.ExternalID, &e.ContentType, &e.SourceIP, &e.Headers, &e.Payload)
 	if errors.Is(err, pgx.ErrNoRows) {
+		return EventHistoryDetail{}, ErrNotFound
+	}
+	if err != nil {
+		return EventHistoryDetail{}, fmt.Errorf("event history detail: %w", err)
+	}
+	return e, nil
+}
+
+// EventHistoryByID returns the full sanitized record for one event, or ErrNotFound.
+func (s *Store) EventHistoryByID(ctx context.Context, id int64) (EventHistoryDetail, error) {
+	e, err := scanEventDetail(s.pool.QueryRow(ctx, eventDetailSelect+` WHERE id = $1`, id))
+	if errors.Is(err, ErrNotFound) {
 		return EventHistoryDetail{}, ErrNotFound
 	}
 	if err != nil {

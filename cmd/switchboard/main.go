@@ -29,6 +29,7 @@ import (
 	"syscall"
 
 	"github.com/joestump/switchboard/internal/config"
+	"github.com/joestump/switchboard/internal/routing"
 	"github.com/joestump/switchboard/internal/server"
 )
 
@@ -36,6 +37,10 @@ import (
 var version = "dev"
 
 func main() {
+	// Routing rules evaluate in a re-executed child of this binary (internal/routing/sandbox.go). The
+	// hook must run before anything else: the child has no environment, no config, and no business
+	// touching the CLI. Governing: SPEC-0020 Security Requirements "Expression sandboxing".
+	routing.RunChildIfRequested()
 	os.Exit(newCLI().run(os.Args[1:]))
 }
 

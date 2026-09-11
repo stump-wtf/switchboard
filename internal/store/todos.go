@@ -50,19 +50,23 @@ type Todo struct {
 	ClaimedAt      *time.Time
 	CompletedAt    *time.Time
 	NextRetryAt    *time.Time // scheduled backoff re-queue for a failed-below-cap todo; nil = dead-lettered/none
+	// RoutingTrace is how the delivery that minted this todo was routed (routing.Trace JSON), nil for
+	// todos that did not come through the routing stage. Governing: SPEC-0020 REQ "Routing Trace"
+	// (every todo explains itself).
+	RoutingTrace []byte
 }
 
 const todoCols = `id, endpoint_id::text, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
 	COALESCE(idempotency_key,''), COALESCE(assignee,''), state, COALESCE(owner,''),
 	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at,
-	next_retry_at`
+	next_retry_at, routing_trace`
 
 func scanTodo(row pgx.Row) (Todo, error) {
 	var t Todo
 	var endpointID *string
 	err := row.Scan(&t.ID, &endpointID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
 		&t.IdempotencyKey, &t.Assignee, &t.State, &t.Owner, &t.LeaseExpiresAt, &t.Attempt,
-		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt, &t.NextRetryAt)
+		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt, &t.NextRetryAt, &t.RoutingTrace)
 	if endpointID != nil {
 		t.EndpointID = *endpointID
 	}
@@ -125,6 +129,7 @@ type CreateTodoParams struct {
 	EventID        *int64
 	IdempotencyKey string
 	Assignee       string
+	RoutingTrace   []byte // routing.Trace JSON when the todo came through the routing stage (SPEC-0020)
 }
 
 // CreateTodo inserts a todo, deduping on (endpoint_id, idempotency_key) among LIVE rows — pending,
@@ -216,18 +221,48 @@ type CreatedTodo struct {
 // lifecycle frame to the operator Board for work that did not actually appear.
 // Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
 func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpointIDs []string, p CreateTodoParams) (int64, []CreatedTodo, error) {
-	if len(targetEndpointIDs) == 0 {
-		return 0, nil, fmt.Errorf("store: CreateEventTodos requires at least one target endpoint")
+	id, out, _, err := s.CreateRoutedEventTodos(ctx, e, false, targetEndpointIDs, p)
+	return id, out, err
+}
+
+// CreateRoutedEventTodos is CreateEventTodos with the routing stage's outcome applied (SPEC-0020).
+// When drop is true — or when this delivery is a redelivery of one that was ALREADY dropped — the
+// event row is recorded (with its routing trace, spending its (source, external_id) dedup slot) and
+// the transaction commits with no todo, no todo hook, and no doorbell. The stickiness is what keeps
+// the dedup contract routing-independent: a producer redelivering a dropped event after the owner
+// edited the rules does not get it re-processed into work. The returned bool reports that outcome.
+// Governing: SPEC-0020 REQ "Drop Action Semantics", design "Drop semantics: spend the dedup slot,
+// keep the receipt"; ADR-0024.
+func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop bool, targetEndpointIDs []string, p CreateTodoParams) (int64, []CreatedTodo, bool, error) {
+	if !drop && len(targetEndpointIDs) == 0 {
+		return 0, nil, false, fmt.Errorf("store: CreateEventTodos requires at least one target endpoint")
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	ev, inserted, err := insertEvent(ctx, tx, e)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
+	}
+	if !inserted && !drop {
+		// The first routing decision recorded for a delivery is the one that counts for a drop.
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE((routing_trace->'action'->>'drop')::boolean, false) FROM events WHERE id = $1`, ev.ID,
+		).Scan(&drop); err != nil {
+			return 0, nil, false, fmt.Errorf("store: read prior routing: %w", err)
+		}
+	}
+	if drop {
+		if err := tx.Commit(ctx); err != nil {
+			return 0, nil, false, err
+		}
+		if inserted {
+			s.fireEventHook(ev)
+		}
+		return ev.ID, nil, true, nil
 	}
 	p.EventID = &ev.ID
 	out := make([]CreatedTodo, 0, len(targetEndpointIDs))
@@ -246,12 +281,12 @@ func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpoi
 		tp.EndpointID = epID
 		t, wasNew, err := createTodo(ctx, tx, tp)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, false, err
 		}
 		out = append(out, CreatedTodo{Todo: t, New: wasNew})
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	// Hooks fire only after the durable commit, event before todos, mirroring the Board's
 	// lifecycle order. Governing: SPEC-0015 REQ "Patch Panel Board".
@@ -276,7 +311,7 @@ func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpoi
 			s.fireDoorbell(ct.Todo)
 		}
 	}
-	return ev.ID, out, nil
+	return ev.ID, out, false, nil
 }
 
 // createTodo is the querier-based core of CreateTodo: it runs on either the pool or a transaction and
@@ -299,14 +334,14 @@ func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool,
 		return Todo{}, false, fmt.Errorf("store: createTodo requires a non-empty EndpointID")
 	}
 	row := q.QueryRow(ctx, `
-		INSERT INTO todos (id, endpoint_id, queue, source, kind, title, payload, event_id, idempotency_key, assignee)
-		VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8, NULLIF($9,''), NULLIF($10,''))
+		INSERT INTO todos (id, endpoint_id, queue, source, kind, title, payload, event_id, idempotency_key, assignee, routing_trace)
+		VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8, NULLIF($9,''), NULLIF($10,''), $11)
 		ON CONFLICT (endpoint_id, idempotency_key)
 			WHERE idempotency_key IS NOT NULL AND state <> 'done'
 				AND (state <> 'failed' OR next_retry_at IS NOT NULL)
 			DO NOTHING
 		RETURNING `+todoCols,
-		id, p.EndpointID, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee)
+		id, p.EndpointID, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee, p.RoutingTrace)
 	t, err := scanTodo(row)
 	if err == nil {
 		return t, true, nil
@@ -975,6 +1010,12 @@ type EventInput struct {
 	Headers      []byte // sanitized JSON
 	Payload      []byte
 	SourceIP     string
+	// WebhookID is the self-managed webhook the delivery arrived on ("" for other receivers), and
+	// RoutingTrace how the routing stage decided it (nil when the delivery was not routed). Both are
+	// written with the row so history can never show a delivery without its route.
+	// Governing: SPEC-0020 REQ "Routing Trace", REQ "Drop Action Semantics".
+	WebhookID    string
+	RoutingTrace []byte
 }
 
 // InsertEvent records an accepted delivery, deduping on (source, external_id). Returns the event id
@@ -997,12 +1038,13 @@ func insertEvent(ctx context.Context, q querier, e EventInput) (EventSummary, bo
 	ev := EventSummary{Source: e.Source, EventType: e.EventType, TrustMode: e.TrustMode}
 	err := q.QueryRow(ctx, `
 		INSERT INTO events (source, family, event_type, external_id, trust_mode, verified, verify_detail,
-			content_type, headers, payload, payload_size, source_ip)
-		VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,NULLIF($12,'')::inet)
+			content_type, headers, payload, payload_size, source_ip, webhook_id, routing_trace)
+		VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,NULLIF($12,'')::inet,
+			NULLIF($13,'')::uuid, $14)
 		ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL DO NOTHING
 		RETURNING id, received_at`,
 		e.Source, e.Family, e.EventType, e.ExternalID, e.TrustMode, e.Verified, e.VerifyDetail,
-		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP).Scan(&ev.ID, &ev.ReceivedAt)
+		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP, e.WebhookID, e.RoutingTrace).Scan(&ev.ID, &ev.ReceivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Duplicate delivery — fetch the existing row.
 		if err2 := q.QueryRow(ctx,
