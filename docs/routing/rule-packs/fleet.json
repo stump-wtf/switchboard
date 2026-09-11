@@ -106,13 +106,13 @@
     {
       "id": "untrusted-author",
       "name": "issues written by anyone outside the trusted humans and agents",
-      "expr": ".issue.author as $a | any((($params.trusted_humans // []) + ($params.trusted_agents // []))[]; . == $a) | not",
+      "expr": ".issue.author as $a | any(((($params.trusted_humans // []) | arrays) + (($params.trusted_agents // []) | arrays))[]; . == $a) | not",
       "action": {"drop": true}
     },
     {
       "id": "untrusted-labeler",
       "name": "label changes made by anyone outside the trusted humans and agents",
-      "expr": ".issue.label_event and (.issue.sender as $s | any((($params.trusted_humans // []) + ($params.trusted_agents // []))[]; . == $s) | not)",
+      "expr": ".issue.label_event and (.issue.sender as $s | any(((($params.trusted_humans // []) | arrays) + (($params.trusted_agents // []) | arrays))[]; . == $s) | not)",
       "action": {"drop": true}
     },
     {
