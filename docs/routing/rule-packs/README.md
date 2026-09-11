@@ -21,7 +21,7 @@ Lanes are by difficulty. Each lane is one queue served by one pool endpoint scop
 | `lane-l` | `size/L`; cairn `lane:l`, or `size:l` when unpinned | `zai/glm-5.3` direct and `hyper/glm-5.3` direct |
 | `lane-vision` | cairn `lane:vision` | `hyper/deepseek-v4.1-flash` direct |
 | `triage` | unsized issues opened or reopened, and unsized, unpinned cairn handoffs. The worker sizes the item with a label; the label event re-routes it. | Qwen |
-| `hold` | `size/XL`, `HUMAN`, more than one `size/*` label, cairn `size:xl`, more than one `lane:` or `size:` tag, and cairn handoffs on behalf of someone untrusted. Surfaced for Joe, never auto-executed. | none |
+| `hold` | `size/XL`, `HUMAN`, more than one `size/*` label, cairn `size:xl`, and more than one `lane:` or `size:` tag. Surfaced for Joe, never auto-executed. | none |
 
 Several workers on one queue, on different provider accounts, are competing consumers: they claim with `FOR UPDATE SKIP LOCKED`, so each todo runs once, and when one provider's quota walls the other keeps draining. Only the local Qwen goes through LiteLLM.
 
@@ -32,12 +32,12 @@ Several workers on one queue, on different provider accounts, are competing cons
 | Param | Meaning |
 |---|---|
 | `require_verified` | `true` (default): a delivery whose signature did not verify is never a work order. |
-| `trusted_humans` | Forge logins and cairn `on_behalf_of` values of trusted people. |
+| `trusted_humans` | Forge logins of trusted people. |
 | `trusted_agents` | Forge logins of trusted agent identities. |
-| `cairn_actors` | Cairn `actor_id`s (the actor of a `CAIRN_API_TOKENS` entry) allowed to hand off work. |
+| `cairn_actors` | Cairn `actor_id`s allowed to hand off work, exactly as cairn records them: a `CAIRN_API_TOKENS` entry's actor, a PAT's owner, or the OIDC login (email or sub) for an MCP OAuth client. |
 | `repo_prefixes` | `owner/` or `owner/repo` prefixes whose issues may route. |
 
-Issue authors, and labelers on label events, must be in `trusted_humans ∪ trusted_agents`. Tags and labels never grant trust.
+Issue authors, and labelers on label events, must be in `trusted_humans ∪ trusted_agents`. Tags, labels, and cairn's `on_behalf_of` never grant trust. `on_behalf_of` is the MCP client's self-reported `name/version`, e.g. `claude-code/2.1.0`.
 
 ### Rule order
 
@@ -48,26 +48,25 @@ First match wins, and the default is `drop`.
 | 1 | `unverified` | drop unless the signature verified |
 | 2 | `cairn-not-handoff` | drop cairn artifacts whose `tags` lack `handoff` |
 | 3 | `cairn-untrusted-actor` | drop cairn handoffs whose `actor_id` is not in `cairn_actors` |
-| 4 | `cairn-on-behalf-untrusted` | hold handoffs on behalf of an untrusted principal |
-| 5 | `cairn-ambiguous` | hold handoffs with more than one `lane:` tag or more than one `size:` tag |
-| 6 | `cairn-size-xl` | hold `size:xl` handoffs, even when pinned |
-| 7–10 | `cairn-lane-{s,m,l,vision}` | route to the pinned lane |
-| 11–13 | `cairn-size-{s,m,l}` | unpinned handoffs by size |
-| 14 | `cairn-triage` | remaining handoffs to triage |
-| 15 | `not-an-issue` | drop everything that is not an issue event, pull requests and review requests included |
-| 16 | `repo-not-allowlisted` | drop issues outside `repo_prefixes` |
-| 17 | `bot-issue` | drop Renovate/`[bot]` authors, "Dependency Dashboard", and the `BOT` verdict |
-| 18 | `untrusted-author` | drop issues by untrusted authors |
-| 19 | `untrusted-labeler` | drop label events made by untrusted senders |
-| 20 | `not-open` | drop closed issues |
-| 21 | `not-routable-action` | drop everything but `opened`, `reopened`, `labeled`, `label_updated` |
-| 22 | `human-verdict` | hold `HUMAN` |
-| 23 | `size-xl` | hold `size/XL` |
-| 24 | `ambiguous-size` | hold more than one `size/*` label |
-| 25–27 | `size-s`, `size-m`, `size-l` | route to `lane-s`, `lane-m`, `lane-l` |
-| 28 | `unsized-new-issue` | opened/reopened with no size label goes to triage |
+| 4 | `cairn-ambiguous` | hold handoffs with more than one `lane:` tag or more than one `size:` tag |
+| 5 | `cairn-size-xl` | hold `size:xl` handoffs, even when pinned |
+| 6–9 | `cairn-lane-{s,m,l,vision}` | route to the pinned lane |
+| 10–12 | `cairn-size-{s,m,l}` | unpinned handoffs by size |
+| 13 | `cairn-triage` | remaining handoffs to triage |
+| 14 | `not-an-issue` | drop everything that is not an issue event, pull requests and review requests included |
+| 15 | `repo-not-allowlisted` | drop issues outside `repo_prefixes` |
+| 16 | `bot-issue` | drop Renovate/`[bot]` authors, "Dependency Dashboard", and the `BOT` verdict |
+| 17 | `untrusted-author` | drop issues by untrusted authors |
+| 18 | `untrusted-labeler` | drop label events made by untrusted senders |
+| 19 | `not-open` | drop closed issues |
+| 20 | `not-routable-action` | drop everything but `opened`, `reopened`, `labeled`, `label_updated` |
+| 21 | `human-verdict` | hold `HUMAN` |
+| 22 | `size-xl` | hold `size/XL` |
+| 23 | `ambiguous-size` | hold more than one `size/*` label |
+| 24–26 | `size-s`, `size-m`, `size-l` | route to `lane-s`, `lane-m`, `lane-l` |
+| 27 | `unsized-new-issue` | opened/reopened with no size label goes to triage |
 
-A label event on an unsized issue matches none of 22–28, so it drops. That is what keeps triage from looping.
+A label event on an unsized issue matches none of 21–27, so it drops. That is what keeps triage from looping.
 
 ### Cairn handoff tags
 
@@ -80,7 +79,7 @@ Tags are lower-case and matched exactly.
 | `size:s` \| `size:m` \| `size:l` \| `size:xl` | difficulty; `size:xl` is always held |
 | `repo:owner/name`, `issue:owner/repo#n` | where the work lives |
 | `source:…` | the sweep that wrote it, e.g. `source:morning-brief` |
-| `reply:…` | where to report back, e.g. an `mcp://cairn/<id>` handle |
+| `reply:cairn-comment` \| `reply:signal` | where to report back: a comment on this artifact, or Signal |
 
 ## `pool-review.json` — single-identity review routing
 

@@ -58,7 +58,7 @@ and `.headers`.
 | `.size` | payload size in bytes |
 | `.headers` | sanitized request headers, **lower-cased** names (secrets read `«redacted»`) |
 | `.payload` | the body parsed as JSON, or `null` when it is not JSON |
-| `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id`, `on_behalf_of`, `expires_at`, `tags` (cairn's string list), `metadata` |
+| `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id` (authenticated), `on_behalf_of` (client-reported `name/version`), `expires_at`, `tags` (cairn's string list), `metadata` (`null`: cairn sends none) |
 | `.issue` | Gitea/GitHub `issues` events only (`null` otherwise, pull requests included): `provider`, `action`, `event_type`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels` (names), `label` (GitHub's changed label), `body_size`, `label_event`, `key` |
 
 `.issue` reads the same on both forges: Gitea's label change (`issue_label`, action `label_updated`)
@@ -155,8 +155,10 @@ An artifact by `joestump-agent` tagged `["handoff", "lane:m"]` becomes one todo,
 pool only. The same tags from any other actor are recorded and dropped: tags choose a lane, they
 never grant trust.
 
-Cairn's `data.tags` and `data.on_behalf_of` come from the cairn-handoff work; until cairn emits
-them, `.artifact.tags` is `null` and nothing routes as a handoff.
+Cairn's `data.tags` comes from the cairn-handoff work; until cairn emits it, `.artifact.tags` is
+`null` and nothing routes as a handoff. Allowlist `.artifact.actor_id`, which cairn derives from the
+authenticated caller. Never allowlist `.artifact.on_behalf_of`: it is the MCP client's self-reported
+`name/version` (e.g. `claude-code/2.1.0`), display text that any client can set.
 
 Cairn deliveries verify strictly: the `X-Cairn-Signature` HMAC over the body, a signed `event_id`
 (the dedup key — a replay collapses onto the original) and a signed `created_at` inside the

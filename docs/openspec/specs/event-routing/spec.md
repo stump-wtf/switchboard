@@ -232,9 +232,9 @@ For a delivery whose webhook source is `gitea`, `github`, or `generic` and whose
 
 ### Requirement: Cairn Handoff Fields
 
-For `cairn` sources, `.artifact` MUST additionally expose `tags` (cairn's list of strings, passed through), `on_behalf_of`, and `handle` (`mcp://cairn/<id>`, or `null` without an id). There is no cairn label map. Handoff tags are `handoff`, `lane:s|m|l|vision|auto`, `size:s|m|l|xl`, `repo:owner/name`, `issue:owner/repo#n`, `source:…`, and `reply:…`, matched exactly. The cairn subject parsed for work orders MUST keep only the string entries of `data.tags`, in order.
+For `cairn` sources, `.artifact` MUST additionally expose `tags` (cairn's list of strings, passed through), `on_behalf_of` (the MCP client's self-reported `name/version`, passed through as display text), and `handle` (`mcp://cairn/<id>`, or `null` without an id). There is no cairn label map. Handoff tags are `handoff`, `lane:s|m|l|vision|auto`, `size:s|m|l|xl`, `repo:owner/name`, `issue:owner/repo#n`, `source:…`, and `reply:…`, matched exactly. The cairn subject parsed for work orders MUST keep only the string entries of `data.tags`, in order.
 
-These depend on the cairn tags contract (`data.tags`, `data.on_behalf_of` on `artifact.created`, bundles included) from the cairn-handoff work; until cairn emits them they are `null`, and whether cairn derives `on_behalf_of` server-side is still being confirmed.
+These depend on the cairn tags contract (`data.tags` on `artifact.created`, bundles included) from the cairn-handoff work; until cairn emits it, `.artifact.tags` is `null`. `on_behalf_of` is client-reported, so provenance checks MUST use the authenticated `.artifact.actor_id` and MUST NOT use `on_behalf_of`.
 
 #### Scenario: A handoff's lane is readable, its authority is not
 
@@ -294,7 +294,7 @@ A `queue` action with `work_order: true` MUST attach to each minted todo a switc
 A webhook whose rules route to worker lanes SHOULD admit a delivery as a work order only when its **verified provenance** passes owner-set allowlists in `$params`:
 
 - the signature verified (`.verified`);
-- for cairn, `.artifact.actor_id` is an allowlisted actor; an `on_behalf_of` outside the trusted principals is held, not executed;
+- for cairn, `.artifact.actor_id`, which cairn derives from the authenticated caller, is an allowlisted actor; `on_behalf_of` is client-reported and neither admits nor vouches for a delivery;
 - for issues, `.issue.author` is a trusted human or agent, `.issue.repo` matches an allowlisted prefix, and for label events `.issue.sender` is trusted.
 
 Tags, labels, titles, and bodies MUST NOT grant trust; they may only choose a lane among already-admitted work. Deliveries that fail MUST drop or hold, and the trace MUST name the deciding rule. The checked-in `docs/routing/rule-packs/fleet.json` implements this.
@@ -303,6 +303,11 @@ Tags, labels, titles, and bodies MUST NOT grant trust; they may only choose a la
 
 - **WHEN** a cairn artifact from an actor outside `cairn_actors` carries `tags: ["handoff", "trusted", "lane:s"]`
 - **THEN** the delivery drops with `rule_id: "cairn-untrusted-actor"`
+
+#### Scenario: on_behalf_of cannot vouch for an actor
+
+- **WHEN** a cairn artifact from an actor outside `cairn_actors` carries `on_behalf_of: "joestump-agent"`
+- **THEN** the delivery drops with `rule_id: "cairn-untrusted-actor"`; and when the actor is allowlisted, any `on_behalf_of` value routes identically
 
 #### Scenario: An unverified delivery is never work
 

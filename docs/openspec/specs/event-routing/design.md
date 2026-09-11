@@ -100,7 +100,7 @@ Evaluation bounds: 50 ms per rule and 250 ms per event. Limits: 32 rules, 4096-b
 
 `routing.Envelope` builds it for both the receiver and the dry-run.
 
-**Rationale.** A producer cannot forge the top-level fields. Using the persisted, sanitized headers means a dry-run against a stored event reproduces what the live delivery saw. For cairn, `.kind` comes from the signed body rather than the unsigned header. `.artifact` passes cairn's `tags` list and `on_behalf_of` through (null until cairn emits them), so handoff rules match the day the cairn tags contract ships.
+**Rationale.** A producer cannot forge the top-level fields. Using the persisted, sanitized headers means a dry-run against a stored event reproduces what the live delivery saw. For cairn, `.kind` comes from the signed body rather than the unsigned header. `.artifact` passes cairn's `tags` list through (null until cairn emits it), so handoff rules match the day the cairn tags contract ships. It also passes `on_behalf_of` through as display text only: cairn fills it from the MCP client's self-reported clientInfo.
 
 ### Out-of-process evaluation
 
@@ -262,6 +262,6 @@ Operational note: endpoints vended before this change hold the verb list of thei
 ## Open Questions
 
 - Shadowed-rule linting in `set_webhook_rules` (warn when a rule can never match) — cheap and useful; deferred.
-- Cairn's tags contract (`data.tags` as a string list, `data.on_behalf_of`) comes from the cairn-handoff work; `.artifact` already passes `tags` and `on_behalf_of` through. Whether cairn derives `on_behalf_of` server-side or lets any caller set it decides how much the fleet pack's on-behalf-of check is worth.
+- Cairn's tags contract (`data.tags` as a string list, cairn branch `feat/artifact-tags`) is confirmed by the cairn-handoff work but not merged; `.artifact` already passes `tags` through. *Resolved:* cairn confirmed `data.on_behalf_of` is the MCP client's self-reported `name/version`, so the fleet pack gates on the authenticated `actor_id` alone and has no on-behalf-of rule.
 - Re-running a completed work order in the same lane: at-most-once keys never expire today. A deliberate release verb (or a TTL) may be wanted once lanes see real use.
 - Dynamic destinations (a rule whose action queue is computed from the payload, constrained to the grant) — not built; one static rule per destination keeps every destination validated at save.
