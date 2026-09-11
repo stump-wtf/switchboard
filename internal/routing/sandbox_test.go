@@ -84,7 +84,10 @@ func TestSandboxContainsMemoryBombs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := Config{Rules: []Rule{rule("bomb", expr, Action{Drop: true}), rule("ok", `true`, Action{Queue: "forge"})}}
 			start := time.Now()
-			d := testSandbox(t, WithChildMemBytes(64<<20)).Route(context.Background(), cfg, grant(), cairnInput(cairnBody))
+			// A 5s deadline (rather than testSandbox's 20s) keeps "contained" meaning contained: a child
+			// stalled by cgroup memory pressure (seen at 10.7s in a 768 MiB container) is killed by the
+			// parent well inside the 10s bound below, and lands as a sandbox fault.
+			d := testSandbox(t, WithChildMemBytes(64<<20), WithDeadline(5*time.Second)).Route(context.Background(), cfg, grant(), cairnInput(cairnBody))
 			if elapsed := time.Since(start); elapsed > 10*time.Second {
 				t.Fatalf("bomb took %v to contain", elapsed)
 			}
@@ -119,6 +122,32 @@ func TestSandboxContainsMemoryBombs(t *testing.T) {
 				t.Fatalf("faults = %+v, want a sandbox failure or a faulted bomb rule", d.Trace.Faults)
 			}
 		})
+	}
+}
+
+// The watchdog trips once mapped memory passes its limit, and exits with the code the parent reads
+// as "exceeded its memory limit". The bomb test above cannot show this on its own — a rule timeout is
+// also an acceptable outcome there, so a no-op watchdog passes it — and an end-to-end child with a
+// tiny limit is no better: on Linux the child routinely finishes before the watchdog's first sample.
+// So the loop is tested directly, with the exit captured. A 1 MiB limit sits below the runtime's own
+// baseline, so the first sample must trip it.
+func TestWatchdogExitsOverItsMemoryLimit(t *testing.T) {
+	codes := make(chan int, 1)
+	orig := exitProcess
+	exitProcess = func(code int) {
+		codes <- code
+		select {} // a real exit never returns; park the loop so it cannot report twice
+	}
+	t.Cleanup(func() { exitProcess = orig })
+
+	go watchdog(1 << 20)
+	select {
+	case code := <-codes:
+		if code != childExitMem {
+			t.Fatalf("watchdog exit code = %d, want %d", code, childExitMem)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchdog never tripped with a limit below the runtime baseline")
 	}
 }
 

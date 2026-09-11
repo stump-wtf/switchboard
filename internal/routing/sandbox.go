@@ -249,6 +249,11 @@ func runChild(r io.Reader, w io.Writer, memLimit uint64) int {
 	return 0
 }
 
+// exitProcess is how the watchdog ends the child. It is os.Exit everywhere except the watchdog's
+// own unit test, which cannot otherwise observe the loop tripping without a race against the child
+// finishing first.
+var exitProcess = os.Exit
+
 // watchdog exits the child once the runtime has mapped more than limit bytes. It reads the total
 // the runtime has obtained from the OS, which grows the moment a large allocation is made — before
 // the pages are written — so a runaway allocation is caught at reservation, not after it is filled.
@@ -257,7 +262,7 @@ func watchdog(limit uint64) {
 	for {
 		metrics.Read(sample)
 		if sample[0].Value.Kind() == metrics.KindUint64 && sample[0].Value.Uint64() > limit {
-			os.Exit(childExitMem)
+			exitProcess(childExitMem)
 		}
 		time.Sleep(time.Millisecond)
 	}
