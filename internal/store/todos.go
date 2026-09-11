@@ -300,39 +300,65 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 		if e.WebhookID == "" {
 			return 0, nil, false, fmt.Errorf("store: a once key needs the delivery's webhook")
 		}
-		var claimedBy *int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO routing_once (webhook_id, once_key, event_id) VALUES ($1, $2, $3)
-			ON CONFLICT (webhook_id, once_key) DO UPDATE SET once_key = EXCLUDED.once_key
-			RETURNING event_id`, e.WebhookID, p.OnceKey, ev.ID).Scan(&claimedBy); err != nil {
-			return 0, nil, false, fmt.Errorf("store: claim once key: %w", err)
+		// A redelivery must claim with the key its ORIGINAL delivery claimed, recorded in the
+		// event's routing trace — never the freshly-evaluated one. Between the two arrivals the
+		// owner may have edited the rules: claiming the new (subject, queue) key would burn it
+		// with zero todos minted there, and every later legitimate delivery for that subject and
+		// lane would report as a repeat forever. A redelivery of a delivery that never claimed
+		// (once was off, or the original routed to a queue without once) skips the claim entirely:
+		// a rule edit must not let an old delivery newly mint at-most-once work.
+		claimKey := p.OnceKey
+		if !inserted {
+			var stored string
+			if err := tx.QueryRow(ctx,
+				`SELECT COALESCE(routing_trace->>'once_key', '') FROM events WHERE id = $1`, ev.ID,
+			).Scan(&stored); err != nil {
+				return 0, nil, false, fmt.Errorf("store: read prior once key: %w", err)
+			}
+			if stored == "" {
+				stored = p.OnceKey
+				p.OnceKey = ""
+			}
+			claimKey = stored
 		}
-		switch {
-		case claimedBy == nil || *claimedBy != ev.ID:
-			if inserted {
-				if _, err := tx.Exec(ctx, `UPDATE events
-					SET routing_trace = COALESCE(routing_trace, '{}'::jsonb) || '{"once":"repeat"}'::jsonb
-					WHERE id = $1`, ev.ID); err != nil {
-					return 0, nil, false, fmt.Errorf("store: mark once repeat: %w", err)
+		if p.OnceKey != "" {
+			var claimedBy *int64
+			if err := tx.QueryRow(ctx, `
+				INSERT INTO routing_once (webhook_id, once_key, event_id) VALUES ($1, $2, $3)
+				ON CONFLICT (webhook_id, once_key) DO UPDATE SET once_key = EXCLUDED.once_key
+				RETURNING event_id`, e.WebhookID, claimKey, ev.ID).Scan(&claimedBy); err != nil {
+				return 0, nil, false, fmt.Errorf("store: claim once key: %w", err)
+			}
+			switch {
+			case claimedBy == nil || *claimedBy != ev.ID:
+				if inserted {
+					if _, err := tx.Exec(ctx, `UPDATE events
+						SET routing_trace = COALESCE(routing_trace, '{}'::jsonb) || '{"once":"repeat"}'::jsonb
+						WHERE id = $1`, ev.ID); err != nil {
+						return 0, nil, false, fmt.Errorf("store: mark once repeat: %w", err)
+					}
 				}
+				if err := tx.Commit(ctx); err != nil {
+					return 0, nil, false, err
+				}
+				if inserted {
+					s.fireEventHook(ev)
+				}
+				return ev.ID, nil, false, nil
+			case !inserted:
+				out, err := eventTodos(ctx, tx, ev.ID)
+				if err != nil {
+					return 0, nil, false, err
+				}
+				if err := tx.Commit(ctx); err != nil {
+					return 0, nil, false, err
+				}
+				return ev.ID, out, false, nil
 			}
-			if err := tx.Commit(ctx); err != nil {
-				return 0, nil, false, err
-			}
-			if inserted {
-				s.fireEventHook(ev)
-			}
-			return ev.ID, nil, false, nil
-		case !inserted:
-			out, err := eventTodos(ctx, tx, ev.ID)
-			if err != nil {
-				return 0, nil, false, err
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return 0, nil, false, err
-			}
-			return ev.ID, out, false, nil
 		}
+		// A redelivery whose original delivery never claimed (p.OnceKey cleared above) falls
+		// through to the per-target path, which idempotently re-reports its existing todos —
+		// exactly as it did before the once action existed.
 	}
 	p.EventID = &ev.ID
 	out := make([]CreatedTodo, 0, len(targetEndpointIDs))

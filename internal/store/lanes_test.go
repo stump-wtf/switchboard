@@ -32,12 +32,18 @@ func TestRoutingOnceMintsAWorkOrderAtMostOnce(t *testing.T) {
 	deliver := func(ext, onceKey string) (int64, []CreatedTodo) {
 		t.Helper()
 		key := wh.ID + ":" + ext
+		// The ingest receiver stamps the claimed once key into the trace it stores (routing.Trace
+		// OnceKey); the store reads it back on a redelivery instead of re-deciding the key.
+		storedTrace := trace
+		if onceKey != "" {
+			storedTrace = []byte(fmt.Sprintf(`{"stage":"rule","rule_id":"size-m","action":{"queue":"lane-zai-flash","exclusive":true,"once":true,"work_order":true},"once_key":%q}`, onceKey))
+		}
 		evID, todos, dropped, err := s.CreateRoutedEventTodos(ctx,
 			EventInput{Source: "gitea", Family: "webhook", EventType: "issues", ExternalID: key, TrustMode: "signed",
-				Verified: true, Payload: []byte(`{"action":"label_updated"}`), WebhookID: wh.ID, RoutingTrace: trace},
+				Verified: true, Payload: []byte(`{"action":"label_updated"}`), WebhookID: wh.ID, RoutingTrace: storedTrace},
 			false, []string{ep},
 			CreateTodoParams{Queue: "lane-zai-flash", Source: "gitea", Kind: "webhook", Title: "issue #1", IdempotencyKey: key,
-				RoutingTrace: trace, OnceKey: onceKey, WorkOrder: workOrder})
+				RoutingTrace: storedTrace, OnceKey: onceKey, WorkOrder: workOrder})
 		if err != nil || dropped {
 			t.Fatalf("deliver %s: dropped %v, %v", ext, dropped, err)
 		}
@@ -99,6 +105,69 @@ func TestRoutingOnceMintsAWorkOrderAtMostOnce(t *testing.T) {
 		false, []string{ep}, CreateTodoParams{Queue: "lane-zai-flash", Title: "t", IdempotencyKey: "x:nowebhook", OnceKey: "once:k"})
 	if err == nil {
 		t.Fatalf("a once key with no webhook id was accepted")
+	}
+}
+
+// A redelivery claims with the key its ORIGINAL delivery claimed, recorded in the event's routing
+// trace — never the freshly-evaluated one. Between the two arrivals the owner may have edited the
+// rules, so replaying the claiming delivery after a re-route must not claim and burn the new
+// (subject, queue) key with zero todos minted there. Regression for the review finding on
+// internal/store/todos.go: a redelivery's once key comes from the event's stored trace.
+func TestRoutingOnceRedeliveryKeepsItsOriginalKey(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "once-key", "lane-a")
+	wh, err := s.CreateWebhook(ctx, ep, "gitea", "router", "signed", "tok-once-key", "whsec_once_key", 5)
+	if err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	// traceWith mimics the ingest layer: the receiver stamps the claimed key into the trace it
+	// stores with the event. An empty key means the delivery routed without a once action.
+	traceWith := func(key string) []byte {
+		return []byte(fmt.Sprintf(`{"stage":"rule","action":{"queue":"lane-a","once":true},"once_key":%q}`, key))
+	}
+	deliver := func(ext, queue, key string, trace []byte) (int64, []CreatedTodo) {
+		t.Helper()
+		idem := wh.ID + ":" + ext
+		evID, todos, dropped, err := s.CreateRoutedEventTodos(ctx,
+			EventInput{Source: "gitea", Family: "webhook", EventType: "issues", ExternalID: idem, TrustMode: "signed",
+				Verified: true, Payload: []byte(`{"action":"label_updated"}`), WebhookID: wh.ID, RoutingTrace: trace},
+			false, []string{ep},
+			CreateTodoParams{Queue: queue, Source: "gitea", Kind: "webhook", Title: "issue #1", IdempotencyKey: idem,
+				RoutingTrace: trace, OnceKey: key})
+		if err != nil || dropped {
+			t.Fatalf("deliver %s: dropped %v, %v", ext, dropped, err)
+		}
+		return evID, todos
+	}
+
+	// D1 claims (issue, lane-a) and mints there.
+	if _, first := deliver("d1", "lane-a", "once:issue-1-lane-a", traceWith("once:issue-1-lane-a")); len(first) != 1 || !first[0].New {
+		t.Fatalf("first delivery = %+v, want one new todo on lane-a", first)
+	}
+
+	// The owner edits the rules; Gitea's redeliver button replays D1, now evaluating to lane-b.
+	if _, again := deliver("d1", "lane-b", "once:issue-1-lane-b", traceWith("once:issue-1-lane-b")); len(again) != 1 || again[0].New {
+		t.Fatalf("redelivery after a re-route = %+v, want the original lane-a todo reported", again)
+	}
+
+	// The lane-b key is NOT burned: a later, legitimate delivery for the same subject routed to
+	// lane-b mints there.
+	if _, laneB := deliver("d2", "lane-b", "once:issue-1-lane-b", traceWith("once:issue-1-lane-b")); len(laneB) != 1 || !laneB[0].New {
+		t.Fatalf("post-reroute delivery on lane-b = %+v, want one new todo", laneB)
+	}
+
+	// A redelivery of a delivery that never claimed (once was off at the time) does not claim the
+	// key it would evaluate to today, either: the replay re-reports its todos, and the key stays
+	// free for the next real delivery.
+	noOnce := []byte(`{"stage":"target","action":{}}`)
+	if _, unclaimed := deliver("d3", "lane-b", "", noOnce); len(unclaimed) != 1 || !unclaimed[0].New {
+		t.Fatalf("never-claiming delivery = %+v, want one new todo", unclaimed)
+	}
+	if _, replay := deliver("d3", "lane-b", "once:issue-1-lane-b", traceWith("once:issue-1-lane-b")); len(replay) != 1 || replay[0].New {
+		t.Fatalf("redelivery of the never-claiming delivery = %+v, want its todo re-reported", replay)
+	}
+	if _, fresh := deliver("d4", "lane-b", "once:issue-2-lane-b", traceWith("once:issue-2-lane-b")); len(fresh) != 1 || !fresh[0].New {
+		t.Fatalf("next subject on lane-b = %+v, want one new todo", fresh)
 	}
 }
 
