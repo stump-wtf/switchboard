@@ -22,15 +22,15 @@
       "actor_id": "joestump-agent",
       "on_behalf_of": "joestump",
       "expires_at": "2026-09-18T08:30:00Z",
-      "labels": {
-        "handoff": "true",
-        "lane": "zai-flash",
-        "size": "M",
-        "repo": "stump.wtf/harness",
-        "issue": "212",
-        "source": "morning-brief",
-        "reply_to": "mcp://cairn/brief-2026-09-11"
-      }
+      "tags": [
+        "handoff",
+        "lane:m",
+        "size:m",
+        "repo:stump.wtf/harness",
+        "issue:stump.wtf/harness#212",
+        "source:morning-brief",
+        "reply:mcp://cairn/brief-2026-09-11"
+      ]
     }
   }
 }

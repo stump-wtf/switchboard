@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -27,8 +28,8 @@ func TestSubjectOfForgeIssues(t *testing.T) {
 		s.URL != "https://gitea.stump.rocks/stump.wtf/switchboard/issues/212" {
 		t.Fatalf("gitea subject = %+v", s)
 	}
-	if got := s.issueLabels(); len(got) != 1 || got[0] != "size/M" {
-		t.Fatalf("gitea labels = %v", got)
+	if !slices.Equal(s.Labels, []string{"size/M"}) {
+		t.Fatalf("gitea labels = %v", s.Labels)
 	}
 
 	github := sampleInput(t, "github-issues-labeled", nil)
@@ -43,10 +44,12 @@ func TestSubjectOfForgeIssues(t *testing.T) {
 		t.Fatalf("generic-with-gitea-headers subject = %+v", gen)
 	}
 
-	// Pull requests are not issues, even as label events.
-	pr := sampleInput(t, "gitea-pull-request-label", nil)
-	if s := SubjectOf(pr.Source, pr.Headers, pr.Body); s != nil {
-		t.Fatalf("pull request produced subject %+v", s)
+	// Pull requests are not issues, even as label events or review requests.
+	for _, name := range []string{"gitea-pull-request-label", "gitea-pull-request-review-requested"} {
+		pr := sampleInput(t, name, nil)
+		if s := SubjectOf(pr.Source, pr.Headers, pr.Body); s != nil {
+			t.Fatalf("%s produced subject %+v", name, s)
+		}
 	}
 	if s := SubjectOf("gitea", map[string]string{"X-Gitea-Event": "issues"}, []byte("not json")); s != nil {
 		t.Fatalf("non-JSON body produced subject %+v", s)
@@ -57,18 +60,20 @@ func TestSubjectOfForgeIssues(t *testing.T) {
 }
 
 func TestSubjectOfCairn(t *testing.T) {
-	in := sampleInput(t, "cairn-artifact-created", map[string]any{"data": map[string]any{"labels": map[string]any{"weird": 7}}})
+	in := sampleInput(t, "cairn-artifact-created", map[string]any{"data": map[string]any{
+		"tags": []any{"handoff", "lane:m", 7, map[string]any{"x": 1}, "reply:mcp://cairn/brief-2026-09-11"},
+	}})
 	s := SubjectOf(in.Source, in.Headers, in.Body)
 	if s == nil || s.Type != SubjectCairnArtifact || s.Handle != "mcp://cairn/hx7Qm2" || s.ActorID != "joestump-agent" ||
 		s.OnBehalfOf != "joestump" || s.Key() != "cairn:hx7Qm2" {
 		t.Fatalf("cairn subject = %+v", s)
 	}
-	labels, _ := s.Labels.(map[string]string)
-	if labels["lane"] != "zai-flash" || labels["reply_to"] != "mcp://cairn/brief-2026-09-11" {
-		t.Fatalf("cairn labels = %v", s.Labels)
+	if !slices.Equal(s.Tags, []string{"handoff", "lane:m", "reply:mcp://cairn/brief-2026-09-11"}) {
+		t.Fatalf("cairn tags = %v, want only the string entries, in order", s.Tags)
 	}
-	if _, kept := labels["weird"]; kept {
-		t.Fatalf("a non-string label value was kept: %v", labels)
+	untagged := sampleInput(t, "cairn-artifact-created", map[string]any{"data": map[string]any{"tags": nil}})
+	if s := SubjectOf(untagged.Source, untagged.Headers, untagged.Body); s == nil || len(s.Tags) != 0 {
+		t.Fatalf("untagged cairn subject = %+v", s)
 	}
 }
 
@@ -77,9 +82,9 @@ func TestSubjectOfCairn(t *testing.T) {
 func TestOnceKey(t *testing.T) {
 	opened := sampleInput(t, "gitea-issue-opened", nil)
 	labeled := sampleInput(t, "gitea-issue-label-updated", nil)
-	a := OnceKey(SubjectOf(opened.Source, opened.Headers, opened.Body), "lane-zai-flash")
-	b := OnceKey(SubjectOf(labeled.Source, labeled.Headers, labeled.Body), "lane-zai-flash")
-	c := OnceKey(SubjectOf(labeled.Source, labeled.Headers, labeled.Body), "lane-zai")
+	a := OnceKey(SubjectOf(opened.Source, opened.Headers, opened.Body), "lane-m")
+	b := OnceKey(SubjectOf(labeled.Source, labeled.Headers, labeled.Body), "lane-m")
+	c := OnceKey(SubjectOf(labeled.Source, labeled.Headers, labeled.Body), "lane-l")
 	if a == "" || a != b || a == c || !strings.HasPrefix(a, "once:") {
 		t.Fatalf("once keys = %q %q %q; want same subject+queue equal, other queue different", a, b, c)
 	}
@@ -90,9 +95,9 @@ func TestOnceKey(t *testing.T) {
 
 func TestBuildWorkOrder(t *testing.T) {
 	in := sampleInput(t, "cairn-artifact-created", nil)
-	idx := 5
-	d := Decision{Queue: "lane-zai-flash", Endpoints: []string{"ep"}, WorkOrder: true,
-		Trace: Trace{Stage: StageRule, RuleIndex: &idx, RuleID: "cairn-lane-zai-flash", RuleName: "handoff pinned to the zai-flash lane"}}
+	idx := 7
+	d := Decision{Queue: "lane-m", Endpoints: []string{"ep"}, WorkOrder: true,
+		Trace: Trace{Stage: StageRule, RuleIndex: &idx, RuleID: "cairn-lane-m", RuleName: "handoff pinned to lane:m"}}
 	wo := BuildWorkOrder(d, in, SubjectOf(in.Source, in.Headers, in.Body))
 	raw, err := json.Marshal(wo)
 	if err != nil {
@@ -102,10 +107,18 @@ func TestBuildWorkOrder(t *testing.T) {
 	_ = json.Unmarshal(raw, &m)
 	subject, _ := m["subject"].(map[string]any)
 	auth, _ := m["authorized_by"].(map[string]any)
-	if m["version"] != float64(WorkOrderVersion) || m["lane"] != "lane-zai-flash" || m["verified"] != true ||
+	tags, _ := subject["tags"].([]any)
+	if m["version"] != float64(WorkOrderVersion) || m["lane"] != "lane-m" || m["verified"] != true ||
 		m["trust_mode"] != "signed" || subject["handle"] != "mcp://cairn/hx7Qm2" || subject["actor_id"] != "joestump-agent" ||
-		auth["rule_id"] != "cairn-lane-zai-flash" || !strings.HasPrefix(m["authority"].(string), "task-only") {
+		subject["on_behalf_of"] != "joestump" || len(tags) != 7 || auth["rule_id"] != "cairn-lane-m" {
 		t.Fatalf("work order = %s", raw)
+	}
+	// Semi-trust travels with every work order, verbatim.
+	authority, _ := m["authority"].(string)
+	for _, must := range []string{"semi-trusted", "prompt injection", "never disclose secrets", "never expand scope", "clamps"} {
+		if !strings.Contains(authority, must) {
+			t.Fatalf("authority %q is missing %q", authority, must)
+		}
 	}
 }
 
@@ -131,9 +144,10 @@ func TestEnvelopeIssueAndCairnProjections(t *testing.T) {
 	}
 	cairn := Envelope(sampleInput(t, "cairn-artifact-created", nil))
 	for _, expr := range []string{
-		`.artifact.labels.handoff == "true" and .artifact.labels.lane == "zai-flash"`,
-		`.artifact.on_behalf_of == "joestump" and .artifact.handle == "mcp://cairn/hx7Qm2"`,
-		`.issue == null`,
+		`.artifact.tags | index("handoff") != null`,
+		`[.artifact.tags[]? | select(startswith("lane:"))][0] == "lane:m"`,
+		`.artifact.on_behalf_of == "joestump" and .artifact.handle == "mcp://cairn/hx7Qm2" and .artifact.actor_id == "joestump-agent"`,
+		`.issue == null and .artifact.labels == null`,
 	} {
 		if !matches(t, cairn, expr) {
 			t.Fatalf("cairn envelope: %s did not match", expr)

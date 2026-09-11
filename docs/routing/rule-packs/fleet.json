@@ -15,8 +15,8 @@
     },
     {
       "id": "cairn-not-handoff",
-      "name": "cairn artifacts that are not handoffs",
-      "expr": ".source == \"cairn\" and (.artifact.labels.handoff // \"\") != \"true\"",
+      "name": "cairn artifacts without the handoff tag",
+      "expr": ".source == \"cairn\" and (any((.artifact.tags // [])[]; . == \"handoff\") | not)",
       "action": {"drop": true}
     },
     {
@@ -32,58 +32,58 @@
       "action": {"queue": "hold", "exclusive": true, "once": true, "work_order": true}
     },
     {
-      "id": "cairn-size-xl",
-      "name": "XL handoffs are held for Joe",
-      "expr": ".source == \"cairn\" and .artifact.labels.size == \"XL\"",
+      "id": "cairn-ambiguous",
+      "name": "more than one lane: or size: tag is held, not guessed",
+      "expr": ".source == \"cairn\" and (([(.artifact.tags // [])[] | select(startswith(\"lane:\"))] | length > 1) or ([(.artifact.tags // [])[] | select(startswith(\"size:\"))] | length > 1))",
       "action": {"queue": "hold", "exclusive": true, "once": true, "work_order": true}
     },
     {
-      "id": "cairn-lane-local",
-      "name": "handoff pinned to the local lane",
-      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"local\"",
-      "action": {"queue": "lane-local", "exclusive": true, "once": true, "work_order": true}
+      "id": "cairn-size-xl",
+      "name": "size:xl handoffs are held for Joe",
+      "expr": ".source == \"cairn\" and any((.artifact.tags // [])[]; . == \"size:xl\")",
+      "action": {"queue": "hold", "exclusive": true, "once": true, "work_order": true}
     },
     {
-      "id": "cairn-lane-zai-flash",
-      "name": "handoff pinned to the zai-flash lane",
-      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"zai-flash\"",
-      "action": {"queue": "lane-zai-flash", "exclusive": true, "once": true, "work_order": true}
+      "id": "cairn-lane-s",
+      "name": "handoff pinned to lane:s",
+      "expr": ".source == \"cairn\" and any((.artifact.tags // [])[]; . == \"lane:s\")",
+      "action": {"queue": "lane-s", "exclusive": true, "once": true, "work_order": true}
     },
     {
-      "id": "cairn-lane-zai",
-      "name": "handoff pinned to the zai lane",
-      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"zai\"",
-      "action": {"queue": "lane-zai", "exclusive": true, "once": true, "work_order": true}
+      "id": "cairn-lane-m",
+      "name": "handoff pinned to lane:m",
+      "expr": ".source == \"cairn\" and any((.artifact.tags // [])[]; . == \"lane:m\")",
+      "action": {"queue": "lane-m", "exclusive": true, "once": true, "work_order": true}
     },
     {
-      "id": "cairn-lane-hyper",
-      "name": "handoff pinned to the hyper lane",
-      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"hyper\"",
-      "action": {"queue": "lane-hyper", "exclusive": true, "once": true, "work_order": true}
+      "id": "cairn-lane-l",
+      "name": "handoff pinned to lane:l",
+      "expr": ".source == \"cairn\" and any((.artifact.tags // [])[]; . == \"lane:l\")",
+      "action": {"queue": "lane-l", "exclusive": true, "once": true, "work_order": true}
     },
     {
       "id": "cairn-lane-vision",
-      "name": "handoff pinned to the vision lane",
-      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"vision\"",
+      "name": "handoff pinned to lane:vision",
+      "expr": ".source == \"cairn\" and any((.artifact.tags // [])[]; . == \"lane:vision\")",
       "action": {"queue": "lane-vision", "exclusive": true, "once": true, "work_order": true}
     },
     {
       "id": "cairn-size-s",
-      "name": "unpinned S handoff to the local lane",
-      "expr": ".source == \"cairn\" and .artifact.labels.size == \"S\"",
-      "action": {"queue": "lane-local", "exclusive": true, "once": true, "work_order": true}
+      "name": "lane:auto or unpinned size:s handoff",
+      "expr": ".source == \"cairn\" and any((.artifact.tags // [])[]; . == \"size:s\")",
+      "action": {"queue": "lane-s", "exclusive": true, "once": true, "work_order": true}
     },
     {
       "id": "cairn-size-m",
-      "name": "unpinned M handoff to the zai-flash lane",
-      "expr": ".source == \"cairn\" and .artifact.labels.size == \"M\"",
-      "action": {"queue": "lane-zai-flash", "exclusive": true, "once": true, "work_order": true}
+      "name": "lane:auto or unpinned size:m handoff",
+      "expr": ".source == \"cairn\" and any((.artifact.tags // [])[]; . == \"size:m\")",
+      "action": {"queue": "lane-m", "exclusive": true, "once": true, "work_order": true}
     },
     {
       "id": "cairn-size-l",
-      "name": "unpinned L handoff to the zai lane",
-      "expr": ".source == \"cairn\" and .artifact.labels.size == \"L\"",
-      "action": {"queue": "lane-zai", "exclusive": true, "once": true, "work_order": true}
+      "name": "lane:auto or unpinned size:l handoff",
+      "expr": ".source == \"cairn\" and any((.artifact.tags // [])[]; . == \"size:l\")",
+      "action": {"queue": "lane-l", "exclusive": true, "once": true, "work_order": true}
     },
     {
       "id": "cairn-triage",
@@ -153,21 +153,21 @@
     },
     {
       "id": "size-s",
-      "name": "size/S to the local lane",
+      "name": "size/S to lane-s",
       "expr": "any(.issue.labels[]; . == \"size/S\")",
-      "action": {"queue": "lane-local", "exclusive": true, "once": true, "work_order": true}
+      "action": {"queue": "lane-s", "exclusive": true, "once": true, "work_order": true}
     },
     {
       "id": "size-m",
-      "name": "size/M to the zai-flash lane",
+      "name": "size/M to lane-m",
       "expr": "any(.issue.labels[]; . == \"size/M\")",
-      "action": {"queue": "lane-zai-flash", "exclusive": true, "once": true, "work_order": true}
+      "action": {"queue": "lane-m", "exclusive": true, "once": true, "work_order": true}
     },
     {
       "id": "size-l",
-      "name": "size/L to the zai lane",
+      "name": "size/L to lane-l",
       "expr": "any(.issue.labels[]; . == \"size/L\")",
-      "action": {"queue": "lane-zai", "exclusive": true, "once": true, "work_order": true}
+      "action": {"queue": "lane-l", "exclusive": true, "once": true, "work_order": true}
     },
     {
       "id": "unsized-new-issue",

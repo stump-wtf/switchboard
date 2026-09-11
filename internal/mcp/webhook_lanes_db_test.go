@@ -30,7 +30,7 @@ func TestFleetPackInstallsAndDryRuns(t *testing.T) {
 		t.Fatalf("router endpoint: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE endpoints SET webhook_queues = $2 WHERE id = $1`, router.ID,
-		[]string{"triage", "lane-local", "lane-zai-flash", "lane-zai", "lane-hyper", "lane-vision", "hold"}); err != nil {
+		[]string{"triage", "lane-s", "lane-m", "lane-l", "lane-vision", "hold"}); err != nil {
 		t.Fatalf("ceiling: %v", err)
 	}
 	token, hash2, prefix2, err := cred.Mint()
@@ -63,7 +63,7 @@ func TestFleetPackInstallsAndDryRuns(t *testing.T) {
 	}
 
 	lanes := map[string]string{}
-	for _, q := range []string{"triage", "lane-local", "lane-zai-flash", "lane-zai", "lane-hyper", "lane-vision", "hold"} {
+	for _, q := range []string{"triage", "lane-s", "lane-m", "lane-l", "lane-vision", "hold"} {
 		_, h, p, err := cred.Mint()
 		if err != nil {
 			t.Fatalf("mint: %v", err)

@@ -28,7 +28,7 @@ import (
 
 const giteaLanesSecret = "whsec_gitea_lanes"
 
-var lanesQueues = []string{"triage", "lane-local", "lane-zai-flash", "lane-zai", "lane-hyper", "lane-vision", "hold"}
+var lanesQueues = []string{"triage", "lane-s", "lane-m", "lane-l", "lane-vision", "hold"}
 
 type lanesWorld struct {
 	ing    *Ingest
@@ -38,7 +38,7 @@ type lanesWorld struct {
 	st     *store.Store
 	router store.Endpoint
 	lanes  map[string]store.Endpoint
-	dup    store.Endpoint // a second endpoint scoped to lane-zai-flash, routed LAST
+	dup    store.Endpoint // a second endpoint scoped to lane-m, routed LAST
 }
 
 func newLanesWorld(t *testing.T) *lanesWorld {
@@ -77,7 +77,7 @@ func newLanesWorld(t *testing.T) *lanesWorld {
 			time.Sleep(time.Millisecond)
 		}
 		if w.dup.ID == "" {
-			w.dup = secondEndpoint(t, ctx, st, h.ID, "lane-dup-zai-flash", []string{"lane-zai-flash"})
+			w.dup = secondEndpoint(t, ctx, st, h.ID, "lane-dup-m", []string{"lane-m"})
 		}
 		if err := st.AddWebhookRoute(ctx, wh.ID, w.dup.ID, h.ID); err != nil {
 			t.Fatalf("route dup: %v", err)
@@ -173,13 +173,13 @@ func TestLanesIssueLifecycle(t *testing.T) {
 		t.Fatalf("triage work order = %+v", wo)
 	}
 
-	// 2. Triage sizes it M: the label event routes to zai-flash — to the FIRST scoped pool, not the
+	// 2. Triage sizes it M: the label event routes to lane-m — to the FIRST scoped pool, not the
 	// duplicate routed after it, and not back to triage.
 	r = routed(t, w.postGitea(t, "d-size-m", setIssue("label_updated", "size/M")))
-	if len(r.Todos) != 1 || r.Todos[0].EndpointID != w.lanes["lane-zai-flash"].ID || len(w.todosOn(t, w.dup)) != 0 {
-		t.Fatalf("size/M = %+v, want one todo on the first zai-flash pool and none on the duplicate", r)
+	if len(r.Todos) != 1 || r.Todos[0].EndpointID != w.lanes["lane-m"].ID || len(w.todosOn(t, w.dup)) != 0 {
+		t.Fatalf("size/M = %+v, want one todo on the first lane-m pool and none on the duplicate", r)
 	}
-	zaiFlashTodo := r.Todos[0].ID
+	laneMTodo := r.Todos[0].ID
 
 	// 3. Another label change (a worker adds "bug"; size/M still present) is a new delivery about the
 	// same issue to the same lane: recorded, not re-run.
@@ -197,7 +197,7 @@ func TestLanesIssueLifecycle(t *testing.T) {
 
 	// 4. Gitea redelivers step 2: the same todo is reported, nothing new.
 	r = routed(t, w.postGitea(t, "d-size-m", setIssue("label_updated", "size/M")))
-	if len(r.Todos) != 1 || r.Todos[0].ID != zaiFlashTodo || r.Created != 0 || w.totalTodos(t) != 2 {
+	if len(r.Todos) != 1 || r.Todos[0].ID != laneMTodo || r.Created != 0 || w.totalTodos(t) != 2 {
 		t.Fatalf("redelivery = %+v (total %d), want the original todo reported", r, w.totalTodos(t))
 	}
 
@@ -208,7 +208,7 @@ func TestLanesIssueLifecycle(t *testing.T) {
 
 	// 6. A re-size to L is a different lane: it routes once.
 	r = routed(t, w.postGitea(t, "d-size-l", setIssue("label_updated", "size/L")))
-	if len(r.Todos) != 1 || r.Todos[0].EndpointID != w.lanes["lane-zai"].ID || w.totalTodos(t) != 3 {
+	if len(r.Todos) != 1 || r.Todos[0].EndpointID != w.lanes["lane-l"].ID || w.totalTodos(t) != 3 {
 		t.Fatalf("size/L = %+v (total %d)", r, w.totalTodos(t))
 	}
 
@@ -246,16 +246,16 @@ func TestLanesCairnHandoff(t *testing.T) {
 	}
 
 	r := routed(t, post("evt-handoff-1", nil))
-	if len(r.Todos) != 1 || r.Todos[0].EndpointID != w.lanes["lane-zai-flash"].ID {
-		t.Fatalf("handoff = %+v, want one todo on the zai-flash pool", r)
+	if len(r.Todos) != 1 || r.Todos[0].EndpointID != w.lanes["lane-m"].ID {
+		t.Fatalf("handoff = %+v, want one todo on the lane-m pool", r)
 	}
-	todo := w.todosOn(t, w.lanes["lane-zai-flash"])[0]
+	todo := w.todosOn(t, w.lanes["lane-m"])[0]
 	var wo routing.WorkOrder
 	if err := json.Unmarshal(todo.WorkOrder, &wo); err != nil {
 		t.Fatalf("work order: %v", err)
 	}
 	if wo.Subject == nil || wo.Subject.Handle != "mcp://cairn/hx7Qm2" || wo.Subject.ActorID != "joestump-agent" ||
-		wo.Subject.OnBehalfOf != "joestump" || wo.Lane != "lane-zai-flash" || wo.AuthorizedBy.RuleID != "cairn-lane-zai-flash" {
+		wo.Subject.OnBehalfOf != "joestump" || wo.Lane != "lane-m" || wo.AuthorizedBy.RuleID != "cairn-lane-m" {
 		t.Fatalf("cairn work order = %+v", wo)
 	}
 
@@ -269,11 +269,11 @@ func TestLanesCairnHandoff(t *testing.T) {
 		t.Fatalf("second announcement = %d %s, want a repeat", rec.Code, rec.Body.String())
 	}
 
-	// Labels are asserted by whoever wrote the artifact: they choose a lane for trusted work and grant
+	// Tags are asserted by whoever wrote the artifact: they choose a lane for trusted work and grant
 	// nothing to an actor outside the allowlist.
 	if rr := routed(t, post("evt-handoff-3", func(d map[string]any) {
 		d["id"], d["actor_id"] = "other1", "someone-else"
-		d["labels"] = map[string]any{"handoff": "true", "lane": "local", "trusted": "true"}
+		d["tags"] = []any{"handoff", "lane:s", "trusted", "on_behalf_of:joestump"}
 	})); !rr.Dropped {
 		t.Fatalf("untrusted actor = %+v, want dropped", rr)
 	}

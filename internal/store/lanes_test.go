@@ -22,13 +22,13 @@ import (
 
 func TestRoutingOnceMintsAWorkOrderAtMostOnce(t *testing.T) {
 	s, ctx := testStore(t)
-	ep := seedEndpoint(t, s, ctx, "once", "lane-zai-flash")
-	wh, err := s.CreateWebhook(ctx, ep, "gitea", "lane-zai-flash", "signed", "tok-once", "whsec_once", 5)
+	ep := seedEndpoint(t, s, ctx, "once", "lane-m")
+	wh, err := s.CreateWebhook(ctx, ep, "gitea", "lane-m", "signed", "tok-once", "whsec_once", 5)
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
-	trace := []byte(`{"stage":"rule","rule_id":"size-m","action":{"queue":"lane-zai-flash","exclusive":true,"once":true,"work_order":true}}`)
-	workOrder := []byte(`{"version":1,"lane":"lane-zai-flash","subject":{"type":"issue","url":"https://gitea.example/o/r/issues/1"}}`)
+	trace := []byte(`{"stage":"rule","rule_id":"size-m","action":{"queue":"lane-m","exclusive":true,"once":true,"work_order":true}}`)
+	workOrder := []byte(`{"version":1,"lane":"lane-m","subject":{"type":"issue","url":"https://gitea.example/o/r/issues/1"}}`)
 	deliver := func(ext, onceKey string) (int64, []CreatedTodo) {
 		t.Helper()
 		key := wh.ID + ":" + ext
@@ -36,13 +36,13 @@ func TestRoutingOnceMintsAWorkOrderAtMostOnce(t *testing.T) {
 		// OnceKey); the store reads it back on a redelivery instead of re-deciding the key.
 		storedTrace := trace
 		if onceKey != "" {
-			storedTrace = []byte(fmt.Sprintf(`{"stage":"rule","rule_id":"size-m","action":{"queue":"lane-zai-flash","exclusive":true,"once":true,"work_order":true},"once_key":%q}`, onceKey))
+			storedTrace = []byte(fmt.Sprintf(`{"stage":"rule","rule_id":"size-m","action":{"queue":"lane-m","exclusive":true,"once":true,"work_order":true},"once_key":%q}`, onceKey))
 		}
 		evID, todos, dropped, err := s.CreateRoutedEventTodos(ctx,
 			EventInput{Source: "gitea", Family: "webhook", EventType: "issues", ExternalID: key, TrustMode: "signed",
 				Verified: true, Payload: []byte(`{"action":"label_updated"}`), WebhookID: wh.ID, RoutingTrace: storedTrace},
 			false, []string{ep},
-			CreateTodoParams{Queue: "lane-zai-flash", Source: "gitea", Kind: "webhook", Title: "issue #1", IdempotencyKey: key,
+			CreateTodoParams{Queue: "lane-m", Source: "gitea", Kind: "webhook", Title: "issue #1", IdempotencyKey: key,
 				RoutingTrace: storedTrace, OnceKey: onceKey, WorkOrder: workOrder})
 		if err != nil || dropped {
 			t.Fatalf("deliver %s: dropped %v, %v", ext, dropped, err)
@@ -102,7 +102,7 @@ func TestRoutingOnceMintsAWorkOrderAtMostOnce(t *testing.T) {
 
 	// A once key without the delivery's webhook is a programming error, not a silent unclaimed key.
 	_, _, _, err = s.CreateRoutedEventTodos(ctx, EventInput{Source: "gitea", Family: "webhook", ExternalID: "x:nowebhook", TrustMode: "signed"},
-		false, []string{ep}, CreateTodoParams{Queue: "lane-zai-flash", Title: "t", IdempotencyKey: "x:nowebhook", OnceKey: "once:k"})
+		false, []string{ep}, CreateTodoParams{Queue: "lane-m", Title: "t", IdempotencyKey: "x:nowebhook", OnceKey: "once:k"})
 	if err == nil {
 		t.Fatalf("a once key with no webhook id was accepted")
 	}
@@ -201,7 +201,7 @@ func TestResolveWebhookTargetsOrderAndScopes(t *testing.T) {
 	}
 	// Mint so that grant order and uuid order disagree often enough to matter, then grant in order.
 	var granted []string
-	for _, q := range []string{"lane-zai", "lane-local", "triage", "lane-zai-flash", "hold"} {
+	for _, q := range []string{"lane-l", "lane-s", "triage", "lane-m", "hold"} {
 		ep := vendUnder(t, s, ctx, human, "pool-"+q, q)
 		if err := s.AddWebhookRoute(ctx, wh.ID, ep, human); err != nil {
 			t.Fatalf("add route: %v", err)
@@ -221,7 +221,7 @@ func TestResolveWebhookTargetsOrderAndScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scope queues: %v", err)
 	}
-	if len(scopes) != 2 || !slices.Equal(scopes[owner], []string{"router"}) || !slices.Equal(scopes[granted[1]], []string{"lane-local"}) {
+	if len(scopes) != 2 || !slices.Equal(scopes[owner], []string{"router"}) || !slices.Equal(scopes[granted[1]], []string{"lane-s"}) {
 		t.Fatalf("scopes = %v", scopes)
 	}
 	if empty, err := s.EndpointScopeQueues(ctx, nil); err != nil || len(empty) != 0 {

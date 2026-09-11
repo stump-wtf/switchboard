@@ -20,7 +20,7 @@ import (
 
 const packPath = "../../docs/routing/rule-packs/fleet.json"
 
-var laneQueues = []string{"triage", "lane-local", "lane-zai-flash", "lane-zai", "lane-hyper", "lane-vision", "hold"}
+var laneQueues = []string{"triage", "lane-s", "lane-m", "lane-l", "lane-vision", "hold"}
 
 // laneGrant models the production topology: a router endpoint owns the webhook (scoped to no lane)
 // and one pool endpoint per lane is routed to it, each scoped to exactly its lane queue.
@@ -224,12 +224,12 @@ func TestExclusiveDeliveryPicksOneIdentityDeterministically(t *testing.T) {
 	g, byQueue := laneGrant()
 	second := "00000000-0000-0000-0000-0000000002ff"
 	g.Endpoints = append(g.Endpoints, second)
-	g.EndpointQueues[second] = []string{"lane-zai-flash"}
+	g.EndpointQueues[second] = []string{"lane-m"}
 	c := packCase{Sample: "cairn-artifact-created"}
 	for i := 0; i < 5; i++ {
 		d := InProcess{}.Route(context.Background(), cfg, g, caseInput(t, c))
-		if !slices.Equal(d.Endpoints, []string{byQueue["lane-zai-flash"]}) {
-			t.Fatalf("run %d: endpoints %v, want only the first-routed %s", i, d.Endpoints, byQueue["lane-zai-flash"])
+		if !slices.Equal(d.Endpoints, []string{byQueue["lane-m"]}) {
+			t.Fatalf("run %d: endpoints %v, want only the first-routed %s", i, d.Endpoints, byQueue["lane-m"])
 		}
 	}
 }
