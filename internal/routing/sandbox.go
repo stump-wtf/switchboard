@@ -142,14 +142,14 @@ func (s *Sandbox) Route(ctx context.Context, cfg Config, g Grant, in EnvelopeInp
 	if len(cfg.Rules) == 0 {
 		return Decide(cfg, g, MatchResult{})
 	}
-	return Decide(cfg, g, s.match(ctx, cfg.Rules, in))
+	return Decide(cfg, g, s.match(ctx, cfg.Rules, cfg.Params, in))
 }
 
 func sandboxFault(cause, detail string) MatchResult {
 	return MatchResult{Faults: []RuleFault{{RuleIndex: -1, Cause: cause, Detail: detail}}}
 }
 
-func (s *Sandbox) match(ctx context.Context, rules []Rule, in EnvelopeInput) MatchResult {
+func (s *Sandbox) match(ctx context.Context, rules []Rule, params map[string]any, in EnvelopeInput) MatchResult {
 	wait, cancelWait := context.WithTimeout(ctx, s.queueWait)
 	defer cancelWait()
 	select {
@@ -159,7 +159,7 @@ func (s *Sandbox) match(ctx context.Context, rules []Rule, in EnvelopeInput) Mat
 		return sandboxFault(FaultSandboxBusy, "no evaluation slot free")
 	}
 
-	req, err := json.Marshal(childRequest{Rules: rules, Input: in})
+	req, err := json.Marshal(childRequest{Rules: rules, Params: params, Input: in})
 	if err != nil || len(req) > maxChildRequestBytes {
 		return sandboxFault(FaultSandbox, "request too large")
 	}
@@ -209,8 +209,9 @@ func childEnviron(memBytes int64) []string {
 }
 
 type childRequest struct {
-	Rules []Rule        `json:"rules"`
-	Input EnvelopeInput `json:"input"`
+	Rules  []Rule         `json:"rules"`
+	Params map[string]any `json:"params,omitempty"`
+	Input  EnvelopeInput  `json:"input"`
 }
 
 // RunChildIfRequested turns this process into a routing child when the parent asked for one, and
@@ -235,7 +236,7 @@ func runChild(r io.Reader, w io.Writer, memLimit uint64) int {
 	if err := json.NewDecoder(io.LimitReader(r, maxChildRequestBytes)).Decode(&req); err != nil {
 		return childExitInput
 	}
-	m := Match(context.Background(), req.Rules, Envelope(req.Input))
+	m := Match(context.Background(), req.Rules, req.Params, Envelope(req.Input))
 	body, err := json.Marshal(m)
 	if err != nil {
 		return childExitInput

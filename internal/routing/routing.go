@@ -28,6 +28,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -58,7 +59,17 @@ const (
 	CodeForbiddenFunction = "forbidden_function"
 	CodeNotGranted        = "not_granted"
 	CodeTooManyRules      = "too_many_rules"
+	CodeInvalidParams     = "invalid_params"
+
+	// MaxParamsBytes bounds a webhook's encoded params (allowlists and other owner-set values).
+	MaxParamsBytes = 16 << 10
 )
+
+// paramsVariable is the one variable rule expressions can see: the webhook owner's params, bound as
+// $params. It is how an allowlist lives next to the rules without being spliced into every expression
+// — and, because only the owner can set it, how a rule's trust decision stays out of the payload's
+// reach. Governing: ADR-0025.
+var paramsVariable = []string{"$params"}
 
 // Trace stages and causes (SPEC-0020 REQ "Routing Trace").
 const (
@@ -75,15 +86,27 @@ const (
 	maxFaultDetailBytes     = 200
 	ruleIDPrefix            = "rule_"
 	defaultIndexForMessages = -1
+	paramsIndexForMessages  = -2
 )
 
 // Action is where a matched delivery goes. Exactly one of Queue or Drop is set. Endpoints, valid
 // only with Queue, narrows the delivery to that subset of the webhook's fan-out targets (its owning
 // endpoint plus explicit webhook routes); empty means every target, which is today's behavior.
+//
+// The three work-order flags are also queue-only (ADR-0025):
+//   - Exclusive delivers to exactly ONE target — the first, in delivery order, whose endpoint scope
+//     grants Queue — instead of fanning out, so a lane served by one pool endpoint gets one todo.
+//   - Once makes the delivery a work order at most once per (subject, queue): a second delivery about
+//     the same issue or artifact routed to the same queue records its event but mints no todo.
+//   - WorkOrder attaches a switchboard-authored work order (subject, provenance, authorizing rule) to
+//     each todo it mints.
 type Action struct {
 	Queue     string   `json:"queue,omitempty"`
 	Drop      bool     `json:"drop,omitempty"`
 	Endpoints []string `json:"endpoints,omitempty"`
+	Exclusive bool     `json:"exclusive,omitempty"`
+	Once      bool     `json:"once,omitempty"`
+	WorkOrder bool     `json:"work_order,omitempty"`
 }
 
 // Rule is one ordered routing rule. Expr is a jq filter whose FIRST output decides the match with
@@ -101,16 +124,20 @@ type Rule struct {
 type Config struct {
 	Rules   []Rule  `json:"rules"`
 	Default *Action `json:"default_action,omitempty"`
+	// Params is bound as $params in every rule expression. Owner-set, never payload-derived.
+	Params map[string]any `json:"params,omitempty"`
 }
 
 // Grant is what a webhook's rules may reach, computed by the caller from switchboard state — never
 // from the payload. TargetQueue is the webhook's own queue (always routable: routing to it grants
 // nothing the webhook did not already have). Queues is the owning endpoint's webhook-queue ceiling.
-// Endpoints is the live, authorized fan-out set in delivery order, owner first.
+// Endpoints is the live, authorized fan-out set in delivery order, owner first. EndpointQueues is
+// each of those endpoints' scope queues — what exclusive delivery selects on.
 type Grant struct {
-	TargetQueue string
-	Queues      []string
-	Endpoints   []string
+	TargetQueue    string
+	Queues         []string
+	Endpoints      []string
+	EndpointQueues map[string][]string
 }
 
 // ValidationError names the offending rule (Index -1 is the default action) so a save failure is
@@ -126,6 +153,9 @@ type ValidationError struct {
 func (e *ValidationError) Error() string {
 	if e.Index == defaultIndexForMessages {
 		return "default_action: " + e.Msg
+	}
+	if e.Index == paramsIndexForMessages {
+		return "params: " + e.Msg
 	}
 	label := fmt.Sprintf("rule %d", e.Index)
 	if e.RuleID != "" {
@@ -153,8 +183,8 @@ func NewRuleID() string {
 
 // forbiddenFuncs are refused at compile time. Each is either host access (env, input, stderr),
 // host control (halt), or non-determinism (now, local time zone) — the three things SPEC-0020 says a
-// routing expression must not have. Variables need no entry: gojq defines none unless WithVariables
-// is passed, so $__loc__, $HOME and friends fail to compile on their own.
+// routing expression must not have. Variables need no entry: the only one gojq is given is $params
+// (paramsVariable), so $__loc__, $HOME and friends fail to compile on their own.
 var forbiddenFuncs = map[string]string{
 	"env":            "environment access is not available to routing rules",
 	"$ENV":           "environment access is not available to routing rules",
@@ -191,8 +221,9 @@ func Compile(expr string) (*gojq.Code, error) {
 		return nil, &ValidationError{Code: CodeForbiddenFunction, Msg: name + ": " + why}
 	}
 	// No WithEnvironLoader (env stays empty), no WithInputIter (input is refused), no module loader
-	// (import fails), no custom functions. This is the whole sandbox surface gojq exposes.
-	code, err := gojq.Compile(q)
+	// (import fails), no custom functions, and one variable: the owner's $params. This is the whole
+	// sandbox surface gojq exposes.
+	code, err := gojq.Compile(q, gojq.WithVariables(paramsVariable))
 	if err != nil {
 		return nil, &ValidationError{Code: CodeInvalidExpression, Msg: "expr does not compile: " + err.Error()}
 	}
@@ -234,6 +265,16 @@ func findForbidden(v reflect.Value) (string, string, bool) {
 // Validate checks a whole configuration against a grant: shape, count, compile, and reachability.
 // It returns the first *ValidationError; nil means the configuration is safe to store.
 func Validate(cfg Config, g Grant) error {
+	if len(cfg.Params) > 0 {
+		raw, err := json.Marshal(cfg.Params)
+		if err != nil {
+			return &ValidationError{Index: paramsIndexForMessages, Code: CodeInvalidParams, Msg: "params are not JSON-encodable"}
+		}
+		if len(raw) > MaxParamsBytes {
+			return &ValidationError{Index: paramsIndexForMessages, Code: CodeInvalidParams,
+				Msg: fmt.Sprintf("params encode to %d bytes; the limit is %d", len(raw), MaxParamsBytes)}
+		}
+	}
 	if len(cfg.Rules) > MaxRules {
 		return &ValidationError{Index: len(cfg.Rules) - 1, Code: CodeTooManyRules,
 			Msg: fmt.Sprintf("%d rules; the limit is %d", len(cfg.Rules), MaxRules)}
@@ -281,6 +322,8 @@ func checkAction(a Action, g Grant) (string, string) {
 		return CodeInvalidRule, "action must set exactly one of queue or drop"
 	case a.Drop && len(a.Endpoints) > 0:
 		return CodeInvalidRule, "endpoints is only valid with a queue action"
+	case a.Drop && (a.Exclusive || a.Once || a.WorkOrder):
+		return CodeInvalidRule, "exclusive, once and work_order are only valid with a queue action"
 	case len(a.Endpoints) > MaxActionEndpoint:
 		return CodeInvalidRule, fmt.Sprintf("at most %d endpoints per action", MaxActionEndpoint)
 	}
@@ -302,7 +345,40 @@ func checkAction(a Action, g Grant) (string, string) {
 			return CodeNotGranted, "endpoint " + ep + " is not a delivery target of this webhook; add it with add_webhook_route first"
 		}
 	}
+	if a.Exclusive {
+		if _, ok := exclusiveTarget(candidates(a, g), a.Queue, g); !ok {
+			return CodeNotGranted, "no delivery target is scoped to queue " + a.Queue +
+				"; exclusive delivery needs one (route an endpoint whose scope includes it)"
+		}
+	}
 	return "", ""
+}
+
+// candidates is the action's target set before exclusivity: its endpoints narrowed to the grant, in
+// grant (owner-first, then route) order, or every target when it names none.
+func candidates(a Action, g Grant) []string {
+	if len(a.Endpoints) == 0 {
+		return slices.Clone(g.Endpoints)
+	}
+	var eps []string
+	for _, ep := range g.Endpoints {
+		if slices.Contains(a.Endpoints, ep) {
+			eps = append(eps, ep)
+		}
+	}
+	return eps
+}
+
+// exclusiveTarget picks the one endpoint an exclusive delivery lands on: the first candidate whose
+// scope grants the queue. Order is the grant's, which the store makes deterministic (owner first,
+// then routes by grant time), so the same delivery always picks the same executing identity.
+func exclusiveTarget(eps []string, queue string, g Grant) (string, bool) {
+	for _, ep := range eps {
+		if slices.Contains(g.EndpointQueues[ep], queue) {
+			return ep, true
+		}
+	}
+	return "", false
 }
 
 func queueGranted(q string, g Grant) bool {
@@ -314,6 +390,8 @@ type Decision struct {
 	Drop      bool
 	Queue     string
 	Endpoints []string // the endpoints to mint todos on, a subset of Grant.Endpoints in its order
+	Once      bool     // the action asked for at-most-once per (subject, queue)
+	WorkOrder bool     // the action asked for a work order on each todo
 	Trace     Trace
 }
 
@@ -327,6 +405,9 @@ type Trace struct {
 	RuleName  string      `json:"rule_name,omitempty"`
 	Action    Action      `json:"action"`
 	Faults    []RuleFault `json:"faults,omitempty"`
+	// OnceKey is the (subject, queue) key a Once action claimed, set by the receiver; "once":"repeat"
+	// is merged into the stored event trace when the key had already been claimed.
+	OnceKey string `json:"once_key,omitempty"`
 }
 
 // RuleFault records a rule that could not be evaluated and was therefore treated as no-match.
@@ -350,15 +431,17 @@ type MatchResult struct {
 // sandbox.go) so jq runs out of process; Evaluate is the same logic for tests and for callers that
 // have already established isolation.
 func Evaluate(ctx context.Context, cfg Config, g Grant, event map[string]any) Decision {
-	return Decide(cfg, g, Match(ctx, cfg.Rules, event))
+	return Decide(cfg, g, Match(ctx, cfg.Rules, cfg.Params, event))
 }
 
-// Match runs the rules, in order, against one normalized event (see Envelope) and stops at the
-// first match. It never fails: every fault degrades to no-match and is recorded.
-func Match(ctx context.Context, rules []Rule, event map[string]any) MatchResult {
+// Match runs the rules, in order, against one normalized event (see Envelope) with params bound as
+// $params, and stops at the first match. It never fails: every fault degrades to no-match and is
+// recorded.
+func Match(ctx context.Context, rules []Rule, params map[string]any, event map[string]any) MatchResult {
 	budget, cancel := context.WithTimeout(ctx, EventBudget)
 	defer cancel()
 
+	vars := paramsValue(params)
 	var res MatchResult
 	for i, r := range rules {
 		if budget.Err() != nil {
@@ -372,7 +455,7 @@ func Match(ctx context.Context, rules []Rule, event map[string]any) MatchResult 
 			res.Faults = append(res.Faults, RuleFault{RuleIndex: i, RuleID: r.ID, Cause: FaultCompile, Detail: clip(err.Error())})
 			continue
 		}
-		matched, cause, detail := run(budget, code, event)
+		matched, cause, detail := run(budget, code, event, vars)
 		if cause != "" {
 			res.Faults = append(res.Faults, RuleFault{RuleIndex: i, RuleID: r.ID, Cause: cause, Detail: detail})
 			continue
@@ -413,10 +496,10 @@ func Decide(cfg Config, g Grant, m MatchResult) Decision {
 // sandbox's job (sandbox.go) — the child's memory watchdog and the parent's hard deadline. That is
 // also why evaluation is synchronous: abandoning a still-running call on a goroutine would let the
 // next rule, or the child's result write, race an allocation that is still in flight.
-func run(ctx context.Context, code *gojq.Code, event map[string]any) (bool, string, string) {
+func run(ctx context.Context, code *gojq.Code, event map[string]any, vars any) (bool, string, string) {
 	rctx, cancel := context.WithTimeout(ctx, RuleTimeout)
 	defer cancel()
-	v, ok := code.RunWithContext(rctx, event).Next()
+	v, ok := code.RunWithContext(rctx, event, vars).Next()
 	if !ok {
 		return false, "", "" // no output: no match
 	}
@@ -437,16 +520,32 @@ func apply(a Action, g Grant) (Decision, bool) {
 	if !queueGranted(a.Queue, g) {
 		return Decision{}, false
 	}
-	if len(a.Endpoints) == 0 {
-		return Decision{Queue: a.Queue, Endpoints: slices.Clone(g.Endpoints)}, len(g.Endpoints) > 0
-	}
-	var eps []string
-	for _, ep := range g.Endpoints { // grant order keeps the owner first, as fan-out does
-		if slices.Contains(a.Endpoints, ep) {
-			eps = append(eps, ep)
+	eps := candidates(a, g) // grant order keeps the owner first, as fan-out does
+	if a.Exclusive {
+		ep, ok := exclusiveTarget(eps, a.Queue, g)
+		if !ok {
+			return Decision{}, false
 		}
+		eps = []string{ep}
 	}
-	return Decision{Queue: a.Queue, Endpoints: eps}, len(eps) > 0
+	return Decision{Queue: a.Queue, Endpoints: eps, Once: a.Once, WorkOrder: a.WorkOrder}, len(eps) > 0
+}
+
+// paramsValue renders params as the gojq value bound to $params: always an object (empty when unset,
+// so `$params.x` is null rather than a compile-time surprise), with numbers normalized the same way
+// payloads are.
+func paramsValue(params map[string]any) any {
+	if len(params) == 0 {
+		return map[string]any{}
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return map[string]any{}
+	}
+	if v, ok := DecodePayload(raw).(map[string]any); ok {
+		return v
+	}
+	return map[string]any{}
 }
 
 // defaultDecision applies the configured default, falling back to the webhook's target queue across

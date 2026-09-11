@@ -1,0 +1,27 @@
+{
+  "source": "gitea",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Gitea-Delivery": "7e3b9f10-4d2a-4b8c-9e61-0f5a2c7d8b93",
+    "X-Gitea-Event": "pull_request",
+    "X-Gitea-Event-Type": "pull_request_label",
+    "X-Github-Event": "pull_request",
+    "X-Hub-Signature-256": "«redacted»"
+  },
+  "body": {
+    "action": "label_updated",
+    "number": 190,
+    "pull_request": {
+      "id": 4410,
+      "number": 190,
+      "html_url": "https://gitea.stump.rocks/stump.wtf/switchboard/pulls/190",
+      "user": {"id": 1, "login": "joestump", "username": "joestump"},
+      "title": "feat: handoff lanes",
+      "body": "",
+      "labels": [{"id": 567, "name": "size/S", "color": "1a7f37"}],
+      "state": "open"
+    },
+    "repository": {"id": 88, "name": "switchboard", "full_name": "stump.wtf/switchboard", "private": true},
+    "sender": {"id": 2, "login": "joestump-agent", "username": "joestump-agent"}
+  }
+}

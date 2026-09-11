@@ -1,0 +1,37 @@
+{
+  "source": "github",
+  "headers": {
+    "Accept": "*/*",
+    "Content-Type": "application/json",
+    "User-Agent": "GitHub-Hookshot/2d5e4a1",
+    "X-Github-Delivery": "5a7e2b10-8f10-11f0-8c5a-6b2d1e9f0a31",
+    "X-Github-Event": "issues",
+    "X-Github-Hook-Id": "561203344",
+    "X-Hub-Signature-256": "«redacted»"
+  },
+  "body": {
+    "action": "labeled",
+    "issue": {
+      "url": "https://api.github.com/repos/joestump/claude-skills/issues/41",
+      "html_url": "https://github.com/joestump/claude-skills/issues/41",
+      "id": 3401118822,
+      "number": 41,
+      "title": "gemini-mockup: honor the project's dark palette",
+      "user": {"login": "joestump", "id": 1053, "type": "User"},
+      "labels": [
+        {"id": 9123456701, "node_id": "LA_kwDOOx4b2c8AAAACHv", "url": "https://api.github.com/repos/joestump/claude-skills/labels/size/S", "name": "size/S", "color": "1a7f37", "default": false, "description": "Small - an older Haiku can carry this end to end"}
+      ],
+      "state": "open",
+      "locked": false,
+      "comments": 1,
+      "created_at": "2026-09-11T15:20:03Z",
+      "updated_at": "2026-09-11T15:24:47Z",
+      "closed_at": null,
+      "author_association": "OWNER",
+      "body": "Mockups render on a light ground even when CLAUDE.md declares a dark identity."
+    },
+    "label": {"id": 9123456701, "name": "size/S", "color": "1a7f37", "default": false},
+    "repository": {"id": 998812345, "name": "claude-skills", "full_name": "joestump/claude-skills", "private": false, "owner": {"login": "joestump", "id": 1053}},
+    "sender": {"login": "joestump-agent", "id": 2207, "type": "User", "site_admin": false}
+  }
+}

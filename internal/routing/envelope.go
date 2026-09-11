@@ -18,8 +18,15 @@ package routing
 //	.size          payload size in bytes
 //	.headers       sanitized request headers, lower-cased names (secret values are «redacted»)
 //	.payload       the body parsed as JSON, or null when it is not JSON
-//	.artifact      cairn only (null otherwise): {event_id, kind, created_at, id, url, title,
-//	               share_type, channel, model, actor_id, expires_at, tags, metadata}
+//	.artifact      cairn only (null otherwise): {event_id, kind, created_at, id, handle, url, title,
+//	               share_type, channel, model, actor_id, on_behalf_of, expires_at, labels, tags,
+//	               metadata} — handle is mcp://cairn/<id>
+//	.issue         a Gitea/GitHub `issues` event only (null otherwise, pull requests included):
+//	               {provider, action, event_type, repo, number, title, url, state, author, sender,
+//	               labels (names), label (GitHub's changed label, else null), body_size, label_event,
+//	               key} — parsed in Go from the body (subject.go), identical across the two forges
+//
+// @joestump-agent 09/11/2026 - Added .issue and the cairn labels/on_behalf_of/handle fields (ADR-0025).
 //
 // Governing: SPEC-0020 REQ "Deterministic Rule Evaluation" (rules evaluate the normalized event),
 // REQ "Isolation and Tenant Safety" (switchboard-derived fields cannot be forged by the payload).
@@ -67,9 +74,13 @@ func Envelope(in EnvelopeInput) map[string]any {
 		"headers":      headers,
 		"payload":      payload,
 		"artifact":     nil,
+		"issue":        nil,
 	}
 	if in.Source == SourceCairn {
 		env["artifact"] = cairnArtifact(payload)
+	}
+	if s := SubjectOf(in.Source, in.Headers, in.Body); s != nil && s.Type == SubjectIssue {
+		env["issue"] = issueProjection(s)
 	}
 	return env
 }
@@ -147,8 +158,13 @@ func cairnArtifact(payload any) map[string]any {
 		"kind":       root["kind"],
 		"created_at": root["created_at"],
 	}
-	for _, k := range []string{"id", "url", "title", "share_type", "channel", "model", "actor_id", "expires_at", "tags", "metadata"} {
+	for _, k := range []string{"id", "url", "title", "share_type", "channel", "model", "actor_id", "on_behalf_of",
+		"expires_at", "labels", "tags", "metadata"} {
 		out[k] = data[k]
+	}
+	out["handle"] = nil
+	if id, ok := data["id"].(string); ok && id != "" {
+		out["handle"] = cairnHandlePrefix + id
 	}
 	return out
 }

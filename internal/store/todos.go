@@ -54,19 +54,23 @@ type Todo struct {
 	// todos that did not come through the routing stage. Governing: SPEC-0020 REQ "Routing Trace"
 	// (every todo explains itself).
 	RoutingTrace []byte
+	// WorkOrder is the switchboard-authored work order (routing.WorkOrder JSON) when a work_order
+	// routing action minted this todo, nil otherwise. Governing: ADR-0025, SPEC-0020 REQ "Work Orders".
+	WorkOrder []byte
 }
 
 const todoCols = `id, endpoint_id::text, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
 	COALESCE(idempotency_key,''), COALESCE(assignee,''), state, COALESCE(owner,''),
 	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at,
-	next_retry_at, routing_trace`
+	next_retry_at, routing_trace, work_order`
 
 func scanTodo(row pgx.Row) (Todo, error) {
 	var t Todo
 	var endpointID *string
 	err := row.Scan(&t.ID, &endpointID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
 		&t.IdempotencyKey, &t.Assignee, &t.State, &t.Owner, &t.LeaseExpiresAt, &t.Attempt,
-		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt, &t.NextRetryAt, &t.RoutingTrace)
+		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt, &t.NextRetryAt, &t.RoutingTrace,
+		&t.WorkOrder)
 	if endpointID != nil {
 		t.EndpointID = *endpointID
 	}
@@ -130,6 +134,10 @@ type CreateTodoParams struct {
 	IdempotencyKey string
 	Assignee       string
 	RoutingTrace   []byte // routing.Trace JSON when the todo came through the routing stage (SPEC-0020)
+	// OnceKey, when set on a routed delivery, claims (webhook, key) in routing_once so the delivery
+	// mints its todos only if no earlier delivery already claimed the key (ADR-0025).
+	OnceKey   string
+	WorkOrder []byte // routing.WorkOrder JSON stored on each minted todo (ADR-0025)
 }
 
 // CreateTodo inserts a todo, deduping on (endpoint_id, idempotency_key) among LIVE rows — pending,
@@ -194,6 +202,24 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 		}
 	}
 	return ev.ID, t, created, nil
+}
+
+// eventTodos returns every todo a delivery event minted, as already-existing (New=false) rows.
+func eventTodos(ctx context.Context, q querier, eventID int64) ([]CreatedTodo, error) {
+	rows, err := q.Query(ctx, `SELECT `+todoCols+` FROM todos WHERE event_id = $1 ORDER BY created_at, id`, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("store: event todos: %w", err)
+	}
+	defer rows.Close()
+	var out []CreatedTodo
+	for rows.Next() {
+		t, err := scanTodo(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: event todos scan: %w", err)
+		}
+		out = append(out, CreatedTodo{Todo: t, New: false})
+	}
+	return out, rows.Err()
 }
 
 // CreatedTodo pairs a fanned-out todo with whether THIS delivery actually minted it. New is false
@@ -263,6 +289,50 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 			s.fireEventHook(ev)
 		}
 		return ev.ID, nil, true, nil
+	}
+	if p.OnceKey != "" {
+		// At-most-once work orders (ADR-0025). The first delivery to claim (webhook, key) mints the
+		// todos; every later DIFFERENT delivery about the same subject routed to the same queue — a
+		// relabel, an edit, a second webhook event — records its event and mints nothing. A
+		// redelivery of the claiming delivery itself reports the todos it already minted, and never
+		// re-mints them, even after they are done. The conflict update is a no-op that lets RETURNING
+		// hand back the claiming event either way.
+		if e.WebhookID == "" {
+			return 0, nil, false, fmt.Errorf("store: a once key needs the delivery's webhook")
+		}
+		var claimedBy *int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO routing_once (webhook_id, once_key, event_id) VALUES ($1, $2, $3)
+			ON CONFLICT (webhook_id, once_key) DO UPDATE SET once_key = EXCLUDED.once_key
+			RETURNING event_id`, e.WebhookID, p.OnceKey, ev.ID).Scan(&claimedBy); err != nil {
+			return 0, nil, false, fmt.Errorf("store: claim once key: %w", err)
+		}
+		switch {
+		case claimedBy == nil || *claimedBy != ev.ID:
+			if inserted {
+				if _, err := tx.Exec(ctx, `UPDATE events
+					SET routing_trace = COALESCE(routing_trace, '{}'::jsonb) || '{"once":"repeat"}'::jsonb
+					WHERE id = $1`, ev.ID); err != nil {
+					return 0, nil, false, fmt.Errorf("store: mark once repeat: %w", err)
+				}
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return 0, nil, false, err
+			}
+			if inserted {
+				s.fireEventHook(ev)
+			}
+			return ev.ID, nil, false, nil
+		case !inserted:
+			out, err := eventTodos(ctx, tx, ev.ID)
+			if err != nil {
+				return 0, nil, false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return 0, nil, false, err
+			}
+			return ev.ID, out, false, nil
+		}
 	}
 	p.EventID = &ev.ID
 	out := make([]CreatedTodo, 0, len(targetEndpointIDs))
@@ -334,14 +404,14 @@ func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool,
 		return Todo{}, false, fmt.Errorf("store: createTodo requires a non-empty EndpointID")
 	}
 	row := q.QueryRow(ctx, `
-		INSERT INTO todos (id, endpoint_id, queue, source, kind, title, payload, event_id, idempotency_key, assignee, routing_trace)
-		VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8, NULLIF($9,''), NULLIF($10,''), $11)
+		INSERT INTO todos (id, endpoint_id, queue, source, kind, title, payload, event_id, idempotency_key, assignee, routing_trace, work_order)
+		VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8, NULLIF($9,''), NULLIF($10,''), $11, $12)
 		ON CONFLICT (endpoint_id, idempotency_key)
 			WHERE idempotency_key IS NOT NULL AND state <> 'done'
 				AND (state <> 'failed' OR next_retry_at IS NOT NULL)
 			DO NOTHING
 		RETURNING `+todoCols,
-		id, p.EndpointID, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee, p.RoutingTrace)
+		id, p.EndpointID, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee, p.RoutingTrace, p.WorkOrder)
 	t, err := scanTodo(row)
 	if err == nil {
 		return t, true, nil

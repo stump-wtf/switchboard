@@ -1,0 +1,53 @@
+{
+  "source": "github",
+  "headers": {
+    "Accept": "*/*",
+    "Content-Type": "application/json",
+    "User-Agent": "GitHub-Hookshot/2d5e4a1",
+    "X-Github-Delivery": "3f1c9a60-8f0e-11f0-9b1d-2a7c4e5d6f70",
+    "X-Github-Event": "issues",
+    "X-Github-Hook-Id": "561203344",
+    "X-Hub-Signature": "«redacted»",
+    "X-Hub-Signature-256": "«redacted»"
+  },
+  "body": {
+    "action": "opened",
+    "issue": {
+      "url": "https://api.github.com/repos/joestump/claude-skills/issues/41",
+      "repository_url": "https://api.github.com/repos/joestump/claude-skills",
+      "labels_url": "https://api.github.com/repos/joestump/claude-skills/issues/41/labels{/name}",
+      "html_url": "https://github.com/joestump/claude-skills/issues/41",
+      "id": 3401118822,
+      "node_id": "I_kwDOOx4b2c7K1n5m",
+      "number": 41,
+      "title": "gemini-mockup: honor the project's dark palette",
+      "user": {"login": "joestump", "id": 1053, "node_id": "MDQ6VXNlcjEwNTM=", "type": "User", "site_admin": false},
+      "labels": [],
+      "state": "open",
+      "locked": false,
+      "assignee": null,
+      "assignees": [],
+      "milestone": null,
+      "comments": 0,
+      "created_at": "2026-09-11T15:20:03Z",
+      "updated_at": "2026-09-11T15:20:03Z",
+      "closed_at": null,
+      "author_association": "OWNER",
+      "active_lock_reason": null,
+      "body": "Mockups render on a light ground even when CLAUDE.md declares a dark identity.",
+      "reactions": {"url": "https://api.github.com/repos/joestump/claude-skills/issues/41/reactions", "total_count": 0},
+      "state_reason": null
+    },
+    "repository": {
+      "id": 998812345,
+      "node_id": "R_kgDOOx4b2c",
+      "name": "claude-skills",
+      "full_name": "joestump/claude-skills",
+      "private": false,
+      "owner": {"login": "joestump", "id": 1053, "type": "User"},
+      "html_url": "https://github.com/joestump/claude-skills",
+      "default_branch": "main"
+    },
+    "sender": {"login": "joestump", "id": 1053, "type": "User", "site_admin": false}
+  }
+}

@@ -39,15 +39,15 @@ type WebhookRouting struct {
 
 const webhookRoutingSelect = `
 	SELECT w.id::text, w.endpoint_id::text, w.source_type, w.trust_mode, w.target_queue,
-	       e.webhook_queues, w.routing_rules, w.default_action
+	       e.webhook_queues, w.routing_rules, w.default_action, w.routing_params
 	FROM endpoint_webhooks w
 	JOIN endpoints e ON e.id = w.endpoint_id`
 
 func scanWebhookRouting(row pgx.Row) (WebhookRouting, error) {
 	var wr WebhookRouting
-	var rules, def []byte
+	var rules, def, params []byte
 	err := row.Scan(&wr.WebhookID, &wr.EndpointID, &wr.SourceType, &wr.TrustMode, &wr.TargetQueue,
-		&wr.WebhookQueues, &rules, &def)
+		&wr.WebhookQueues, &rules, &def, &params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WebhookRouting{}, ErrNotFound
 	}
@@ -63,6 +63,11 @@ func scanWebhookRouting(row pgx.Row) (WebhookRouting, error) {
 			return WebhookRouting{}, fmt.Errorf("store: decode default action: %w", err)
 		}
 		wr.Config.Default = &a
+	}
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &wr.Config.Params); err != nil {
+			return WebhookRouting{}, fmt.Errorf("store: decode routing params: %w", err)
+		}
 	}
 	return wr, nil
 }
@@ -130,9 +135,15 @@ func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanI
 			return WebhookRouting{}, fmt.Errorf("store: encode default action: %w", err)
 		}
 	}
+	var params []byte // nil persists NULL: no params
+	if len(cfg.Params) > 0 {
+		if params, err = json.Marshal(cfg.Params); err != nil {
+			return WebhookRouting{}, fmt.Errorf("store: encode routing params: %w", err)
+		}
+	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE endpoint_webhooks SET routing_rules = $2, default_action = $3 WHERE id = $1`,
-		webhookID, rules, def); err != nil {
+		`UPDATE endpoint_webhooks SET routing_rules = $2, default_action = $3, routing_params = $4 WHERE id = $1`,
+		webhookID, rules, def, params); err != nil {
 		return WebhookRouting{}, fmt.Errorf("store: update webhook routing: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -140,6 +151,37 @@ func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanI
 	}
 	wr.Config = cfg
 	return wr, nil
+}
+
+// EndpointScopeQueues returns the scope queues of the given endpoints, keyed by id. It feeds the
+// routing grant's EndpointQueues, which exclusive delivery selects on (ADR-0025). Callers pass ids
+// that ResolveWebhookTargets already authorized, so this is a projection, not an authorization
+// read; malformed ids are skipped and unknown ids are simply absent.
+func (s *Store) EndpointScopeQueues(ctx context.Context, endpointIDs []string) (map[string][]string, error) {
+	ids := make([]string, 0, len(endpointIDs))
+	for _, id := range endpointIDs {
+		if isUUID(id) {
+			ids = append(ids, id)
+		}
+	}
+	out := make(map[string][]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id::text, scope_queues FROM endpoints WHERE id = ANY($1::uuid[])`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: endpoint scope queues: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var queues []string
+		if err := rows.Scan(&id, &queues); err != nil {
+			return nil, fmt.Errorf("store: endpoint scope queues scan: %w", err)
+		}
+		out[id] = queues
+	}
+	return out, rows.Err()
 }
 
 // EventForWebhook returns one stored event, but only if it arrived on webhookID. The caller has

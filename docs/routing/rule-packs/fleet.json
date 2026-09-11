@@ -1,0 +1,180 @@
+{
+  "params": {
+    "require_verified": true,
+    "trusted_humans": ["joestump"],
+    "trusted_agents": ["joestump-agent"],
+    "cairn_actors": ["joestump-agent", "joestump"],
+    "repo_prefixes": ["stump.wtf/", "stumpcloud/", "joestump/", "joestump-agent/"]
+  },
+  "rules": [
+    {
+      "id": "unverified",
+      "name": "unverified deliveries are never work orders",
+      "expr": "($params.require_verified != false) and (.verified | not)",
+      "action": {"drop": true}
+    },
+    {
+      "id": "cairn-not-handoff",
+      "name": "cairn artifacts that are not handoffs",
+      "expr": ".source == \"cairn\" and (.artifact.labels.handoff // \"\") != \"true\"",
+      "action": {"drop": true}
+    },
+    {
+      "id": "cairn-untrusted-actor",
+      "name": "cairn handoffs from actors outside cairn_actors",
+      "expr": ".source == \"cairn\" and ((.artifact.actor_id // \"\") as $a | any(($params.cairn_actors // [])[]; . == $a) | not)",
+      "action": {"drop": true}
+    },
+    {
+      "id": "cairn-on-behalf-untrusted",
+      "name": "cairn handoffs on behalf of someone we do not trust are held for Joe",
+      "expr": ".source == \"cairn\" and .artifact.on_behalf_of != null and (.artifact.on_behalf_of as $o | any((($params.trusted_humans // []) + ($params.trusted_agents // []))[]; . == $o) | not)",
+      "action": {"queue": "hold", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-size-xl",
+      "name": "XL handoffs are held for Joe",
+      "expr": ".source == \"cairn\" and .artifact.labels.size == \"XL\"",
+      "action": {"queue": "hold", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-lane-local",
+      "name": "handoff pinned to the local lane",
+      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"local\"",
+      "action": {"queue": "lane-local", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-lane-zai-flash",
+      "name": "handoff pinned to the zai-flash lane",
+      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"zai-flash\"",
+      "action": {"queue": "lane-zai-flash", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-lane-zai",
+      "name": "handoff pinned to the zai lane",
+      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"zai\"",
+      "action": {"queue": "lane-zai", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-lane-hyper",
+      "name": "handoff pinned to the hyper lane",
+      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"hyper\"",
+      "action": {"queue": "lane-hyper", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-lane-vision",
+      "name": "handoff pinned to the vision lane",
+      "expr": ".source == \"cairn\" and .artifact.labels.lane == \"vision\"",
+      "action": {"queue": "lane-vision", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-size-s",
+      "name": "unpinned S handoff to the local lane",
+      "expr": ".source == \"cairn\" and .artifact.labels.size == \"S\"",
+      "action": {"queue": "lane-local", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-size-m",
+      "name": "unpinned M handoff to the zai-flash lane",
+      "expr": ".source == \"cairn\" and .artifact.labels.size == \"M\"",
+      "action": {"queue": "lane-zai-flash", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-size-l",
+      "name": "unpinned L handoff to the zai lane",
+      "expr": ".source == \"cairn\" and .artifact.labels.size == \"L\"",
+      "action": {"queue": "lane-zai", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "cairn-triage",
+      "name": "unsized, unpinned handoff to triage",
+      "expr": ".source == \"cairn\"",
+      "action": {"queue": "triage", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "not-an-issue",
+      "name": "everything that is not an issue event",
+      "expr": ".issue == null",
+      "action": {"drop": true}
+    },
+    {
+      "id": "repo-not-allowlisted",
+      "name": "issues outside repo_prefixes",
+      "expr": ".issue.repo as $r | any(($params.repo_prefixes // [])[]; . as $p | $r | startswith($p)) | not",
+      "action": {"drop": true}
+    },
+    {
+      "id": "bot-issue",
+      "name": "Renovate dashboards, bot authors, and the BOT verdict",
+      "expr": "(.issue.author | test(\"renovate\"; \"i\") or endswith(\"[bot]\")) or (.issue.title | test(\"^dependency dashboard$\"; \"i\")) or any(.issue.labels[]; . == \"BOT\")",
+      "action": {"drop": true}
+    },
+    {
+      "id": "untrusted-author",
+      "name": "issues written by anyone outside the trusted humans and agents",
+      "expr": ".issue.author as $a | any((($params.trusted_humans // []) + ($params.trusted_agents // []))[]; . == $a) | not",
+      "action": {"drop": true}
+    },
+    {
+      "id": "untrusted-labeler",
+      "name": "label changes made by anyone outside the trusted humans and agents",
+      "expr": ".issue.label_event and (.issue.sender as $s | any((($params.trusted_humans // []) + ($params.trusted_agents // []))[]; . == $s) | not)",
+      "action": {"drop": true}
+    },
+    {
+      "id": "not-open",
+      "name": "closed issues",
+      "expr": ".issue.state != \"open\"",
+      "action": {"drop": true}
+    },
+    {
+      "id": "not-routable-action",
+      "name": "only opened, reopened, and label events route",
+      "expr": ".issue.action | IN(\"opened\", \"reopened\", \"labeled\", \"label_updated\") | not",
+      "action": {"drop": true}
+    },
+    {
+      "id": "human-verdict",
+      "name": "HUMAN verdict is held for Joe",
+      "expr": "any(.issue.labels[]; . == \"HUMAN\")",
+      "action": {"queue": "hold", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "size-xl",
+      "name": "size/XL is held for Joe",
+      "expr": "any(.issue.labels[]; . == \"size/XL\")",
+      "action": {"queue": "hold", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "ambiguous-size",
+      "name": "more than one size label is held, not guessed",
+      "expr": "[.issue.labels[] | select(startswith(\"size/\"))] | length > 1",
+      "action": {"queue": "hold", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "size-s",
+      "name": "size/S to the local lane",
+      "expr": "any(.issue.labels[]; . == \"size/S\")",
+      "action": {"queue": "lane-local", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "size-m",
+      "name": "size/M to the zai-flash lane",
+      "expr": "any(.issue.labels[]; . == \"size/M\")",
+      "action": {"queue": "lane-zai-flash", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "size-l",
+      "name": "size/L to the zai lane",
+      "expr": "any(.issue.labels[]; . == \"size/L\")",
+      "action": {"queue": "lane-zai", "exclusive": true, "once": true, "work_order": true}
+    },
+    {
+      "id": "unsized-new-issue",
+      "name": "a new or reopened unsized issue goes to triage to be sized",
+      "expr": ".issue.action | IN(\"opened\", \"reopened\")",
+      "action": {"queue": "triage", "exclusive": true, "once": true, "work_order": true}
+    }
+  ],
+  "default_action": {"drop": true}
+}

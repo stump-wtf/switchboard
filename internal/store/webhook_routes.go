@@ -177,7 +177,11 @@ func (s *Store) ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpo
 		                 WHERE fe.from_human = oa.owner_human_id
 		                   AND fe.to_human   = ta.owner_human_id
 		                   AND fe.state      = 'approved')
-		  )`, webhookID)
+		  )
+		ORDER BY r.granted_at, r.target_endpoint_id`, webhookID)
+	// The ORDER BY is load-bearing: exclusive routing delivers to the FIRST target scoped to the
+	// queue (ADR-0025), so target order decides which identity executes a work order and must be the
+	// same on every delivery. Grant order is stable and operator-visible (list_webhook_routes).
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve webhook targets: %w", err)
 	}
