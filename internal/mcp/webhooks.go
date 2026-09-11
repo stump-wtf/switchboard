@@ -56,13 +56,16 @@ var webhookVerbs = verbSet(WebhookVerbs())
 // is switchboard's alone: the agent never supplies a trust mode, so a self-created `signed` webhook
 // (github/stripe/slack) can never be downgraded to token/open, and a `generic` webhook is token, not
 // open (open is operator-only, out of reach of self-management). A source type outside this map is
-// unsupported even if a ceiling names it. Governing: ADR-0012 (switchboard owns verification; no
-// agent trust downgrade), ADR-0003 (per-source trust model).
+// unsupported even if a ceiling names it. cairn is signed: its outbound webhooks carry an HMAC over
+// the body and a signed event_id/created_at (cairn SPEC-0012; ingest/routing.go verifyCairn).
+// Governing: ADR-0012 (switchboard owns verification; no agent trust downgrade), ADR-0003 (per-source
+// trust model), ADR-0024.
 var webhookTrustModes = map[string]string{
 	"github":  "signed",
 	"stripe":  "signed",
 	"slack":   "signed",
 	"gitea":   "signed",
+	"cairn":   "signed",
 	"generic": "token",
 }
 

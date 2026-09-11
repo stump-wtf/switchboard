@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joestump/switchboard/internal/routing"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -86,6 +87,10 @@ type Ingest struct {
 	// instrument observes in-flight deliveries for the board's ephemeral received lane
 	// (instrument.go). Nil = no observation. Governing: SPEC-0015 REQ "Patch Panel Board".
 	instrument Instrument
+	// router evaluates webhook routing rules (routing.go). New installs the out-of-process sandbox;
+	// nil means none could be built, and rule-bearing webhooks then route by default with a recorded
+	// fault. Governing: ADR-0024, SPEC-0020.
+	router routing.Router
 }
 
 // Config carries the per-provider ingestion settings (secrets + target queues).
@@ -156,7 +161,7 @@ func (c Config) Normalized() Config {
 // New builds an Ingest.
 func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 	cfg = cfg.Normalized()
-	return &Ingest{
+	ing := &Ingest{
 		store: st, hub: hub, log: log,
 		githubSecret: cfg.GitHubSecret, githubQueue: cfg.GitHubQueue,
 		giteaSecret: cfg.GiteaSecret, giteaQueue: cfg.GiteaQueue,
@@ -167,6 +172,12 @@ func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 		devLogin:         cfg.DevLogin,
 		legacyEndpointID: cfg.LegacyEndpointID,
 	}
+	if sb, err := routing.NewSandbox(""); err == nil {
+		ing.router = sb
+	} else if log != nil {
+		log.Error("routing sandbox unavailable; webhooks with rules will route by default", "err", err)
+	}
+	return ing
 }
 
 // legacyEndpoint resolves the owning endpoint for an OPERATOR-CONFIGURED receiver, writing the

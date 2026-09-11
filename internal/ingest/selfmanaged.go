@@ -31,12 +31,14 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/joestump/switchboard/internal/routing"
 	"github.com/joestump/switchboard/internal/store"
 )
 
@@ -71,10 +73,16 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// Idempotency key scoped to this webhook so a redelivery to the SAME webhook dedups but identical
 	// payloads to different self-managed webhooks (which share a source namespace like "github") never
 	// collide. Prefer a provider delivery id where one exists; fall back to a body hash otherwise.
-	// Gitea uses X-Gitea-Delivery; GitHub uses X-GitHub-Delivery.
-	deliveryID := r.Header.Get("X-GitHub-Delivery")
-	if deliveryID == "" {
-		deliveryID = r.Header.Get("X-Gitea-Delivery")
+	// Gitea uses X-Gitea-Delivery; GitHub uses X-GitHub-Delivery. Cairn's id is the event_id inside
+	// its SIGNED body, never an unsigned header, so a replay cannot mint a fresh key (routing.go).
+	var deliveryID string
+	if wh.SourceType == routing.SourceCairn {
+		deliveryID = cairnEventID(body)
+	} else {
+		deliveryID = r.Header.Get("X-GitHub-Delivery")
+		if deliveryID == "" {
+			deliveryID = r.Header.Get("X-Gitea-Delivery")
+		}
 	}
 	key := wh.ID + ":" + idempotencyKey(deliveryID, body)
 	// The routed line is in flight: surface it on the board's ephemeral received lane (SPEC-0015).
@@ -140,6 +148,25 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Route (ADR-0024, SPEC-0020): after the idempotency key and the fan-out targets, before any
+	// write. Rules pick a queue — optionally narrowing the targets — or drop; a webhook with no rules
+	// takes its target queue on every target, exactly as before routing existed. The trace is
+	// written with the event and every todo so each one can explain why it exists.
+	kind := routing.EventKind(wh.SourceType, r.Header.Get, body)
+	headers := sanitizeHeaders(r.Header)
+	decision, err := i.routeDelivery(r.Context(), wh, targets, kind, verified, headers, r.Header.Get("Content-Type"), body)
+	if err != nil {
+		i.log.Error("self-managed webhook routing", "webhook", wh.ID, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	trace, err := json.Marshal(decision.Trace)
+	if err != nil {
+		i.log.Error("self-managed webhook routing trace", "webhook", wh.ID, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
 	// Governing: SPEC-0002/0004 REQ atomic ingestion, generalized to N targets (ADR-0022) — the
 	// event and ALL of its per-target todos commit in one transaction, so a fan-out is never
 	// partial. Every target's todo carries the SAME idempotency key this receiver computed,
@@ -148,21 +175,35 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// comes from the (endpoint_id, idempotency_key) dedup index, not from rewriting the key: a
 	// redelivery collapses independently within each target, while two targets of the SAME delivery
 	// never collapse onto each other. Governing: SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
-	_, todos, err := i.store.CreateEventTodos(r.Context(),
+	_, todos, dropped, err := i.store.CreateRoutedEventTodos(r.Context(),
 		store.EventInput{
-			Source: wh.SourceType, Family: "webhook", ExternalID: key,
+			Source: wh.SourceType, Family: "webhook", EventType: kind, ExternalID: key,
 			TrustMode: wh.TrustMode, Verified: verified, VerifyDetail: verifyDetail,
-			ContentType: r.Header.Get("Content-Type"), Headers: sanitizeHeaders(r.Header),
+			ContentType: r.Header.Get("Content-Type"), Headers: headers,
 			Payload: body, SourceIP: clientIP(r),
-		}, targets,
+			WebhookID: wh.ID, RoutingTrace: trace,
+		}, decision.Drop, decision.Endpoints,
 		store.CreateTodoParams{
-			Queue: wh.TargetQueue, Source: wh.SourceType, Kind: "webhook",
+			Queue: decision.Queue, Source: wh.SourceType, Kind: "webhook",
 			Title:   summarizeSelfManagedTitle(wh.SourceType, selfManagedEvent(r), body),
-			Payload: body, IdempotencyKey: key,
+			Payload: body, IdempotencyKey: key, RoutingTrace: trace,
 		})
 	if err != nil {
 		i.log.Error("ingest self-managed delivery", "webhook", wh.ID, "err", err)
 		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if dropped {
+		// Recorded, not work: the event row and its trace persist and the dedup slot is spent, but
+		// there is no todo, no hub publish, and no doorbell. The in-flight card resolves without a
+		// lane advance, as a deduped redelivery's does. The trace is NOT echoed to the producer — the
+		// owner's rule names are the owner's business. Governing: SPEC-0020 REQ "Drop Action
+		// Semantics".
+		i.observeDeduped(wh.SourceType, "webhook", wh.TrustMode, key)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"todos": []map[string]any{}, "created": 0, "dropped": true,
+			"verified": verified, "trust_mode": wh.TrustMode,
+		})
 		return
 	}
 
@@ -170,13 +211,14 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	//
 	//	{"todos": [{"id":…, "endpoint_id":…, "queue":…, "created": true|false}, …],
 	//	 "created": <count of newly-minted todos>,
-	//	 "id": …, "queue": …,            // the OWNER's todo — retained for compatibility
+	//	 "id": …, "queue": …,            // the first target's todo — retained for compatibility
 	//	 "verified": …, "trust_mode": …}
 	//
-	// `id`/`queue` still name the owner endpoint's todo because ResolveWebhookTargets returns the
-	// owner first, so a single-target webhook — every webhook with no routes, which is the common
-	// case — sees byte-identical fields to the pre-fan-out response. `created` changes shape from
-	// nothing to a count; it was never in the old body, so no existing reader loses a field.
+	// `id`/`queue` name the first target's todo. Targets keep ResolveWebhookTargets' owner-first
+	// order, so that is the owner's todo unless a routing rule narrowed the owner out — and a
+	// single-target webhook with no rules sees byte-identical fields to the pre-fan-out response.
+	// `created` changes shape from nothing to a count; it was never in the old body, so no existing
+	// reader loses a field. A dropped delivery answers {"dropped": true} with an empty todo set.
 	// endpoint_id is deliberately included: the producer already knows the webhook it posted to,
 	// and the fan-out is only auditable if the response says where the work actually landed.
 	newTodos := 0
@@ -199,7 +241,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		// Resolve the in-flight card without a lane advance (SPEC-0015).
 		i.observeDeduped(wh.SourceType, "webhook", wh.TrustMode, key)
 	}
-	owner := todos[0].Todo // ResolveWebhookTargets puts the owning endpoint first.
+	owner := todos[0].Todo // owner-first target order; see the response-body note above
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"todos": items, "created": newTodos,
 		"id": owner.ID, "queue": owner.Queue,
@@ -231,6 +273,10 @@ func (i *Ingest) verifySelfManagedSigned(r *http.Request, sourceType, secret str
 	case "slack":
 		return verifySlack(secret, body, r.Header.Get("X-Slack-Request-Timestamp"),
 			r.Header.Get("X-Slack-Signature"), i.now(), i.tolerance), nil
+	case routing.SourceCairn:
+		// Body HMAC plus signed event_id/created_at replay defenses (routing.go verifyCairn).
+		return verifyCairn(secret, body, r.Header.Get("X-Cairn-Signature"), r.Header.Get("X-Cairn-Event-Id"),
+			i.now(), i.tolerance), nil
 	default:
 		return false, fmt.Errorf("unsupported signed source type %q", sourceType)
 	}
@@ -290,6 +336,9 @@ func selfManagedEvent(r *http.Request) string {
 // non-forge source type is taken at its word — a stripe webhook does not become a forge delivery
 // because a header looked like one.
 func summarizeSelfManagedTitle(sourceType, event string, body []byte) string {
+	if sourceType == routing.SourceCairn {
+		return summarizeCairn(body)
+	}
 	if event == "" {
 		return summarizeSelfManaged(sourceType)
 	}
