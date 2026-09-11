@@ -19,7 +19,7 @@ Ingestion was linear: verify → normalize → derive idempotency key → create
 
 ### Non-Goals
 
-- Producer-side filtering (cairn `ring=true` et al.) — producers may set advisory metadata (`data.metadata.review_requested`) that rules can match, but the mechanism lives here
+- Producer-side filtering (cairn `ring=true` et al.) — producers may set advisory tags (cairn `data.tags`, e.g. `handoff`, `lane:m`) that rules can match, but the mechanism lives here
 - Broadcast routing beyond the webhook's existing targets — an action may **narrow** fan-out to a subset of the webhook's delivery targets, but never add one
 - Pull-adapter routing ([ADR-0014](../../../adrs/ADR-0014-ingestion-adapters-push-pull.md) pull family) — the same stage applies once pull adapters exist
 - A rules UI in the operator board (MCP surface first)
@@ -100,7 +100,7 @@ Evaluation bounds: 50 ms per rule and 250 ms per event. Limits: 32 rules, 4096-b
 
 `routing.Envelope` builds it for both the receiver and the dry-run.
 
-**Rationale.** A producer cannot forge the top-level fields. Using the persisted, sanitized headers means a dry-run against a stored event reproduces what the live delivery saw. For cairn, `.kind` comes from the signed body rather than the unsigned header. `.artifact` passes `tags`/`metadata` through, null today, so rules written for a future cairn field match the day it ships.
+**Rationale.** A producer cannot forge the top-level fields. Using the persisted, sanitized headers means a dry-run against a stored event reproduces what the live delivery saw. For cairn, `.kind` comes from the signed body rather than the unsigned header. `.artifact` passes cairn's `tags` list and `on_behalf_of` through (null until cairn emits them), so handoff rules match the day the cairn tags contract ships.
 
 ### Out-of-process evaluation
 
@@ -190,7 +190,9 @@ Ownership is checked at the human, as the ADR-0022 route verbs do. Mutations are
 
 ### Work orders and difficulty lanes ([ADR-0025](../../../adrs/ADR-0025-handoff-work-orders-and-difficulty-lanes.md))
 
-**Topology.** A router endpoint (scoped to no lane) owns one signed ingress webhook per producer — each Gitea org, GitHub, cairn — and routes to one pool endpoint per lane, each scoped to exactly its lane queue (`triage`, `lane-local`, `lane-zai-flash`, `lane-zai`, `lane-hyper`, `lane-vision`, `hold`). All of a lane's workers connect to that lane's endpoint.
+**Topology.** Lanes are by difficulty and run on tars only, as `joestump-agent`; kitt (`joestump`) keeps review duty. A `joestump-agent` router endpoint (scoped to no lane) owns one signed ingress webhook per producer — each Gitea org, GitHub, cairn — and routes to one `joestump-agent` pool endpoint per lane, each scoped to exactly its lane queue (`lane-s`, `lane-m`, `lane-l`, `lane-vision`, `triage`, `hold`). All of a lane's workers connect to that lane's endpoint.
+
+**Competing consumers across providers.** `lane-m` and `lane-l` each have workers on two provider accounts (Z.ai and Hyper, called directly); `lane-s` and `triage` use the local Qwen, the only traffic through LiteLLM; `lane-vision` uses Hyper's vision model; `hold` has no worker. Workers on one lane endpoint claim with `FOR UPDATE SKIP LOCKED`, so each todo is executed once, and a provider whose quota walls simply parks while the other drains the queue.
 
 **Why not one shared lanes endpoint.** A session's queues are its endpoint's scope, and doorbells are unicast round-robin across an endpoint's sessions, so a shared endpoint would ring a Qwen worker for a GLM todo while the GLM worker sleeps.
 
@@ -204,12 +206,18 @@ Ownership is checked at the human, as the ADR-0022 route verbs do. Mutations are
 - the same event on a redelivery reports its existing todos;
 - `event_id` is not a foreign key, because event retention must not release a claim.
 
-**Params.** `endpoint_webhooks.routing_params` is bound as `$params`, so allowlists sit beside the rules and are changed only by the owner-gated verbs.
+**Params.** `endpoint_webhooks.routing_params` is bound as `$params`, so allowlists (and the pool-review identity) sit beside the rules and are changed only by the owner-gated verbs.
+
+**Semi-trust.** Verified provenance makes a work order eligible; it does not make its text safe. Every work order carries a fixed `authority` string (`routing.WorkOrderAuthority`) telling the worker the task grants no permission and that producer-supplied fields may carry prompt injection. The boundary travels with the task rather than living only in worker prompts.
+
+**Pool review routing.** Both identities' org webhooks deliver every pull request event to both pools, so a pool worker could receive a review request meant for the other identity, or a trigger to review its own pull request. `pool-review.json`, installed per pool webhook with `params.identity`, drops review requests not addressed to that identity and review triggers on its own pull requests; everything else still reaches the pool. Cross-identity review is enforced by routing, not prompts.
 
 **Alternatives considered.**
 - Endpoint ids in actions (deployment-specific packs).
-- Label-based trust (client-asserted).
+- Label- or tag-based trust (client-asserted).
+- Fully trusted handoffs from our own agents (provenance proves who handed off, not that the text is safe).
 - A dynamic queue computed by jq (unvalidated at save).
+- A verb that widens an existing endpoint's scope (SPEC-0007 makes scope immutable; re-vend instead).
 
 ## Architecture
 
@@ -240,6 +248,7 @@ sequenceDiagram
 - **A runaway rule can starve later rules in the same child** → later rules may record `timeout`/`budget_exhausted` faults; bounded and visible.
 - **Cairn freshness window** → cairn signs no timestamp header, so freshness comes from the signed body's `created_at` (default 300 s). A cairn backlog older than that, e.g. after a long switchboard outage, is refused with 401 and abandoned by cairn.
 - **gojq divergence from real jq** → the save-time compiler is the compatibility contract (if it compiles in the sandbox, it routes).
+- **Semi-trusted work orders still carry injection risk** → eligibility never widens a worker's clamps, and the authority string travels with every work order; a worker with broad tools remains exposed to injection that stays within its clamps.
 - *(Phase 2)* **LLM cost runaway / payload egress** → budgets with operator ceilings; `include_payload` off by default.
 
 ## Migration Plan
@@ -248,11 +257,11 @@ Additive migration `0018_event_routing.sql`. Existing webhooks behave identicall
 
 Additive migration `0019_handoff_lanes.sql` (ADR-0025) adds `endpoint_webhooks.routing_params`, `todos.work_order`, and the `routing_once` table; nothing reads `routing_once` unless a rule asks for `once`.
 
-Operational note: endpoints vended before this change hold the verb list of their day. They need the seven rule verbs added to `scope_verbs`, and `cairn` added to `webhook_source_types`, to use this surface.
+Operational note: endpoints vended before this change hold the verb list of their day, and endpoint scope is immutable ([SPEC-0007](../identity/spec.md)): there is no verb that widens it. An endpoint that needs the seven rule verbs, `cairn` in `webhook_source_types`, or another webhook queue is re-vended, its consumer's credential rotated, and the old endpoint revoked. As an operator-only interim, rules can be written to `endpoint_webhooks.routing_rules` by SQL after validating them with the evaluator; SQL bypasses save-time validation.
 
 ## Open Questions
 
 - Shadowed-rule linting in `set_webhook_rules` (warn when a rule can never match) — cheap and useful; deferred.
-- Cairn's labels contract (`data.labels`, `data.on_behalf_of`) is being added producer-side; `.artifact` already passes `labels`, `on_behalf_of`, `tags`, and `metadata` through. Whether cairn derives `on_behalf_of` server-side or lets any caller set it decides how much the fleet pack's on-behalf-of check is worth.
+- Cairn's tags contract (`data.tags` as a string list, `data.on_behalf_of`) comes from the cairn-handoff work; `.artifact` already passes `tags` and `on_behalf_of` through. Whether cairn derives `on_behalf_of` server-side or lets any caller set it decides how much the fleet pack's on-behalf-of check is worth.
 - Re-running a completed work order in the same lane: at-most-once keys never expire today. A deliberate release verb (or a TTL) may be wanted once lanes see real use.
 - Dynamic destinations (a rule whose action queue is computed from the payload, constrained to the grant) — not built; one static rule per destination keeps every destination validated at save.

@@ -1,26 +1,31 @@
 # Routing rule packs
 
-A rule pack is a routing configuration checked into the repo so it can be reviewed, tested, and installed the same way everywhere. A pack file is **exactly** a `set_webhook_rules` body minus `webhook_id`: `{"rules": [...], "default_action": {...}, "params": {...}}`. The Go test that exercises it rejects unknown fields.
-
-## `fleet.json` — handoff work orders and difficulty lanes
+A rule pack is a routing configuration checked into the repo so it can be reviewed, tested, and installed the same way everywhere. A pack file is **exactly** a `set_webhook_rules` body minus `webhook_id`: `{"rules": [...], "default_action": {...}, "params": {...}}` (`default_action` may be omitted). The Go tests that exercise the packs reject unknown fields.
 
 Governing: [ADR-0025](../../adrs/ADR-0025-handoff-work-orders-and-difficulty-lanes.md), [SPEC-0020](../../openspec/specs/event-routing/spec.md). Operator runbook: [guide 08](../../guides/08-handoff-lanes.md).
+
+**Changing params.** Call `set_webhook_rules` with the same `rules` and `default_action` and the new `params`. `set` replaces all three; omitting `params` clears them, and both packs then fail closed.
+
+## `fleet.json` — handoff work orders and difficulty lanes
 
 Install `fleet.json` on the **router** webhooks: one per Gitea org, one GitHub, and one cairn. Never install it on per-identity pool hooks, because dedup is per webhook and a second copy is a second work order.
 
 ### Lanes
 
-Each lane is one queue served by one pool endpoint scoped to exactly that queue. Every lane action is `{"queue": …, "exclusive": true, "once": true, "work_order": true}`.
+Lanes are by difficulty. Each lane is one queue served by one pool endpoint scoped to exactly that queue; work lanes run on tars as `joestump-agent`. Every lane action is `{"queue": …, "exclusive": true, "once": true, "work_order": true}`.
 
-| Queue | Model | Takes |
+| Queue | Takes | Workers |
 |---|---|---|
-| `lane-local` | Qwen3.8-27B via LiteLLM (free) | `size/S`; cairn `lane=local` or `size=S` |
-| `lane-zai-flash` | `zai/glm-5.3-flash` direct | `size/M`; cairn `lane=zai-flash` or `size=M` |
-| `lane-zai` | `zai/glm-5.3` direct | `size/L`; cairn `lane=zai` or `size=L` |
-| `lane-hyper` | cheap Hyper flash via LiteLLM | overflow/general; cairn `lane=hyper` |
-| `lane-vision` | Hyper `deepseek-v4.1-flash` (vision) | screenshots/UI; cairn `lane=vision` |
-| `triage` | Qwen | unsized issues opened or reopened, and unsized, unpinned cairn handoffs. The worker sizes the item and labels it; the label event re-routes it. |
-| `hold` | no worker | `size/XL`, `HUMAN`, ambiguous sizes, cairn `size=XL`, and cairn handoffs on behalf of someone untrusted. These are surfaced for Joe and never auto-executed. |
+| `lane-s` | `size/S`; cairn `lane:s`, or `size:s` when unpinned | Qwen3.8-27B, local via LiteLLM → vLLM |
+| `lane-m` | `size/M`; cairn `lane:m`, or `size:m` when unpinned | `zai/glm-5.3-flash` direct and `hyper/glm-5.3-flash` direct |
+| `lane-l` | `size/L`; cairn `lane:l`, or `size:l` when unpinned | `zai/glm-5.3` direct and `hyper/glm-5.3` direct |
+| `lane-vision` | cairn `lane:vision` | `hyper/deepseek-v4.1-flash` direct |
+| `triage` | unsized issues opened or reopened, and unsized, unpinned cairn handoffs. The worker sizes the item with a label; the label event re-routes it. | Qwen |
+| `hold` | `size/XL`, `HUMAN`, more than one `size/*` label, cairn `size:xl`, more than one `lane:` or `size:` tag, and cairn handoffs on behalf of someone untrusted. Surfaced for Joe, never auto-executed. | none |
+
+Several workers on one queue, on different provider accounts, are competing consumers: they claim with `FOR UPDATE SKIP LOCKED`, so each todo runs once, and when one provider's quota walls the other keeps draining. Only the local Qwen goes through LiteLLM.
+
+"Unpinned" means the handoff has no `lane:s|m|l|vision` tag — `lane:auto`, no `lane:` tag, or an unknown one.
 
 ### Params
 
@@ -32,9 +37,7 @@ Each lane is one queue served by one pool endpoint scoped to exactly that queue.
 | `cairn_actors` | Cairn `actor_id`s (the actor of a `CAIRN_API_TOKENS` entry) allowed to hand off work. |
 | `repo_prefixes` | `owner/` or `owner/repo` prefixes whose issues may route. |
 
-Issue authors, and labelers on label events, must be in `trusted_humans ∪ trusted_agents`. Labels never grant trust.
-
-**Changing an allowlist.** Call `set_webhook_rules` with the same `rules` and `default_action` and the new `params`. `set` replaces all three; omitting `params` clears them. The pack then fails closed and nothing reaches a lane.
+Issue authors, and labelers on label events, must be in `trusted_humans ∪ trusted_agents`. Tags and labels never grant trust.
 
 ### Rule order
 
@@ -43,14 +46,15 @@ First match wins, and the default is `drop`.
 | # | id | Effect |
 |---|---|---|
 | 1 | `unverified` | drop unless the signature verified |
-| 2 | `cairn-not-handoff` | drop cairn artifacts without `labels.handoff == "true"` |
+| 2 | `cairn-not-handoff` | drop cairn artifacts whose `tags` lack `handoff` |
 | 3 | `cairn-untrusted-actor` | drop cairn handoffs whose `actor_id` is not in `cairn_actors` |
 | 4 | `cairn-on-behalf-untrusted` | hold handoffs on behalf of an untrusted principal |
-| 5 | `cairn-size-xl` | hold XL handoffs |
-| 6–10 | `cairn-lane-{local,zai-flash,zai,hyper,vision}` | route to the pinned lane |
+| 5 | `cairn-ambiguous` | hold handoffs with more than one `lane:` tag or more than one `size:` tag |
+| 6 | `cairn-size-xl` | hold `size:xl` handoffs, even when pinned |
+| 7–10 | `cairn-lane-{s,m,l,vision}` | route to the pinned lane |
 | 11–13 | `cairn-size-{s,m,l}` | unpinned handoffs by size |
 | 14 | `cairn-triage` | remaining handoffs to triage |
-| 15 | `not-an-issue` | drop everything that is not an issue event, pull requests included |
+| 15 | `not-an-issue` | drop everything that is not an issue event, pull requests and review requests included |
 | 16 | `repo-not-allowlisted` | drop issues outside `repo_prefixes` |
 | 17 | `bot-issue` | drop Renovate/`[bot]` authors, "Dependency Dashboard", and the `BOT` verdict |
 | 18 | `untrusted-author` | drop issues by untrusted authors |
@@ -60,12 +64,41 @@ First match wins, and the default is `drop`.
 | 22 | `human-verdict` | hold `HUMAN` |
 | 23 | `size-xl` | hold `size/XL` |
 | 24 | `ambiguous-size` | hold more than one `size/*` label |
-| 25–27 | `size-s`, `size-m`, `size-l` | route to `lane-local`, `lane-zai-flash`, `lane-zai` |
+| 25–27 | `size-s`, `size-m`, `size-l` | route to `lane-s`, `lane-m`, `lane-l` |
 | 28 | `unsized-new-issue` | opened/reopened with no size label goes to triage |
 
 A label event on an unsized issue matches none of 22–28, so it drops. That is what keeps triage from looping.
 
-### Testing
+### Cairn handoff tags
 
-- **Live:** `test_webhook_rules` with a sample `payload` and `headers`, or a stored `event_id` of the router webhook. The result shows the `decision`, the exclusive target endpoint, the `once_key`, the `work_order`, and the envelope. Candidate `params` can be tried without saving.
-- **In the repo:** `internal/routing/fleet_pack_test.go` validates the pack against a lanes grant and routes every case in `internal/routing/testdata/fleet/cases.json` (real-shape Gitea, GitHub, and cairn samples). It routes them in-process and again through the sandbox child. Add a case whenever you change a rule.
+Tags are lower-case and matched exactly.
+
+| Tag | Meaning |
+|---|---|
+| `handoff` | required: marks the artifact as a handoff |
+| `lane:s` \| `lane:m` \| `lane:l` \| `lane:vision` \| `lane:auto` | pin a lane, or let `size:` decide |
+| `size:s` \| `size:m` \| `size:l` \| `size:xl` | difficulty; `size:xl` is always held |
+| `repo:owner/name`, `issue:owner/repo#n` | where the work lives |
+| `source:…` | the sweep that wrote it, e.g. `source:morning-brief` |
+| `reply:…` | where to report back, e.g. an `mcp://cairn/<id>` handle |
+
+## `pool-review.json` — single-identity review routing
+
+Install `pool-review.json` on **each** identity's forge pool webhooks, with `params.identity` set to that identity (`joestump` on kitt's pools, `joestump-agent` on tars' pools). It has no `default_action`, so everything it does not drop still goes to the pool's target queue.
+
+| # | id | Effect |
+|---|---|---|
+| 1 | `review-request-not-for-me` | drop `pull_request` `review_requested` / `review_request_removed` events whose `requested_reviewer.login` is not `$params.identity` |
+| 2 | `own-pr-review-trigger` | drop `pull_request` `opened`, `reopened`, `synchronized`, `synchronize`, `edited`, `ready_for_review`, `review_requested` events whose `pull_request.user.login` is `$params.identity` |
+
+Review comments on your own pull request, and issue events, still reach the pool. With no `identity` param, every review request fails closed (rule 1 drops it).
+
+Why it exists: both identities' org webhooks deliver every pull request event to both identities' pools. On 2026-09-11 a `joestump` pool worker received review requests meant for `joestump-agent` and reviewed and merged `joestump`'s own pull requests (harness#307, dotfiles#242).
+
+## Testing
+
+- **Live:** `test_webhook_rules` with a sample `payload` and `headers`, or a stored `event_id` of the webhook. The result shows the `decision`, the exclusive target endpoint, the `once_key`, the `work_order`, and the envelope. Candidate `params` can be tried without saving.
+- **In the repo:**
+  - `internal/routing/fleet_pack_test.go` validates `fleet.json` against a lanes grant and routes every case in `internal/routing/testdata/fleet/cases.json` (real-shape Gitea, GitHub, and cairn samples), in-process and again through the sandbox child.
+  - `internal/routing/pool_review_pack_test.go` routes review requests, own-PR triggers, comments, and issue events for both identities through `pool-review.json`, in-process and through the sandbox child.
+  - Add a case whenever you change a rule.

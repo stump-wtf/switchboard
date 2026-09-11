@@ -24,9 +24,9 @@ verify → idempotency key → resolve targets → ROUTE (rules → default) →
 | `{"queue": "forge"}` | Create the todo in `forge` on **every** delivery target (owner + routes). |
 | `{"queue": "handoff", "endpoints": ["<id>"]}` | Create it only on those targets — a subset of the webhook's existing delivery targets. |
 | `{"drop": true}` | Record the event (visible in history, dedup slot spent) but create no todo and ring no doorbell. |
-| `{"queue": "lane-local", "exclusive": true}` | Create it on exactly **one** target: the first (owner first, then routes by grant time) whose endpoint scope includes the queue. |
-| `{"queue": "lane-local", "once": true}` | At most once per subject (issue or cairn artifact) per queue: later deliveries about it are recorded with `"once": "repeat"` and answer `{"repeat": true}`. |
-| `{"queue": "lane-local", "work_order": true}` | Attach a switchboard-authored `work_order` (lane, verified provenance, authorizing rule, subject) to each todo. |
+| `{"queue": "lane-s", "exclusive": true}` | Create it on exactly **one** target: the first (owner first, then routes by grant time) whose endpoint scope includes the queue. |
+| `{"queue": "lane-s", "once": true}` | At most once per subject (issue or cairn artifact) per queue: later deliveries about it are recorded with `"once": "repeat"` and answer `{"repeat": true}`. |
+| `{"queue": "lane-s", "work_order": true}` | Attach a switchboard-authored, semi-trusted `work_order` (lane, verified provenance, authorizing rule, subject, authority) to each todo. |
 
 The last three combine, and are only valid with `queue`. They are what handoff lanes use — see
 [guide 08](08-handoff-lanes.md).
@@ -58,7 +58,7 @@ and `.headers`.
 | `.size` | payload size in bytes |
 | `.headers` | sanitized request headers, **lower-cased** names (secrets read `«redacted»`) |
 | `.payload` | the body parsed as JSON, or `null` when it is not JSON |
-| `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id`, `on_behalf_of`, `expires_at`, `labels`, `tags`, `metadata` |
+| `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id`, `on_behalf_of`, `expires_at`, `tags` (cairn's string list), `metadata` |
 | `.issue` | Gitea/GitHub `issues` events only (`null` otherwise, pull requests included): `provider`, `action`, `event_type`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels` (names), `label` (GitHub's changed label), `body_size`, `label_event`, `key` |
 
 `.issue` reads the same on both forges: Gitea's label change (`issue_label`, action `label_updated`)
@@ -111,8 +111,8 @@ names the offending rule and leaves the previous rules in force.
 Every todo a routed delivery creates carries the same trace in its `routing` field:
 
 ```json
-{"stage": "rule", "rule_index": 0, "rule_id": "handoff-opus", "rule_name": "handoff to opus",
- "action": {"queue": "handoff", "endpoints": ["…"]}}
+{"stage": "rule", "rule_index": 7, "rule_id": "cairn-lane-m", "rule_name": "handoff pinned to lane:m",
+ "action": {"queue": "lane-m", "exclusive": true, "once": true, "work_order": true}}
 ```
 
 or, for the default, `{"stage": "default", "cause": "no_match_default", "action": {…}}`, with any
@@ -122,36 +122,41 @@ rule `faults` listed alongside.
 
 Cairn announces every artifact over one outbound webhook list, signed with **one** secret. Switchboard
 mints a secret per signed webhook, so the shape that works is **one** cairn webhook with routes to
-every pool, and rules that pick the pool.
+every lane pool, and rules that pick the pool. A handoff is an artifact tagged `handoff`, with
+`lane:s|m|l|vision|auto` and `size:s|m|l|xl` choosing where it goes.
 
-1. On the pool endpoint that should own the webhook, `create_webhook` with `source_type: "cairn"` and
-   `target_queue: "inbox"`. It is `signed`: keep the revealed `signing_secret` for cairn's
-   `CAIRN_OUTBOUND_WEBHOOK_SECRET`, and the `ingest_url` for `CAIRN_OUTBOUND_WEBHOOK_URLS`.
-2. `add_webhook_route` from that webhook to each other pool endpoint.
-3. `set_webhook_rules`:
+1. On the router endpoint, `create_webhook` with `source_type: "cairn"`. It is `signed`: keep the
+   revealed `signing_secret` for cairn's `CAIRN_OUTBOUND_WEBHOOK_SECRET`, and the `ingest_url` for
+   `CAIRN_OUTBOUND_WEBHOOK_URLS`.
+2. `add_webhook_route` from that webhook to each lane pool endpoint.
+3. `set_webhook_rules` — in full, that is the [fleet pack](../routing/rule-packs/README.md); its cairn
+   half looks like this:
 
 ```json
 {
   "webhook_id": "<cairn webhook id>",
+  "params": {"require_verified": true, "cairn_actors": ["joestump-agent"]},
   "rules": [
-    {"id": "handoff-opus", "name": "handoff to the opus pool",
-     "expr": ".artifact.metadata.handoff_to == \"opus-pool\" or (.artifact.title // \"\" | startswith(\"[handoff:opus-pool]\"))",
-     "action": {"queue": "handoff", "endpoints": ["<opus pool endpoint id>"]}},
-    {"id": "review", "name": "review requests",
-     "expr": ".artifact.metadata.review_requested == true",
-     "action": {"queue": "forge"}}
+    {"id": "cairn-not-handoff", "expr": ".source == \"cairn\" and (any((.artifact.tags // [])[]; . == \"handoff\") | not)",
+     "action": {"drop": true}},
+    {"id": "cairn-untrusted-actor",
+     "expr": ".source == \"cairn\" and ((.artifact.actor_id // \"\") as $a | any(($params.cairn_actors // [])[]; . == $a) | not)",
+     "action": {"drop": true}},
+    {"id": "cairn-lane-m", "expr": ".source == \"cairn\" and any((.artifact.tags // [])[]; . == \"lane:m\")",
+     "action": {"queue": "lane-m", "exclusive": true, "once": true, "work_order": true}},
+    {"id": "cairn-triage", "expr": ".source == \"cairn\"",
+     "action": {"queue": "triage", "exclusive": true, "once": true, "work_order": true}}
   ],
   "default_action": {"drop": true}
 }
 ```
 
-A paste titled `[handoff:opus-pool] audit the backups` becomes one todo, on the opus pool only, in
-`handoff`. Everything else cairn announces is recorded and dropped.
+An artifact by `joestump-agent` tagged `["handoff", "lane:m"]` becomes one todo, on the `lane-m`
+pool only. The same tags from any other actor are recorded and dropped: tags choose a lane, they
+never grant trust.
 
-**Cairn today sends no metadata or tags** — its `artifact.created` carries `id`, `share_type`,
-`title`, `url`, `channel`, `model`, `actor_id`, and `expires_at` only. The **title prefix** is the
-convention that works now; the `.artifact.metadata` forms are passed through so the same rules
-match the day cairn carries them.
+Cairn's `data.tags` and `data.on_behalf_of` come from the cairn-handoff work; until cairn emits
+them, `.artifact.tags` is `null` and nothing routes as a handoff.
 
 Cairn deliveries verify strictly: the `X-Cairn-Signature` HMAC over the body, a signed `event_id`
 (the dedup key — a replay collapses onto the original) and a signed `created_at` inside the
@@ -161,8 +166,10 @@ disagrees with the body is a 401 and nothing is stored.
 ## Before you start: older endpoints
 
 Endpoints vended before routing shipped were granted the verb list of their day: they lack the seven
-rule verbs in their scope and `cairn` in their allowed source types. Re-vend the endpoint, or have an
-operator widen its `scope_verbs` and `webhook_source_types`.
+rule verbs in their scope and `cairn` in their allowed source types. Endpoint scope is immutable
+([SPEC-0007](/specs/identity/spec)) and there is no verb that widens it: re-vend the endpoint, rotate
+its consumer's credential, and revoke the old one. Guide 08 covers the operator-only interim of
+writing validated rules directly.
 
 > Deeper detail: [ADR-0024 — Event routing](/decisions/ADR-0024-event-routing-deterministic-and-llm),
 > [ADR-0025 — Handoff work orders and difficulty lanes](/decisions/ADR-0025-handoff-work-orders-and-difficulty-lanes),
