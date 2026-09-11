@@ -1,0 +1,19 @@
+{
+  "params": {
+    "identity": "joestump"
+  },
+  "rules": [
+    {
+      "id": "review-request-not-for-me",
+      "name": "PR review requests for anyone other than this pool's identity (all of them when identity is unset)",
+      "expr": ".kind == \"pull_request\" and ((.payload.action // \"\") | IN(\"review_requested\", \"review_request_removed\")) and ((($params.identity // \"\") == \"\") or ((.payload.requested_reviewer.login // \"\") != $params.identity))",
+      "action": {"drop": true}
+    },
+    {
+      "id": "own-pr-review-trigger",
+      "name": "never review a PR this pool's identity authored",
+      "expr": ".kind == \"pull_request\" and ($params.identity // \"\") != \"\" and ((.payload.pull_request.user.login // \"\") == $params.identity) and ((.payload.action // \"\") | IN(\"opened\", \"reopened\", \"synchronized\", \"synchronize\", \"edited\", \"ready_for_review\", \"review_requested\"))",
+      "action": {"drop": true}
+    }
+  ]
+}

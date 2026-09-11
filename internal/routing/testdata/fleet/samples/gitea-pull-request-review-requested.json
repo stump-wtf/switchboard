@@ -1,0 +1,39 @@
+{
+  "source": "generic",
+  "headers": {
+    "Content-Type": "application/json",
+    "User-Agent": "Go-http-client/1.1",
+    "X-Gitea-Delivery": "2d6f0c91-7a3e-4b1d-9c58-e4f1a2b3c4d5",
+    "X-Gitea-Event": "pull_request",
+    "X-Gitea-Event-Type": "pull_request_review_request",
+    "X-Github-Delivery": "2d6f0c91-7a3e-4b1d-9c58-e4f1a2b3c4d5",
+    "X-Github-Event": "pull_request",
+    "X-Github-Event-Type": "pull_request_review_request"
+  },
+  "body": {
+    "action": "review_requested",
+    "number": 306,
+    "pull_request": {
+      "id": 5120,
+      "url": "https://gitea.stump.rocks/stump.wtf/harness/pulls/306",
+      "number": 306,
+      "user": {"id": 1, "login": "joestump", "username": "joestump"},
+      "title": "feat(scheduler): suspend-safe wall-clock tick",
+      "body": "Fixes missed windows after sleep.",
+      "labels": [],
+      "state": "open",
+      "draft": false,
+      "html_url": "https://gitea.stump.rocks/stump.wtf/harness/pulls/306",
+      "mergeable": true,
+      "merged": false,
+      "base": {"label": "main", "ref": "main"},
+      "head": {"label": "feat/scheduler-tick", "ref": "feat/scheduler-tick"},
+      "requested_reviewers": [{"id": 2, "login": "joestump-agent", "username": "joestump-agent"}]
+    },
+    "requested_reviewer": {"id": 2, "login": "joestump-agent", "username": "joestump-agent"},
+    "repository": {"id": 91, "name": "harness", "full_name": "stump.wtf/harness", "private": true},
+    "sender": {"id": 1, "login": "joestump", "username": "joestump"},
+    "commit_id": "",
+    "review": null
+  }
+}

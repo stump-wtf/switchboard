@@ -1,0 +1,33 @@
+{
+  "source": "generic",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Gitea-Delivery": "9a1c7e22-3b4d-4f60-8e17-5c2d9b0a6f31",
+    "X-Gitea-Event": "issue_comment",
+    "X-Gitea-Event-Type": "pull_request_comment",
+    "X-Github-Event": "issue_comment",
+    "X-Github-Event-Type": "pull_request_comment"
+  },
+  "body": {
+    "action": "created",
+    "issue": {
+      "id": 9950,
+      "number": 306,
+      "user": {"id": 1, "login": "joestump", "username": "joestump"},
+      "title": "feat(scheduler): suspend-safe wall-clock tick",
+      "state": "open",
+      "labels": [],
+      "html_url": "https://gitea.stump.rocks/stump.wtf/harness/pulls/306",
+      "pull_request": {"merged": false, "merged_at": null, "html_url": "https://gitea.stump.rocks/stump.wtf/harness/pulls/306"}
+    },
+    "comment": {
+      "id": 31700,
+      "html_url": "https://gitea.stump.rocks/stump.wtf/harness/pulls/306#issuecomment-31700",
+      "user": {"id": 2, "login": "joestump-agent", "username": "joestump-agent"},
+      "body": "Requested changes: the tick drifts across DST."
+    },
+    "repository": {"id": 91, "name": "harness", "full_name": "stump.wtf/harness", "private": true},
+    "sender": {"id": 2, "login": "joestump-agent", "username": "joestump-agent"},
+    "is_pull": true
+  }
+}
