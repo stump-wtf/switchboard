@@ -188,8 +188,10 @@ option skill-path ~/src/claude-plugin-switchboard/skills
 ```
 
 Crush also loads skills from a few directories automatically, `~/.config/crush/skills/` among them,
-so copying or linking the repository's `skills/` contents there works too. Either way, point Crush
-at the **directory of skills**, not at one skill's folder inside it.
+so copying the repository's `skills/` contents there works too. **Don't symlink instead**: Crush
+resolves symlinks back out of the scanned directory, so a linked skill loads but its file reads sit
+outside the skill path and get denied. Either way, point Crush at the **directory of skills**, not
+at one skill's folder inside it.
 
 **Check that it loaded** by asking the agent to look at a queue. With the skill, it filters
 `list_todos` by queue, state and a bounded limit, and buckets what comes back before touching
