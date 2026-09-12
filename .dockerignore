@@ -5,7 +5,20 @@
 # vendor/ is NOT excluded, and must not be: the build is deliberately hermetic
 # (`go build -mod=vendor` with no network), which is what lets a stranger build
 # offline and what stops a release publishing an unbuildable binary.
+# TWO Dockerfiles share this ONE context. deploy/docker/Dockerfile builds the
+# app, and deploy/docker/docs.Dockerfile builds the docs image — and docs.yaml
+# builds it with `context: .`, the repo root, so these patterns apply to it too.
+# docs.Dockerfile:9 does `COPY docs-site/build /srv`, so excluding docs-site
+# outright breaks every docs deployment with
+# `failed to compute cache key: "/docs-site/build": not found`.
+#
+# Hence the re-include below. It MUST stay after the `docs-site` line: patterns
+# apply in order, so a negation above the exclusion it reverses does nothing.
+# docs-site/build is generated, not tracked — docs.yaml runs `npm run build`
+# before the image build — so this re-includes an artifact that only exists in
+# CI, and excludes the ~18 tracked sources that the app image never reads.
 .git
 docs
 docs-site
+!docs-site/build
 *.md
