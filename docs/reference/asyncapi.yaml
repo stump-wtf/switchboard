@@ -22,7 +22,7 @@ info:
     resume with `Last-Event-ID`).
   license:
     name: MIT
-    url: https://github.com/joestump/switchboard/blob/main/LICENSE
+    url: https://opensource.org/license/mit
 
 defaultContentType: application/json
 
