@@ -2,7 +2,7 @@
 
 An MCP server that verifies inbound webhooks & queue messages and turns them into a durable todo
 work-queue that human-owned AI agents drain. Go + PostgreSQL. Design record published at
-<https://joestump.github.io/switchboard/>.
+<https://switchboard.stump.wtf/docs/>.
 
 ## Architecture Context
 
@@ -72,7 +72,7 @@ When orchestrating multiple SDD plugin skills in a single session (e.g., running
 - **Base URL**: https://gitea.stump.rocks
 - **Owner**: stump.wtf
 - **Repo**: switchboard
-- **Note**: origin of truth is https://gitea.stump.rocks/stump.wtf/switchboard; GitHub (github.com/stump-wtf/switchboard) is a push mirror. Docs publish to GitHub Pages at https://joestump.github.io/switchboard/. If the Gitea MCP has no token, use the Gitea REST API with the available git credential.
+- **Note**: origin of truth is https://gitea.stump.rocks/stump.wtf/switchboard; GitHub (github.com/stump-wtf/switchboard) is a private push mirror. Docs are published at https://switchboard.stump.wtf/docs/: a push to `main` runs `.gitea/workflows/docs.yaml`, which builds the site into the `switchboard-docs` image, and the live site changes when that container is redeployed and pulls it. GitHub Pages was retired for this repo — a private org repo on the Team plan cannot serve Pages. If the Gitea MCP has no token, use the Gitea REST API with the available git credential.
 
 #### Branch Conventions
 

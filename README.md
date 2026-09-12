@@ -245,11 +245,15 @@ Each package `CREATE DATABASE`s its target on first use (tolerating the `42P04 d
 from a prior run), migrates it, and truncates between tests. The databases persist across runs; drop
 them with `DROP DATABASE switchboard_test_store` (etc.) if you want a clean slate.
 
-The docs site builds with Docusaurus and deploys to **GitHub Pages** via `.github/workflows/pages.yml`.
+The docs site builds with Docusaurus and ships as the `switchboard-docs` image via
+`.gitea/workflows/docs.yaml` — see **Repository hosting** below.
 
 ## Repository hosting
 
-- **Source:** <https://github.com/joestump/switchboard>
+- **Source:** <https://gitea.stump.rocks/stump.wtf/switchboard> — the origin of truth.
+  `github.com/stump-wtf/switchboard` is a private push mirror; the old `github.com/joestump/switchboard`
+  is retired. The Go module path stays `github.com/joestump/switchboard`: it is the module's identity,
+  not a location.
 - **Docs:** built with Docusaurus and served as a compiled static site at <https://switchboard.stump.wtf/docs/> — the front Caddy routes `/docs/*` to the `switchboard-docs` container (built + pushed by `.gitea/workflows/docs.yaml`). GitHub Pages was retired: a private org repo on the Team plan cannot serve Pages.
 
 ## License
