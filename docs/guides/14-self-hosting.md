@@ -16,7 +16,7 @@ switchboard needs and how to tell it worked.
 
 | | Requirement | Notes |
 |---|---|---|
-| **Database** | PostgreSQL | The schema uses `gen_random_uuid()` and identity columns, so **13 or newer**. Verified on 16; the project's own CI runs 18. Switchboard creates and migrates its own schema at startup — 22 migrations as of this writing. |
+| **Database** | PostgreSQL | The schema uses `gen_random_uuid()` and identity columns, so **13 or newer**. Verified on 16; the project's own CI runs 18, and the Docker path below brings its own. Switchboard creates and migrates its own schema at startup — 22 migrations as of this writing. |
 | **Identity provider** | Any OIDC provider | Needed for real logins, because every endpoint is vended by an accountable human. See [Sign-in](#sign-in-oidc). |
 | **TLS** | A reverse proxy | Switchboard speaks plain HTTP and expects something in front terminating TLS. |
 | **Redis** | Optional | Only for the queue pull-adapters. Leave `SWITCHBOARD_REDIS_URL` unset and they stay off. |
@@ -59,7 +59,60 @@ openssl rand -base64 32     # 44 characters
 openssl rand -hex 32        # 64 characters
 ```
 
+## Get the source
+
+Switchboard is MIT licensed and built from source. Everything below assumes you have a checkout.
+
+**The repository is not public yet.** When it is, it will live at
+`github.com/stump-wtf/switchboard`, and a clone of that plus the steps below is the whole install.
+Until then there is no public URL to clone from, and no published release or container image — so
+this guide documents only the build-from-source path, which works from any checkout.
+
+Dependencies are vendored in the repository, so the build needs no network and no module downloads.
+Don't run `go mod tidy`: it can rewrite `go.mod` and `vendor/`, which is exactly the hermetic
+property the vendoring exists to guarantee.
+
 ## Start it
+
+There are two paths. Docker is the shorter one and brings its own PostgreSQL; the binary path suits
+an existing database or a systemd unit.
+
+### With Docker
+
+From a checkout, in `deploy/docker/`:
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+That builds the image from the vendored source and starts PostgreSQL alongside it, waiting for the
+database to pass its health check first. The service is published on `127.0.0.1:8080`, and
+`SWITCHBOARD_BASE_URL` defaults to `http://127.0.0.1:8080`.
+
+```bash
+docker compose logs switchboard
+```
+
+```
+level=INFO msg="database ready"
+level=INFO msg="switchboard listening" addr=0.0.0.0:8080 base_url=http://127.0.0.1:8080 oidc=false dev_login=false
+level=INFO msg="listening for todo_ready wakeups" channel=todo_ready
+```
+
+`curl http://127.0.0.1:8080/login` then returns the login page. With no OIDC configured it says
+"No login configured", which is the expected state until you do the
+[OIDC setup](#sign-in-oidc) below — set the `SWITCHBOARD_OIDC_*` variables in the compose
+environment, along with a real `SWITCHBOARD_BASE_URL` and a
+`SWITCHBOARD_SECRET_ENCRYPTION_KEY`, and recreate the service.
+
+The compose file is a starting point, not a production deployment: the database password is
+`change-me`, the database volume is local, and there is no TLS. Read
+[Behind a reverse proxy](#behind-a-reverse-proxy) before exposing it.
+
+`docker compose down` stops it; `docker compose down -v` also deletes the database volume.
+
+### As a binary
 
 ```bash
 go build -o switchboard ./cmd/switchboard
