@@ -209,6 +209,44 @@ For scheduled, one-shot sweeps of a queue instead of an always-on session, see H
 [configuration reference](https://stump-wtf.github.io/harness/usage/configuration/) for `prompt` and
 `schedule`.
 
+## Give the agent the queue discipline too
+
+Connecting an agent gets it the tools. It doesn't get it the judgement about when to use them, and a
+busy queue punishes that quickly: most todos are exhaust rather than work, every `claim` and
+`complete` echoes the producer's entire payload, and draining a flood by hand is a treadmill while
+the producer keeps sending.
+
+The `switchboard` skill packages that judgement for Claude Code and Crush. It doesn't replace this
+documentation — [Working the queue well](/guides/working-the-queue) stays the reference, and the
+skill points back at it.
+
+For Claude Code:
+
+```bash
+claude plugin marketplace add stump-wtf/claude-plugin-switchboard
+claude plugin install switchboard@claude-plugin-switchboard
+```
+
+It also ships three commands that run in the session holding the MCP tools: `/switchboard:triage`
+(read-only bucketing), `/switchboard:work-next` (claim one and carry it to done), and
+`/switchboard:drain` (clear a noise flood, source first).
+
+Crush discovers skills through `options.skills_paths` in `crush.json`, an explicit list of
+directories. Clone the plugin, then append the clone's own `skills` directory to that list as an
+absolute path — nothing reads a directory that isn't in the list.
+
+```bash
+git clone https://github.com/stump-wtf/claude-plugin-switchboard.git ~/src/claude-plugin-switchboard
+```
+
+To check it loaded, ask the agent to look at a queue. With the skill it filters `list_todos` by
+queue, state and a bounded limit, and buckets what comes back before touching anything, rather than
+listing unfiltered and acting on the first row.
+
+The skill grants nothing. The endpoint's scope is the only capability boundary and it's immutable
+after vend, so no skill can widen a verb or a queue — see [Vend an endpoint](/guides/vend-an-endpoint),
+which also lists every tool the surface serves.
+
 ## Check the connection
 
 Ask the agent to call `list_webhooks`, or `list_todos` with `{"queue": "inbox", "limit": 5}`. An

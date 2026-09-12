@@ -100,6 +100,12 @@ anything.
   `fail`.
 - **It was dead-lettered.** After 5 attempts, a `failed` todo stops retrying. Fix the cause, then use
   **Retry now** on the todo in **Todos** to re-queue it with a fresh budget.
+- **You can't tell retrying from dead-lettered through the tools.** Both sit in `state: "failed"`. A
+  todo that will retry has a pending retry time; a dead letter has none — but `list_todos` returns
+  neither that field nor the attempt count, so a `failed` list mixes the two and an agent triaging
+  one will report transient failures as dead. Use **Todos** on the board, where the distinction is
+  visible, and treat a `failed` list from the tools as "needs a closer look" rather than "dead".
+  Tracked as #214.
 - **A redelivery made a new one.** Once a todo is `done`, the same delivery id arriving again creates
   a new todo. Forge "redeliver" buttons do exactly that.
 
