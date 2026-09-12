@@ -1,0 +1,242 @@
+---
+title: Run your own switchboard
+---
+
+# Run your own switchboard
+
+Switchboard is a single Go binary and a PostgreSQL database. This guide takes you from nothing to a
+running instance with a verified webhook → todo → agent loop.
+
+Every command here was run against a fresh database while writing it, and the outputs are the real
+ones. The one step that cannot be run for you is registering an OIDC client in your identity
+provider, since that happens in software this project doesn't ship — that section says exactly what
+switchboard needs and how to tell it worked.
+
+## What you need
+
+| | Requirement | Notes |
+|---|---|---|
+| **Database** | PostgreSQL | The schema uses `gen_random_uuid()` and identity columns, so **13 or newer**. Verified on 16; the project's own CI runs 18. Switchboard creates and migrates its own schema at startup — 22 migrations as of this writing. |
+| **Identity provider** | Any OIDC provider | Needed for real logins, because every endpoint is vended by an accountable human. See [Sign-in](#sign-in-oidc). |
+| **TLS** | A reverse proxy | Switchboard speaks plain HTTP and expects something in front terminating TLS. |
+| **Redis** | Optional | Only for the queue pull-adapters. Leave `SWITCHBOARD_REDIS_URL` unset and they stay off. |
+
+There is no external secret manager, no message broker requirement, and no sidecar. One process, one
+database.
+
+## Configuration
+
+Everything comes from the environment; `serve` takes no flags.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SWITCHBOARD_DATABASE_URL` | — | **Required.** PostgreSQL DSN. |
+| `SWITCHBOARD_BASE_URL` | `http://127.0.0.1:8080` | **Set this.** The externally reachable base URL, with no trailing slash. It builds the OIDC redirect URL, the vended MCP endpoint URLs, and the webhook ingest URLs you hand to producers. |
+| `SWITCHBOARD_ADDR` | `127.0.0.1:8080` | Listen address. The container image sets `0.0.0.0:8080`. |
+| `SWITCHBOARD_OIDC_ISSUER` | — | Issuer URL. Discovery runs at startup. |
+| `SWITCHBOARD_OIDC_CLIENT_ID` | — | |
+| `SWITCHBOARD_OIDC_CLIENT_SECRET` | — | |
+| `SWITCHBOARD_OIDC_REDIRECT_URL` | `<base>/auth/callback` | Override only if your proxy rewrites paths. |
+| `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | — | Recommended. Encrypts webhook signing secrets at rest. 32 bytes, base64 or hex. |
+| `SWITCHBOARD_OPERATOR_SUBJECTS` | empty | Comma-separated OIDC subjects allowed to administer instance-wide providers. **Empty means nobody**, deliberately. |
+| `SWITCHBOARD_REDIS_URL` | — | Enables the Redis pull adapters. |
+| `SWITCHBOARD_DEV_LOGIN` | off | Unauthenticated local login. Never in production. |
+| `SWITCHBOARD_FRIENDING`, `SWITCHBOARD_PERSONAS`, `SWITCHBOARD_A2A`, `SWITCHBOARD_A2UI` | off | Advanced capabilities, hidden until switched on. |
+
+Two settings are easy to get wrong:
+
+- **`SWITCHBOARD_BASE_URL` decides whether session cookies are marked `Secure`.** Switchboard sets
+  that flag when the base URL starts with `https://`. Behind TLS, the base URL must say `https://`
+  or you serve session cookies without the flag.
+- **`SWITCHBOARD_OPERATOR_SUBJECTS` fails closed.** Unset, the instance-wide provider admin is
+  read-only for everyone. That is the safe direction, and it means your own subject has to go in
+  before you can connect instance-wide providers.
+
+Generate an encryption key with either of these:
+
+```bash
+openssl rand -base64 32     # 44 characters
+openssl rand -hex 32        # 64 characters
+```
+
+## Start it
+
+```bash
+go build -o switchboard ./cmd/switchboard
+
+export SWITCHBOARD_DATABASE_URL='postgres://switchboard:secret@localhost:5432/switchboard?sslmode=disable'
+export SWITCHBOARD_BASE_URL='https://switchboard.example.com'
+export SWITCHBOARD_ADDR='127.0.0.1:8080'
+export SWITCHBOARD_SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+./switchboard serve
+```
+
+A healthy start looks like this — the schema is created and migrated on first run, so there is no
+separate migrate step:
+
+```
+level=INFO msg="database ready"
+level=INFO msg="webhook signing secrets encrypted at rest"
+level=INFO msg="switchboard listening" addr=127.0.0.1:8080 base_url=https://switchboard.example.com oidc=true dev_login=false
+level=INFO msg="listening for todo_ready wakeups" channel=todo_ready
+```
+
+Check the `oidc=` and `dev_login=` values on that line: they tell you which login paths are live.
+
+`sslmode=disable` above assumes the database is on the same host or a private network. Across a
+network, use `sslmode=verify-full`.
+
+### When it won't start
+
+| Message | Cause |
+|---|---|
+| `db: empty DATABASE_URL` | `SWITCHBOARD_DATABASE_URL` is unset. |
+| `db: ping: … connection refused` | The DSN is right but nothing is listening. |
+| `cred: secret encryption key must decode (base64 or hex) to exactly 32 bytes` | The key is the wrong length or encoding. |
+
+All three exit immediately and say which one it is.
+
+### Behind a reverse proxy
+
+Two rules matter more than the rest:
+
+- **Do not buffer `/mcp/*`.** A vended MCP endpoint's `GET` is a long-lived notification stream. A
+  buffering proxy holds doorbells until the connection closes. Caddy:
+  `reverse_proxy … { flush_interval -1 }`. nginx: `proxy_buffering off;`.
+- **Pass a trusted `X-Forwarded-For`.** The pre-auth rate limiter keys on the client IP, and with
+  TLS terminated upstream every agent otherwise arrives from one address and shares a bucket.
+
+Switchboard is a complete OIDC relying party with its own login, so don't put forward-auth in front
+of it.
+
+## Sign-in (OIDC)
+
+Register switchboard as a confidential client in your provider:
+
+- **Redirect URI:** `<SWITCHBOARD_BASE_URL>/auth/callback`
+- **Grant:** authorization code, with PKCE
+- **Scopes:** `openid`, plus whatever your provider needs for name and email
+
+Then set the three `SWITCHBOARD_OIDC_*` variables and restart.
+
+Switchboard trusts the issuer wholesale and enforces no assurance claim, which is only appropriate
+for a provider you control and would trust for admin access. **Users are created on first
+sign-in**, keyed on the OIDC subject, so whoever can authenticate at your provider can sign in here.
+Restrict access at the provider.
+
+To confirm it worked: open `/login`. With OIDC configured you get a login button; with nothing
+configured you get "No login configured", and `/auth/login` answers:
+
+```
+503 OIDC not configured (set SWITCHBOARD_OIDC_* or SWITCHBOARD_DEV_LOGIN=1)
+```
+
+`SWITCHBOARD_DEV_LOGIN=1` mints a session for a fixed local user with no authentication at all. It
+is for trying the loop on a laptop, never for a deployment.
+
+## Verify the whole loop
+
+Do this once, on a fresh instance. It takes a few minutes and proves ingestion, verification,
+routing, and the agent surface all work together.
+
+**1. Vend an endpoint.** Sign in, open **Endpoints**, and use **+ vend endpoint**. Give it a queue
+(`inbox`), the six todo verbs plus `create_webhook`, and a webhook allowance of 1 or 2 with source
+type `github`. The reveal shows the MCP URL and a `sbk_…` credential **once**.
+
+**2. Create a webhook.** From an MCP client connected to that endpoint, or any HTTP client speaking
+MCP, call `create_webhook`:
+
+```json
+{"source_type": "github", "target_queue": "inbox"}
+```
+
+You get back an `ingest_url` and a `signing_secret` (`whsec_…`), the secret shown only this once.
+
+**3. Send a signed delivery.**
+
+```bash
+BODY='{"action":"opened","issue":{"number":1,"title":"self-host check","user":{"login":"you"}},"sender":{"login":"you"}}'
+SIG="sha256=$(printf %s "$BODY" | openssl dgst -sha256 -hmac "$SIGNING_SECRET" | awk '{print $NF}')"
+
+curl -sS -X POST "$INGEST_URL" \
+  -H 'Content-Type: application/json' \
+  -H 'X-GitHub-Event: issues' \
+  -H "X-GitHub-Delivery: $(uuidgen)" \
+  -H "X-Hub-Signature-256: $SIG" \
+  -d "$BODY"
+```
+
+Expect `202` and a body naming the todo it created:
+
+```json
+{"todos":[{"id":"td_…","queue":"inbox","created":true}],"created":1,"trust_mode":"signed","verified":true}
+```
+
+**4. Prove verification is real.** Send the same body with no signature header:
+
+```json
+401 {"error":"signature verification failed"}
+```
+
+Nothing is stored for a rejected delivery.
+
+**5. Work the todo.** `list_todos` with `{"queue": "inbox", "state": "pending", "limit": 5}` returns
+it, with `attempt: 0` and `max_attempts: 5`. `claim` takes it under a lease (`state: claimed`,
+`attempt: 1`, a `lease_expires_at`), and `complete` finishes it (`state: done`).
+
+If all five steps behave that way, the instance is working: signatures are enforced, todos are
+durable, and agents can drain them.
+
+### Two things that look like bugs
+
+- **A repeated identical body collapses.** Deliveries dedupe on the producer's delivery id, or on a
+  hash of the body when there is none. Posting the same JSON twice with plain `curl` returns
+  `"created": 0` and the *first* todo's id — it isn't lost, it's the same work item. Send a unique
+  `X-GitHub-Delivery` per delivery, as real producers do.
+- **The CLI says nothing is there before you log in.** `switchboard endpoint list` prints
+  `not logged in — run \`switchboard login <URL>\` first`.
+
+## Routing rules: two live defects
+
+Routing rules are optional — without any, deliveries land on the webhook's target queue. If you
+write them, know these two before you write a trust rule, because both are unfixed and both fail in
+the dangerous direction.
+
+**Rules fail open.** A rule whose jq expression errors is recorded as a fault and treated as *no
+match*. For a drop rule that means it stops dropping. A trust rule that reads a parameter of the
+wrong type doesn't fail closed — it lets everything past. Defend by hand: read list parameters
+through `arrays` and string parameters through `strings`, so a missing or mistyped value becomes an
+empty list rather than an error:
+
+```json
+{"id": "untrusted", "expr": "(($params.trusted | arrays) // []) as $t | ((.payload.sender.login // \"\") as $who | any($t[]; . == $who) | not)", "action": {"drop": true}}
+```
+
+**Saving rules without `params` clears them.** `set_webhook_rules` replaces rules, default action
+and parameters together. Omit `params` and your allowlists are gone — combined with the above, a
+trust rule then matches nobody or everybody depending on how it is written. Always send `params`
+with the rules, and read them back with `list_webhook_rules`.
+
+The [routing cookbook](/guides/routing-cookbook) has tested recipes that already follow both rules.
+
+## What an endpoint can do
+
+An endpoint is the whole capability grant: an MCP URL plus a credential, scoped at vend time to a
+set of queues, a list of tools, a webhook allowance, and a lifetime.
+
+**The endpoint's scope is the only capability boundary.** It cannot be widened after vending — there
+is deliberately no verb for that — and no client-side configuration, skill, or prompt changes what it
+may do. To change what an agent can do, vend a new endpoint and revoke the old one. Revocation is
+immediate: the credential stops authenticating and live sessions are torn down.
+
+Grant the smallest useful scope. The event-history tools in particular should go only to endpoints
+whose job needs them.
+
+## Where to go next
+
+- [Concepts in five minutes](/getting-started/concepts) — the model your users will work in.
+- [Vend an endpoint](/guides/vend-an-endpoint) — the full scope surface.
+- [Receive your first webhook](/getting-started/first-webhook) — GitHub, Gitea, Cairn, and signing
+  your own producer.
+- [Routing cookbook](/guides/routing-cookbook), [Working the queue well](/guides/working-the-queue),
+  [Security model](/guides/security-model), and [Troubleshooting](/guides/troubleshooting).
