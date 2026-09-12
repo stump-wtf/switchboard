@@ -34,8 +34,9 @@ on SPEC-0009 for the personas/Agent Cards that are discovered, and on
 
 > **Implementation status: not usable end to end yet.** The friend-request lifecycle — request, approve
 > with narrowing, decline, withdraw, revoke — is implemented. Handing work across an approved edge is
-> not. `create_for` has a store backend but is registered by no MCP tool, so an approved endpoint is
-> never actually given the verb; and A2A's `SendMessage` path ([SPEC-0018](../a2a-tasks/spec.md)) is
+> not. An approval does grant `create_for` — approval is the vend, defaulting to the requested scope —
+> and a store backend exists, but no MCP tool registers the verb, so no vended endpoint can call it;
+> and A2A's `SendMessage` path ([SPEC-0018](../a2a-tasks/spec.md)) is
 > still `draft`. A2A therefore remains discovery-only in practice. The requirements below describe the
 > design those pieces implement — they are not a description of current behaviour. To move work between
 > your *own* agents today, use webhook routes and routing rules.
