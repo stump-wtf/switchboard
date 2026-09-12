@@ -28,14 +28,23 @@ services:
       retries: 12
 
   switchboard:
-    image: gitea.stump.rocks/joestump/switchboard:latest
-    pull_policy: always
+    # Built from this checkout, so the stack runs the moment you clone it. The Dockerfile is
+    # hermetic — dependencies are vendored and the build needs no network — so this costs one
+    # compile and nothing else. To run a published image instead, comment `build` out and
+    # uncomment `image` (see docs/guides/14-self-hosting.md).
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    # image: ghcr.io/stump-wtf/switchboard:latest
     depends_on:
       db:
         condition: service_healthy
     environment:
       SWITCHBOARD_ADDR: 0.0.0.0:8080
-      SWITCHBOARD_BASE_URL: ${SWITCHBOARD_BASE_URL:-https://switchboard.stump.rocks}
+      # Loopback by default so a fresh clone works unconfigured. Set this to your externally
+      # reachable URL: it builds the OIDC redirect, the vended MCP endpoint URLs and the webhook
+      # ingest URLs, and an `https://` value is what marks session cookies Secure.
+      SWITCHBOARD_BASE_URL: ${SWITCHBOARD_BASE_URL:-http://127.0.0.1:8080}
       SWITCHBOARD_DATABASE_URL: postgres://switchboard:change-me@db:5432/switchboard?sslmode=disable
       SWITCHBOARD_OIDC_ISSUER: ${SWITCHBOARD_OIDC_ISSUER:-}
       SWITCHBOARD_OIDC_CLIENT_ID: ${SWITCHBOARD_OIDC_CLIENT_ID:-}
@@ -70,12 +79,14 @@ services:
   #     handle { reverse_proxy 127.0.0.1:8080 { flush_interval -1 } }   # the app (see below)
   #   }
   # (GitHub Pages was retired: a private org repo on the Team plan cannot serve Pages.)
-  switchboard-docs:
-    image: gitea.stump.rocks/stump.wtf/switchboard-docs:latest
-    pull_policy: always
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8081:80"
+  # Commented out deliberately: this image is published by our own CI to a registry you cannot
+  # reach, so leaving it enabled would fail the stack on a pull nobody can satisfy. The docs are
+  # readable at https://switchboard.stump.wtf/docs/, and `docs-site/` in this repo builds them.
+  # switchboard-docs:
+  #   image: <your registry>/switchboard-docs:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:8081:80"
 
 volumes:
   switchboard-db:

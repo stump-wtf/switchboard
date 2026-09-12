@@ -6,11 +6,11 @@
 #   - Trivy scan (fail-closed on HIGH/CRITICAL with a fix)
 #   - push :latest, :main, :sha-<short>
 # StumpCloud's Ansible pulls :latest with `pull: always`, so a redeploy of the switchboard service
-# picks up HEAD. COUPLING: the running deployment still pulls the RETIRED joestump/switchboard:latest,
-# and its committed inventory definition (the `switchboard` group + service dict) was dropped with the
-# ie02 decommission — so it is not visible in stumpcloud/ansible main. The consumer's image ref must be
-# repointed to stump.wtf/switchboard in lockstep with this change, or the live service keeps running
-# its current image and silently stops receiving updates.
+# picks up HEAD. A warning lived here saying the consumer still pulled the RETIRED
+# joestump/switchboard:latest and had to be repointed in lockstep. That is no longer true — the
+# deployment pulls the stump.wtf ref this workflow pushes — so the warning is removed rather than
+# left to mislead. A comment asserting a coupling that no longer exists is worse than no comment:
+# it survives long after anyone can remember whether it was ever checked.
 #
 # Registry auth: on Gitea < 1.26 the automatic per-run token (gitea.token) is REJECTED by the
 # container registry even with `permissions: packages: write` — VERIFIED: it returns
