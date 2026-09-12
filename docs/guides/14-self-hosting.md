@@ -194,7 +194,7 @@ durable, and agents can drain them.
   `"created": 0` and the *first* todo's id — it isn't lost, it's the same work item. Send a unique
   `X-GitHub-Delivery` per delivery, as real producers do.
 - **The CLI says nothing is there before you log in.** `switchboard endpoint list` prints
-  `not logged in — run \`switchboard login <URL>\` first`.
+  ``not logged in — run `switchboard login <URL>` first``.
 
 ## Routing rules: two live defects
 
