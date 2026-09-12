@@ -1,0 +1,119 @@
+# GoReleaser configuration for switchboard.
+# https://goreleaser.com
+#
+# switchboard is ONE binary containing both the server and the operator CLI —
+# cmd/switchboard/main.go imports internal/server directly. That is the design
+# (see the command's own doc comment), not an accident, which is why this config
+# has no artifact-content gate. Cairn's .goreleaser.yaml runs
+# scripts/verify-cli-artifact.sh as a post hook to prove its CLI archive carries
+# no server code; that gate guards a CLI package acquiring an import edge into a
+# server package. switchboard has no such split to protect, so porting the gate
+# would mean asserting something deliberately false — and the predictable repair
+# is loosening it until it stops rejecting, leaving a check that measures
+# nothing.
+#
+# DELIBERATE DEVIATION from cairn's config: NO before.hooks at all.
+#
+# Cairn runs `go mod tidy`. That is wrong here and would undermine the property
+# this release exists to deliver: switchboard vendors its dependencies, which is
+# what lets anyone build it with GOPROXY=off and no network, and what stops a
+# release job publishing an unbuildable binary. `tidy` can rewrite go.mod and
+# vendor/ in the middle of a release.
+#
+# `go mod verify` was the first replacement and it is ALSO wrong — found by
+# running it rather than reasoning about it. It consults the module cache and
+# therefore the network, so under GOPROXY=off it dies with "module lookup
+# disabled by GOPROXY=off". A hook that requires network access, in a repo whose
+# build must not, is wrong whichever verb it uses.
+#
+# So: no hook. The vendored tree IS the verification — `go build -mod=vendor`
+# fails immediately if vendor/ and go.mod disagree, and that check runs on every
+# one of the six target builds below rather than once at the start.
+
+version: 2
+
+project_name: switchboard
+
+builds:
+  - id: switchboard
+    main: ./cmd/switchboard
+    binary: switchboard
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      # -mod=vendor is implied by the vendor/ directory, but stated so a future
+      # GOFLAGS change cannot quietly send the release build to the module proxy.
+      - -mod=vendor
+      - -trimpath
+    ldflags:
+      # `main.version` and nothing else: cmd/switchboard/main.go declares a
+      # single `var version = "dev"` (main.go:36), so there is no Commit or Date
+      # symbol to stamp. Cairn stamps three into internal/clicmd — copying that
+      # path here would inject NOTHING and still exit 0, leaving every release
+      # binary reporting "dev". Verified by control before writing this: built
+      # with and without the flag and compared `switchboard version` output.
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    # Ship the binary and the licence, nothing else. Left unset, goreleaser's
+    # default sweeps README*/CHANGELOG*/LICENSE* from the repo root, and this
+    # repo's README links docs/adrs/ and docs/openspec/ — dead links for whoever
+    # unpacks the tarball, since none of that travels inside it. The key stays
+    # explicitly listed: omitting it re-enables the default, so an empty list and
+    # an absent key are not the same thing.
+    files:
+      - LICENSE
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  # REQUIRED, and not inferable. This job runs on the Gitea runner, where the
+  # git remote is gitea.stump.rocks — so without an explicit target goreleaser
+  # would resolve the wrong host entirely. switchboard releases to ITSELF on
+  # GitHub (unlike cairn, which publishes its CLI to a separate stump-wtf/
+  # cairn-cli repo because cairn's source is private). switchboard's source is
+  # the thing being open-sourced, so the binaries belong on the same repo.
+  github:
+    owner: stump-wtf
+    name: switchboard
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+  # Re-running a tag must not clobber notes on a release that already exists.
+  mode: keep-existing
+  # Re-running against a tag that already carries archives is the normal
+  # recovery path (a half-finished upload, a re-run after provisioning a
+  # secret). goreleaser defaults this to false and errors on the first name
+  # collision, turning every retry into a manual "delete the assets by hand".
+  replace_existing_artifacts: true

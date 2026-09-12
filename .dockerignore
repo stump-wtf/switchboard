@@ -1,0 +1,11 @@
+# The Dockerfile does `COPY . .`, so without this file every `docker build` and
+# every `docker compose up` ships the whole repository as build context — 1,379
+# tracked files, most of which the build never reads.
+#
+# vendor/ is NOT excluded, and must not be: the build is deliberately hermetic
+# (`go build -mod=vendor` with no network), which is what lets a stranger build
+# offline and what stops a release publishing an unbuildable binary.
+.git
+docs
+docs-site
+*.md
