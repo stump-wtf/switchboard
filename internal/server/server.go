@@ -48,6 +48,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// rather than silently persisting plaintext. Governing: SPEC-0006 REQ "Switchboard Owns Secrets,
 	// Verification, and Idempotency".
 	var storeOpts []store.Option
+	encryptionEnabled := false
 	if key, err := cred.ParseSecretBoxKey(cfg.SecretEncryptionKey); err != nil {
 		return err
 	} else if len(key) > 0 {
@@ -56,9 +57,30 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			return err
 		}
 		storeOpts = append(storeOpts, store.WithSecretCipher(box))
+		encryptionEnabled = true
 		log.Info("webhook signing secrets encrypted at rest")
 	}
+	// The logger is what makes a plaintext signing-secret write audible at the moment it happens;
+	// without it the store stays silent exactly as before.
+	storeOpts = append(storeOpts, store.WithLogger(log))
 	st := store.New(pool, storeOpts...)
+
+	// An empty key is a supported configuration, but it must not be a silent one when the deployment
+	// is already holding signing secrets in the clear. This covers the webhooks that exist at boot;
+	// one created later is caught by the per-write warning in the store, because a startup-only check
+	// is correct when it fires and silent when it does not.
+	if !encryptionEnabled {
+		if n, err := st.CountSignedWebhooks(ctx); err != nil {
+			log.Warn("could not check for signed webhooks at startup", "err", err)
+		} else if n > 0 {
+			log.Warn("webhook signing secrets are stored in plaintext",
+				"signed_webhooks", n,
+				"reason", "SWITCHBOARD_SECRET_ENCRYPTION_KEY is empty",
+				"impact", "anyone who can read the database can read the HMAC signing secrets",
+				"fix", "set SWITCHBOARD_SECRET_ENCRYPTION_KEY to a 32-byte key (openssl rand -base64 32)",
+			)
+		}
+	}
 	// The ingest Hub is the accept-path's lossy, in-process new-todo doorbell (ingest.Hub); the
 	// production channel push to live MCP sessions flows through the store doorbell hook wired below.
 	// (The stdio adapter and the /agent REST surface — and their agentapi.Hub — were retired in the
