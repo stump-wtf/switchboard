@@ -145,7 +145,7 @@ If you want a pool to ignore reviews and comments on PRs its identity authored, 
 ```json
 {"id": "own-pr-review-feedback",
  "name": "never act on reviews or comments on a PR this pool's identity authored",
- "expr": "($params.identity // \"\") as $id | $id != \"\" and (((.kind | IN(\"pull_request_comment\", \"pull_request_review_approved\", \"pull_request_review_rejected\", \"pull_request_review_comment\")) and ((.payload.pull_request.user.login // \"\") == $id)) or ((.kind | IN(\"issue_comment\", \"pull_request_comment\")) and ((.payload.is_pull // false) == true or (.payload.issue.pull_request // null) != null) and ((.payload.issue.user.login // \"\") == $id)))",
+ "expr": "($params.identity // \"\") as $id | $id != \"\" and (((.kind | IN(\"pull_request_review\", \"pull_request_review_comment\")) and ((.payload.pull_request.user.login // \"\") == $id)) or ((.kind | IN(\"issue_comment\")) and ((.payload.is_pull // false) == true or (.payload.issue.pull_request // null) != null) and ((.payload.issue.user.login // \"\") == $id)))",
  "action": {"drop": true}}
 ```
 
