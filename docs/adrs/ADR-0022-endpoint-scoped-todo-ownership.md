@@ -92,6 +92,8 @@ populated later by friending/routing without further schema change.
 
 Chosen option: **(C) endpoint-owned todos with deterministic route fan-out.**
 
+**Implementation status (partial):** endpoint-owned todos and deterministic route fan-out — the mechanism this ADR chose — are implemented. The `create_for` verb it contrasts fan-out against is **not** exposed: a store backend exists, but no MCP tool registers it, so the "ad-hoc case (one agent handing one todo to another via `create_for`)" discussed above is unavailable today. That strengthens rather than weakens the decision recorded here: route fan-out is the path that works.
+
 ### Todo ownership
 
 The `todos` table gains a non-null `endpoint_id` foreign key to `endpoints` (ON DELETE

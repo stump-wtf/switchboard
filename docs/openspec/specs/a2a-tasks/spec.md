@@ -33,6 +33,13 @@ sessions, while this spec's streaming (`SubscribeToTask`) serves external A2A ca
 replaces the other. The separate `PushNotificationConfig` webhook mechanism (external, authenticated,
 durable HTTP delivery) is out of scope here and is formalized in its own spec.
 
+> **Premise note.** This spec is `draft`, so its own requirements plainly describe work that is not
+> built. What the status does *not* convey is that the **existing** path it repeatedly refers to is
+> also unbuilt: MCP's `create_for` has a store backend but is registered by no MCP tool, so no vended
+> endpoint can call it. Phrasing below such as "the same authorization path `create_for` already uses"
+> describes an *intended* path, not a live one. Anything this spec inherits from that path has to be
+> built rather than assumed.
+
 ## Requirements
 
 ### Requirement: SendMessage Requires a Vended Endpoint
