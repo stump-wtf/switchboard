@@ -106,6 +106,22 @@ afterwards achieves nothing while breaking things:
 The exception is ordinary change: if the pipeline genuinely moves to different infrastructure, the
 workflows follow it. That is maintenance, not hygiene.
 
+### What still needs doing at the flip
+
+This decision removes the blocker to publishing; it does not mean everything about publication has
+been verified. One item is outstanding and cannot be closed before the flip:
+
+**The self-hosting guide's source-acquisition step is unverified by construction.** It documents how
+a reader obtains the source, against a public location that does not resolve while the repository is
+private. Nobody can test it today. The moment the repository is public, someone must run the clone
+*as an outside reader would* — not from a machine that already holds the source, and not by reading
+the instructions and judging them plausible. Until that happens, the install path is documented but
+unproven, and it should not be described as working.
+
+The same caution applies to anything else whose correctness depends on the repository being
+reachable: a green docs build proves the page renders, not that the commands on it succeed for
+someone who has never seen this network.
+
 ### How this decision was made
 
 This ADR began as an open question. A sweep of the tree during documentation work surfaced the ~30
