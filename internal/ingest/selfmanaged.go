@@ -160,6 +160,27 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// A rule that cannot be evaluated is treated as no-match (routing.Match), so a faulting rule
+	// does not fail the delivery — it stops doing its job. That inverts the two restrictive shapes:
+	// a drop rule stops dropping, and a trust rule stops restricting, which means the delivery falls
+	// through to whatever follows. The trace has always recorded the fault, but nothing surfaced it,
+	// so an owner learned their allowlist had gone quiet only by opening the right event.
+	//
+	// Warn, not Error: the delivery is routed and its outcome is unchanged. This is the signal that
+	// a rule needs fixing, not a failure. Governing: #212.
+	for _, f := range decision.Trace.Faults {
+		// RuleIndex -1 is the sandbox reporting that evaluation failed wholesale rather than one
+		// rule misbehaving (routing/sandbox.go) — every rule was skipped, which is a different
+		// operator situation from "rule 3 is broken" and reads better as its own line.
+		if f.RuleIndex < 0 {
+			i.log.Warn("routing failed wholesale; every rule treated as no-match",
+				"webhook", wh.ID, "cause", f.Cause, "detail", f.Detail)
+			continue
+		}
+		i.log.Warn("routing rule faulted; treated as no-match",
+			"webhook", wh.ID, "rule_id", f.RuleID, "rule_index", f.RuleIndex,
+			"cause", f.Cause, "detail", f.Detail)
+	}
 	// Work orders (ADR-0025). The subject — the issue or artifact this delivery is about — is parsed
 	// here in Go from the verified body, never taken from a rule: it keys at-most-once delivery and
 	// populates the work order, and neither may depend on tenant-written jq.
