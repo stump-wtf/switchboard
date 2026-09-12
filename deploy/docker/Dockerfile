@@ -1,5 +1,5 @@
 # switchboard container image — a single static binary (assets + migrations embedded via embed.FS).
-# Built and pushed by .gitea/workflows/build.yaml to gitea.stump.rocks/joestump/switchboard.
+# Built and pushed by .gitea/workflows/build.yaml to gitea.stump.rocks/stump.wtf/switchboard.
 #
 # Runtime needs: PostgreSQL (SWITCHBOARD_DATABASE_URL) and, for real login, a Pocket ID OIDC client
 # (SWITCHBOARD_OIDC_*). The container binds 0.0.0.0:8080 — switchboard is a complete, self-contained
