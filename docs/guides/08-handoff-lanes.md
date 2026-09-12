@@ -136,6 +136,30 @@ Install `docs/routing/rule-packs/pool-review.json` on **each** identity's forge 
 
 Dry-run it with `test_webhook_rules` against a stored review request event of that webhook, one addressed to each identity.
 
+**Routing is not the merge gate.** These rules decide which pool is woken, not what a worker may do once it is awake. On 2026-09-11 a `joestump` pool worker merged a `joestump` PR (switchboard#193) while working a todo made from a *review* delivery, which no rule above covers. Gate merges in the forge: require at least one approval on the protected branch, dismiss stale approvals on push, and rely on the forge refusing an author's approval of their own PR. Then no worker's judgment can land a merge, and a worker clamp is defense in depth rather than the gate.
+
+### Optional: cut a pool off from its own PRs' review feedback
+
+If you want a pool to ignore reviews and comments on PRs its identity authored, add a third rule. **Weigh the cost first:** the authoring identity's pool then never wakes for review feedback on its own work, so it cannot push review fixes. That path produces real work, so prefer the branch-protection gate above and add this only when you want authors handled solely by their own session.
+
+```json
+{"id": "own-pr-review-feedback",
+ "name": "never act on reviews or comments on a PR this pool's identity authored",
+ "expr": "($params.identity // \"\") as $id | $id != \"\" and (((.kind | IN(\"pull_request_comment\", \"pull_request_review_approved\", \"pull_request_review_rejected\", \"pull_request_review_comment\")) and ((.payload.pull_request.user.login // \"\") == $id)) or ((.kind | IN(\"issue_comment\", \"pull_request_comment\")) and ((.payload.is_pull // false) == true or (.payload.issue.pull_request // null) != null) and ((.payload.issue.user.login // \"\") == $id)))",
+ "action": {"drop": true}}
+```
+
+On an endpoint without rule verbs, an operator writes the same rule with the identity inlined in place of `$id`, one variant per identity.
+
+Dry-run evidence, from 20 real deliveries about one pull request across both identity pools:
+
+| Pool | Without the rule | With it |
+|---|---|---|
+| the PR author's identity | 2 review requests dropped, 8 review and comment deliveries routed | the same 2, plus all 8 dropped |
+| the other identity | all 10 routed | unchanged, all 10 routed |
+
+No rule faulted, and the two-rule pack alone reproduced each delivery's stored production trace exactly.
+
 ## 8. Retire lane-bound events from the pool hooks
 
 Dedup is per webhook. If a per-identity pool hook still receives the same Issues events, and routes them anywhere that executes work, each issue becomes a second work order. Narrow those hooks' events, or give them rules that drop issue events. The router is the **single ingress** for lanes.
