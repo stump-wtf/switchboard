@@ -103,6 +103,29 @@ anything.
 - **A redelivery made a new one.** Once a todo is `done`, the same delivery id arriving again creates
   a new todo. Forge "redeliver" buttons do exactly that.
 
+## `failed` does not mean finished
+
+`failed` is two different situations wearing one label:
+
+- **Still retrying.** Attempts remain, so switchboard re-queues the todo after a backoff that starts
+  at 30 seconds and doubles to a 15-minute cap. It will be worked again on its own.
+- **Dead-lettered.** The attempt budget is spent. Nothing re-queues it, and it waits for a human.
+
+`list_todos` returns no field that says which one a todo is in — there is no "next retry" time in its
+output — so a queue full of `failed` todos looks the same whether it is busy recovering or has
+quietly stopped. Tell them apart this way:
+
+- **Compare `attempt` with `max_attempts`,** both of which every todo carries. `attempt` below
+  `max_attempts` means a retry is still coming; `attempt` equal to it means dead-lettered.
+- **Open the Todos view** for the definitive answer: a retrying todo shows a `↻ retry` countdown, and
+  a dead-lettered one says it was dead-lettered after N/M attempts and offers **Retry now**.
+- **Watch whether the count moves.** Retrying todos leave `failed` on their own within 15 minutes.
+  A `failed` count that never changes is dead letters, not work in progress.
+
+Two things follow from this for anyone writing a worker or an alert. Don't treat `failed` as a
+terminal state, and don't count it as a queue-health signal on its own: the number that matters is
+how many todos are at their attempt ceiling.
+
 ## Tool errors
 
 | Error | Meaning |
