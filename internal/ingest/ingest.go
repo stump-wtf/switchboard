@@ -23,8 +23,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joestump/switchboard/internal/routing"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 const maxBody = 5 << 20 // 5 MiB

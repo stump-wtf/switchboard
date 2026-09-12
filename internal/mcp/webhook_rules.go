@@ -48,8 +48,8 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/joestump/switchboard/internal/routing"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 const codeRuleNotFound = "rule_not_found"

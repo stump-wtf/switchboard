@@ -22,7 +22,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // TestChannelCapabilityAdvertised: initialize advertises the experimental claude/channel

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/adapter"
+	"github.com/stump-wtf/switchboard/internal/adapter"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

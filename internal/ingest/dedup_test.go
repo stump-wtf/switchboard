@@ -22,8 +22,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joestump/switchboard/internal/db"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/db"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // idempotencyKey MUST prefer the provider delivery id and MUST fall back to sha256(body) where the

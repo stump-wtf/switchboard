@@ -20,7 +20,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // session vends a credential with the given scope, seeds todos, and returns a connected session.

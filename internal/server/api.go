@@ -34,9 +34,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/cred"
-	"github.com/joestump/switchboard/internal/mcp"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // apiHandler serves the /api/v1 operator surface.

@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/config"
 )
 
 // --- assurance posture ----------------------------------------------------------------------------

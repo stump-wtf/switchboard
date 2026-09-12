@@ -25,8 +25,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/joestump/switchboard/internal/routing"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 const cairnSecret = "whsec_cairn_ingest"

@@ -23,7 +23,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // eventVerbNames is the full SPEC-0005 tool surface, used to vend all-granted test endpoints.

@@ -26,8 +26,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // connectWizard is the connect-provider flow's wizard definition. steps is the full slug

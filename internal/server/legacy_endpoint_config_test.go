@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 func TestValidateLegacyEndpointID(t *testing.T) {

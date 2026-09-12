@@ -31,9 +31,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/joestump/switchboard/internal/cred"
-	"github.com/joestump/switchboard/internal/db"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/db"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // --- fakeStore routing stubs ---------------------------------------------------------------------

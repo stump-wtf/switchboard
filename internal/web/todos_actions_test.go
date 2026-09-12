@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // TestRespondTodoActionMapsStoreErrors proves the SPEC-0012 error-handling standard: a drawer action

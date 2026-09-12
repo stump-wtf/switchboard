@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/joestump/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/auth"
 )
 
 // Governing: SPEC-0006 REQ webhook self-management rate ceiling, SPEC-0009 persona card. A small

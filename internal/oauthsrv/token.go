@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joestump/switchboard/internal/cred"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // AccessTokenTTL is the policy lifetime of an access token. One hour keeps a leaked access token

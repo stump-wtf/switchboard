@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // renderFrag renders one fragment from the standalone fragment set (the same path live.go uses

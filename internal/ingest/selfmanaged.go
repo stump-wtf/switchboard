@@ -38,8 +38,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/routing"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // SelfManaged is the receiver for agent self-managed webhooks: POST /webhooks/w/{token}.

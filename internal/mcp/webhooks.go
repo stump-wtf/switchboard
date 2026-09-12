@@ -31,7 +31,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Stable machine error codes specific to the webhook ceiling (SPEC-0006 REQ "Structured Output and

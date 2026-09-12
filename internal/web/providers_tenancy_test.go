@@ -16,8 +16,8 @@ package web
 import (
 	"testing"
 
-	"github.com/joestump/switchboard/internal/config"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 func TestIsOperatorRequiresAnExplicitAllowlistMatch(t *testing.T) {

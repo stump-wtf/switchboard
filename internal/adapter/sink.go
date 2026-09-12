@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // DefaultDeliverTimeout bounds each Deliver's event-insert + todo-create transaction when

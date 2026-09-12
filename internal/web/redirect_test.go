@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/config"
 )
 
 func TestSafeRedirectTarget(t *testing.T) {

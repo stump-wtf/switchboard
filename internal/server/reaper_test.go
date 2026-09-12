@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // fakeReapStore scripts ExpireEndpoints results per call and records everything; the todo-lease

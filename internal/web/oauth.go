@@ -19,10 +19,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/mcp"
-	"github.com/joestump/switchboard/internal/oauthsrv"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Authorize-request parameter bounds (SPEC-0016 "Security Requirements → Input Validation"): a

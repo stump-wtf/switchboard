@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Governing: ADR-0010 (A2A discovery + human-vended friending), ADR-0011 (OIDC provenance; passkey

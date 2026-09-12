@@ -9,7 +9,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/joestump/switchboard/internal/adapter"
+	"github.com/stump-wtf/switchboard/internal/adapter"
 )
 
 // ListClient is the narrow subset of go-redis commands the reliable-list adapter uses;

@@ -21,8 +21,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // SetPersonasEnabled toggles the personas capability for this handler. The server enables it by

@@ -18,14 +18,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/a2a"
-	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/config"
-	"github.com/joestump/switchboard/internal/ingest"
-	mcpsrv "github.com/joestump/switchboard/internal/mcp"
-	"github.com/joestump/switchboard/internal/oauthsrv"
-	"github.com/joestump/switchboard/internal/store"
-	"github.com/joestump/switchboard/internal/web"
+	"github.com/stump-wtf/switchboard/internal/a2a"
+	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/ingest"
+	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/web"
 )
 
 // newTestRouter builds the production route table without a database. That is safe for anonymous

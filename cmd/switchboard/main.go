@@ -28,9 +28,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/joestump/switchboard/internal/config"
-	"github.com/joestump/switchboard/internal/routing"
-	"github.com/joestump/switchboard/internal/server"
+	"github.com/stump-wtf/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/server"
 )
 
 // version is stamped at build time (go build -ldflags "-X main.version=…"); "dev" otherwise.

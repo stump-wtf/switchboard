@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/db"
+	"github.com/stump-wtf/switchboard/internal/db"
 )
 
 // testStore connects to a store-package-OWNED database derived from SWITCHBOARD_TEST_DATABASE_URL

@@ -33,7 +33,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // fanoutLease is the claim TTL these tests use. Long enough that no lease expires mid-test, so a

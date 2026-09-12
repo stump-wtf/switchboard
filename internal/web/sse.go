@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/joestump/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/auth"
 )
 
 const (

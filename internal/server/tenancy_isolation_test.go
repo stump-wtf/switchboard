@@ -44,7 +44,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // tenancyLease mirrors the operators' claim TTL: long enough that no lease expires mid-test, so a

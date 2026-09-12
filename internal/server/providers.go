@@ -14,9 +14,9 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/joestump/switchboard/internal/ingest"
-	mcpsrv "github.com/joestump/switchboard/internal/mcp"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/ingest"
+	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // providerSeeder is the store slice the boot seed needs; *store.Store satisfies it, tests fake it.

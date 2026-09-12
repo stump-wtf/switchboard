@@ -17,7 +17,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // testRegistryIngest builds an Ingest whose store the test can also seed registry rows through,

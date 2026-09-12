@@ -21,7 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/joestump/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/routing"
 )
 
 // WebhookRouting is a webhook's routing configuration plus the switchboard-side facts a grant is

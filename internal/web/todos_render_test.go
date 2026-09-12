@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // TestTodoRowDoneStateIsTerminal covers the fourth todo state: a done row shows the done state

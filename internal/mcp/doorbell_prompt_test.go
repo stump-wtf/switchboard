@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // The doorbell has to ASK for the lifecycle, not just announce a todo. The announcement version

@@ -26,7 +26,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Stable machine error codes completing the SPEC-0005 set (codeNotFound and codeInternal are

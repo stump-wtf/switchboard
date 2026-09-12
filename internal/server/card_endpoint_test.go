@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // cardPath builds the well-known card path for a persona id.

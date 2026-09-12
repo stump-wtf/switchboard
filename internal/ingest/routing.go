@@ -28,8 +28,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joestump/switchboard/internal/routing"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // SetRouter replaces the router used for webhooks that have routing rules. New installs the

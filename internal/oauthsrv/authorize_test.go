@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/cred"
 )
 
 func TestValidateCodeChallenge(t *testing.T) {

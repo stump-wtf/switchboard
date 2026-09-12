@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/config"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // disabledFriendsHandler is a test handler with the friending capability OFF (the default).

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // pendingRow / claimedRow / failedRow build todoRow render models without a store.

@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/oauthsrv"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // mintOperatorBearer issues a live operator OAuth access token bound to humanID — the same shape

@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/cred"
-	"github.com/joestump/switchboard/internal/oauthsrv"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // vendOAuth mints an OAuth access token (oauthsrv.MintToken — unprefixed, hashed with the same

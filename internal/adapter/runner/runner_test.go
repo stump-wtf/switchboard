@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/adapter"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/adapter"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

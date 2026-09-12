@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // hubSharedQueueNames are the collision cases from the reported bug: queue labels two unrelated

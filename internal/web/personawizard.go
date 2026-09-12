@@ -23,8 +23,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // personaWizard is the persona flow's wizard definition. The step order is the SPEC-0015 contract:

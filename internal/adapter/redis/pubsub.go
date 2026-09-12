@@ -9,7 +9,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/joestump/switchboard/internal/adapter"
+	"github.com/stump-wtf/switchboard/internal/adapter"
 )
 
 // PubSubConn is the narrow subset of *goredis.PubSub the pub/sub adapter uses.

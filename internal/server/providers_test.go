@@ -11,8 +11,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/ingest"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/ingest"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // fakeSeeder records every seed offered to it, simulating an already-populated registry for the

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // testErrHandler returns a Handler whose slog output is captured in the returned buffer, so tests

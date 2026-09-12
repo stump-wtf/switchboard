@@ -9,7 +9,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/joestump/switchboard/internal/adapter"
+	"github.com/stump-wtf/switchboard/internal/adapter"
 )
 
 // Transport is the adapters.config "transport" value that assigns a queue-family registry row to

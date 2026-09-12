@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/cred"
-	"github.com/joestump/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/routing"
 )
 
 func TestRoutingOnceMintsAWorkOrderAtMostOnce(t *testing.T) {

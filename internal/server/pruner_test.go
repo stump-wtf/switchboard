@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // fakePruneStore counts Prune invocations and returns a scripted result/error per call.

@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/config"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // newSessionAuth builds an Authenticator with no OIDC provider — session machinery only.

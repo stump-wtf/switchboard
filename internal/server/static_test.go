@@ -78,7 +78,7 @@ func TestStaticTraversalCannotEscapeEmbed(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, p, nil)
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
-		if rec.Code == http.StatusOK && strings.Contains(rec.Body.String(), "module github.com/joestump/switchboard") {
+		if rec.Code == http.StatusOK && strings.Contains(rec.Body.String(), "module github.com/stump-wtf/switchboard") {
 			t.Errorf("GET %s: escaped the embedded static FS", p)
 		}
 	}

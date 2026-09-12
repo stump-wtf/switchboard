@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joestump/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/cred"
 )
 
 // CodeTTL is how long an issued authorization code may sit unredeemed. RFC 6749 §4.1.2 recommends

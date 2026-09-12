@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Sentinel validation errors, so callers can distinguish which envelope invariant failed.

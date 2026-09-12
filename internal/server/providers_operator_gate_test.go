@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Every administrative provider route refuses a signed-in NON-operator with 404.

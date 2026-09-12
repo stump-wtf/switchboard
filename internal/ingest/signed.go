@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Stripe is the signed Stripe webhook receiver: POST /webhooks/stripe.

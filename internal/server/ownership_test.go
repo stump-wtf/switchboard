@@ -23,13 +23,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/config"
-	"github.com/joestump/switchboard/internal/db"
-	"github.com/joestump/switchboard/internal/ingest"
-	"github.com/joestump/switchboard/internal/oauthsrv"
-	"github.com/joestump/switchboard/internal/store"
-	"github.com/joestump/switchboard/internal/web"
+	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/db"
+	"github.com/stump-wtf/switchboard/internal/ingest"
+	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/web"
 )
 
 // sessionCookieName is the session cookie's wire name — a stable browser-facing contract

@@ -14,8 +14,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // quickVendView is the render model for templates/quickvend.html — one page, one form.

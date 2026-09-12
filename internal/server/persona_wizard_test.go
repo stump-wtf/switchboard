@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // TestPersonaWizardCreateWithLivePreview walks the whole create wizard as a no-JS browser:

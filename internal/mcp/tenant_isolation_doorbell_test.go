@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // tenantIsoTodo builds a todo pinned to endpointID. Pinning is not optional decoration:

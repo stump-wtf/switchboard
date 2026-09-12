@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // allPages renders every registered page with representative data so sweeps cover the whole

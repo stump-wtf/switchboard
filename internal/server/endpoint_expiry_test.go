@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/cred"
-	mcpsrv "github.com/joestump/switchboard/internal/mcp"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/cred"
+	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // TestVendWithLifetimePersistsExpiryAndExposesCountdownData: a vend submitting lifetime=24h mints

@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // TaskState is A2A's task lifecycle enum (https://a2a-protocol.org/latest/specification/#taskstate).

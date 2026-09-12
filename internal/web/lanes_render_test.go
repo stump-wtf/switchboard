@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // laneList extracts the inner HTML of one lane's card list (<ul id="sb-lane-<key>-cards">…</ul>)

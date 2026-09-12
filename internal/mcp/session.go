@@ -29,7 +29,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Streamable HTTP wire headers (fixed by the MCP spec; the SDK's own constants are unexported).

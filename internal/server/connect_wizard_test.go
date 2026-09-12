@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 var connectTokenRe = regexp.MustCompile(`data-sb-connect-token>([0-9a-f]{64})<`)

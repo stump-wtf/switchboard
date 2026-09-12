@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // testEndpointID is the owning endpoint every sink in this file is pinned to. A queue adapter has no

@@ -28,7 +28,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Well-known and endpoint paths of the AS surface. Exported as constants so the router

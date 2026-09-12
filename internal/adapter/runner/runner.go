@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/joestump/switchboard/internal/adapter"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/adapter"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Registry is the narrow slice of the store the runner needs: adapter registration, the runtime

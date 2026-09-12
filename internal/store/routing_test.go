@@ -14,7 +14,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/routing"
 )
 
 func sameJSON(t *testing.T, got, want []byte) bool {

@@ -23,7 +23,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Trust modes a generic provider may be explicitly configured with (ADR-0003).

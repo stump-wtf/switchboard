@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // boardBody renders the Board with a connected shell and one card in each persisted lane — enough

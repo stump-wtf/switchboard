@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/oauthsrv"
 )
 
 // TestChallengeCarriesResourceMetadata: with a base URL wired (as Run always does), every 401

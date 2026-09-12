@@ -17,7 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/oauthsrv"
 )
 
 func getDoc(t *testing.T, r chi.Router, path string) map[string]any {

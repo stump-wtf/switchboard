@@ -23,14 +23,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/auth"
-	"github.com/joestump/switchboard/internal/config"
-	"github.com/joestump/switchboard/internal/db"
-	"github.com/joestump/switchboard/internal/ingest"
-	mcpsrv "github.com/joestump/switchboard/internal/mcp"
-	"github.com/joestump/switchboard/internal/oauthsrv"
-	"github.com/joestump/switchboard/internal/store"
-	"github.com/joestump/switchboard/internal/web"
+	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/db"
+	"github.com/stump-wtf/switchboard/internal/ingest"
+	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/web"
 )
 
 // mvpDoorbell is the decoded notifications/claude/channel frame the raw SSE client captures.

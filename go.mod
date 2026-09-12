@@ -1,4 +1,4 @@
-module github.com/joestump/switchboard
+module github.com/stump-wtf/switchboard
 
 go 1.26.0
 

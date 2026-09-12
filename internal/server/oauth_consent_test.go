@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/cred"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 const (

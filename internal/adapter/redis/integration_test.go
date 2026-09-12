@@ -24,9 +24,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/joestump/switchboard/internal/adapter"
-	"github.com/joestump/switchboard/internal/db"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/adapter"
+	"github.com/stump-wtf/switchboard/internal/db"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // integrationDeps connects to the gated test Postgres (package-owned database, migrated,

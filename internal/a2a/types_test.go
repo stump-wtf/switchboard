@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // TestTaskStateFromTodo asserts the full todo-state → A2A-TaskState mapping, including the four base

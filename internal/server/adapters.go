@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/joestump/switchboard/internal/adapter"
-	"github.com/joestump/switchboard/internal/adapter/redis"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/adapter"
+	"github.com/stump-wtf/switchboard/internal/adapter/redis"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // queueAdapterStore is the narrow slice of the store the queue-adapter wiring needs: the registry

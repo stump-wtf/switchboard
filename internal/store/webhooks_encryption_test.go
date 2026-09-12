@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joestump/switchboard/internal/cred"
-	"github.com/joestump/switchboard/internal/db"
+	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/db"
 )
 
 // testStoreWithCipher is testStore's sibling that enables at-rest encryption, so the DB-backed tests

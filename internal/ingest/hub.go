@@ -21,7 +21,7 @@ package ingest
 import (
 	"sync"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Hub fans newly-created todos out to subscribed consumers, scoped to one endpoint and filtered by

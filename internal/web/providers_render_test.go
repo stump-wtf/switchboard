@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // sampleAdapters covers every trust mode + both families: a signed webhook (configured), a token

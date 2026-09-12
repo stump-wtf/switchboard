@@ -29,8 +29,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/cred"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // maxBodyBytes caps A2A request bodies before JSON-RPC parsing. 256 KiB matches SPEC-0018's Security

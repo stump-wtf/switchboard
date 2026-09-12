@@ -10,7 +10,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/joestump/switchboard/internal/adapter"
+	"github.com/stump-wtf/switchboard/internal/adapter"
 )
 
 // StreamClient is the narrow subset of go-redis commands the stream adapter uses;

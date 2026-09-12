@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // testSSEHandler builds a Handler with just enough plumbing for the SSE surface: no DB (the retry

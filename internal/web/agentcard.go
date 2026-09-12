@@ -8,8 +8,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/joestump/switchboard/internal/persona"
-	"github.com/joestump/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/persona"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // a2aProtocolVersion is the A2A protocol version the published Agent Cards conform to. Switchboard
