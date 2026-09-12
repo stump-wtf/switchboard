@@ -148,57 +148,6 @@ value currently comes back as 50.
 Poll at the latency you actually need. Polling an empty queue is cheap for switchboard, but each
 poll can cost a model turn on your side.
 
-## Give the agent the queue discipline too
-
-Connecting an agent gets it the tools. It doesn't get it the judgement about when to use them, and
-a busy queue punishes that quickly: most todos turn out to be exhaust rather than work, every
-`claim` and `complete` echoes the producer's entire payload back into the agent's context, and
-draining a flood by hand is a treadmill while the producer keeps sending.
-
-The **switchboard skill** packages that discipline — triage before acting, one todo at a time under
-its lease, narrow the source before clearing a backlog, and the sharp edges that return a plausible
-wrong answer instead of an error (notably that a `limit` above 200 comes back as 50, so a flooded
-queue reads as a nearly empty one). It's the same practice written out in
-[Working the queue well](/guides/working-the-queue).
-
-The skill lives in a **public** repository, `stump-wtf/claude-plugin-switchboard`, even though the
-service itself is closed source.
-
-**Claude Code** installs it as a plugin:
-
-```bash
-claude plugin marketplace add stump-wtf/claude-plugin-switchboard
-claude plugin install switchboard@claude-plugin-switchboard
-```
-
-It also ships three commands, which run in the session holding the MCP tools:
-`/switchboard:triage` (read-only bucketing), `/switchboard:work-next` (claim one todo and carry it
-to done), and `/switchboard:drain` (clear a noise flood the right way).
-
-**Crush** discovers skills by directory rather than by installing plugins. Clone the repository and
-point Crush at its `skills/` directory in your `crushrc`:
-
-```bash
-git clone https://github.com/stump-wtf/claude-plugin-switchboard.git ~/src/claude-plugin-switchboard
-```
-
-```bash
-# ~/.config/crush/crushrc
-option skill-path ~/src/claude-plugin-switchboard/skills
-```
-
-Crush also loads skills from a few directories automatically, `~/.config/crush/skills/` among them,
-so copying or linking the repository's `skills/` contents there works too. Either way, point Crush
-at the **directory of skills**, not at one skill's folder inside it.
-
-**Check that it loaded** by asking the agent to look at a queue. With the skill, it filters
-`list_todos` by queue, state and a bounded limit, and buckets what comes back before touching
-anything, rather than listing unfiltered and acting on the first row.
-
-**What it does not do.** It grants nothing. The endpoint's scope is still the only capability
-boundary, and no skill can widen it — scope is fixed when the endpoint is vended. It also doesn't
-connect anything: the wiring above is still required.
-
 ## One channel consumer per server
 
 A doorbell rings **one** connected session per todo, not all of them. On an endpoint with several
@@ -259,6 +208,62 @@ Notes on those choices:
 For scheduled, one-shot sweeps of a queue instead of an always-on session, see Harness's
 [configuration reference](https://stump-wtf.github.io/harness/usage/configuration/) for `prompt` and
 `schedule`.
+
+## Give the agent the queue discipline too
+
+Connecting an agent gets it the tools. It doesn't get it the judgement about when to use them, and
+a busy queue punishes that quickly: most todos turn out to be exhaust rather than work, every
+`claim` and `complete` echoes the producer's entire payload back into the agent's context, and
+draining a flood by hand is a treadmill while the producer keeps sending.
+
+The **switchboard skill** packages that discipline — triage before acting, one todo at a time under
+its lease, narrow the source before clearing a backlog, and the sharp edges that return a plausible
+wrong answer instead of an error (notably that a `limit` above 200 comes back as 50, so a flooded
+queue reads as a nearly empty one). It doesn't replace this documentation:
+[Working the queue well](/guides/working-the-queue) stays the reference, and the skill points back
+at it.
+
+The skill lives in a **public** repository, `stump-wtf/claude-plugin-switchboard`, even though the
+service itself is closed source.
+
+**Claude Code** installs it as a plugin:
+
+```bash
+claude plugin marketplace add stump-wtf/claude-plugin-switchboard
+claude plugin install switchboard@claude-plugin-switchboard
+```
+
+It also ships three commands, which run in the session holding the MCP tools:
+`/switchboard:triage` (read-only bucketing), `/switchboard:work-next` (claim one todo and carry it
+to done), and `/switchboard:drain` (clear a noise flood the right way).
+
+**Crush** discovers skills by directory rather than by installing plugins. Clone the repository and
+point Crush at its `skills/` directory in your `crushrc`:
+
+```bash
+git clone https://github.com/stump-wtf/claude-plugin-switchboard.git ~/src/claude-plugin-switchboard
+```
+
+```bash
+# ~/.config/crush/crushrc
+option skill-path ~/src/claude-plugin-switchboard/skills
+```
+
+Crush also loads skills from a few directories automatically, `~/.config/crush/skills/` among them,
+so **copying** the repository's `skills/` contents there works too. **Linking does not:** Crush
+resolves symlinks when it decides whether a file belongs to a skills directory, so a symlinked skill
+loads but its reads resolve back outside that directory and lose the exemption that lets an agent
+read them without a permission prompt or a size limit. Either way, point Crush at the **directory of
+skills**, not at one skill's folder inside it, and remember that a directory Crush doesn't know about
+is never read.
+
+**Check that it loaded** by asking the agent to look at a queue. With the skill, it filters
+`list_todos` by queue, state and a bounded limit, and buckets what comes back before touching
+anything, rather than listing unfiltered and acting on the first row.
+
+**What it does not do.** It grants nothing. The endpoint's scope is still the only capability
+boundary, and no skill can widen it — scope is fixed when the endpoint is vended. It also doesn't
+connect anything: the wiring above is still required.
 
 ## Check the connection
 
