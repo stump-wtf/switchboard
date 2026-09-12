@@ -89,8 +89,21 @@ Install `pool-review.json` on **each** identity's forge pool webhooks, with `par
 |---|---|---|
 | 1 | `review-request-not-for-me` | drop `pull_request` `review_requested` / `review_request_removed` events whose `requested_reviewer.login` is not `$params.identity` |
 | 2 | `own-pr-review-trigger` | drop `pull_request` `opened`, `reopened`, `synchronized`, `synchronize`, `edited`, `ready_for_review`, `review_requested` events whose `pull_request.user.login` is `$params.identity` |
+| 3 | `bot-comment-noise` | drop `issue_comment` and `pull_request_comment` events whose `sender.login` is in `$params.bot_actors` |
+| 4 | `bot-review-outcome` | drop `pull_request_approved` / `pull_request_rejected` events whose `sender.login` is in `$params.bot_actors` |
+| 5 | `review-outcome-not-my-pr` | drop `pull_request_approved` / `pull_request_rejected` events whose `pull_request.user.login` is **not** `$params.identity` |
 
-Review comments on your own pull request, and issue events, still reach the pool. With no `identity` param, every review request fails closed (rule 1 drops it).
+Human and sibling-agent comments, review requests addressed to the identity, and issue events still reach the pool. With no `identity` param, review requests and review outcomes both fail closed (rules 1 and 5).
+
+**Rules 3 to 5 exist because queue latency is release latency.** Branch protection makes the sibling identity's approval the merge gate, so a real review request sitting behind machine chatter delays every release. Measured over 12.4h of real traffic on both pools (240 deliveries, 222 todos, ~430 todos/day), these three rules remove ~180 todos/day (42%) and leave every human signal intact.
+
+Three things about them that look wrong until you know why:
+
+- **They key on `sender.login`, never `comment.user.login`.** `pull_request_comment`, `pull_request_approved` and `pull_request_rejected` carry **no** `comment` object at all — the text lives in `review.content`. Across every delivery these webhooks have ever received, `sender.login` and `comment.user.login` never disagree. Do not "fix" these rules to read the comment author.
+- **The sender is bound with `as $s` before `any()`.** Inside `any(gen; cond)` the `.` is the generator's element, so the obvious `any($params.bot_actors[]; . == (.payload.sender.login // ""))` indexes a *string*, faults, and a faulted rule is a no-match — the drop silently never fires. `pool_review_pack_test.go` fails if anyone rewrites them that way.
+- **Rule 5 keeps outcomes on the identity's own PRs.** That is the author's "your PR is approved and can merge" signal. Dropping every outcome instead removes ~41 more todos/day and costs exactly the signal branch protection depends on; it was considered and rejected. Keep the asymmetry.
+
+`bot_actors` is an exact-match list of logins. Only `gitea-actions` appears in real traffic today — aibot posts as `gitea-actions`, and Renovate has never posted to these webhooks — but `aibot`, `renovate-bot` and `renovate` are listed so they are covered if they ever do. Like every allowlist here it is `| arrays` / `| strings` guarded, so a mistyped param drops nothing rather than faulting open.
 
 Why it exists: both identities' org webhooks deliver every pull request event to both identities' pools. On 2026-09-11 a `joestump` pool worker received review requests meant for `joestump-agent` and reviewed and merged `joestump`'s own pull requests (harness#307, dotfiles#242).
 

@@ -1,6 +1,7 @@
 {
   "params": {
-    "identity": "joestump"
+    "identity": "joestump",
+    "bot_actors": ["gitea-actions", "aibot", "renovate-bot", "renovate"]
   },
   "rules": [
     {
@@ -13,6 +14,24 @@
       "id": "own-pr-review-trigger",
       "name": "never review a PR this pool's identity authored",
       "expr": ".kind == \"pull_request\" and ($params.identity // \"\") != \"\" and ((.payload.pull_request.user.login // \"\") == $params.identity) and ((.payload.action // \"\") | IN(\"opened\", \"reopened\", \"synchronized\", \"synchronize\", \"edited\", \"ready_for_review\", \"review_requested\"))",
+      "action": {"drop": true}
+    },
+    {
+      "id": "bot-comment-noise",
+      "name": "comments and review chatter authored by a bot (sender.login; see the pack README)",
+      "expr": "(.payload.sender.login // \"\") as $s | (.kind | IN(\"issue_comment\", \"pull_request_comment\")) and any((($params.bot_actors // []) | arrays)[] | strings; . == $s)",
+      "action": {"drop": true}
+    },
+    {
+      "id": "bot-review-outcome",
+      "name": "approved/rejected notifications from a bot reviewer (sender.login; see the pack README)",
+      "expr": "(.payload.sender.login // \"\") as $s | (.kind | IN(\"pull_request_approved\", \"pull_request_rejected\")) and any((($params.bot_actors // []) | arrays)[] | strings; . == $s)",
+      "action": {"drop": true}
+    },
+    {
+      "id": "review-outcome-not-my-pr",
+      "name": "review outcomes on PRs this identity did not author; keeps its own (see the pack README)",
+      "expr": "(.kind | IN(\"pull_request_approved\", \"pull_request_rejected\")) and ((($params.identity // \"\") == \"\") or ((.payload.pull_request.user.login // \"\") != $params.identity))",
       "action": {"drop": true}
     }
   ]

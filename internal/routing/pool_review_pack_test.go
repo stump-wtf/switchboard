@@ -29,10 +29,16 @@ func loadPoolPack(t *testing.T, identity string) Config {
 	if err := dec.Decode(&cfg); err != nil {
 		t.Fatalf("decode pack: %v", err)
 	}
+	// An empty identity models an operator who saved the rules with no params at all: every
+	// identity-keyed rule then fails closed. Otherwise keep the pack's own params (the bot list) and
+	// override only the identity, the way an operator installs it per pool.
 	if identity == "" {
 		cfg.Params = nil
 	} else {
-		cfg.Params = map[string]any{"identity": identity}
+		if cfg.Params == nil {
+			cfg.Params = map[string]any{}
+		}
+		cfg.Params["identity"] = identity
 	}
 	return cfg
 }
@@ -45,6 +51,15 @@ func TestPoolReviewPack(t *testing.T) {
 		"requested_reviewer": map[string]any{"login": "joestump"},
 		"pull_request":       map[string]any{"user": map[string]any{"login": "joestump-agent"}},
 	}
+	// A bot-authored delivery. sender.login is the actor field that matters: the review events carry
+	// no comment object at all, and where one exists it never disagrees with sender.
+	botSender := map[string]any{
+		"sender":  map[string]any{"login": "gitea-actions"},
+		"comment": map[string]any{"user": map[string]any{"login": "gitea-actions"}},
+	}
+	// The sibling agent approving joestump's PR: the merge-gate signal for joestump, a self-echo for
+	// joestump-agent. The sample's pull_request.user is joestump.
+	agentApproval := map[string]any{"sender": map[string]any{"login": "joestump-agent"}}
 	cases := []struct {
 		name     string
 		identity string
@@ -73,6 +88,35 @@ func TestPoolReviewPack(t *testing.T) {
 		{"a team request is not a request for this identity", "joestump-agent", "gitea-pull-request-review-requested",
 			map[string]any{"requested_reviewer": nil}, "review-request-not-for-me"},
 		{"with no identity set, comments still route", "", "gitea-pull-request-comment", nil, ""},
+
+		// Noise drops. These also pin the `as $s` binding in the bot rules: written the obvious way,
+		// as any(($params.bot_actors // [])[]; . == (.payload.sender.login // "")), the `.` inside
+		// any() is the generator's element, so .payload indexes a string, the rule faults, and a
+		// faulted rule is a no-match — the drop silently never fires. Every bot case below fails if
+		// anyone rewrites these expressions in that unbound form.
+		{"a bot's PR comment is noise", "joestump", "gitea-pull-request-comment", botSender, "bot-comment-noise"},
+		{"a bot's comment is noise on the other pool too", "joestump-agent", "gitea-pull-request-comment", botSender, "bot-comment-noise"},
+		{"a bot's approval notification is noise", "joestump", "gitea-pull-request-approved", nil, "bot-review-outcome"},
+		{"a bot's rejection notification is noise", "joestump", "gitea-pull-request-approved",
+			map[string]any{"review": map[string]any{"type": "pull_request_review_rejected"}}, "bot-review-outcome"},
+		// With no params at all there is no bot list either, so the bot rules match nothing and the
+		// identity-keyed outcome rule is what fails closed. Still dropped, by a different rule.
+		{"with no params at all, a bot approval still fails closed", "", "gitea-pull-request-approved", nil, "review-outcome-not-my-pr"},
+
+		// Review outcomes: the author's own approval is the merge-gate signal and must survive; the
+		// reviewer-side echo of that same approval is dropped.
+		{"an approval of this identity's own PR still wakes it", "joestump", "gitea-pull-request-approved", agentApproval, ""},
+		{"the reviewer's echo of its own approval is dropped", "joestump-agent", "gitea-pull-request-approved", agentApproval, "review-outcome-not-my-pr"},
+		{"a rejection of this identity's own PR still wakes it", "joestump", "gitea-pull-request-approved",
+			map[string]any{"action": "reviewed", "review": map[string]any{"type": "pull_request_review_rejected"},
+				"sender": map[string]any{"login": "joestump-agent"}}, ""},
+		{"with no identity set, review outcomes fail closed", "", "gitea-pull-request-approved", agentApproval, "review-outcome-not-my-pr"},
+
+		// Human and sibling-agent signal is never noise.
+		{"a human's PR comment always reaches the pool", "joestump", "gitea-pull-request-comment",
+			map[string]any{"sender": map[string]any{"login": "joestump"}}, ""},
+		{"the sibling agent's PR comment always reaches the pool", "joestump", "gitea-pull-request-comment",
+			map[string]any{"sender": map[string]any{"login": "joestump-agent"}}, ""},
 	}
 	sb := testSandbox(t)
 	for _, c := range cases {

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-11
 decision-makers: [joestump, joestump-agent]
 governs: [SPEC-0020]

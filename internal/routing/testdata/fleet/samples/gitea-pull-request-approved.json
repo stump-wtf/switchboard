@@ -1,0 +1,47 @@
+{
+  "source": "generic",
+  "headers": {
+    "Content-Type": "application/json",
+    "User-Agent": "Go-http-client/1.1",
+    "X-Gitea-Delivery": "7b3e1d40-5c92-4a68-9f11-3d8c0e5a7b24",
+    "X-Gitea-Event": "pull_request_approved",
+    "X-Gitea-Event-Type": "pull_request_review_approved",
+    "X-Github-Delivery": "7b3e1d40-5c92-4a68-9f11-3d8c0e5a7b24",
+    "X-Github-Event": "pull_request_approved",
+    "X-Github-Event-Type": "pull_request_review_approved"
+  },
+  "body": {
+    "action": "reviewed",
+    "number": 205,
+    "pull_request": {
+      "id": 5210,
+      "url": "https://gitea.stump.rocks/stump.wtf/switchboard/pulls/205",
+      "number": 205,
+      "user": {"id": 1, "login": "joestump", "username": "joestump"},
+      "title": "docs(routing): routing is not the merge gate, plus an optional pool rule",
+      "body": "Guide 08 implied the pool-review rules prevent self-merges.",
+      "labels": [],
+      "state": "open",
+      "draft": false,
+      "html_url": "https://gitea.stump.rocks/stump.wtf/switchboard/pulls/205",
+      "mergeable": true,
+      "merged": false,
+      "base": {"label": "main", "ref": "main"},
+      "head": {"label": "toil/pool-review-optional-rule", "ref": "toil/pool-review-optional-rule"}
+    },
+    "review": {
+      "type": "pull_request_review_approved",
+      "content": "<!-- aibot:code-review -->\n✅ No issues found\n\nDocs-only change."
+    },
+    "requested_reviewer": {"id": 7, "login": "gitea-actions", "username": "gitea-actions"},
+    "repository": {
+      "id": 42,
+      "name": "switchboard",
+      "full_name": "stump.wtf/switchboard",
+      "html_url": "https://gitea.stump.rocks/stump.wtf/switchboard",
+      "private": true,
+      "owner": {"id": 3, "login": "stump.wtf", "username": "stump.wtf"}
+    },
+    "sender": {"id": 7, "login": "gitea-actions", "username": "gitea-actions"}
+  }
+}
