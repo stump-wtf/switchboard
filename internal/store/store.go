@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,6 +71,10 @@ type Store struct {
 	pool *pgxpool.Pool
 	// secretCipher, when set, encrypts held secrets at rest (webhook signing secrets). nil = plaintext.
 	secretCipher SecretCipher
+	// log, when set (WithLogger), carries security-relevant warnings about what was persisted —
+	// currently the plaintext-signing-secret warning in secretwarn.go. Optional and nil-safe: the
+	// store's data-access behaviour does not depend on it.
+	log *slog.Logger
 	// todoHook/eventHook/endpointSeenHook are read on every transition and set (rarely) at wiring
 	// time; atomic so a late Set*Hook can never race in-flight transitions.
 	todoHook         atomic.Pointer[TodoTransitionHook]
