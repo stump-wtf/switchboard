@@ -145,20 +145,33 @@ If you want a pool to ignore reviews and comments on PRs its identity authored, 
 ```json
 {"id": "own-pr-review-feedback",
  "name": "never act on reviews or comments on a PR this pool's identity authored",
- "expr": "($params.identity // \"\") as $id | $id != \"\" and (((.kind | IN(\"pull_request_review\", \"pull_request_review_comment\")) and ((.payload.pull_request.user.login // \"\") == $id)) or ((.kind | IN(\"issue_comment\")) and ((.payload.is_pull // false) == true or (.payload.issue.pull_request // null) != null) and ((.payload.issue.user.login // \"\") == $id)))",
+ "expr": "($params.identity // \"\") as $id | $id != \"\" and (((.kind | IN(\"pull_request_approved\", \"pull_request_rejected\", \"pull_request_comment\", \"pull_request_review\", \"pull_request_review_comment\")) and ((.payload.pull_request.user.login // \"\") == $id)) or ((.kind | IN(\"issue_comment\")) and ((.payload.is_pull // false) == true or (.payload.issue.pull_request // null) != null) and ((.payload.issue.user.login // \"\") == $id)))",
  "action": {"drop": true}}
 ```
 
 On an endpoint without rule verbs, an operator writes the same rule with the identity inlined in place of `$id`, one variant per identity.
 
-Dry-run evidence, from 20 real deliveries about one pull request across both identity pools:
+**Match `.kind` against the values the forge actually sends.** `.kind` is the `X-GitHub-Event` / `X-Gitea-Event` header verbatim, never `X-Gitea-Event-Type`. Gitea sends the review outcome in `X-Gitea-Event` and the sub-type in `X-Gitea-Event-Type`, so a rule written against the sub-type matches nothing and, being a no-match, drops nothing. Across every delivery the production pool webhooks have received, the header values are:
 
-| Pool | Without the rule | With it |
+| `.kind` (`X-Gitea-Event`) | `X-Gitea-Event-Type` | What it is |
 |---|---|---|
-| the PR author's identity | 2 review requests dropped, 8 review and comment deliveries routed | the same 2, plus all 8 dropped |
-| the other identity | all 10 routed | unchanged, all 10 routed |
+| `issue_comment` | `pull_request_comment` | a comment on a PR |
+| `pull_request` | `pull_request_review_request` | a review requested or removed |
+| `pull_request_approved` | `pull_request_review_approved` | an approving review |
+| `pull_request_comment` | `pull_request_review_comment` | a review submitted with comments |
+| `pull_request_rejected` | `pull_request_review_rejected` | a changes-requested review |
 
-No rule faulted, and the two-rule pack alone reproduced each delivery's stored production trace exactly.
+`pull_request_review` never appears on Gitea; it is GitHub's spelling. The rule above lists both forges' values so it works on either.
+
+Dry-run evidence, from 240 real deliveries across both identity pools (12.4h, ~430 todos/day), replayed through the evaluator. The two kind lists that were tried and rejected are kept here because both looked right and neither worked:
+
+| Kind list | Deliveries dropped | Todos/day |
+|---|---|---|
+| `pull_request_comment` plus the three `pull_request_review_*` **sub-type** strings | 68 | 147 |
+| `pull_request_review`, `pull_request_review_comment` (GitHub spellings only) | 48 | 108 |
+| **both forges' real values, as above** | **94** | **197** |
+
+No form faulted; the wrong ones simply matched less. A rule that matches nothing is indistinguishable from a rule that is installed and working, which is why this is dry-run against stored deliveries rather than reasoned about.
 
 ## 8. Retire lane-bound events from the pool hooks
 
