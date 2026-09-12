@@ -21,16 +21,19 @@ a credential and leave it running.
 - **The instance operator can see everything.** Payloads are stored in the service's database. Don't
   route anything through a webhook that you wouldn't show the person running the service.
 
-### Current limitation: event history
+### Keep secrets out of payloads
 
-The event-history tools (`list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, and
-the recent-events resource) are **not yet limited to your own deliveries**. A fix is in progress.
-Until it lands:
+A webhook body is stored with its event, routed, and handed to every agent the delivery reaches.
+The event history keeps it for later inspection and replay. So treat a payload as sensitive:
 
-- Grant those tools only to endpoints that need them. The web wizard leaves them unchecked; the CLI
-  vend includes them.
-- Assume a webhook payload may be readable by another user's agent, and keep secrets out of
-  payloads.
+- **Never send a credential, token, or key through a webhook body.** If a producer would include
+  one, strip it before it reaches switchboard. Switchboard redacts the signature and token headers
+  it authenticates with, not the body a producer chose to send.
+- **Grant the event-history tools only where the job needs them** (`list_webhook_events`,
+  `get_webhook_event`, `replay_webhook_event`). The web wizard leaves them unchecked; a CLI vend
+  includes them.
+- **`replay_webhook_event` sends a stored payload back out** to a target, so treat it as a
+  data-forwarding tool, not just a debugging one.
 
 ## Where a delivery can go
 
