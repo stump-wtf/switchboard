@@ -1,0 +1,121 @@
+# Gitea Actions: cut a release from a v* tag.
+#
+# Until this file existed, switchboard had NO tag-triggered workflow at all —
+# aibot fires on PRs, build.yaml/ci.yaml/gitleaks on push-to-main, docs.yaml on
+# paths. So a .goreleaser.yaml on its own would never have been invoked: pushing
+# a tag would have done nothing, silently, and looked like success.
+#
+# Runs on Gitea rather than the GitHub mirror because this runner is the only
+# host that reaches both sides — Gitea over the LAN and github.com outbound.
+#
+# WHY THIS DOES NOT RUN `make ci`: the DB-backed suites skip when
+# SWITCHBOARD_TEST_DATABASE_URL is unset, and Go reports a fully-skipped package
+# as `ok`. Running the gate here without a database would print green while
+# testing almost nothing — the exact false-confidence this repo has been
+# chasing. The tagged commit's real gate is ci.yaml, which stands up Postgres
+# and ran on main before the tag existed. What IS worth re-checking at release
+# time is that the tree still compiles for every target, and goreleaser does
+# that by cross-building all six.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ gitea.workflow }}-${{ gitea.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: goreleaser
+    runs-on: ubuntu-latest
+    env:
+      GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+    steps:
+      # DELIBERATELY FATAL, and deliberately not a job-level `if:` — secrets are
+      # not available there, so the env indirection is the only way to test one.
+      #
+      # build.yaml skips quietly when REGISTRY_TOKEN is missing, which is right
+      # for an image that rebuilds on the next push. It is WRONG for a release: a
+      # tag that publishes nothing and still reports green is what leaves `brew
+      # upgrade` serving a stale version for weeks while every run looks fine.
+      #
+      # This token does not exist yet and must be provisioned before the first
+      # tag. It is NOT cairn's GH_RELEASE_TOKEN — that one is scoped to
+      # stump-wtf/cairn-cli and would authenticate here, then 404.
+      - name: Require the release token
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_RELEASE_TOKEN:-}" ]; then
+            echo "::error::GH_RELEASE_TOKEN is not set. Create a GitHub PAT with" \
+                 "contents:write on stump-wtf/switchboard and add it as a repo or" \
+                 "org Actions secret named GH_RELEASE_TOKEN. This is a DIFFERENT" \
+                 "token from cairn's: cairn's is scoped to stump-wtf/cairn-cli and" \
+                 "would authenticate and then 404 against this repo. Without it the" \
+                 "tag lands but nothing is published."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          # goreleaser derives the version and changelog from tag history, and a
+          # shallow clone DEGRADES rather than failing: it logs "running against
+          # a shallow clone" and computes an empty changelog.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          # goreleaser reads GITHUB_TOKEN; the value is switchboard's own PAT.
+          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+
+      # A wrong -X path injects nothing and still exits 0, so "it built" is no
+      # evidence the version was stamped. Assert it, rather than remember to
+      # check. Only the linux/amd64 artifact is executed — the runner cannot run
+      # the darwin or windows builds, so this is the one that can be proven here.
+      # POSITIVE control. The pass condition is "the output contains the tag",
+      # never "the output lacks the word dev" — an absence check passes on any
+      # unexpected string, including an error.
+      #
+      # Written the wrong way first and caught locally: on a darwin host the
+      # linux binary cannot execute, `version` returned "exec format error",
+      # and a `case` rejecting only *dev* and "" reported PASS. A check that
+      # succeeds when the thing it tests never ran is the same failure this
+      # step exists to prevent, so the execution itself is now asserted too.
+      - name: Assert the released binary reports the tag, not "dev"
+        run: |
+          set -euo pipefail
+          bin="$(find dist -type f -name switchboard -path '*linux_amd64*' | head -1)"
+          [ -n "$bin" ] || { echo "::error::no linux/amd64 binary in dist/"; exit 1; }
+
+          if ! got="$("$bin" version 2>&1)"; then
+            echo "::error::could not execute $bin — the assertion never ran: $got"
+            exit 1
+          fi
+          echo "version output: $got"
+
+          want="${GITEA_REF_NAME#v}"
+          case "$got" in
+            *"$want"*) echo "stamped version contains the tag ($want)" ;;
+            *)
+              echo "::error::binary reports '$got', expected it to contain '$want'." \
+                   "A wrong -X path injects nothing and still exits 0."
+              exit 1
+              ;;
+          esac
+        env:
+          GITEA_REF_NAME: ${{ gitea.ref_name }}
