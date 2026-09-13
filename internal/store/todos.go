@@ -1317,6 +1317,72 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 	return out, rows.Err()
 }
 
+const (
+	// attachRingLimit caps how many todos one stream attach rings. A consumer that comes back to a
+	// deep backlog gets its oldest few at once and the heartbeat sweep paces the rest — waking it
+	// for fifty rows in one breath is the token bomb ringSweepLimit exists to prevent.
+	attachRingLimit = 3
+	// attachRingCooldown is the least time between two attach rings of the same todo. A consumer
+	// that dies ON the doorbell reconnects, is rung, and dies again; the cooldown turns that loop
+	// into at most one push per todo per minute, and ringMaxAttempts ends it.
+	attachRingCooldown = time.Minute
+)
+
+// RingOnAttach is the catch-up ring: when a session opens its notification stream, the pending,
+// doorbell-eligible todos in its scope are rung on THAT stream at once instead of waiting for the
+// heartbeat sweep. The sweep exists for work nobody picked up; this exists for work that landed
+// while the consumer was away — created during a restart, or pushed into a stream that had just
+// dropped — which the sweep reaches only after its first backoff, three rows at a time, and never
+// at all once the row's ring budget was spent ringing an empty room.
+//
+// Same ledger, same budget. Rows are charged exactly as the sweep charges them (ring_attempts,
+// last_ringed_at), so the two mechanisms share ringMaxAttempts and a row rung here is not rung
+// again by the next sweep. Same sender gate as RingUnclaimed, for the same reason: it lives in the
+// query so it cannot be bypassed. Unlike the sweep this IS endpoint-scoped — the caller is an
+// authenticated session and every row returned is its own (ADR-0022).
+//
+// Governing: ADR-0013 (queue is the ledger, push is a hint); SPEC-0011 REQ "Best-Effort Lossy
+// Delivery and Degradation to Pull" (scenario "Reconnecting session is rung for waiting work").
+//
+// @justinabrahms 09/13/2026 - Added: a worker that restarted found nothing at its door until the
+// next sweep, and nothing ever again for rows whose five rings had gone to no one.
+func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []string) ([]Todo, error) {
+	if endpointScope(endpointID) != nil || len(queues) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		WHERE id IN (
+			SELECT t.id FROM todos t
+			WHERE t.endpoint_id = $1
+			  AND t.queue = ANY($2)
+			  AND t.state = 'pending'
+			  AND t.ring_attempts < $3
+			  -- Sender gate (SPEC-0011): the predicate RingUnclaimed applies, unchanged.
+			  AND t.event_id IS NOT NULL
+			  AND EXISTS (SELECT 1 FROM events ev WHERE ev.id = t.event_id AND (ev.verified OR ev.trust_mode = 'token'))
+			  AND (t.last_ringed_at IS NULL OR t.last_ringed_at < now() - $4::interval)
+			ORDER BY t.created_at
+			LIMIT $5
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING `+todoCols,
+		endpointID, queues, ringMaxAttempts, attachRingCooldown, attachRingLimit)
+	if err != nil {
+		return nil, fmt.Errorf("store: ring on attach: %w", err)
+	}
+	defer rows.Close()
+	var out []Todo
+	for rows.Next() {
+		t, err := scanTodo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // deadLetterEndpointTodos is the todo half of the revocation cascade, run inside the SAME
 // transaction that kills the endpoint rows (RevokeEndpoint, ExpireEndpoints, RevokeFriendEdge).
 //
