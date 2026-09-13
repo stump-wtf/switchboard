@@ -254,3 +254,28 @@ func TestSSETaxonomyHasSwapTargetsOnBoard(t *testing.T) {
 		}
 	}
 }
+
+// TestOperatorTrustBadgeCarriesDefinition: an operator hand-off (ADR-0026) is a delivery trust
+// mode with no provider behind it, so it lives in deliveryDefs rather than trustDefs — but its
+// badge, on a lane card and in the board legend, carries a real definition like every other pill
+// (#84), never the neutral fallback gloss.
+func TestOperatorTrustBadgeCarriesDefinition(t *testing.T) {
+	def := deliveryDefs["operator"]
+	if def == "" || trustDef("operator") != def || trustDef("OPERATOR") != def {
+		t.Fatalf("trustDef(operator) = %q, want the deliveryDefs definition %q", trustDef("operator"), def)
+	}
+	if _, isProvider := trustDefs["operator"]; isProvider {
+		t.Fatal("operator is a delivery trust mode, not a provider one: it must not be in trustDefs")
+	}
+	body := boardBody(t)
+	if !strings.Contains(body, `sb-badge--operator" title="`+def+`"><span aria-hidden="true">● </span>operator<`) {
+		t.Error("board legend missing the operator pill with its definition")
+	}
+	card := laneCardFromItem(store.TodoItem{Todo: store.Todo{
+		ID: "td_op", Source: "operator", Kind: "operator", State: "pending", CreatedAt: time.Now(),
+	}, TrustMode: "operator"})
+	out := renderFrag(t, newTestHandler(t), "lane_card", card)
+	if !strings.Contains(out, `sb-badge--operator" title="`+def+`"`) {
+		t.Errorf("lane card operator badge missing its definition, got %q", out)
+	}
+}

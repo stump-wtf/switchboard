@@ -52,6 +52,9 @@ type cli struct {
 	now            func() time.Time
 	// loginTimeout bounds the wait for the browser to come back with the authorization code.
 	loginTimeout time.Duration
+	// readFile resolves a --payload @file argument; an injected edge like the rest, so tests
+	// exercise the verb without touching the real filesystem.
+	readFile func(name string) ([]byte, error)
 
 	verbUsage map[*flag.FlagSet]verbUsage // per-verb synopsis, filled by flagSet
 }
@@ -67,6 +70,7 @@ func newCLI() *cli {
 		serve:        runServe,
 		now:          time.Now,
 		loginTimeout: 5 * time.Minute,
+		readFile:     os.ReadFile,
 		verbUsage:    map[*flag.FlagSet]verbUsage{},
 	}
 }
@@ -98,6 +102,9 @@ func commands() []command {
 		}},
 		{name: "agent", args: "<verb>", summary: "manage registered agents", subs: []command{
 			{name: "list", summary: "list your registered agents", run: cmdAgents},
+		}},
+		{name: "todo", args: "<verb>", summary: "hand work to your agents", subs: []command{
+			{name: "push", args: "ENDPOINT TITLE", summary: "mint a todo on an endpoint you own and ring its doorbell", run: cmdTodoPush},
 		}},
 		{name: "login", args: "[URL]", summary: "sign in to a deployment over OAuth (opens your browser)", run: cmdLogin},
 		{name: "status", summary: "show where you are logged in and whether the credentials are live", run: cmdStatus},
