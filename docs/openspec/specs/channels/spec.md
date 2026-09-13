@@ -121,7 +121,11 @@ ownership ([ADR-0008](../../../adrs/ADR-0008-human-principal-vended-endpoints.md
 the sender" the standard requires. Before emitting a notification, switchboard MUST neutralize any
 `</channel>` sequence in payload-derived content so a webhook body cannot break out of the
 `<channel>` wrapper. Secret-bearing values MUST NOT be inlined into a push; they MUST remain behind a
-fetchable `secret-ref`.
+fetchable `secret-ref`. A todo the endpoint's own operator authored over the operator API
+([ADR-0026](../../../adrs/ADR-0026-operator-authored-todos.md)) carries the strongest attribution
+switchboard has — an OIDC-authenticated human, the principal that vended the endpoint — and MUST be
+push-eligible, recorded as a verified delivery event of trust mode `operator`; its title and payload
+remain untrusted content and MUST pass through the same neutralization as any other push.
 
 #### Scenario: Payload cannot break out of the channel wrapper
 
@@ -133,6 +137,14 @@ fetchable `secret-ref`.
 
 - **WHEN** a todo has not passed per-source verification and human attribution
 - **THEN** it MUST NOT be eligible for a channel push
+
+#### Scenario: Operator-authored todo is pushed
+
+- **WHEN** the human who owns an endpoint hands it a todo over the operator API
+- **THEN** the todo MUST be persisted with a verified delivery event of trust mode `operator`
+  naming that human, and MUST ring the endpoint's doorbell exactly as a verified webhook delivery
+  does — while a repeat of the same operator-supplied idempotency key MUST return the existing todo
+  and ring nothing
 
 ### Requirement: Error Handling Standards
 

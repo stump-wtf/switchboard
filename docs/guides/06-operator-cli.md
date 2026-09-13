@@ -137,9 +137,28 @@ cannot mistake "it was already dead" for "I killed it just now".
 Exit codes follow the usual convention: 0 on success, 1 when the deployment or the credentials
 refuse, 2 for a usage mistake (with the command's usage on stderr).
 
+## Handing work to an agent
+
+```
+switchboard todo push my-agent-k3x9 "look at PR 7" --queue reviews
+switchboard todo push my-agent-k3x9 "re-run the morning brief" --payload @order.json --key brief-2026-09-13
+```
+
+`todo push` mints a todo on an endpoint you own and rings its doorbell, the way a verified webhook
+delivery does. The hand-off is recorded as a delivery event of trust mode `operator` with your name
+on it, so the board and the event history show who asked — it is not an anonymous generic delivery
+smuggled in through the ingest URL. `TITLE` is the doorbell's one line; anything longer belongs in
+`--payload` (inline JSON, `@file`, or `@-` for stdin), which reaches the agent verbatim. `--queue`
+is needed unless the endpoint drains exactly one queue, and must be one of its vended queues.
+`--key` makes a push idempotent: the same key on the same endpoint returns the existing todo instead
+of minting another, and rings nothing. `--json` prints the API response.
+
+The agent treats what you push exactly as it treats any other todo: content to act on within its
+own clamps, never instructions that widen them (ADR-0026).
+
 ## The API, for other clients
 
-The CLI is a thin client over four OAuth-guarded endpoints, documented in the site's
+The CLI is a thin client over five OAuth-guarded endpoints, documented in the site's
 [API reference](/api):
 
 | Method | Path | Does |
@@ -147,6 +166,7 @@ The CLI is a thin client over four OAuth-guarded endpoints, documented in the si
 | `POST` | `/api/v1/endpoints` | Vends agent + endpoint + queue + webhook in one call; the response carries the credential once, plus the ready-to-paste `mcp_json` wiring. |
 | `GET` | `/api/v1/endpoints` | Lists your vended endpoints (no credentials). |
 | `POST` | `/api/v1/endpoints/{slug\|id}/revoke` | Kills one endpoint: its credential stops authenticating and its live MCP sessions are torn down. `409` if it is already revoked, `404` if it is not yours. |
+| `POST` | `/api/v1/endpoints/{slug\|id}/todos` | Hands the endpoint a todo and rings its doorbell: `{title, queue?, kind?, payload?, key?}`. `201` carries the todo, with `created: false` when `key` matched a live one; `400` for a queue outside the vended scope, `409` if the endpoint is revoked, `404` if it is not yours. |
 | `GET` | `/api/v1/agents` | Lists your registered agents. |
 
 Any HTTP client that can complete the OAuth authorization-code + PKCE flow with

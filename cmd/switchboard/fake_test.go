@@ -35,6 +35,8 @@ type fakeDeployment struct {
 	generation   int                 // bumps on every issuance
 	revoked      map[string]bool     // access tokens the API rejects with 401
 	vends        []map[string]string // POST /api/v1/endpoints bodies seen
+	pushes       []map[string]any    // POST /api/v1/endpoints/{ref}/todos bodies seen, "ref" added
+	pushExists   bool                // the push answers created:false, as a matched key does
 	revokes      []string            // endpoint refs seen on POST /api/v1/endpoints/{ref}/revoke
 	revokeStatus int                 // when non-zero, the status the revoke route answers with
 	endpointRows []map[string]any    // GET /api/v1/endpoints answer
@@ -173,6 +175,30 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSONResponse(w, 200, rows)
 		default:
+			// POST /api/v1/endpoints/{ref}/todos
+			if rest, ok := strings.CutPrefix(r.URL.Path, "/api/v1/endpoints/"); ok && r.Method == http.MethodPost {
+				if ref, ok := strings.CutSuffix(rest, "/todos"); ok && ref != "" {
+					var in map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+						http.Error(w, "invalid JSON body", 400)
+						return
+					}
+					if in["title"] == "" {
+						http.Error(w, "title is required", 400)
+						return
+					}
+					in["ref"] = ref
+					f.pushes = append(f.pushes, in)
+					queue, _ := in["queue"].(string)
+					if queue == "" {
+						queue = "inbox"
+					}
+					writeJSONResponse(w, 201, map[string]any{
+						"id": "td_1", "endpoint_id": "ep-1", "slug": ref, "queue": queue,
+						"state": "pending", "created": !f.pushExists, "event_id": 7})
+					return
+				}
+			}
 			// POST /api/v1/endpoints/{ref}/revoke
 			ref, isRevoke := strings.CutPrefix(r.URL.Path, "/api/v1/endpoints/")
 			ref, alsoRevoke := strings.CutSuffix(ref, "/revoke")

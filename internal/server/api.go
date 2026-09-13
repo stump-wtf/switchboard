@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -102,6 +103,7 @@ func (a *apiHandler) Routes() chi.Router {
 	r.Post("/endpoints", a.VendEndpoint)
 	r.Get("/endpoints", a.ListEndpoints)
 	r.Post("/endpoints/{ref}/revoke", a.RevokeEndpoint)
+	r.Post("/endpoints/{ref}/todos", a.PushTodo)
 	r.Get("/agents", a.ListAgents)
 	return r
 }
@@ -297,25 +299,8 @@ func (a *apiHandler) ListAgents(w http.ResponseWriter, r *http.Request) {
 // Governing: SPEC-0007 REQ "Revoke = Kill the Endpoint"; ADR-0008.
 func (a *apiHandler) RevokeEndpoint(w http.ResponseWriter, r *http.Request) {
 	human, _ := operatorFromContext(r.Context())
-	ref := chi.URLParam(r, "ref")
-
-	cards, err := a.st.ListEndpointCards(r.Context(), human.ID)
-	if err != nil {
-		a.fail(w, "revoke endpoint", err)
-		return
-	}
-	var found *store.EndpointCard
-	for i, c := range cards {
-		if c.Slug == ref || c.ID == ref {
-			found = &cards[i]
-			break
-		}
-	}
-	if found == nil {
-		// Unknown and another operator's endpoints are the same answer: the caller learns nothing
-		// about endpoints that are not theirs.
-		writeJSON(w, http.StatusNotFound, map[string]any{
-			"error": "no endpoint by that name or id belongs to you"})
+	found, ok := a.ownedEndpoint(w, r, "revoke endpoint")
+	if !ok {
 		return
 	}
 	if found.State != "active" {
@@ -332,6 +317,182 @@ func (a *apiHandler) RevokeEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": found.ID, "slug": found.Slug, "agent_name": found.AgentName, "state": "revoked"})
+}
+
+// ownedEndpoint resolves {ref} — the slug an operator reads, or the id — among the caller's OWN
+// endpoints. Unknown and another operator's endpoints are the same answer, already written to w:
+// the caller learns nothing about endpoints that are not theirs. Governing: ADR-0022, SPEC-0007
+// REQ "Human as Accountable Principal".
+func (a *apiHandler) ownedEndpoint(w http.ResponseWriter, r *http.Request, what string) (store.EndpointCard, bool) {
+	human, _ := operatorFromContext(r.Context())
+	ref := chi.URLParam(r, "ref")
+	cards, err := a.st.ListEndpointCards(r.Context(), human.ID)
+	if err != nil {
+		a.fail(w, what, err)
+		return store.EndpointCard{}, false
+	}
+	for _, c := range cards {
+		if c.Slug == ref || c.ID == ref {
+			return c, true
+		}
+	}
+	writeJSON(w, http.StatusNotFound, map[string]any{
+		"error": "no endpoint by that name or id belongs to you"})
+	return store.EndpointCard{}, false
+}
+
+// --- operator hand-off (ADR-0026) ---
+
+const (
+	// pushSource is the source, family and trust mode of an operator hand-off's delivery event.
+	pushSource = "operator"
+	// maxPushTitle bounds a hand-off's title: it is the doorbell's one line, and a paragraph there
+	// is a payload, not a title.
+	maxPushTitle = 200
+	// maxPushKey bounds the operator-supplied idempotency key — the ceiling the generic receivers
+	// put on a sender-supplied delivery id.
+	maxPushKey = 256
+)
+
+type pushTodoIn struct {
+	// Queue must be one of the endpoint's vended queues; an endpoint that drains exactly one
+	// needs none.
+	Queue string `json:"queue,omitempty"`
+	Title string `json:"title"`
+	// Kind is what list_todos reports; defaults to "operator".
+	Kind string `json:"kind,omitempty"`
+	// Payload is optional JSON handed to the agent verbatim. The body decoder has already
+	// validated it as JSON by the time it lands here.
+	Payload json.RawMessage `json:"payload,omitempty"`
+	// Key makes the push idempotent within the endpoint: the same key returns the existing live
+	// todo instead of minting another.
+	Key string `json:"key,omitempty"`
+}
+
+type pushTodoOut struct {
+	ID         string `json:"id"`
+	EndpointID string `json:"endpoint_id"`
+	Slug       string `json:"slug"`
+	Queue      string `json:"queue"`
+	State      string `json:"state"`
+	// Created is false when Key matched a live todo: nothing was minted and nothing was rung.
+	Created bool  `json:"created"`
+	EventID int64 `json:"event_id"`
+}
+
+// PushTodo is the operator's hand: POST /api/v1/endpoints/{ref}/todos mints one todo on an
+// endpoint the caller owns and rings its doorbell. It records the hand-off as a delivery event —
+// source, family and trust mode "operator", verified, verify_detail naming the human — and fans it
+// out through the same CreateEventTodos path an ingest receiver uses, so nothing downstream is
+// special-cased: the store's doorbell hook fires because the event is verified (SPEC-0011 sender
+// gate), the heartbeat sweep and the pull path apply their existing predicates, the board shows an
+// operator badge, and history shows who handed the work over. The title and payload are the
+// agent's untrusted input like any todo's. Governing: ADR-0026; SPEC-0011 scenario
+// "Operator-authored todo is pushed"; ADR-0022 (owner-only, queue inside the vended scope).
+//
+// @justinabrahms 09/13/2026 - Added: the only way for a human to hand their own agent a todo was
+// to impersonate a producer on its ingest URL, which recorded the hand-off as anonymous and
+// unverified — exactly what the trust model exists to flag.
+func (a *apiHandler) PushTodo(w http.ResponseWriter, r *http.Request) {
+	human, _ := operatorFromContext(r.Context())
+	found, ok := a.ownedEndpoint(w, r, "push todo")
+	if !ok {
+		return
+	}
+	var in pushTodoIn
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	in.Title, in.Queue = strings.TrimSpace(in.Title), strings.TrimSpace(in.Queue)
+	in.Kind, in.Key = strings.TrimSpace(in.Kind), strings.TrimSpace(in.Key)
+	switch {
+	case in.Title == "":
+		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	case len(in.Title) > maxPushTitle:
+		http.Error(w, fmt.Sprintf("title is over %d bytes; put the detail in payload", maxPushTitle), http.StatusBadRequest)
+		return
+	case len(in.Key) > maxPushKey:
+		http.Error(w, fmt.Sprintf("key is over %d bytes", maxPushKey), http.StatusBadRequest)
+		return
+	}
+	if in.Queue == "" {
+		if len(found.ScopeQueues) != 1 {
+			http.Error(w, "queue is required: the endpoint drains "+strings.Join(found.ScopeQueues, ", "), http.StatusBadRequest)
+			return
+		}
+		in.Queue = found.ScopeQueues[0]
+	}
+	if !slices.Contains(found.ScopeQueues, in.Queue) {
+		http.Error(w, fmt.Sprintf("queue %q is outside the endpoint's scope (%s)", in.Queue, strings.Join(found.ScopeQueues, ", ")), http.StatusBadRequest)
+		return
+	}
+	if found.State != "active" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "endpoint is " + found.State, "slug": found.Slug, "state": found.State})
+		return
+	}
+	if in.Kind == "" {
+		in.Kind = pushSource
+	}
+	payload := []byte(in.Payload)
+	if len(payload) == 0 {
+		payload = []byte(`{}`)
+	}
+	// Without a key every push is new work. With one, the key is scoped to the endpoint so two
+	// operators' keys — or one operator's keys on two endpoints — never collide (ADR-0022).
+	key := in.Key
+	if key == "" {
+		key = rand.Text()
+	}
+	key = found.ID + ":" + key
+
+	eventID, out, err := a.st.CreateEventTodos(r.Context(), store.EventInput{
+		Source: pushSource, Family: pushSource, EventType: in.Kind, ExternalID: key,
+		TrustMode: pushSource, Verified: true,
+		VerifyDetail: "operator-authored over /api/v1 by " + operatorName(human) + " (" + human.ID + ")",
+		ContentType:  "application/json", Headers: []byte(`{}`), Payload: payload, SourceIP: remoteIP(r),
+	}, []string{found.ID}, store.CreateTodoParams{
+		Queue: in.Queue, Source: pushSource, Kind: in.Kind, Title: in.Title,
+		Payload: payload, IdempotencyKey: key,
+	})
+	if err != nil {
+		a.fail(w, "push todo", err)
+		return
+	}
+	if len(out) != 1 {
+		a.fail(w, "push todo", fmt.Errorf("fan-out minted %d todos for one target", len(out)))
+		return
+	}
+	td := out[0]
+	a.log.Info("api todo pushed", "human", human.ID, "slug", found.Slug, "todo_id", td.Todo.ID,
+		"queue", td.Todo.Queue, "created", td.New)
+	writeJSON(w, http.StatusCreated, pushTodoOut{
+		ID: td.Todo.ID, EndpointID: found.ID, Slug: found.Slug, Queue: td.Todo.Queue,
+		State: td.Todo.State, Created: td.New, EventID: eventID,
+	})
+}
+
+// remoteIP is the caller's address without the port, the way the ingest receivers record it:
+// events.source_ip is inet, and "host:port" is not an inet.
+func remoteIP(r *http.Request) string {
+	host := r.RemoteAddr
+	if i := strings.LastIndex(host, ":"); i > 0 {
+		host = host[:i]
+	}
+	return strings.Trim(host, "[]")
+}
+
+// operatorName is the readable half of a hand-off's attribution: display name, else email, else
+// the OIDC subject. The human id follows it in verify_detail, so the name is a courtesy, not the key.
+func operatorName(h store.Human) string {
+	for _, s := range []string{h.DisplayName, h.Email, h.OIDCSubject} {
+		if s != "" {
+			return s
+		}
+	}
+	return pushSource
 }
 
 func (a *apiHandler) fail(w http.ResponseWriter, what string, err error) {
