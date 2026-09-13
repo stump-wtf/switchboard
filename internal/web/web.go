@@ -169,20 +169,21 @@ type shell struct {
 }
 
 type view struct {
-	Title          string
-	Landing        bool // public marketing landing (GET / when logged out): render the full-bleed home template, not the app shell
-	Human          *store.Human
-	CSRF           string
-	Shell          shell
-	OIDCConfigured bool
-	DevLogin       bool
-	Tiles          tilesView        // Board stat band (stats + activity bars)
-	Lanes          lanesView        // Board three-lane patch panel (SPEC-0015)
-	Counts         store.TodoCounts // Todos view filter-pill counts
-	TodoItems      []todoRow        // Todos view table rows
-	Filter         string           // active Todos filter pill (all|pending|claimed|done|failed)
-	Query          string           // Todos search text
-	Drawer         *drawerView      // standalone todo detail page (drawer fallback)
+	Title            string
+	Landing          bool // public marketing landing (GET / when logged out): render the full-bleed home template, not the app shell
+	Human            *store.Human
+	CSRF             string
+	Shell            shell
+	OIDCConfigured   bool
+	GitHubConfigured bool
+	DevLogin         bool
+	Tiles            tilesView        // Board stat band (stats + activity bars)
+	Lanes            lanesView        // Board three-lane patch panel (SPEC-0015)
+	Counts           store.TodoCounts // Todos view filter-pill counts
+	TodoItems        []todoRow        // Todos view table rows
+	Filter           string           // active Todos filter pill (all|pending|claimed|done|failed)
+	Query            string           // Todos search text
+	Drawer           *drawerView      // standalone todo detail page (drawer fallback)
 
 	// Endpoints view + vend wizard (SPEC-0015 REQ "Endpoints View And Vend Wizard").
 	EndpointCards   []endpointCard     // the vended-endpoint cards
@@ -292,7 +293,7 @@ func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
 
 // Login renders the public login page.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "login", view{Title: "Log in", OIDCConfigured: h.cfg.OIDCConfigured(), DevLogin: h.cfg.DevLogin})
+	h.render(w, "login", view{Title: "Log in", OIDCConfigured: h.cfg.OIDCConfigured(), GitHubConfigured: h.cfg.GitHubConfigured(), DevLogin: h.cfg.DevLogin})
 }
 
 // Board renders the landing view: trust legend, stat tiles (throughput + activity bars), and the

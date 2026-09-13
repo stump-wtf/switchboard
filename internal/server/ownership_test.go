@@ -159,7 +159,7 @@ func mintSession(t *testing.T, st *store.Store, ctx context.Context, subject, na
 	}
 	token := "test-session-" + subject
 	sum := sha256.Sum256([]byte(token))
-	if err := st.CreateSession(ctx, hex.EncodeToString(sum[:]), h.ID, time.Hour); err != nil {
+	if err := st.CreateSession(ctx, hex.EncodeToString(sum[:]), h.ID, time.Hour, "https://id.example", "test-sub"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	return h, token

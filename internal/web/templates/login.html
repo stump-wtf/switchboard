@@ -11,6 +11,7 @@
        (polite) / role="alert" (assertive) so AT announces them. */}}
   <div class="sb-card">
     {{if .OIDCConfigured}}<p><a class="sb-btn" href="/auth/login" autofocus>Log in with Pocket ID</a></p>{{end}}
+    {{if .GitHubConfigured}}<p><a class="sb-btn sb-btn--secondary" href="/auth/login?provider=github" aria-label="Log in with GitHub">Log in with GitHub</a></p>{{end}}
     {{if .DevLogin}}<form method="post" action="/auth/dev-login"><button class="sb-btn sb-btn--secondary"{{if not .OIDCConfigured}} autofocus{{end}}>Dev login (local, no OIDC)</button></form>
     <p class="sb-callout sb-callout--warn" role="status">dev only — OIDC bypassed</p>{{end}}
     {{if and (not .OIDCConfigured) (not .DevLogin)}}<p class="sb-callout sb-callout--danger" role="alert" tabindex="-1" autofocus>No login configured. Set <code>SWITCHBOARD_OIDC_*</code> or <code>SWITCHBOARD_DEV_LOGIN=1</code>.</p>{{end}}

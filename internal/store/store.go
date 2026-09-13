@@ -171,13 +171,18 @@ func (s *Store) fireDoorbell(t Todo) {
 	}
 }
 
-// Human is an OIDC-authenticated principal (Pocket ID subject). ADR-0008/011.
+// Human is an authenticated principal (provider subject: Pocket ID OIDC today,
+// GitHub OAuth per ADR-0026). Issuer/ProviderSub are the session's recorded
+// provenance (SPEC-0021 REQ "Session Parity and Provenance") — blank on a
+// session created before provenance existed.
 type Human struct {
 	ID          string
 	OIDCSubject string
 	DisplayName string
 	Email       string
 	CreatedAt   time.Time
+	Issuer      string
+	ProviderSub string
 }
 
 // UpsertHuman inserts or updates a human keyed on the OIDC subject, returning the current row.
@@ -195,24 +200,30 @@ func (s *Store) UpsertHuman(ctx context.Context, subject, displayName, email str
 	return h, err
 }
 
-// CreateSession records a server-side session (the caller stores the hash of the opaque cookie token).
-func (s *Store) CreateSession(ctx context.Context, tokenHash, humanID string, ttl time.Duration) error {
+// CreateSession records a server-side session (the caller stores the hash of the opaque cookie token)
+// together with its login provenance: the trusted issuer and the provider-side subject
+// (SPEC-0021 REQ "Session Parity and Provenance"). Both are empty for a session minted before
+// provenance existed; a migration backfills nothing — provenance is recorded at establishment and
+// only there.
+func (s *Store) CreateSession(ctx context.Context, tokenHash, humanID string, ttl time.Duration, issuer, providerSub string) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO sessions (token_hash, human_id, expires_at) VALUES ($1, $2, now() + $3::interval)`,
-		tokenHash, humanID, ttl.String(),
+		`INSERT INTO sessions (token_hash, human_id, expires_at, issuer, provider_sub) VALUES ($1, $2, now() + $3::interval, $4, $5)`,
+		tokenHash, humanID, ttl.String(), issuer, providerSub,
 	)
 	return err
 }
 
-// SessionHuman returns the human for a live (unexpired) session, or ErrNotFound.
+// SessionHuman returns the human for a live (unexpired) session, or ErrNotFound, along with the
+// session's recorded provenance.
 func (s *Store) SessionHuman(ctx context.Context, tokenHash string) (Human, error) {
 	var h Human
 	err := s.pool.QueryRow(ctx, `
-		SELECT h.id::text, h.oidc_subject, COALESCE(h.display_name, ''), COALESCE(h.email, ''), h.created_at
+		SELECT h.id::text, h.oidc_subject, COALESCE(h.display_name, ''), COALESCE(h.email, ''), h.created_at,
+		       COALESCE(s.issuer, ''), COALESCE(s.provider_sub, '')
 		FROM sessions s JOIN humans h ON h.id = s.human_id
 		WHERE s.token_hash = $1 AND s.expires_at > now()`,
 		tokenHash,
-	).Scan(&h.ID, &h.OIDCSubject, &h.DisplayName, &h.Email, &h.CreatedAt)
+	).Scan(&h.ID, &h.OIDCSubject, &h.DisplayName, &h.Email, &h.CreatedAt, &h.Issuer, &h.ProviderSub)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Human{}, ErrNotFound
 	}

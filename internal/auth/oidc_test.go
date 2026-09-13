@@ -185,6 +185,8 @@ type fakeStore struct {
 type fakeSession struct {
 	humanID   string
 	expiresAt time.Time
+	issuer    string
+	sub       string
 }
 
 func newFakeStore() *fakeStore {
@@ -208,10 +210,10 @@ func (f *fakeStore) UpsertHuman(_ context.Context, subject, displayName, email s
 	return h, nil
 }
 
-func (f *fakeStore) CreateSession(_ context.Context, tokenHash, humanID string, ttl time.Duration) error {
+func (f *fakeStore) CreateSession(_ context.Context, tokenHash, humanID string, ttl time.Duration, issuer, providerSub string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.sessions[tokenHash] = fakeSession{humanID: humanID, expiresAt: time.Now().Add(ttl)}
+	f.sessions[tokenHash] = fakeSession{humanID: humanID, expiresAt: time.Now().Add(ttl), issuer: issuer, sub: providerSub}
 	return nil
 }
 
@@ -328,17 +330,18 @@ func doCallback(t *testing.T, a *Authenticator, state string, cookie *http.Cooki
 
 // --- login initiation ---------------------------------------------------------------------------
 
-// SPEC-0008 scenario "OIDC not configured": clear error, no session.
+// SPEC-0008 scenario "OIDC not configured" / SPEC-0021 "provider=github returns 404": an
+// unconfigured provider's login route is a plain 404 — no session, no cookies. (The old
+// single-provider contract returned 503 with an explanatory body; the provider model 404s a
+// provider that does not exist for this deployment, which is the same answer an unknown provider
+// gets and confirms nothing about configuration.)
 func TestLoginNotConfigured(t *testing.T) {
 	a := &Authenticator{log: discardLog()}
 	rec := httptest.NewRecorder()
 	a.Login(rec, httptest.NewRequest(http.MethodGet, "/auth/login", nil))
 	resp := rec.Result()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("want 503, got %d", resp.StatusCode)
-	}
-	if !strings.Contains(rec.Body.String(), "OIDC not configured") {
-		t.Fatalf("want a clear 'OIDC not configured' error, got %q", rec.Body.String())
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", resp.StatusCode)
 	}
 	requireNoSessionCookie(t, resp)
 	if len(resp.Cookies()) != 0 {
@@ -438,8 +441,10 @@ func TestCookiesSecureUnderHTTPSBaseURL(t *testing.T) {
 func TestCallbackNotConfigured(t *testing.T) {
 	a := &Authenticator{log: discardLog()}
 	resp := doCallback(t, a, "whatever", nil)
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("want 503, got %d", resp.StatusCode)
+	// State is validated before provider dispatch, so a missing state cookie is
+	// a 400 regardless of what is configured.
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
 	}
 	requireNoSessionCookie(t, resp)
 }

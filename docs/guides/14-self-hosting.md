@@ -37,6 +37,9 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_OIDC_CLIENT_ID` | — | |
 | `SWITCHBOARD_OIDC_CLIENT_SECRET` | — | |
 | `SWITCHBOARD_OIDC_REDIRECT_URL` | `<base>/auth/callback` | Override only if your proxy rewrites paths. |
+| `SWITCHBOARD_GITHUB_CLIENT_ID` | — | Optional second login provider (GitHub OAuth, ADR-0026). When set with its secret, the login page gains "Log in with GitHub". |
+| `SWITCHBOARD_GITHUB_CLIENT_SECRET` | — | |
+| `SWITCHBOARD_GITHUB_REDIRECT_URL` | `<base>/auth/callback` | Override only if your proxy rewrites paths. |
 | `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | — | Recommended. Encrypts webhook signing secrets at rest. 32 bytes, base64 or hex. |
 | `SWITCHBOARD_OPERATOR_SUBJECTS` | empty | Comma-separated OIDC subjects allowed to administer instance-wide providers. **Empty means nobody**, deliberately. |
 | `SWITCHBOARD_REDIS_URL` | — | Enables the Redis pull adapters. |

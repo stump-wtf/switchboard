@@ -32,6 +32,12 @@ type Config struct {
 	// OIDCRedirectURL defaults to BaseURL + /auth/callback when empty.
 	OIDCRedirectURL string
 
+	// --- GitHub OAuth provider (ADR-0026: second human login provider, non-passkey) ---
+	GitHubClientID     string
+	GitHubClientSecret string
+	// GitHubRedirectURL defaults to BaseURL + /auth/callback when empty.
+	GitHubRedirectURL string
+
 	// SecretEncryptionKey, when set, enables at-rest encryption of held secrets that switchboard must
 	// keep recoverable — currently self-managed webhook HMAC signing secrets (which cannot be hashed,
 	// since verification recomputes the HMAC). It is a 32-byte AES-256 key supplied as base64 or hex,
@@ -106,6 +112,10 @@ func FromEnv() Config {
 	if redirect == "" {
 		redirect = base + "/auth/callback"
 	}
+	githubRedirect := os.Getenv("SWITCHBOARD_GITHUB_REDIRECT_URL")
+	if githubRedirect == "" {
+		githubRedirect = base + "/auth/callback"
+	}
 	return Config{
 		Addr:                getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
 		BaseURL:             base,
@@ -115,6 +125,9 @@ func FromEnv() Config {
 		OIDCClientID:        os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
 		OIDCClientSecret:    os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
 		OIDCRedirectURL:     redirect,
+		GitHubClientID:      os.Getenv("SWITCHBOARD_GITHUB_CLIENT_ID"),
+		GitHubClientSecret:  os.Getenv("SWITCHBOARD_GITHUB_CLIENT_SECRET"),
+		GitHubRedirectURL:   githubRedirect,
 		SecretEncryptionKey: os.Getenv("SWITCHBOARD_SECRET_ENCRYPTION_KEY"),
 		DevLogin:            os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
 		FriendingEnabled:    os.Getenv("SWITCHBOARD_FRIENDING") == "1",
@@ -129,6 +142,11 @@ func FromEnv() Config {
 // OIDCConfigured reports whether the OIDC relying-party settings are present.
 func (c Config) OIDCConfigured() bool {
 	return c.OIDCIssuer != "" && c.OIDCClientID != "" && c.OIDCClientSecret != ""
+}
+
+// GitHubConfigured reports whether the GitHub OAuth provider settings are present.
+func (c Config) GitHubConfigured() bool {
+	return c.GitHubClientID != "" && c.GitHubClientSecret != ""
 }
 
 func getenv(key, def string) string {

@@ -46,7 +46,10 @@ const (
 // Governing: SPEC-0008 REQ "Human Upsert Keyed on OIDC Subject", REQ "Server-Side Session Establishment".
 type sessionStore interface {
 	UpsertHuman(ctx context.Context, subject, displayName, email string) (store.Human, error)
-	CreateSession(ctx context.Context, tokenHash, humanID string, ttl time.Duration) error
+	// CreateSession records the session with its provenance (issuer + provider
+	// subject); SessionHuman returns them so the issuer gate can read provenance
+	// from the live session (SPEC-0021 REQ "Session Parity and Provenance").
+	CreateSession(ctx context.Context, tokenHash, humanID string, ttl time.Duration, issuer, providerSub string) error
 	SessionHuman(ctx context.Context, tokenHash string) (store.Human, error)
 	DeleteSession(ctx context.Context, tokenHash string) error
 }
@@ -60,6 +63,10 @@ type Authenticator struct {
 	oauth    oauth2.Config
 	verifier *oidc.IDTokenVerifier
 	secure   bool
+	// providers is the login-provider registry (ADR-0026): one route tree, one
+	// state cookie, one session-establishment path; a provider is config + one
+	// file. Governing: SPEC-0021.
+	providers map[string]AuthProvider
 }
 
 // New builds an Authenticator. OIDC is initialized only when configured; dev-login still works without it.
@@ -85,6 +92,16 @@ func New(ctx context.Context, cfg config.Config, st *store.Store, log *slog.Logg
 			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 		}
 		a.verifier = provider.Verifier(&oidc.Config{ClientID: cfg.OIDCClientID})
+	}
+	if a.providers == nil {
+		a.providers = map[string]AuthProvider{}
+	}
+	// The Pocket ID provider is always registered; its Configured() reports the
+	// OIDC init above, so an unconfigured deployment 404s the provider route
+	// while a configured one behaves exactly as before providers existed.
+	a.providers[PocketIDProviderID] = &pocketIDProvider{a: a}
+	if gh := newGitHubProvider(cfg, log); gh != nil {
+		a.providers[GitHubProviderID] = gh
 	}
 	return a, nil
 }
@@ -114,100 +131,104 @@ func csrfToken(sessionToken string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// oidcState is the short-lived per-login state stashed in a cookie across the redirect.
+// oidcState is the short-lived per-login state stashed in a cookie across the
+// redirect. Provider records which login flow started, so the callback always
+// finishes with the provider that began it (an empty Provider is a pre-provider
+// cookie and means Pocket ID).
 type oidcState struct {
 	State    string `json:"s"`
 	Nonce    string `json:"n"`
 	Verifier string `json:"v"`
+	Provider string `json:"p,omitempty"`
 }
 
-// Login begins the OIDC authorization-code flow (with PKCE + nonce).
-// Governing: SPEC-0008 REQ "OIDC Relying-Party Login".
+// Login begins a login with the provider named by ?provider= (default: Pocket
+// ID, preserving the pre-provider URL's behavior). An unknown or unconfigured
+// provider is a 404 — not an error page that confirms provider names — because
+// the route simply does not exist for it (SPEC-0021 REQ "Provider Selection on
+// the Login Page").
+// Governing: SPEC-0008 REQ "OIDC Relying-Party Login", SPEC-0021.
 func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
-	if a.provider == nil {
-		http.Error(w, "OIDC not configured (set SWITCHBOARD_OIDC_* or SWITCHBOARD_DEV_LOGIN=1)", http.StatusServiceUnavailable)
+	p := a.providerFor(r.URL.Query().Get("provider"))
+	if p == nil || !p.Configured() {
+		http.NotFound(w, r)
 		return
 	}
-	state, err := randToken()
+	url, st, err := p.Begin(r)
 	if err != nil {
-		a.log.Error("login: generate state", "err", err)
+		a.log.Error("login: begin", "provider", p.ID(), "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	nonce, err := randToken()
-	if err != nil {
-		a.log.Error("login: generate nonce", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	st := oidcState{State: state, Nonce: nonce, Verifier: oauth2.GenerateVerifier()}
 	raw, _ := json.Marshal(st)
 	http.SetCookie(w, a.cookie(stateCookie, base64.RawURLEncoding.EncodeToString(raw), 10*time.Minute))
-	url := a.oauth.AuthCodeURL(st.State, oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier))
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-// Callback completes the flow: exchange code, verify the ID token, upsert the human, mint a session.
-// Governing: SPEC-0008 REQ "Callback Verification", REQ "Human Upsert Keyed on OIDC Subject".
+// Callback completes whichever login flow the state cookie says it started:
+// validate state, dispatch to that provider, upsert the human, mint a session
+// carrying the provider's iss/sub provenance. The provider query parameter, if
+// present, must agree with the cookie — a mismatch is the same rejection as a
+// bad state, before any token exchange (SPEC-0021 REQ "GitHub OAuth Callback
+// Exchange", scenario "Invalid or replayed state").
+// Governing: SPEC-0008 REQ "Callback Verification", REQ "Human Upsert Keyed on
+// OIDC Subject", SPEC-0021.
 func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
-	if a.provider == nil {
-		http.Error(w, "OIDC not configured", http.StatusServiceUnavailable)
-		return
-	}
 	c, err := r.Cookie(stateCookie)
 	if err != nil {
-		a.log.Warn("oidc callback rejected", "reason", "missing state cookie", "remote", r.RemoteAddr)
+		a.log.Warn("auth callback rejected", "reason", "missing state cookie", "remote", r.RemoteAddr)
 		http.Error(w, "missing state", http.StatusBadRequest)
 		return
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
 	if err != nil {
-		a.log.Warn("oidc callback rejected", "reason", "malformed state cookie", "remote", r.RemoteAddr)
+		a.log.Warn("auth callback rejected", "reason", "malformed state cookie", "remote", r.RemoteAddr)
 		http.Error(w, "bad state", http.StatusBadRequest)
 		return
 	}
 	var st oidcState
 	if err := json.Unmarshal(raw, &st); err != nil || st.State == "" || st.State != r.URL.Query().Get("state") {
-		a.log.Warn("oidc callback rejected", "reason", "state mismatch", "remote", r.RemoteAddr)
+		a.log.Warn("auth callback rejected", "reason", "state mismatch", "remote", r.RemoteAddr)
 		http.Error(w, "state mismatch", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, a.cookie(stateCookie, "", -time.Hour)) // clear
+	if q := r.URL.Query().Get("provider"); q != "" && q != st.ProviderName() {
+		a.log.Warn("auth callback rejected", "reason", "provider mismatch", "remote", r.RemoteAddr)
+		http.Error(w, "state mismatch", http.StatusBadRequest)
+		return
+	}
+	http.SetCookie(w, a.cookie(stateCookie, "", -time.Hour)) // single-use: cleared before any exchange
 
-	token, err := a.oauth.Exchange(r.Context(), r.URL.Query().Get("code"), oauth2.VerifierOption(st.Verifier))
+	p := a.providerFor(st.ProviderName())
+	if p == nil || !p.Configured() {
+		// The flow's own provider vanished mid-flight (config change) or the
+		// cookie names an unknown provider — do not fall through to another one.
+		a.log.Warn("auth callback rejected", "reason", "unknown provider in state", "remote", r.RemoteAddr)
+		http.NotFound(w, r)
+		return
+	}
+	id, err := p.Finish(r.Context(), st, r.URL.Query().Get("code"))
 	if err != nil {
-		a.log.Warn("oidc exchange failed", "err", err)
-		http.Error(w, "token exchange failed", http.StatusBadGateway)
+		// Map each provider failure to the same user-visible status and message
+		// the single-provider flow always returned; the detail stays in the
+		// server log (and the GitHub access token in none of it).
+		switch {
+		case errors.Is(err, errUnverifiedEmail):
+			http.Error(w, "login requires a verified primary email", http.StatusForbidden)
+		case errors.Is(err, errNonceMismatch):
+			a.log.Warn("auth callback rejected", "reason", "nonce mismatch", "provider", p.ID(), "remote", r.RemoteAddr)
+			http.Error(w, "nonce mismatch", http.StatusBadRequest)
+		case errors.Is(err, errVerifyFailed):
+			a.log.Warn("auth callback rejected", "reason", "verification failed", "provider", p.ID(), "err", err, "remote", r.RemoteAddr)
+			http.Error(w, "id_token verify failed", http.StatusBadGateway)
+		default:
+			a.log.Warn("login finish failed", "provider", p.ID(), "err", err)
+			http.Error(w, "login failed", http.StatusBadGateway)
+		}
 		return
 	}
-	rawID, ok := token.Extra("id_token").(string)
-	if !ok {
-		a.log.Warn("oidc callback rejected", "reason", "no id_token in token response", "remote", r.RemoteAddr)
-		http.Error(w, "no id_token", http.StatusBadGateway)
-		return
-	}
-	// The verifier checks issuer, audience, expiry, and signature only. Deliberately NO amr/acr
-	// assurance check here — the trusted issuer is passkey-only (ADR-0011); see New for the guard
-	// that must accompany any non-passkey issuer.
-	// Governing: ADR-0011, SPEC-0008 REQ "Assurance Posture — Trust the Issuer, Step-Up Deferred".
-	idToken, err := a.verifier.Verify(r.Context(), rawID)
-	if err != nil {
-		a.log.Warn("oidc callback rejected", "reason", "id_token verification failed", "err", err, "remote", r.RemoteAddr)
-		http.Error(w, "id_token verify failed", http.StatusBadGateway)
-		return
-	}
-	if idToken.Nonce != st.Nonce {
-		a.log.Warn("oidc callback rejected", "reason", "nonce mismatch", "remote", r.RemoteAddr)
-		http.Error(w, "nonce mismatch", http.StatusBadRequest)
-		return
-	}
-	var claims struct {
-		Name  string `json:"name"`
-		Email string `json:"email"`
-	}
-	_ = idToken.Claims(&claims)
 
-	if err := a.establishSession(r.Context(), w, idToken.Subject, claims.Name, claims.Email); err != nil {
+	if err := a.establishSession(r.Context(), w, id); err != nil {
 		a.log.Error("establish session", "err", err)
 		http.Error(w, "login failed", http.StatusInternalServerError)
 		return
@@ -263,7 +284,10 @@ func (a *Authenticator) DevLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.log.Warn("DEV LOGIN used — OIDC bypassed; never enable SWITCHBOARD_DEV_LOGIN in production")
-	if err := a.establishSession(r.Context(), w, "dev|local", "Local Dev", "dev@localhost"); err != nil {
+	if err := a.establishSession(r.Context(), w, identity{
+		Issuer: "dev", Subject: "local", HumanSubject: "dev|local",
+		Name: "Local Dev", Email: "dev@localhost",
+	}); err != nil {
 		http.Error(w, "dev login failed", http.StatusInternalServerError)
 		return
 	}
@@ -279,8 +303,12 @@ func (a *Authenticator) Logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWriter, subject, name, email string) error {
-	h, err := a.store.UpsertHuman(ctx, subject, name, email)
+// establishSession mints a session for the authenticated identity, recording
+// its provenance (iss + provider sub) on the session row so the issuer gate is
+// auditable (SPEC-0021 REQ "Session Parity and Provenance"). The human is
+// upserted keyed on the provider-namespaced subject.
+func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWriter, id identity) error {
+	h, err := a.store.UpsertHuman(ctx, id.HumanSubject, id.Name, id.Email)
 	if err != nil {
 		return err
 	}
@@ -288,7 +316,7 @@ func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWri
 	if err != nil {
 		return err
 	}
-	if err := a.store.CreateSession(ctx, hashToken(tok), h.ID, sessionTTL); err != nil {
+	if err := a.store.CreateSession(ctx, hashToken(tok), h.ID, sessionTTL, id.Issuer, id.Subject); err != nil {
 		return err
 	}
 	http.SetCookie(w, a.cookie(sessionCookie, tok, sessionTTL))

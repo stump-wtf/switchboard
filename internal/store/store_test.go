@@ -198,17 +198,21 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("upsert human: %v", err)
 	}
 
-	// A live session resolves to its human.
-	if err := s.CreateSession(ctx, "livehash", h.ID, time.Hour); err != nil {
+	// A live session resolves to its human, carrying the recorded provenance
+	// (SPEC-0021 REQ "Session Parity and Provenance").
+	if err := s.CreateSession(ctx, "livehash", h.ID, time.Hour, "https://id.example", "sub-live"); err != nil {
 		t.Fatalf("create live session: %v", err)
 	}
 	got, err := s.SessionHuman(ctx, "livehash")
 	if err != nil || got.ID != h.ID {
 		t.Fatalf("live session must resolve to its human: %+v, %v", got, err)
 	}
+	if got.Issuer != "https://id.example" || got.ProviderSub != "sub-live" {
+		t.Fatalf("session must record provenance: got issuer=%q sub=%q", got.Issuer, got.ProviderSub)
+	}
 
 	// An expired session is not honored.
-	if err := s.CreateSession(ctx, "expiredhash", h.ID, -time.Minute); err != nil {
+	if err := s.CreateSession(ctx, "expiredhash", h.ID, -time.Minute, "https://id.example", "sub-expired"); err != nil {
 		t.Fatalf("create expired session: %v", err)
 	}
 	if _, err := s.SessionHuman(ctx, "expiredhash"); !errors.Is(err, ErrNotFound) {

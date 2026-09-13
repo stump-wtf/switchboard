@@ -34,7 +34,7 @@ func newSessionAuth(fs *fakeStore, baseURL string) *Authenticator {
 func establish(t *testing.T, a *Authenticator) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	if err := a.establishSession(context.Background(), rec, testSubject, testName, testEmail); err != nil {
+	if err := a.establishSession(context.Background(), rec, identity{Issuer: "https://id.example", Subject: testSubject, HumanSubject: testSubject, Name: testName, Email: testEmail}); err != nil {
 		t.Fatalf("establishSession: %v", err)
 	}
 	c := cookieByName(t, rec.Result(), sessionCookie)
@@ -98,7 +98,7 @@ func TestSessionStoresOnlyTokenHash(t *testing.T) {
 	a := newSessionAuth(fs, "http://127.0.0.1:8080")
 
 	rec := httptest.NewRecorder()
-	if err := a.establishSession(context.Background(), rec, testSubject, testName, testEmail); err != nil {
+	if err := a.establishSession(context.Background(), rec, identity{Issuer: "https://id.example", Subject: testSubject, HumanSubject: testSubject, Name: testName, Email: testEmail}); err != nil {
 		t.Fatalf("establishSession: %v", err)
 	}
 	c := cookieByName(t, rec.Result(), sessionCookie)
@@ -173,7 +173,7 @@ func TestRequireHumanExpiredSessionRedirectsAndClears(t *testing.T) {
 	if err != nil {
 		t.Fatalf("randToken: %v", err)
 	}
-	if err := fs.CreateSession(context.Background(), hashToken(tok), hu.ID, -time.Second); err != nil {
+	if err := fs.CreateSession(context.Background(), hashToken(tok), hu.ID, -time.Second, "https://id.example", testSubject); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
