@@ -111,6 +111,9 @@ func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targe
 	if err := tx.Commit(ctx); err != nil {
 		return Webhook{}, fmt.Errorf("store: create webhook commit: %w", err)
 	}
+	// Warn only after the commit: the ceiling check above can roll this insert back, and a warning
+	// before that point would report a plaintext write that never happened.
+	s.warnPlaintextSigningSecret(w.TrustMode, secret, w.ID, w.EndpointID)
 	return w, nil
 }
 
@@ -205,6 +208,23 @@ func (s *Store) sealSecret(secret string) (string, error) {
 	return sealed, nil
 }
 
+// CountSignedWebhooks reports how many self-managed webhooks currently retain a signing secret
+// (trust_mode='signed'). Used at startup to decide whether an empty encryption key is worth warning
+// about: a deployment with no signed webhooks is not storing anything in the clear yet.
+//
+// This is a point-in-time answer and deliberately not the only guard — a signed webhook created
+// later is caught by the per-write warning instead. Governing: SPEC-0006 REQ "Switchboard Owns
+// Secrets, Verification, and Idempotency".
+func (s *Store) CountSignedWebhooks(ctx context.Context) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM endpoint_webhooks WHERE trust_mode = 'signed' AND signing_secret IS NOT NULL`,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count signed webhooks: %w", err)
+	}
+	return n, nil
+}
+
 // openSecret reverses sealSecret on the delivery path. With no cipher it returns the value unchanged
 // (legacy plaintext); with a cipher it decrypts enc:v1: ciphertext and passes legacy plaintext
 // through, so enabling encryption never strands rows written before it was on.
@@ -248,6 +268,9 @@ func (s *Store) RotateWebhookSecret(ctx context.Context, id, endpointID, newSecr
 	if err != nil {
 		return Webhook{}, fmt.Errorf("store: rotate webhook: %w", err)
 	}
+	// Rotate mints a secret for every webhook but the CASE above stores one only for a signed
+	// webhook, so the trust mode comes from the row we just wrote, not from the caller.
+	s.warnPlaintextSigningSecret(w.TrustMode, newSecret, w.ID, w.EndpointID)
 	return w, nil
 }
 
