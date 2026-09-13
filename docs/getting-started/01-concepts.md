@@ -97,8 +97,8 @@ Because a worker can crash after doing the work but before completing, delivery 
 ## Duplicates collapse
 
 Forges retry webhooks. Switchboard keys each todo on the webhook plus the delivery's id
-(`X-GitHub-Delivery`, `X-Gitea-Delivery`, Cairn's signed `event_id`, or a hash of the body when
-there is none). A repeat delivery while the todo is still pending, claimed, or waiting to retry
+(`X-GitHub-Delivery`, `X-Gitea-Delivery`, Cairn's signed `event_id`, a generic sender's own
+`X-Delivery-Id`, or a hash of the body when there is none). A repeat delivery while the todo is still pending, claimed, or waiting to retry
 collapses onto it. Once the todo is `done`, a redelivery creates a new one.
 
 ## Competing consumers vs. fan-out

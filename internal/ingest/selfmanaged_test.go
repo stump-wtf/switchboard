@@ -581,3 +581,29 @@ func TestSelfManagedEventReadsBothForgeHeaders(t *testing.T) {
 		})
 	}
 }
+
+// A token-mode generic webhook honours the sender's own delivery id the way a forge webhook honours
+// the forge's: a retry with a re-serialized body collapses onto the first todo. The id is scoped to
+// the webhook it arrived on, so the same id on another webhook is another delivery. Governing:
+// SPEC-0001 REQ "Idempotency Key Extraction and Dedup" (scenario "Generic redelivery with the same
+// delivery id dedups").
+func TestSelfManagedGenericHonoursDeliveryID(t *testing.T) {
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
+	st := store.New(pool)
+	seedWebhook(t, st, ctx, "generic", "token", "reviews", "route-generic-delivery-id", "")
+	seedWebhook(t, st, ctx, "generic", "token", "reviews", "route-generic-delivery-id-2", "")
+
+	stamped := map[string]string{"X-Delivery-Id": "job-7"}
+	id1, _ := accepted202(t, postSelfManaged(ing, "route-generic-delivery-id", `{"n":1,"sent":"a"}`, stamped))
+	id2, _ := accepted202(t, postSelfManaged(ing, "route-generic-delivery-id", `{"n":1,"sent":"b"}`, stamped))
+	if id2 != id1 {
+		t.Fatalf("redelivery with the same X-Delivery-Id must dedup despite a different body: %s vs %s", id1, id2)
+	}
+	id3, _ := accepted202(t, postSelfManaged(ing, "route-generic-delivery-id-2", `{"n":1,"sent":"a"}`, stamped))
+	if id3 == id1 {
+		t.Fatal("a delivery id is scoped to the webhook it arrived on")
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 2 {
+		t.Fatalf("todos = %d, want 2", n)
+	}
+}
