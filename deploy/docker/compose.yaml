@@ -1,6 +1,8 @@
 # Reference compose for switchboard (service + PostgreSQL). StumpCloud deploys via Ansible; this
-# documents the runtime shape and is runnable locally. For a real login, set the OIDC env; or set
-# SWITCHBOARD_DEV_LOGIN=1 to exercise the vend → Channels loop without Pocket ID.
+# documents the runtime shape and is runnable locally. For a real login, set the OIDC env; or
+# uncomment the SWITCHBOARD_DEV_LOGIN line in the switchboard environment block below (exporting
+# it in your shell does nothing — this file does not interpolate it) to exercise the vend →
+# Channels loop without Pocket ID.
 services:
   db:
     # Upgrading an EXISTING volume from a previous major (e.g. 16 → 18) is NOT in-place: Postgres
