@@ -596,6 +596,11 @@ a:hover {
   color: var(--sb-trust-queue);
   background: var(--sb-trust-queue-bg);
 }
+/* an operator hand-off (ADR-0026) is verified provenance: it wears the signed colours */
+.sb-badge--operator {
+  color: var(--sb-trust-signed);
+  background: var(--sb-trust-signed-bg);
+}
 /* endpoint state pills share the badge grammar */
 .sb-badge--active {
   color: var(--sb-status-done);

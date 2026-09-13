@@ -550,3 +550,85 @@ func TestEndpointRevokeUsageAndErrors(t *testing.T) {
 	}
 	mustContain(t, "conflict", tc.stderr.String(), "already revoked")
 }
+
+func TestTodoPushPostsAndPrints(t *testing.T) {
+	tc := newTestCLI(t)
+	f := newFakeDeployment(t)
+	tc.loggedIn(t, f, tc.clock.Add(time.Hour))
+
+	if code := tc.run(t, "todo", "push", "my-agent-k3x9", "look at PR 7",
+		"--queue", "reviews", "--payload", `{"pr":7}`, "--key", "pr-7", "--kind", "review"); code != exitOK {
+		t.Fatalf("todo push: code %d, stderr %q", code, tc.stderr.String())
+	}
+	mustContain(t, "push output", tc.stdout.String(), "Pushed td_1 to my-agent-k3x9 on queue reviews", "doorbell rung")
+	if len(f.pushes) != 1 {
+		t.Fatalf("pushes = %v, want one", f.pushes)
+	}
+	p := f.pushes[0]
+	if p["ref"] != "my-agent-k3x9" || p["title"] != "look at PR 7" || p["queue"] != "reviews" || p["key"] != "pr-7" || p["kind"] != "review" {
+		t.Fatalf("push body = %v", p)
+	}
+	if pl, _ := p["payload"].(map[string]any); pl["pr"] != float64(7) {
+		t.Fatalf("payload = %v, want the inline JSON", p["payload"])
+	}
+
+	// @file payloads go through the injected reader; a matched key is reported as such.
+	tc.cli.readFile = func(name string) ([]byte, error) {
+		if name != "order.json" {
+			t.Fatalf("readFile(%q), want order.json", name)
+		}
+		return []byte(`{"pr": 8}`), nil
+	}
+	f.pushExists = true
+	tc.stdout.Reset()
+	if code := tc.run(t, "todo", "push", "--payload", "@order.json", "my-agent-k3x9", "look at PR 8"); code != exitOK {
+		t.Fatalf("todo push @file: code %d, stderr %q", code, tc.stderr.String())
+	}
+	mustContain(t, "repeat output", tc.stdout.String(), "Already there: td_1 on my-agent-k3x9", "nothing new minted")
+	if pl, _ := f.pushes[1]["payload"].(map[string]any); pl["pr"] != float64(8) {
+		t.Fatalf("@file payload = %v", f.pushes[1]["payload"])
+	}
+	if _, has := f.pushes[1]["queue"]; has {
+		t.Fatalf("no --queue given, yet one was sent: %v", f.pushes[1])
+	}
+
+	// @- reads stdin; --json prints the API document verbatim.
+	tc.cli.stdin = strings.NewReader(`{"pr": 9}`)
+	tc.stdout.Reset()
+	if code := tc.run(t, "todo", "push", "--json", "--payload", "@-", "my-agent-k3x9", "look at PR 9"); code != exitOK {
+		t.Fatalf("todo push --json: code %d, stderr %q", code, tc.stderr.String())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(tc.stdout.Bytes(), &doc); err != nil {
+		t.Fatalf("--json output is not JSON: %v\n%s", err, tc.stdout.String())
+	}
+	if doc["id"] != "td_1" || doc["created"] != false {
+		t.Fatalf("--json doc = %v", doc)
+	}
+	if pl, _ := f.pushes[2]["payload"].(map[string]any); pl["pr"] != float64(9) {
+		t.Fatalf("stdin payload = %v", f.pushes[2]["payload"])
+	}
+}
+
+func TestTodoPushUsageMistakes(t *testing.T) {
+	tc := newTestCLI(t)
+	f := newFakeDeployment(t)
+	tc.loggedIn(t, f, tc.clock.Add(time.Hour))
+	for _, args := range [][]string{
+		{"todo"},
+		{"todo", "push"},
+		{"todo", "push", "my-agent-k3x9"},
+		{"todo", "push", "my-agent-k3x9", "   "},
+		{"todo", "push", "my-agent-k3x9", "title", "extra"},
+		{"todo", "push", "my-agent-k3x9", "title", "--payload", "not json"},
+		{"todo", "push", "my-agent-k3x9", "title", "--bogus"},
+	} {
+		tc.stderr.Reset()
+		if code := tc.run(t, args...); code != exitUsage {
+			t.Fatalf("%v: code %d, want %d (stderr %q)", args, code, exitUsage, tc.stderr.String())
+		}
+	}
+	if len(f.pushes) != 0 {
+		t.Fatalf("usage mistakes must never reach the API: %v", f.pushes)
+	}
+}

@@ -410,3 +410,103 @@ func cmdEndpointRevoke(c *cli, args []string) int {
 	fmt.Fprintln(c.stdout, "Anything wired to it needs a new endpoint: switchboard endpoint vend NAME --queue Q")
 	return exitOK
 }
+
+// --- todo ---
+
+// cmdTodoPush hands a todo to an endpoint you own and rings its doorbell — the operator's front
+// door, recorded with the operator's name rather than smuggled in through the ingest URL as an
+// anonymous producer. Governing: ADR-0026; SPEC-0011 scenario "Operator-authored todo is pushed".
+func cmdTodoPush(c *cli, args []string) int {
+	fs := c.flagSet("todo push", "ENDPOINT TITLE",
+		"Hand a todo to an endpoint you own and ring its doorbell, the way a verified delivery does.\n"+
+			"Name the endpoint by the slug `endpoint list` prints, or by its id. TITLE is the doorbell's\n"+
+			"one line; put the detail in --payload.")
+	queue := fs.String("queue", "", "the queue to put it on (needed unless the endpoint drains exactly one)")
+	fs.StringVar(queue, "q", "", "shorthand for --queue")
+	kind := fs.String("kind", "", "the todo's kind, as list_todos reports it (default: operator)")
+	payload := fs.String("payload", "", "JSON handed to the agent with the todo: inline, @file, or @- for stdin")
+	key := fs.String("key", "", "idempotency key: the same key on the same endpoint returns the existing todo")
+	asJSON := fs.Bool("json", false, "print the raw API response")
+	pos, exit, ok := c.parseArgs(fs, args)
+	if !ok {
+		return exit
+	}
+	switch {
+	case len(pos) < 2 || strings.TrimSpace(pos[0]) == "" || strings.TrimSpace(pos[1]) == "":
+		return c.usageError(fs, `an endpoint and a title are required (switchboard todo push ENDPOINT "title")`)
+	case len(pos) > 2:
+		return c.usageError(fs, fmt.Sprintf("unexpected argument %q", pos[2]))
+	}
+	body := map[string]any{"title": strings.TrimSpace(pos[1])}
+	if *queue != "" {
+		body["queue"] = *queue
+	}
+	if *kind != "" {
+		body["kind"] = *kind
+	}
+	if *key != "" {
+		body["key"] = *key
+	}
+	if *payload != "" {
+		raw, err := c.readPayload(*payload)
+		if err != nil {
+			return c.fail(err)
+		}
+		if !json.Valid(raw) {
+			return c.usageError(fs, "--payload must be JSON (inline, @file, or @- for stdin)")
+		}
+		body["payload"] = json.RawMessage(raw)
+	}
+
+	api, err := c.apiClient(context.Background())
+	if err != nil {
+		return c.fail(err)
+	}
+	resp, err := api.post("/api/v1/endpoints/"+url.PathEscape(strings.TrimSpace(pos[0]))+"/todos", body)
+	if err != nil {
+		return c.fail(err)
+	}
+	if *asJSON {
+		return c.printJSON(resp)
+	}
+	var out struct {
+		ID      string `json:"id"`
+		Slug    string `json:"slug"`
+		Queue   string `json:"queue"`
+		State   string `json:"state"`
+		Created bool   `json:"created"`
+	}
+	if err := json.Unmarshal(resp, &out); err != nil {
+		return c.fail(fmt.Errorf("todo push: malformed response: %w", err))
+	}
+	if out.Created {
+		fmt.Fprintf(c.stdout, "Pushed %s to %s on queue %s — doorbell rung.\n", out.ID, out.Slug, out.Queue)
+	} else {
+		fmt.Fprintf(c.stdout, "Already there: %s on %s (queue %s, %s) — same key, nothing new minted.\n",
+			out.ID, out.Slug, out.Queue, out.State)
+	}
+	return exitOK
+}
+
+// readPayload resolves a --payload argument: @- reads stdin, @path reads a file, anything else is
+// the JSON itself.
+func (c *cli) readPayload(arg string) ([]byte, error) {
+	switch {
+	case arg == "@-":
+		if c.stdin == nil {
+			return nil, errors.New("--payload @-: no stdin")
+		}
+		return io.ReadAll(c.stdin)
+	case strings.HasPrefix(arg, "@"):
+		read := c.readFile
+		if read == nil {
+			read = os.ReadFile
+		}
+		b, err := read(arg[1:])
+		if err != nil {
+			return nil, fmt.Errorf("--payload: %w", err)
+		}
+		return b, nil
+	}
+	return []byte(arg), nil
+}
