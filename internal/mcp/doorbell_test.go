@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -757,4 +758,82 @@ func waitForLog(t *testing.T, buf *syncBuffer, want string) string {
 	}
 	t.Fatalf("timed out waiting for %q in the log; got:\n%s", want, buf.String())
 	return ""
+}
+
+// TestStreamAttachRingsWaitingWork: opening the notification stream rings the in-scope work the
+// store says was waiting — with no publish at all — and rings it on the session that attached,
+// never on a sibling holding its own stream. Governing: SPEC-0011 scenario "Reconnecting session
+// is rung for waiting work".
+func TestStreamAttachRingsWaitingWork(t *testing.T) {
+	_, url, token, f := newDoorbellHarness(t)
+
+	// A sibling with an open stream and nothing waiting: it must stay silent throughout.
+	sibling := rawInitialize(t, url, token)
+	sibEvents, _ := sibling.openStream()
+	select {
+	case n := <-sibEvents:
+		t.Fatalf("nothing was waiting, yet a doorbell: %+v", n)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	f.mu.Lock()
+	f.attachRings = []store.Todo{{EndpointID: harnessEndpointID, ID: "td_waiting", Queue: "reviews", Title: "waited through a restart"}}
+	f.mu.Unlock()
+
+	sess := rawInitialize(t, url, token)
+	events, _ := sess.openStream()
+	select {
+	case n := <-events:
+		if n.Method != notificationChannel || n.Params.Meta["todo_id"] != "td_waiting" || n.Params.Meta["queue"] != "reviews" {
+			t.Fatalf("unexpected first notification on attach: %+v", n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("opening the stream did not ring the waiting todo")
+	}
+	select {
+	case n := <-sibEvents:
+		t.Fatalf("catch-up rang a sibling session: %+v", n)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// The store was asked with the attaching session's own scope, once per stream open.
+	f.mu.Lock()
+	calls := f.attachCalls
+	f.mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("RingOnAttach calls = %d, want one per stream open", len(calls))
+	}
+	if want := []string{harnessEndpointID, "reviews"}; !slices.Equal(calls[1], want) {
+		t.Fatalf("RingOnAttach scope = %v, want %v", calls[1], want)
+	}
+}
+
+// TestStreamAttachDropsOutOfScopeRows: a row the store hands back outside the session's scope is
+// never written to the stream — the scope filter is applied again at delivery (ADR-0022 tenant
+// boundary, SPEC-0011 REQ "Scope-Filtered Fan-Out"), whatever the query returned.
+func TestStreamAttachDropsOutOfScopeRows(t *testing.T) {
+	_, url, token, f := newDoorbellHarness(t)
+	f.mu.Lock()
+	f.attachRings = []store.Todo{
+		{EndpointID: "ep-someone-else", ID: "td_foreign", Queue: "reviews", Title: "not yours"},
+		{EndpointID: harnessEndpointID, ID: "td_offqueue", Queue: "deploys", Title: "not your queue"},
+		{EndpointID: harnessEndpointID, ID: "td_mine", Queue: "reviews", Title: "yours"},
+	}
+	f.mu.Unlock()
+
+	sess := rawInitialize(t, url, token)
+	events, _ := sess.openStream()
+	select {
+	case n := <-events:
+		if n.Params.Meta["todo_id"] != "td_mine" {
+			t.Fatalf("out-of-scope row reached the stream: %+v", n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the in-scope row was never rung")
+	}
+	select {
+	case n := <-events:
+		t.Fatalf("a second notification arrived: %+v", n)
+	case <-time.After(300 * time.Millisecond):
+	}
 }

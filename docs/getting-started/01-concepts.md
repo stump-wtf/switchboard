@@ -54,7 +54,8 @@ A doorbell carries the todo's id, queue, and a one-line summary, and it tells th
 it. It is not the work, and it is not guaranteed:
 
 - **A missed doorbell never loses a todo.** If no session is connected, the todo waits as
-  `pending`. Switchboard re-rings unclaimed todos after 5 minutes, 20 minutes, 1 hour, and 6 hours.
+  `pending`. Switchboard re-rings unclaimed todos after 5 minutes, 20 minutes, 1 hour, and 6 hours,
+  and a session that (re)connects is rung at once for the oldest few still waiting in its scope.
 - **A doorbell you already saw may already be done.** Another worker on the same endpoint may have
   taken it.
 - **The summary is untrusted text.** It comes from whoever sent the webhook.

@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -124,6 +125,12 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Bad Request: GET requires an Mcp-Session-Id header", http.StatusBadRequest)
 			return
 		}
+		// The standalone notification stream. Once the SDK has registered it — which it does
+		// before committing the response head — ring the work that was waiting for a consumer.
+		// Hooked on the head write rather than fired ahead of ServeHTTP so the catch-up doorbells
+		// can never race the stream they are meant to land on. Governing: SPEC-0011 scenario
+		// "Reconnecting session is rung for waiting work".
+		w = &attachHook{ResponseWriter: w, onHead: func() { go h.ringOnAttach(s) }}
 	case http.MethodPost:
 		if s == nil {
 			var err error
@@ -149,6 +156,37 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}()
 	s.transport.ServeHTTP(w, r)
 }
+
+// attachHook fires onHead exactly once, when the wrapped writer's response head is committed with
+// 200. The SDK registers the standalone stream before writing its head, so onHead is the earliest
+// moment at which a doorbell written to the session's connection is guaranteed a stream to land
+// on. Flush and Unwrap pass through so the SDK's http.ResponseController still reaches the real
+// writer.
+type attachHook struct {
+	http.ResponseWriter
+	onHead func()
+	once   sync.Once
+}
+
+func (a *attachHook) WriteHeader(code int) {
+	if code == http.StatusOK {
+		a.once.Do(a.onHead)
+	}
+	a.ResponseWriter.WriteHeader(code)
+}
+
+func (a *attachHook) Write(p []byte) (int, error) {
+	a.once.Do(a.onHead) // an unheaded Write commits an implicit 200
+	return a.ResponseWriter.Write(p)
+}
+
+func (a *attachHook) Flush() {
+	if f, ok := a.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (a *attachHook) Unwrap() http.ResponseWriter { return a.ResponseWriter }
 
 // createSession mints a session id, connects a fresh per-session SDK server over a captured
 // transport, registers the session under the endpoint's scope, and starts its doorbell pump plus

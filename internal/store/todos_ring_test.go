@@ -289,3 +289,91 @@ func TestRingUnclaimedUsesFullBudgetForASingleEndpoint(t *testing.T) {
 		t.Fatalf("swept %d todos for a sole endpoint, want the full budget of %d", len(got), ringSweepLimit)
 	}
 }
+
+// The catch-up ring (RingOnAttach): a session that just opened its notification stream is rung at
+// once for the work waiting in its scope — no first-backoff wait, unlike the sweep — and the rows
+// are charged to the same ring budget so the two mechanisms never double up. Governing: SPEC-0011
+// scenario "Reconnecting session is rung for waiting work".
+func TestRingOnAttachRingsWaitingWorkAtOnce(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "attach", "forge")
+	td := seedRingingTodo(t, s, ctx, ep, "waiting", true, "signed")
+
+	got, err := s.RingOnAttach(ctx, ep, []string{"forge"})
+	if err != nil {
+		t.Fatalf("ring on attach: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != td.ID {
+		t.Fatalf("expected the fresh todo to be rung on attach, got %d rows", len(got))
+	}
+	// Charged to the shared budget, and inside the cooldown a re-attach does not repeat it.
+	var attempts int
+	if err := s.pool.QueryRow(ctx, `SELECT ring_attempts FROM todos WHERE id = $1`, td.ID).Scan(&attempts); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("ring_attempts = %d, want 1", attempts)
+	}
+	if again, err := s.RingOnAttach(ctx, ep, []string{"forge"}); err != nil || len(again) != 0 {
+		t.Fatalf("re-attach inside the cooldown rang again: %d rows, err %v", len(again), err)
+	}
+	// The sweep sees it as just rung, not as due.
+	if due, err := s.RingUnclaimed(ctx); err != nil || len(due) != 0 {
+		t.Fatalf("sweep re-rang a todo the attach just rang: %d rows, err %v", len(due), err)
+	}
+	// Past the cooldown it is due on attach again.
+	ago := attachRingCooldown + time.Minute
+	age(t, s, ctx, td.ID, 10*time.Minute, 1, &ago)
+	if got, err := s.RingOnAttach(ctx, ep, []string{"forge"}); err != nil || len(got) != 1 {
+		t.Fatalf("expected the todo to be rung again after the cooldown: %d rows, err %v", len(got), err)
+	}
+}
+
+// RingOnAttach is endpoint- and queue-scoped (ADR-0022) and applies the sender gate and the ring
+// budget exactly as the sweep does.
+func TestRingOnAttachIsScopedAndGated(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "attach-a", "forge")
+	other := seedEndpoint(t, s, ctx, "attach-b", "forge")
+	mine := seedRingingTodo(t, s, ctx, ep, "mine", true, "signed")
+	token := seedRingingTodo(t, s, ctx, ep, "token-trust", false, "token")
+	seedRingingTodo(t, s, ctx, other, "theirs", true, "signed")
+	seedRingingTodo(t, s, ctx, ep, "unverified", false, "open")
+	spent := seedRingingTodo(t, s, ctx, ep, "spent", true, "signed")
+	age(t, s, ctx, spent.ID, time.Hour, ringMaxAttempts, nil)
+
+	got, err := s.RingOnAttach(ctx, ep, []string{"forge"})
+	if err != nil {
+		t.Fatalf("ring on attach: %v", err)
+	}
+	rung := map[string]bool{}
+	for _, td := range got {
+		rung[td.ID] = true
+	}
+	if len(got) != 2 || !rung[mine.ID] || !rung[token.ID] {
+		t.Fatalf("expected exactly the verified and token-trust todos of this endpoint, got %d rows: %v", len(got), rung)
+	}
+	// A queue outside the attaching session's scope is not rung, and neither is a bogus scope.
+	if got, err := s.RingOnAttach(ctx, other, []string{"reviews"}); err != nil || len(got) != 0 {
+		t.Fatalf("out-of-scope queue rung: %d rows, err %v", len(got), err)
+	}
+	if got, err := s.RingOnAttach(ctx, "", []string{"forge"}); err != nil || len(got) != 0 {
+		t.Fatalf("empty endpoint scope rung: %d rows, err %v", len(got), err)
+	}
+}
+
+// One attach rings at most attachRingLimit rows; the sweep paces the rest.
+func TestRingOnAttachIsCapped(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "attach-cap", "forge")
+	for i := 0; i < attachRingLimit+2; i++ {
+		seedRingingTodo(t, s, ctx, ep, fmt.Sprintf("row-%d", i), true, "signed")
+	}
+	got, err := s.RingOnAttach(ctx, ep, []string{"forge"})
+	if err != nil {
+		t.Fatalf("ring on attach: %v", err)
+	}
+	if len(got) != attachRingLimit {
+		t.Fatalf("rung %d rows, want the cap of %d", len(got), attachRingLimit)
+	}
+}

@@ -43,6 +43,21 @@ type fakeStore struct {
 	webhookN       int                                // monotonic id source for created webhooks
 	settings       map[string]string                  // SPEC-0005 replay knobs (replay_test.go)
 	failErr        error
+	// attachRings is what the next RingOnAttach returns — handed out once, the way the store's
+	// cooldown makes a row ring once per attach — and attachCalls records every call's scope.
+	attachRings []store.Todo
+	attachCalls [][]string
+}
+
+// RingOnAttach hands out attachRings once. Deliberately ignores failErr: a stream open in a test
+// that is exercising a failing verb must not turn into a spurious catch-up warning.
+func (f *fakeStore) RingOnAttach(_ context.Context, endpointID string, queues []string) ([]store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attachCalls = append(f.attachCalls, append([]string{endpointID}, queues...))
+	out := f.attachRings
+	f.attachRings = nil
+	return out, nil
 }
 
 func newFakeStore() *fakeStore {
