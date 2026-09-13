@@ -28,14 +28,14 @@ services:
       retries: 12
 
   switchboard:
-    # Built from this checkout, so the stack runs the moment you clone it. The Dockerfile is
-    # hermetic — dependencies are vendored and the build needs no network — so this costs one
-    # compile and nothing else. To run a published image instead, comment `build` out and
-    # uncomment `image` (see docs/guides/14-self-hosting.md).
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile
-    # image: ghcr.io/stump-wtf/switchboard:latest
+    # Published image by default, so the stack runs from this one file with no
+    # checkout. To build from source instead, comment `image` out and uncomment
+    # `build` — the Dockerfile is hermetic (dependencies vendored, no network),
+    # so that costs one compile and nothing else.
+    image: ghcr.io/stump-wtf/switchboard:latest
+    # build:
+    #   context: ../..
+    #   dockerfile: deploy/docker/Dockerfile
     depends_on:
       db:
         condition: service_healthy

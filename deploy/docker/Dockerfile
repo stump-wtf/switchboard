@@ -1,6 +1,7 @@
 # switchboard container image — a single static binary (assets + migrations embedded via embed.FS).
-# Built and pushed by .gitea/workflows/build.yaml to the project's container registry.
-# Self-hosting? Build it yourself — see docs/guides/14-self-hosting.md.
+# Published to ghcr.io/stump-wtf/switchboard on v* tags (.github/workflows/release.yml); internal
+# registry builds happen via .gitea/workflows/build.yaml.
+# Self-hosting? Pull the published image, or build this yourself — docs/guides/14-self-hosting.md.
 #
 # Runtime needs: PostgreSQL (SWITCHBOARD_DATABASE_URL) and, for real login, a Pocket ID OIDC client
 # (SWITCHBOARD_OIDC_*). The container binds 0.0.0.0:8080 — switchboard is a complete, self-contained

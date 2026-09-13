@@ -61,12 +61,16 @@ openssl rand -hex 32        # 64 characters
 
 ## Get the source
 
-Switchboard is MIT licensed and built from source. Everything below assumes you have a checkout.
+Switchboard is MIT licensed and the repository is public at
+https://github.com/stump-wtf/switchboard:
 
-**The repository is not public yet.** When it is, it will live at
-`github.com/stump-wtf/switchboard`, and a clone of that plus the steps below is the whole install.
-Until then there is no public URL to clone from, and no published release or container image — so
-this guide documents only the build-from-source path, which works from any checkout.
+```bash
+git clone https://github.com/stump-wtf/switchboard.git
+```
+
+Published container images for `linux/amd64` and `linux/arm64` live at
+`ghcr.io/stump-wtf/switchboard`, built on every `v*` tag. Everything below works from a clone, and
+the Docker path works from the image alone — no checkout needed.
 
 Dependencies are vendored in the repository, so the build needs no network and no module downloads.
 Don't run `go mod tidy`: it can rewrite `go.mod` and `vendor/`, which is exactly the hermetic
@@ -79,16 +83,26 @@ an existing database or a systemd unit.
 
 ### With Docker
 
-From a checkout, in `deploy/docker/`:
+Fastest path — the published image, no checkout:
+
+```bash
+curl -fsSL -o compose.yaml https://raw.githubusercontent.com/stump-wtf/switchboard/main/deploy/docker/compose.yaml
+docker compose up -d
+```
+
+That starts PostgreSQL alongside switchboard (image `ghcr.io/stump-wtf/switchboard:latest`,
+multi-arch `linux/amd64` + `linux/arm64`), waiting for the database to pass its health check first.
+The service is published on `127.0.0.1:8080`, and `SWITCHBOARD_BASE_URL` defaults to
+`http://127.0.0.1:8080`.
+
+If you would rather build from source, clone the repo and, from `deploy/docker/`:
 
 ```bash
 docker compose build
 docker compose up -d
 ```
 
-That builds the image from the vendored source and starts PostgreSQL alongside it, waiting for the
-database to pass its health check first. The service is published on `127.0.0.1:8080`, and
-`SWITCHBOARD_BASE_URL` defaults to `http://127.0.0.1:8080`.
+That builds the image from the vendored source and runs the same stack.
 
 ```bash
 docker compose logs switchboard

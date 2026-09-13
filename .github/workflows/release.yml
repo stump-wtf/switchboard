@@ -1,0 +1,90 @@
+# Publishes the switchboard container image to ghcr.io when a v* tag is pushed.
+#
+# THIS WORKFLOW PUBLISHES THE IMAGE AND NOTHING ELSE. Binaries and the release
+# notes are owned by the Gitea pipeline (.gitea/workflows), which stays the CI
+# that gates merge. This file exists only because GITHUB_TOKEN is the credential
+# that works against ghcr.io; pushing from Gitea would mean putting a GitHub PAT
+# into Gitea Actions.
+#
+# ghcr.io creates NEW packages private by default, which breaks every anonymous
+# self-hoster. After the first successful push, flip the package's visibility to
+# public (github.com/orgs/stump-wtf/packages/container/switchboard/settings).
+# That is a one-time, deliberate, human-visible step — do not script it away.
+#
+# @joestump-agent 09/13/2026 - Copied from stump.wtf/cairn's release.yml shape
+#   (QEMU + Buildx, metadata-action, Trivy gate, multi-arch push), with actions
+#   pinned to exact versions per issue #248.
+name: Release image
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: build + scan + push (ghcr.io)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.11.1
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5.8.0
+        with:
+          images: ghcr.io/stump-wtf/switchboard
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Scan before publishing, not after. A single-arch amd64 build is loaded
+      # locally so Trivy has something to inspect; the multi-arch push below
+      # only happens if this gate passes.
+      - name: Build amd64 image for the Trivy scan
+        uses: docker/build-push-action@v6.9.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: ghcr.io/stump-wtf/switchboard:scan-${{ github.run_id }}
+
+      - name: Trivy image scan (fails closed on CRITICAL/HIGH)
+        uses: docker://aquasec/trivy:0.65.0
+        with:
+          args: >-
+            image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1
+            --format table ghcr.io/stump-wtf/switchboard:scan-${{ github.run_id }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6.9.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
