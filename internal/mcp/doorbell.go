@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
@@ -116,6 +117,61 @@ func (h *Handler) PublishTodoReady(t store.Todo) {
 	}
 	// Not delivered: every eligible session's buffer was full. The todo remains recoverable by
 	// pull, which is the whole point of the queue being the ledger.
+}
+
+// attachRingTimeout bounds the catch-up query. The stream is already open; a slow store must not
+// hold a goroutine per attach for long, and the sweep covers anything this misses.
+const attachRingTimeout = 5 * time.Second
+
+// ringOnAttach rings the work that was waiting for this session: the store picks and charges the
+// rows (RingOnAttach — same sender gate and ring budget as the heartbeat sweep), and each one
+// goes to THIS session's buffer rather than through PublishTodoReady's rotation, because the
+// consumer that just attached is the one that asked. Best-effort like every push: a full buffer
+// drops, a store error is logged, and the sweep catches up later. The send happens under h.mu
+// against the live registry, for the same reason PublishTodoReady's does — reapOnClose deletes a
+// session before closing its buffer, so a registered session's channel is never closed.
+//
+// Governing: SPEC-0011 scenario "Reconnecting session is rung for waiting work"; ADR-0022 (the
+// rows come back endpoint-scoped, and the scope filter is applied again here, defense in depth).
+//
+// @justinabrahms 09/13/2026 - Added: a restarted worker waited out the sweep's first backoff for
+// work that had landed while it was down, and never heard of rows whose ring budget was spent.
+func (h *Handler) ringOnAttach(s *mcpSession) {
+	ctx, cancel := context.WithTimeout(context.Background(), attachRingTimeout)
+	defer cancel()
+	queues := make([]string, 0, len(s.queues))
+	for q := range s.queues {
+		queues = append(queues, q)
+	}
+	sort.Strings(queues)
+	todos, err := h.store.RingOnAttach(ctx, s.endpointID, queues)
+	if err != nil {
+		h.log.Warn("mcp doorbell catch-up", "slug", s.slug, "session", s.id, "err", err)
+		return
+	}
+	if len(todos) == 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sessions[s.id] != s {
+		return // closed between the store call and now: its buffer may already be closed
+	}
+	delivered := 0
+	for _, t := range todos {
+		if t.EndpointID != s.endpointID || !s.queues[t.Queue] {
+			continue
+		}
+		select {
+		case s.doorbells <- t:
+			delivered++
+		default:
+			h.log.Debug("mcp doorbell catch-up dropped: buffer full", "slug", s.slug, "todo_id", t.ID)
+		}
+	}
+	if delivered > 0 {
+		h.log.Info("mcp doorbell catch-up", "slug", s.slug, "session", s.id, "count", delivered)
+	}
 }
 
 // pump drains one session's doorbell buffer onto its transport connection. A write with a

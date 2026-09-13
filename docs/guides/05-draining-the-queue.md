@@ -86,8 +86,9 @@ Pulling with `list_todos` is always correct on its own. Where a client supports 
 **pushes** a notification the moment a todo is ready for a channel-attached consumer — over the same
 vended MCP endpoint, as a `notifications/claude/channel` event. Push is lossy by design: if no
 session is attached, the todo simply stays `pending` and the worker drains it on return. Unclaimed
-todos are rung again after 5 minutes, 20 minutes, 1 hour, and 6 hours. **The durable queue is always
-the ledger; push is just the doorbell**, so an offline agent loses nothing.
+todos are rung again after 5 minutes, 20 minutes, 1 hour, and 6 hours, and a session that opens its
+notification stream is rung at once for the oldest few still waiting in its scope. **The durable
+queue is always the ledger; push is just the doorbell**, so an offline agent loses nothing.
 
 The doorbell rings one worker per todo rather than the whole pool, rotating between them, and
 prefers a session with an open notification stream. That keeps a pool from spending N model turns to

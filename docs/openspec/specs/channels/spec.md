@@ -93,13 +93,26 @@ push fails for any reason, the todo MUST remain `pending` and MUST be drained by
 loop ([ADR-0007](../../../adrs/ADR-0007-todos-as-core-primitive.md)) with no loss. Notification is
 at-least-once; duplicate notifications MUST be harmless, relying on idempotency-key dedup and an
 idempotent `claim`. A slow or full subscriber MUST cause the push to be dropped (never blocking the
-publisher), because the queue is the ledger and the push is only a doorbell.
+publisher), because the queue is the ledger and the push is only a doorbell. When a session opens
+its notification stream, switchboard MUST ring that stream at once for a bounded number of the
+oldest pending, push-eligible todos in its scope — charged to the same per-todo ring budget as the
+heartbeat re-ring, and repeated for a given todo no more often than a cooldown — so a consumer that
+restarted does not wait for the next sweep.
 
 #### Scenario: No attached session loses nothing
 
 - **WHEN** a todo is created but no harness session is attached to receive the push
 - **THEN** the push is dropped silently AND the todo MUST remain `pending` and MUST be delivered later
   when the harness reconnects and drains the queue by pull
+
+#### Scenario: Reconnecting session is rung for waiting work
+
+- **WHEN** a session opens its notification stream while push-eligible todos in its scope are
+  `pending`
+- **THEN** switchboard MUST ring that stream — and only that stream — for the oldest of them, up to
+  a bounded count, charging each ring to the todo's ring budget; a todo rung this way MUST NOT be
+  rung again by a re-attach inside its cooldown, and a todo whose ring budget is spent MUST NOT be
+  rung
 
 #### Scenario: Duplicate notifications do not double-process
 
