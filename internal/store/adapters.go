@@ -106,6 +106,8 @@ func (s *Store) SeedProvider(ctx context.Context, seed ProviderSeed) (bool, erro
 	created := tag.RowsAffected() > 0
 	if created {
 		s.invalidateProviderCache()
+		// Warn only when the row was actually written: a no-op ON CONFLICT insert stores nothing.
+		s.warnPlaintextProviderSecret(seed.Secret, seed.Name, "seed")
 	}
 	return created, nil
 }
@@ -294,6 +296,7 @@ func (s *Store) RotateProviderSecret(ctx context.Context, name, secret string) e
 		return ErrNotFound
 	}
 	s.invalidateProviderCache()
+	s.warnPlaintextProviderSecret(secret, name, "rotate")
 	return nil
 }
 
