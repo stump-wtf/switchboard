@@ -75,6 +75,8 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// collide. Prefer a provider delivery id where one exists; fall back to a body hash otherwise.
 	// Gitea uses X-Gitea-Delivery; GitHub uses X-GitHub-Delivery. Cairn's id is the event_id inside
 	// its SIGNED body, never an unsigned header, so a replay cannot mint a fresh key (routing.go).
+	// A generic webhook additionally honours the sender's own X-Delivery-Id / Webhook-Id
+	// (genericDeliveryID): a retry that re-serializes its body still collapses onto the original.
 	var deliveryID string
 	if wh.SourceType == routing.SourceCairn {
 		deliveryID = cairnEventID(body)
@@ -82,6 +84,9 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		deliveryID = r.Header.Get("X-GitHub-Delivery")
 		if deliveryID == "" {
 			deliveryID = r.Header.Get("X-Gitea-Delivery")
+		}
+		if deliveryID == "" && wh.SourceType == "generic" {
+			deliveryID = genericDeliveryID(r.Header)
 		}
 	}
 	key := wh.ID + ":" + idempotencyKey(deliveryID, body)
