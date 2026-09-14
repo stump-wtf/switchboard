@@ -144,7 +144,12 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 	// The idempotency key: the sender's own delivery id when it stamped one (genericDeliveryID),
 	// else the body hash. Derived here (before verification) ONLY to correlate the ephemeral
 	// received-lane card (SPEC-0015); nothing is persisted until the trust check below passes.
-	key := idempotencyKey(genericDeliveryID(r.Header), body)
+	// Prefixed with the provider name, exactly as the self-managed path scopes with wh.ID: every
+	// operator-configured generic provider shares the single legacy receiver endpoint, so an
+	// unscoped key would let two providers stamping the same delivery id collapse onto one todo.
+	// A sender-asserted id is scoped to the provider it arrived on (SPEC-0001 REQ "Idempotency Key
+	// Extraction and Dedup"): a provider can only ever collapse its OWN deliveries.
+	key := name + ":" + idempotencyKey(genericDeliveryID(r.Header), body)
 	// The line is in flight for a CONFIGURED provider: surface it on the received lane. An
 	// unconfigured name (the 404 above) never rings the board — probe noise is not a line.
 	i.observeReceived(name, "webhook", p.Mode, key)
@@ -282,8 +287,9 @@ func summarizeGeneric(name string) string {
 // is a duplicate.
 //
 // The id is trusted exactly as much as the body it travels with: it is caller-asserted, and the
-// key it feeds is scoped to the provider (events dedup on (source, external_id), todos on the
-// owning endpoint), so a caller can only ever collapse ITS OWN deliveries. An id over
+// key it feeds is prefixed with the provider name (events dedup on (source, external_id), todos
+// on (endpoint_id, idempotency_key) over the shared legacy endpoint), so a caller can only ever
+// collapse ITS OWN deliveries. An id over
 // maxGenericDeliveryID bytes is ignored — the body hash applies — so a hostile sender cannot grow
 // the dedup index with the header. Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup"
 // (scenario "Generic redelivery with the same delivery id dedups").

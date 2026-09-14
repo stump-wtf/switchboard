@@ -575,8 +575,8 @@ func TestGenericDeliveryIDDedup(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT external_id FROM events WHERE source = 'homelab'`).Scan(&ext); err != nil {
 		t.Fatalf("query event: %v", err)
 	}
-	if ext != "dep-42" {
-		t.Fatalf("external_id = %q, want the sender's delivery id", ext)
+	if ext != "homelab:dep-42" {
+		t.Fatalf("external_id = %q, want the sender's delivery id namespaced by provider", ext)
 	}
 
 	// The Standard Webhooks spelling is honoured too, and a different id is a different delivery —
@@ -595,5 +595,43 @@ func TestGenericDeliveryIDDedup(t *testing.T) {
 	}
 	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 4 {
 		t.Fatalf("todos = %d, want 4", n)
+	}
+}
+
+// Two providers that both stamp X-Delivery-Id: dep-42 share the single legacy receiver endpoint,
+// but each must still get its own todo: the key is namespaced by provider name. Without the
+// prefix the second provider's delivery collapsed onto the first's todo and was silently
+// swallowed. Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup" (a sender-asserted
+// id is scoped to the provider it arrived on).
+func TestGenericDeliveryIDNoCrossProviderCollapse(t *testing.T) {
+	ing, hub, pool, ctx, endpointID := testIngestDeps(t, Config{
+		Generic: map[string]GenericProvider{
+			"homelab": {Mode: "token", Token: "tok", Queue: "ops"},
+			"backups": {Mode: "token", Token: "tok2", Queue: "ops"},
+		},
+	})
+	ch, cancel := hub.Subscribe(endpointID, []string{"ops"})
+	defer cancel()
+
+	deliver := func(name, token, payload string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		ing.Generic(rec, genericRequest(name, payload,
+			map[string]string{"X-Webhook-Token": token, "X-Delivery-Id": "dep-42"}, ""))
+		return rec
+	}
+
+	idA, _ := accepted202(t, deliver("homelab", "tok", `{"event":"deploy","at":"10:00:00"}`))
+	idB, _ := accepted202(t, deliver("backups", "tok2", `{"event":"deploy","at":"10:00:00"}`))
+	if idA == idB {
+		t.Fatal("two providers stamping the same X-Delivery-Id must not collapse onto one todo")
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 2 {
+		t.Fatalf("todos = %d, want 2", n)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos WHERE idempotency_key = 'homelab:dep-42'`); n != 1 {
+		t.Fatalf("homelab namespaced key = %d rows, want 1", n)
+	}
+	if n := drainHub(ch); n != 2 {
+		t.Fatalf("hub publishes = %d, want 2", n)
 	}
 }
