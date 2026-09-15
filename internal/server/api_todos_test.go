@@ -156,6 +156,8 @@ func TestAPIPushTodoRefusesWhatItMust(t *testing.T) {
 		{"queue required when the endpoint drains several", bearer, ep.Slug, map[string]any{"title": "x"}, http.StatusBadRequest},
 		{"queue outside the vended scope", bearer, ep.Slug, map[string]any{"title": "x", "queue": "deploys"}, http.StatusBadRequest},
 		{"key too long", bearer, ep.Slug, map[string]any{"title": "x", "queue": "ci", "key": strings.Repeat("k", maxPushKey+1)}, http.StatusBadRequest},
+		// The route caps the body at 64 KiB: an over-cap hand-off is a 413, not a malformed-JSON 400.
+		{"oversized body", bearer, ep.Slug, `{"title":"x","queue":"ci","payload":"` + strings.Repeat("p", 64<<10) + `"}`, http.StatusRequestEntityTooLarge},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

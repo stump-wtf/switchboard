@@ -401,6 +401,14 @@ func (a *apiHandler) PushTodo(w http.ResponseWriter, r *http.Request) {
 	}
 	var in pushTodoIn
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		// The route's maxBytes(64 KiB) wraps the body, so a read past the cap surfaces as a
+		// *http.MaxBytesError — a 413, told apart from a mistyped body's 400 the way the
+		// friend-intake route splits them. Governing: SPEC-0012 REQ "Request Body Size Limits".
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body exceeds 64 KiB; put the detail in a smaller payload", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
