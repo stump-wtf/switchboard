@@ -458,6 +458,61 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Problem' }
 
+  /api/v1/endpoints/{ref}/todos:
+    post:
+      tags: [operator-api]
+      operationId: pushTodo
+      summary: Hand an endpoint you own a todo and ring its doorbell
+      description: |
+        The operator's hand (ADR-0026): mints one todo on the named endpoint and rings its
+        doorbell exactly as a verified delivery does. The hand-off is recorded as a delivery event
+        of source, family and trust mode `operator`, verified, whose `verify_detail` names the
+        authenticated human — so history and the board show who asked. Only the endpoint's owner
+        may push, only onto one of its vended queues; the title and payload reach the agent as
+        untrusted content like any todo's.
+      security:
+        - operatorOAuth: []
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          description: The endpoint's slug (as `endpoint list` prints it) or its id.
+          schema: { type: string }
+          example: my-agent-k3x9
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PushTodoIn' }
+      responses:
+        '201':
+          description: |
+            The todo. `created` is false when `key` matched a live todo on the endpoint: the
+            existing todo is returned, nothing was minted, nothing was rung.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PushTodoOut' }
+        '400':
+          description: Invalid body, empty or over-long title, a queue outside the endpoint's vended scope, or no queue on an endpoint that drains several.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: No endpoint by that slug or id belongs to the caller (unknown and another operator's are the same answer).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: The endpoint is revoked; nothing could ever drain the work.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
   /healthz:
     get:
       tags: [ops]
@@ -694,6 +749,48 @@ components:
         id: { type: string }
         name: { type: string, example: my-agent }
         description: { type: string }
+
+    PushTodoIn:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+          description: The doorbell's one line. Detail belongs in `payload`.
+          example: look at PR 7
+        queue:
+          type: string
+          description: One of the endpoint's vended queues. Optional when the endpoint drains exactly one.
+          example: reviews
+        kind:
+          type: string
+          default: operator
+          description: What `list_todos` reports as the todo's kind.
+        payload:
+          description: Any JSON, handed to the agent verbatim.
+          example: { pr: 7 }
+        key:
+          type: string
+          maxLength: 256
+          description: Idempotency key, scoped to the endpoint — the same key again returns the existing live todo.
+          example: pr-7
+
+    PushTodoOut:
+      type: object
+      required: [id, endpoint_id, slug, queue, state, created, event_id]
+      properties:
+        id: { type: string, example: td_5f1c… }
+        endpoint_id: { type: string }
+        slug: { type: string, example: my-agent-k3x9 }
+        queue: { type: string, example: reviews }
+        state: { type: string, example: pending }
+        created:
+          type: boolean
+          description: False when `key` matched a live todo — nothing minted, nothing rung.
+        event_id:
+          type: integer
+          description: The `operator` delivery event the todo was born from.
 
     EndpointOut:
       type: object
