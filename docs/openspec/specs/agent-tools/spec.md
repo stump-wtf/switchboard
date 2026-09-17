@@ -56,7 +56,11 @@ request; the agent MUST NOT be able to widen its own scope through any verb.
 ### Requirement: Scope Enforcement at the Boundary
 
 Before executing any verb, the server MUST verify the verb is in the endpoint's allowlist and, for
-todo-targeting verbs, that the todo's queue is in the endpoint's granted queues. A verb outside the
+todo-targeting verbs, that the todo's queue is in the endpoint's granted queues. The one exception is
+the **self verbs** `clock_in`, `clock_out` and `presence`
+([SPEC-0022](../endpoint-presence/spec.md) REQ "Self Verbs Are Unscoped"). They are allowed for every
+authenticated endpoint without appearing in its allowlist, because they act only on the caller's own
+presence and take no identifier that could address anything else. A verb outside the
 allowlist MUST be refused with `forbidden`. A queue filter or a target todo whose queue is outside
 the grant MUST be refused with `forbidden`. These checks MUST occur before any state-changing
 operation.
@@ -65,6 +69,11 @@ operation.
 
 - **WHEN** an endpoint whose allowlist lacks `complete` calls `complete`
 - **THEN** the server MUST respond `forbidden` and MUST NOT transition the todo
+
+#### Scenario: Self verb outside the allowlist
+
+- **WHEN** an endpoint whose allowlist lacks `clock_out` calls `clock_out`
+- **THEN** the call succeeds and changes only that endpoint's presence
 
 #### Scenario: Todo outside granted queues
 

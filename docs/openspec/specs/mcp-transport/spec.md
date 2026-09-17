@@ -67,14 +67,16 @@ The tools served MUST be the SPEC-0006 agent verbs — `list_todos`, `claim`, `c
 `heartbeat` — with the schemas, structured outputs, and error mapping SPEC-0006 defines. `tools/list`
 MUST advertise only the verbs in the endpoint's allowlist, and `tools/call` MUST enforce both the
 verb allowlist and the queue scope at the boundary before touching the store; out-of-scope calls
-MUST return a scope error without side effects. Todo lifecycle semantics MUST defer to
+MUST return a scope error without side effects. `tools/list` MUST additionally advertise the
+[SPEC-0022](../endpoint-presence/spec.md) self verbs (`clock_in`, `clock_out`, `presence`) on every
+session, since they sit outside the allowlist. Todo lifecycle semantics MUST defer to
 [SPEC-0003](../todo-queue/spec.md) (the transport adds no lifecycle behavior).
 
 #### Scenario: Scope filters the advertised tools
 
 - **WHEN** an endpoint vended with verbs `list_todos, claim` requests `tools/list`
-- **THEN** exactly those two tools MUST be advertised, and a `tools/call` of `complete` MUST return a
-  scope error without mutating any todo
+- **THEN** exactly those two tools plus the three self verbs MUST be advertised, and a `tools/call`
+  of `complete` MUST return a scope error without mutating any todo
 
 ### Requirement: Channels Push over the HTTP Stream
 
