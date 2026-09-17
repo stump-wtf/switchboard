@@ -82,11 +82,19 @@ re-reads the cache as a safety net for a missed notification.
 ### The heartbeat sweep takes the instance's receivers
 
 `RingUnclaimed(ctx)` becomes `RingUnclaimed(ctx, receivers []string)`. `receivers` holds the endpoint
-IDs with at least one open-stream session on this instance whose effective presence is `in`, and the
-`Handler` builds that list. The SQL adds `AND t.endpoint_id = ANY($8)`. An instance with no receivers
-skips the query. Rings are still counted in the same statement that picks them, but now only for an
-endpoint that could receive one. A buffer-full drop can still waste a ring, which the existing lossy
-contract accepts.
+IDs that have at least one session attached to this instance (streaming **or** idle, matching what
+`PublishTodoReady` will accept) and whose effective presence is `in`; the `Handler` builds that list.
+The SQL adds `AND t.endpoint_id = ANY($8)`. An instance with no receivers skips the query. Rings are
+still counted in the same statement that picks them, but now only for an endpoint that could receive
+one. A buffer-full drop can still waste a ring, which the existing lossy contract accepts.
+
+The list MUST be built from *attached* sessions, not from open streams alone. `PublishTodoReady`
+prefers a streaming session but falls back to a streamless one, and the transport only drops that
+push if the stream is still closed when it is written. An endpoint whose only session is momentarily
+streamless is thus still rung — so excluding it from `receivers` would mean no sweep ever counts its
+todo, and with nothing else to re-arm it the backoff silently becomes no ring at all. That is
+precisely the lost-ring failure (SPEC-0011 REQ "Doorbell Heartbeat") this fix exists to remove, so
+the narrower predicate would reintroduce it.
 
 ### Transitions: claim in SQL, deliver locally
 
