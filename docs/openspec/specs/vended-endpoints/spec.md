@@ -70,7 +70,10 @@ its owning agent, its scope (queues + verbs), its mutability, and a state of `ac
 A vended endpoint's scope MUST consist of an allowed set of queues and a verb allowlist. Every
 credential-authenticated call MUST be authorized at the boundary: a verb outside `scope.verbs` MUST be
 rejected as `forbidden`, and an operation targeting a queue outside `scope.queues` MUST be rejected as
-`forbidden`. An agent MUST NOT be able to widen its own scope.
+`forbidden`. An agent MUST NOT be able to widen its own scope. The self verbs `clock_in`, `clock_out`
+and `presence` are outside `scope.verbs` by design ([SPEC-0022](../endpoint-presence/spec.md) REQ
+"Self Verbs Are Unscoped"): they are callable by every active endpoint, and cannot be granted or
+withheld.
 
 #### Scenario: Verb outside allowlist is denied
 
@@ -114,7 +117,8 @@ A vended endpoint's scope SHOULD be immutable by default (`mutability = immutabl
 agent may do, the human SHOULD revoke the endpoint and vend a new one with the new scope, rather than
 editing a live grant in place. This keeps a given URL+credential pair denoting one fixed power set for
 its lifetime. (Whether to also support mutable-in-place scope is an open question recorded in
-design.md.)
+design.md.) An endpoint's presence and `shift` ([SPEC-0022](../endpoint-presence/spec.md)) are not
+scope: they decide only when the endpoint is rung, so changing them MUST NOT require a re-vend.
 
 #### Scenario: Scope change is a re-vend
 
