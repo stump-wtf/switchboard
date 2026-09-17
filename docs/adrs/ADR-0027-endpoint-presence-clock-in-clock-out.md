@@ -54,7 +54,15 @@ spent or lost, and "I'm back", so the agent learns what waited, in one turn?
   disconnects, and give more to agents that say something.
 * **The human decides.** The operator can see and override presence, and can set a standing shift.
 * **Many instances and restarts.** Sessions live on one instance. Presence and its transitions must be
-  decided once, in the database, not in one process's memory.
+  decided once, in the database, not in one process's memory. Switchboard runs as a **single**
+  instance today (one `switchboard` compose service against one PostgreSQL host), but
+  [SPEC-0004](../openspec/specs/persistence/spec.md) requires a multi-node app tier against one
+  database, so the rule is designed for it from the start: presence is a column, the transition is a
+  conditional update, and delivery fans out per instance. The cost today is a small amount of
+  per-instance machinery (`LISTEN` refresh, per-instance digest) that a single instance simply never
+  exercises. It is not over-built, because a design that kept presence in process memory would have
+  to be rewritten — with a migration — at the first horizontal scale, and the correctness rules
+  (exactly-once transition, no double digest) are exactly the ones that are hard to retrofit.
 
 ## Considered Options
 
@@ -146,7 +154,9 @@ spend on return the turns presence exists to save.
 ### Coming back is one digest (4A)
 
 When an endpoint's effective presence goes from out to in, whether by `clock_in`, the operator, a
-shift start or an override expiring, Switchboard sends **one digest doorbell** to one of its sessions:
+shift start or an override expiring, Switchboard sends **one digest doorbell** — one per instance
+that hosts a session for the endpoint, and exactly one to a session on each, so a single-session
+endpoint gets one:
 
 ```
 switchboard: clocked in — 7 todos waiting (reviews 5, lane-m 2), oldest 14h. Drain with claim_next.
@@ -156,7 +166,8 @@ It is a `notifications/claude/channel` with `meta.kind = "digest"`, `meta.pendin
 `meta.reason`, and no `todo_id`. Every todo it summarizes has `last_ringed_at` set to the digest time
 without spending a ring attempt, so the sweep waits its normal backoff instead of re-ringing the
 backlog one todo at a time. The transition is recorded in the endpoint row with a conditional update,
-so exactly one instance decides it, even across a restart.
+so exactly one instance decides it, even across a restart, and only the instance that won the update
+broadcasts it.
 
 The same digest goes out when an endpoint that is in gains its first open notification stream on an
 instance and has push-eligible pending todos (`meta.reason = "reconnect"`), at most once per endpoint
@@ -213,10 +224,15 @@ Tests assert:
 
 * a clocked-out endpoint's new todo rings no session, is not selected by the sweep, and is returned by
   `list_todos` and `claim_next`;
-* a sweep with no open stream for an endpoint leaves its todos' `ring_attempts` unchanged;
-* one out-to-in transition sends one digest per instance, with the right counts and no `todo_id`,
-  sets `last_ringed_at` on the summarized todos without incrementing `ring_attempts`, and a
-  concurrent second instance does not decide the same transition;
+* a sweep with no session for an endpoint leaves its todos' `ring_attempts` unchanged, while an
+  endpoint whose only session is momentarily streamless is still selected — the "attached" case that
+  keeps the lost-ring fix from becoming its own cause of lost rings;
+* one out-to-in transition sends one digest per hosting instance, with the right counts and no
+  `todo_id`, sets `last_ringed_at` on the summarized todos without incrementing `ring_attempts`, a
+  concurrent second instance does not decide the same transition, and only the claiming instance
+  broadcasts it;
+* a todo doorbell whose source payload type is `digest` is still delivered as a todo doorbell and
+  does not set `meta.kind = "digest"`;
 * a shift boundary ends an override; `clock_in {for: "9h"}` is refused; an endpoint with no shift and
   no override is in;
 * the presence verbs are callable on an endpoint whose scope lists none of them, and cannot name
