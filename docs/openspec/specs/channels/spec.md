@@ -67,19 +67,36 @@ and `queue` are REQUIRED; `kind` and `source` MUST be included when present on t
 notification MUST NOT itself carry a lease — the agent reads `todo_id` and then claims via the
 durable verbs.
 
-A **digest doorbell** (SPEC-0022 REQ "Clock-In Digest") is the one notification without a `todo_id`.
-Its `meta` MUST carry `kind = "digest"`, `pending` (a decimal count), `queues` (comma-joined queue
-names, sorted), and `reason` (`clock_in`, `operator`, `shift_start`, `override_end` or `reconnect`).
-Its `content` MUST be one line of counts, queue names and the oldest pending age, and MUST NOT
-contain any todo title, payload or other webhook-derived text. The session `instructions` MUST
-describe both notification kinds: claim `meta.todo_id` for a todo doorbell, drain with `claim_next`
-for a digest.
+A **digest doorbell** (SPEC-0022 REQ "Clock-In Digest") is the one notification without a `todo_id`,
+so the `todo_id`/`queue` requirement above applies in full to todo doorbells and is relaxed only
+here. Its `meta` MUST carry `kind = "digest"`, `pending` (a decimal count), `queues` (comma-joined
+queue names, sorted), and `reason` (`clock_in`, `operator`, `shift_start`, `override_end` or
+`reconnect`). Its `content` MUST be one line of counts, queue names and the oldest pending age, and
+MUST NOT contain any todo title, payload or other webhook-derived text. The session `instructions`
+MUST describe both notification kinds: claim `meta.todo_id` for a todo doorbell, drain with
+`claim_next` for a digest.
+
+A todo's `kind` is copied from the source payload and is therefore **not** a closed vocabulary
+(`internal/ingest/signed.go` sets it from a Stripe event type, for one), so a raw `kind` value MUST
+NOT be the thing that distinguishes the two shapes. A consumer MUST treat a notification as a digest
+only when `kind = "digest"` **and** no `todo_id` is present, and a producer MUST NOT emit a todo
+doorbell whose `meta.kind` is `"digest"` — the todo's own kind MUST be carried under a distinct key
+(or omitted) when it would collide. Otherwise a webhook whose payload type happened to be `digest`
+would forge a digest frame inside a todo doorbell that also advertises a `todo_id`, and a consumer
+branching on `kind` alone would drop a real todo.
 
 #### Scenario: Digest carries counts, not content
 
 - **WHEN** an endpoint clocks in with 7 pending todos across `reviews` (5) and `lane-m` (2)
 - **THEN** its digest has `meta.kind = "digest"`, `meta.pending = "7"`,
   `meta.queues = "lane-m,reviews"`, no `meta.todo_id`, and content with no todo title
+
+#### Scenario: A todo whose kind is "digest" is not forged into a digest
+
+- **WHEN** a delivery creates a todo whose source payload type is `digest`
+- **THEN** the notification it produces carries its `meta.todo_id`, and its `meta.kind` is not
+  `"digest"` (the todo's own kind is carried under a distinct key or omitted), so a consumer
+  branching on `kind` and `todo_id` still treats it as a todo doorbell
 
 #### Scenario: New todo produces one identifier-safe notification
 
@@ -163,11 +180,24 @@ only todos on active endpoints. The ring and its count MUST be recorded in the s
 selects the row, so two sweeps rarely ring the same todo.
 
 Each instance's sweep MUST select only todos whose endpoint, at sweep time, has at least one session
-with an open notification stream on that instance and an effective presence of `in`. A todo whose
-endpoint has no such session MUST NOT be selected, and its `ring_attempts` and `last_ringed_at` MUST
-be unchanged, so a disconnected or clocked-out agent keeps its full ring budget for its return. A
-digest (REQ "Push Notification Shape") sets `last_ringed_at` on the todos it counted without spending
-a ring attempt.
+attached to that instance and an effective presence of `in`. A todo whose endpoint has no such
+session MUST NOT be selected, and its `ring_attempts` and `last_ringed_at` MUST be unchanged, so a
+disconnected or clocked-out agent keeps its full ring budget for its return. A digest (REQ "Push
+Notification Shape") sets `last_ringed_at` on the todos it counted without spending a ring attempt.
+
+"Attached" MUST mean what the delivery path already means by it, not the narrower "holds an open
+stream": `PublishTodoReady` rings a streaming session first but falls back to a session whose stream
+is momentarily closed (`inflight = 0`), and the transport drops that push only if no stream is open
+by the time it is written. An endpoint whose only session is in that state MUST therefore still be a
+sweep receiver — otherwise its todo is counted by no sweep, and because nothing else re-arms it, the
+one-ring-per-sweep backoff silently becomes no ring at all. A `receivers` list built from open
+streams alone reintroduces exactly the lost-ring failure this requirement exists to prevent; the
+distinction between "attached" and "streaming" belongs to session selection inside
+`PublishTodoReady`, where the fallback already lives.
+
+A ring whose push is then dropped (a buffer-full, or a stream that closed between selection and
+write) still spends its attempt. That is the existing lossy contract and is accepted: the todo stays
+`pending` and pullable, and the next backoff step still fires while a session is attached.
 
 #### Scenario: Agent offline overnight
 
@@ -180,6 +210,14 @@ a ring attempt.
 
 - **WHEN** an endpoint stays connected and in, and a todo is rung 5 times without being claimed
 - **THEN** it is not rung again and stays `pending` and visible
+
+#### Scenario: An attached session with no open stream still receives sweeps
+
+- **WHEN** an endpoint's only session on an instance is attached but has no open notification stream
+  at sweep time (`inflight = 0`), and it has an unclaimed todo due for a re-ring
+- **THEN** the sweep still selects that todo and the attempt is counted, because
+  `PublishTodoReady` falls back to a streamless session and a push dropped at the transport
+  (rather than one never attempted) is the contract this sweep exists to satisfy
 
 ### Requirement: Sender Gate and Injection Safety
 
