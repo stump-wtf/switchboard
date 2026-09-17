@@ -189,7 +189,12 @@ the loudest/weakest tier everywhere. The system MUST NOT default any provider to
 Each accepted webhook delivery MUST derive an idempotency key and use it to dedup redeliveries into a
 single todo. The key SHOULD be derived from a provider delivery id where one exists (GitHub
 `X-GitHub-Delivery`, Gitea `X-Gitea-Delivery`, Stripe event `id`) and MUST fall back to a body hash
-where the provider supplies no delivery id (Slack, generic). If a non-terminal todo already exists
+where the provider supplies no delivery id (Slack). A generic sender has no provider id, but MAY
+stamp its own on each delivery as `X-Delivery-Id` (or the Standard Webhooks `Webhook-Id`); when one
+is present and no longer than 256 bytes the receiver MUST use it as the delivery id, and MUST
+otherwise fall back to the body hash. A sender-asserted id is trusted exactly as much as the body it
+travels with: it MUST be scoped to the provider (or self-managed webhook) it arrived on, so a sender
+can only ever collapse its own deliveries. If a non-terminal todo already exists
 in the target queue for the derived key, ingestion MUST return the existing todo and create nothing
 new. Events MUST additionally dedup on `(source, external_id)` so a duplicate delivery does not
 create a second event row.
@@ -205,6 +210,19 @@ create a second event row.
 
 - **WHEN** two deliveries carry different delivery ids
 - **THEN** each derives a distinct idempotency key and each creates its own todo
+
+#### Scenario: Generic redelivery with the same delivery id dedups
+
+- **WHEN** a generic sender delivers twice with the same `X-Delivery-Id` (or `Webhook-Id`) and a
+  byte-different body (a fresh timestamp, a re-serialized payload)
+- **THEN** the second delivery derives the same idempotency key, matches the existing non-terminal
+  todo, and creates no duplicate todo or event
+
+#### Scenario: Oversized delivery id falls back to the body hash
+
+- **WHEN** a generic sender's delivery id exceeds 256 bytes
+- **THEN** the receiver ignores it and derives the key from the body hash, exactly as if no id had
+  been sent
 
 ### Requirement: Header and Secret Sanitization Before Persist
 
