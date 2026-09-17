@@ -98,7 +98,9 @@ Every authenticated endpoint session MUST be able to call three verbs, whether o
 the endpoint's `scope.verbs` (REQ "Self Verbs Are Unscoped"):
 
 * **`clock_out {}`**: set an `out` override with `override_by = agent`. With a shift, it lasts until
-  the next shift start. Without one, it has no end.
+  the first shift boundary after it was set — the next boundary, whether that boundary is a shift
+  start or a shift end, exactly as REQ "Presence Model" defines and not merely the next shift start.
+  Without one, it has no end.
 * **`clock_in {for?}`**: `for` is an optional duration, default `1h`, at most `8h`. When the shift
   (if any) would put the endpoint out, set an `in` override ending at the earlier of now plus `for`
   and the next shift start. Otherwise, clear any `out` override. `for` over `8h`, zero, negative or
@@ -121,6 +123,26 @@ endpoint, and MUST be idempotent: repeating one changes nothing further.
 
 - **WHEN** an agent with shift `Mon-Fri 09:00-13:00` calls `clock_in {for: "2h"}` at 20:00 Monday
 - **THEN** it is in until 22:00 Monday and out again afterwards
+
+#### Scenario: Clock-in crossing a shift start
+
+- **WHEN** an agent with shift `Mon-Fri 09:00-13:00` calls `clock_in {for: "2h"}` at 08:00 Monday, a
+  window in which the shift would put it out
+- **THEN** it is in until 09:00 Monday, the earlier of 10:00 (now plus `for`) and the next shift
+  start, and the shift decides from 09:00 onward
+
+#### Scenario: Clock-in inside a shift only clears a clock-out
+
+- **WHEN** an agent with shift `Mon-Fri 09:00-13:00` calls `clock_out` at 10:00 Monday and then calls
+  `clock_in` at 11:00 Monday
+- **THEN** the `out` override is cleared and it is in for the remainder of the shift, ending at
+  13:00 Monday when the shift puts it out again
+
+#### Scenario: Clock-out expires at the next boundary, not the next shift start
+
+- **WHEN** an agent with shift `Mon-Fri 09:00-13:00` calls `clock_out` at 10:00 Monday
+- **THEN** its `out` override ends at 13:00 Monday, the first boundary after it was set, and is
+  governed by the shift from then until 09:00 Tuesday
 
 #### Scenario: Clock-in cap
 
@@ -189,15 +211,64 @@ The transition MUST be decided once across all instances and restarts: an instan
 a conditional update of `presence_seen` from `out` to `in` and act only if the update changed a row.
 An `in` to `out` change MUST update `presence_seen` the same way, without a digest, so that the next
 return is detected. A periodic evaluation (at least every 30 seconds) MUST detect transitions nobody triggered, such as a
-shift start or override expiry. A change of `presence_seen` MUST be broadcast to the other instances
-(for example over `LISTEN/NOTIFY`) so each can deliver to its own sessions.
+shift start or override expiry.
+
+`presence_seen` MUST advance independently of whether any session could receive the digest, and a
+transition whose digest is therefore never sent MUST NOT be re-delivered later. Two rules keep that
+from losing the summary:
+
+* An out-to-in transition that no instance can deliver because no instance hosts a session for the
+  endpoint is recorded and dropped. The endpoint is `in` and the return is covered by the reconnect
+  digest, which fires when the first stream opens — so nothing is left unsurfaced.
+* A missed broadcast MUST NOT be the reason a digest is lost. If an instance's conditional update
+  loses the claim (another instance already advanced `presence_seen`, including across a restart), it
+  MUST NOT broadcast and MUST NOT send a digest; whether *it* hosts a session is irrelevant, because
+  the claim is what makes delivery exactly-once, not session locality. An instance that hosts a
+  session for an endpoint whose `presence_seen` already agrees with the effective presence has
+  nothing to deliver for that transition.
+
+An override expiring during an instance's restart is therefore decided by whichever instance next
+runs the evaluator: the conditional update is on the row, not on process state, so a restart cannot
+double-decide a transition or skip one it never observed.
+
+The broadcast that tells the other instances MUST be emitted by the claiming instance and by it
+alone, after its conditional update has returned a row. An instance that lost the claim MUST NOT
+broadcast, or a single transition produces one broadcast per evaluating instance and every hosting
+instance sends a digest for each — the "exactly one" property is established by the claim, so the
+notification must inherit that single ownership rather than be emitted independently of it. Each
+instance that receives an `in` broadcast and hosts a session for that endpoint emits at most one
+digest for it, so a transition yields one digest per hosting instance and never two on one instance.
+Sessions of one endpoint each live on exactly one instance, so no session can receive the same
+transition's digest twice.
 
 When an endpoint that is `in` gains its first open notification stream on an instance, and it has at
 least one push-eligible pending todo, that instance MUST send a digest with reason `reconnect`, at
 most once per endpoint per 10 minutes per instance.
 
 After sending a digest, the instance MUST set `last_ringed_at` to the digest time on every todo the
-digest counted, without incrementing `ring_attempts`.
+digest counted, without incrementing `ring_attempts`. Only a digest actually written to a session
+marks its todos (REQ "Presence Error Handling and Audit").
+
+The rows marked MUST be the rows counted, and the mark MUST NOT be recomputed from a second,
+independent read of the backlog. Counting and marking are separated by a network write, so a todo
+created or claimed in between must not be silently swept into the mark or dropped from it:
+
+* A todo created after the count is not marked, and is rung on its own normal schedule — it was never
+  summarized, so the digest did not tell the agent about it.
+* A todo claimed or completed between the count and the mark MUST NOT have `last_ringed_at` written
+  by the digest, because `last_ringed_at` is only meaningful for a `pending` row and the claim
+  already took it out of the sweep's candidate set.
+* The mark MUST be scoped to the counted ids, not to a queue or endpoint predicate, so a row that
+  arrived in the meantime cannot be marked by accident.
+
+Because the mark sets `last_ringed_at` without spending an attempt, a todo the digest summarized
+waits its normal backoff from the digest time before the sweep considers it again. That is the point:
+the digest just told the agent the backlog is there, so re-ringing it one row at a time would spend
+exactly the turns presence exists to save. It cannot starve a todo, because the digest is sent only
+when the endpoint is `in` and a session can receive it — the same condition under which the sweep
+runs — and every summarized todo's next backoff step still fires. It cannot double-ring a todo
+either, because the mark moves `last_ringed_at` forward, so the sweep's backoff predicate is false
+for that todo until the backoff elapses again.
 
 #### Scenario: Shift start
 
@@ -210,7 +281,15 @@ digest counted, without incrementing `ring_attempts`.
 #### Scenario: Two instances see the same transition
 
 - **WHEN** two instances evaluate the same shift start concurrently
-- **THEN** exactly one claims the transition, and no session receives two digests for it
+- **THEN** exactly one claims the transition, only the claimant broadcasts it, and no session
+  receives two digests for it
+
+#### Scenario: Two instances host sessions for one transition
+
+- **WHEN** two instances both host a session for one endpoint, and that endpoint's presence goes
+  from `out` to `in`
+- **THEN** each instance delivers one digest to one of its own sessions, and neither instance's
+  session receives a second digest for the same transition
 
 #### Scenario: Reconnect after a night off
 
@@ -228,14 +307,42 @@ digest counted, without incrementing `ring_attempts`.
 - **WHEN** an endpoint clocks in with no pending push-eligible todos
 - **THEN** no digest is sent
 
+#### Scenario: Digest does not starve or double-ring a todo
+
+- **WHEN** a digest counts a todo and then marks it
+- **THEN** that todo's `last_ringed_at` moves to the digest time and its `ring_attempts` is
+  unchanged, so the sweep waits a further backoff from the digest and does not ring it twice for the
+  same window
+
+#### Scenario: A todo arriving during the digest is not swept into the mark
+
+- **WHEN** a todo is created after the digest counted the backlog but before the mark is written
+- **THEN** that todo's `last_ringed_at` is unchanged by the digest, and it is rung on its own normal
+  schedule because the digest never summarized it
+
+#### Scenario: Transition claimed while no session can receive it
+
+- **WHEN** an endpoint's override expires while it has no session on any instance
+- **THEN** the transition is recorded and no digest is sent, and the return is covered by the
+  reconnect digest when the first stream opens rather than by a retroactive transition digest
+
+#### Scenario: An override expires during a restart
+
+- **WHEN** an instance restarts across the moment an `out` override would have ended, and the
+  evaluator runs again after it comes back
+- **THEN** the conditional update on `presence_seen` decides the transition exactly once, because the
+  claim is a row update and not process state, and no second digest is produced for it
+
 ### Requirement: Operator Presence Controls
 
 The operator API MUST expose, under the same OAuth guard as every other `/api/v1` route:
 
 * `GET /api/v1/endpoints/{ref}/presence`, returning the `presence` verb's shape;
 * `PUT /api/v1/endpoints/{ref}/presence` with `{"presence": "in"|"out", "until": RFC3339|null}`,
-  setting an override with `override_by = operator:<human_id>`. It has no duration cap, and still
-  ends at the next shift boundary;
+  setting an override with `override_by = operator:<human_id>`. Unlike the agent's `clock_in`, it has
+  no duration cap, and it still ends at the first shift boundary after it was set. With no shift and
+  no `until` it has no end and lasts until the operator clears it or sets presence again — the same
+  shape an agent's `clock_out` has, minus the cap on the other direction;
 * `DELETE /api/v1/endpoints/{ref}/presence`, clearing any override;
 * `PUT /api/v1/endpoints/{ref}/shift` with `{"shift": string|null}`.
 
@@ -282,5 +389,21 @@ digest actually written marks them. No presence operation may log a credential.
   keep an agent awake indefinitely against its human's shift.
 * Digest `content` and `meta` MUST contain only counts, queue names and reasons: never todo titles,
   payloads, or anything else derived from a webhook body.
+* Queue names are operator-defined (an ingestion route or a webhook's target queue, chosen by the
+  human who wrote the rule), never taken from a delivery body, so they are not attacker-controlled.
+  They MUST nevertheless be passed through the same neutralization the todo doorbell applies to
+  `meta.todo_id`, because a queue name is still operator-supplied text landing inside a
+  `notifications/claude/channel` frame: a name containing a newline or a `</channel>` sequence would
+  otherwise be able to break the frame it is quoted in.
+* The digest MUST NOT be addressed by any caller — it is emitted only by the server for the
+  endpoint's own transition — so it MUST NOT be usable to read another endpoint's counts. The
+  `pending` and `queues` figures MUST be computed for the caller's endpoint alone, and the operator
+  routes MUST apply the same ownership check the other `/api/v1/endpoints/{ref}` routes do, so one
+  human cannot read or change another human's presence or backlog counts.
+* A prompt injection that makes an agent call `clock_out` MUST NOT be able to do more than quiet that
+  endpoint until the next shift boundary or a `clock_in`: presence cannot refuse a pull, hide work
+  from `list_todos`, move a todo, or widen scope. A repeated `clock_in` injection is bounded by the
+  8-hour cap and by the shift boundary the override always yields to, so an injected agent cannot
+  hold itself awake past its human's shift.
 * Operator presence routes inherit the operator OAuth guard, ownership check and rate limits of the
   existing `/api/v1/endpoints/{ref}` routes.
