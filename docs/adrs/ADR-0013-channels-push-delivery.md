@@ -101,4 +101,7 @@ flowchart LR
 * Human consent that permission-relay accelerates (still durable todos): [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md).
 * The human-side push analogue (SSE web UI): [ADR-0001](ADR-0001-web-stack-go-htmx-pico.md).
 * Delivery contract, message mapping, two-way + limits: [channel-delivery spec](../openspec/specs/channels/spec.md).
+* **Amended by [ADR-0027](ADR-0027-endpoint-presence-clock-in-clock-out.md) (2026-09-17):** a doorbell
+  is withheld while its endpoint is clocked out, a digest doorbell summarizes held work on return, and
+  a heartbeat ring that no session can receive is no longer counted.
 * Claude Code Channels reference: <https://code.claude.com/docs/en/channels-reference>. MCP: <https://modelcontextprotocol.io/>.

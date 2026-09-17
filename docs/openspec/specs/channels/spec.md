@@ -1,8 +1,8 @@
 ---
-status: implemented
+status: amended
 date: 2026-07-10
-implements: [ADR-0013]
-requires: [SPEC-0007, SPEC-0008, SPEC-0014]
+implements: [ADR-0013, ADR-0027]
+requires: [SPEC-0007, SPEC-0008, SPEC-0014, SPEC-0022]
 ---
 
 # SPEC-0011: Channels Push Delivery
@@ -31,6 +31,12 @@ doorbell notifications on its server-to-client stream. The earlier local stdio a
 (`switchboard channel`) is retired per ADR-0017; session mechanics, authentication, tool serving, and
 stream lifecycle are governed by SPEC-0014. This spec governs **push semantics**: what may be pushed,
 when, in what shape, and with what delivery guarantees.
+
+> **Amended by [ADR-0027](../../../adrs/ADR-0027-endpoint-presence-clock-in-clock-out.md)
+> (2026-09-17).** Doorbells are withheld while an endpoint is clocked out
+> ([SPEC-0022](../endpoint-presence/spec.md)). A second notification kind, the **digest**, summarizes
+> held work on return. The heartbeat sweep, previously unspecified, is specified below, and it no
+> longer counts a ring that no session can receive.
 
 ## Requirements
 
@@ -61,6 +67,20 @@ and `queue` are REQUIRED; `kind` and `source` MUST be included when present on t
 notification MUST NOT itself carry a lease — the agent reads `todo_id` and then claims via the
 durable verbs.
 
+A **digest doorbell** (SPEC-0022 REQ "Clock-In Digest") is the one notification without a `todo_id`.
+Its `meta` MUST carry `kind = "digest"`, `pending` (a decimal count), `queues` (comma-joined queue
+names, sorted), and `reason` (`clock_in`, `operator`, `shift_start`, `override_end` or `reconnect`).
+Its `content` MUST be one line of counts, queue names and the oldest pending age, and MUST NOT
+contain any todo title, payload or other webhook-derived text. The session `instructions` MUST
+describe both notification kinds: claim `meta.todo_id` for a todo doorbell, drain with `claim_next`
+for a digest.
+
+#### Scenario: Digest carries counts, not content
+
+- **WHEN** an endpoint clocks in with 7 pending todos across `reviews` (5) and `lane-m` (2)
+- **THEN** its digest has `meta.kind = "digest"`, `meta.pending = "7"`,
+  `meta.queues = "lane-m,reviews"`, no `meta.todo_id`, and content with no todo title
+
 #### Scenario: New todo produces one identifier-safe notification
 
 - **WHEN** a todo becomes ready in a queue within an attached session's scope
@@ -78,7 +98,15 @@ durable verbs.
 
 A doorbell MUST be delivered only to sessions whose vended endpoint scope (SPEC-0007) covers the
 todo's queue. Sessions MUST NOT receive notifications for queues outside their grant, regardless of
-verb allowlist.
+verb allowlist. A todo doorbell MUST NOT be delivered to any session of an endpoint whose effective
+presence is `out` (SPEC-0022 REQ "Held Doorbells"). The todo stays `pending` and pullable, and no
+ring is recorded for it.
+
+#### Scenario: Clocked-out endpoint is not rung
+
+- **WHEN** a todo becomes ready on an endpoint that is clocked out and has a session with an open
+  stream
+- **THEN** that session receives no notification, and the todo's `ring_attempts` stays unchanged
 
 #### Scenario: Out-of-scope todo is not pushed
 
@@ -125,6 +153,33 @@ restarted does not wait for the next sweep.
 - **WHEN** a subscriber's buffered fan-out channel is full at publish time
 - **THEN** the publisher MUST drop the event for that subscriber rather than block, and the todo
   remains recoverable by pull
+
+### Requirement: Doorbell Heartbeat
+
+A pending, push-eligible todo that nobody claims MUST be rung again on a widening backoff: about 5
+minutes after creation, then 20 minutes, 1 hour, and 6 hours after each previous ring, for at most 5
+rings. A sweep MUST ring at most a small fixed number of todos (3), round-robin across endpoints, and
+only todos on active endpoints. The ring and its count MUST be recorded in the same statement that
+selects the row, so two sweeps rarely ring the same todo.
+
+Each instance's sweep MUST select only todos whose endpoint, at sweep time, has at least one session
+with an open notification stream on that instance and an effective presence of `in`. A todo whose
+endpoint has no such session MUST NOT be selected, and its `ring_attempts` and `last_ringed_at` MUST
+be unchanged, so a disconnected or clocked-out agent keeps its full ring budget for its return. A
+digest (REQ "Push Notification Shape") sets `last_ringed_at` on the todos it counted without spending
+a ring attempt.
+
+#### Scenario: Agent offline overnight
+
+- **WHEN** a todo is created at 18:00 on an endpoint with no connected session, and the agent
+  reconnects at 09:00
+- **THEN** the todo's `ring_attempts` is still 0 at 09:00, and the sweep's first ring waits its
+  backoff from the reconnect digest
+
+#### Scenario: Ring budget exhausted while connected
+
+- **WHEN** an endpoint stays connected and in, and a todo is rung 5 times without being claimed
+- **THEN** it is not rung again and stays `pending` and visible
 
 ### Requirement: Sender Gate and Injection Safety
 
