@@ -92,6 +92,10 @@ type ToolStore interface {
 	GetTodo(ctx context.Context, endpointID, id string) (store.Todo, error)
 	ClaimTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error)
 	ClaimNext(ctx context.Context, endpointID string, queues []string, owner string, ttl time.Duration) (store.Todo, error)
+	// RingOnAttach is the catch-up ring behind a freshly opened notification stream (SPEC-0011
+	// scenario "Reconnecting session is rung for waiting work"): the store picks and charges the
+	// rows; the session that opened the stream is the only one rung.
+	RingOnAttach(ctx context.Context, endpointID string, queues []string) ([]store.Todo, error)
 	HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error)
 	CompleteTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
 	FailTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
