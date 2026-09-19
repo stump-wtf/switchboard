@@ -6,7 +6,7 @@ extends: [ADR-0022]
 related: [ADR-0025]
 ---
 
-# ADR-0027: Switchboard Exposes Prometheus Metrics, Led by Queue Liveness
+# ADR-0028: Switchboard Exposes Prometheus Metrics, Led by Queue Liveness
 
 ## Context and Problem Statement
 
@@ -93,7 +93,7 @@ queue is not moving — deliveries arriving and their verdicts, routing decision
 including drops, claims and completions, and **lease expiries**, which are the
 duplicate-work signal that is otherwise invisible.
 
-SPEC-0022 defines the exact names, labels and types.
+SPEC-0023 defines the exact names, labels and types.
 
 ### Consequences
 
@@ -115,7 +115,7 @@ SPEC-0022 defines the exact names, labels and types.
 
 * Incident that motivated this: the `forge` queue undrained for ~20h on
   2026-09-14, with the model provider's quota — not Switchboard — as root cause.
-* SPEC-0022 (metrics) defines the surface.
+* SPEC-0023 (metrics) defines the surface.
 * The gauge pair above is the machine-readable form of the operator guidance in
   the queue-draining guide: before debugging why a queue is not draining, check
   whether anything is claiming at all.
