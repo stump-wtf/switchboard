@@ -1,11 +1,11 @@
 ---
 status: draft
 date: 2026-09-15
-implements: [ADR-0027]
+implements: [ADR-0028]
 related: [ADR-0022, ADR-0025]
 ---
 
-# SPEC-0022: Prometheus Metrics
+# SPEC-0023: Prometheus Metrics
 
 ## Overview
 

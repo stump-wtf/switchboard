@@ -1,7 +1,7 @@
 ---
 status: draft
 date: 2026-09-15
-implements: [ADR-0027]
+implements: [ADR-0028]
 ---
 
 # Design: Prometheus Metrics
@@ -41,7 +41,7 @@ trade a real correctness property for a saving we have not yet needed.
 
 The collector MUST apply a timeout shorter than the scrape interval and, on
 timeout or error, omit the gauges and increment
-`switchboard_metrics_collection_errors_total` (SPEC-0022 REQ-6). It MUST NOT
+`switchboard_metrics_collection_errors_total` (SPEC-0023 REQ-6). It MUST NOT
 report stale or zero values, because a flat line at zero is exactly the reading
 this whole surface exists to prevent.
 
