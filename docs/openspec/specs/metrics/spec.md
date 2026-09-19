@@ -28,9 +28,11 @@ asserts.
 via `prometheus/client_golang`'s `promhttp` handler.
 
 It MUST require authentication. An unauthenticated request MUST receive `401`
-and MUST NOT disclose metric names or values. The accepted credential is the
-same operator/master credential the service already recognises; a scrape
-configures it as a bearer token.
+and MUST NOT disclose metric names or values. The accepted credential is a
+dedicated scrape credential, presented as a bearer token. It is a new
+credential class, not a reused one: the service recognises no static shared
+credential today, operator surfaces authenticate per-human, and nothing
+existing can authorize a scrape.
 
 The endpoint MUST NOT be part of any endpoint-scoped grant: it is an operator
 surface, not an agent surface. A vended endpoint credential MUST NOT authorize it.
@@ -91,8 +93,11 @@ switchboard_webhook_verify_failures_total{provider,reason}        counter
 jq rule that matches nothing installs green and behaves identically to a rule
 that was never added; a counter stuck at zero is how that becomes visible.
 
-`rule_id` is a bounded operator-chosen identifier and is acceptable as a label.
-Rule *names* MUST NOT be used — they are free text.
+`rule_id` is a server-minted, stable, opaque id (`rule_<24 hex>`), not
+operator-chosen; at most 32 exist per webhook, so it is acceptable as a label.
+`webhook` is likewise server-minted but unbounded across the fleet, so it is
+held to REQ-5: distinct values MUST be capped, with overflow aggregated under
+`webhook="__other__"`. Rule *names* MUST NOT be used — they are free text.
 
 ### REQ-5: Cardinality
 
