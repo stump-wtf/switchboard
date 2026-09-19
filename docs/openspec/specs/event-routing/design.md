@@ -136,7 +136,7 @@ Every jq subset that closes those also stops being useful for routing, and the s
 
 **Choice.** The grant is:
 - the webhook's target queue;
-- the owner endpoint's allowed webhook queues;
+- the owner's allowed webhook queues: the owning endpoint's webhook-queue ceiling united with the scope and webhook queues of every active, unexpired endpoint the same human owns (issue #270 — the grant follows the endpoints the owner already has, and revocation or expiry shrinks it on the next read);
 - the webhook's live, authorized delivery targets.
 
 `endpoints` must be a subset of those targets at save. At delivery the grant is recomputed and the subset intersected again. A matched rule that no longer fits takes the default with cause `rule_not_granted`. It does not fall through to later rules, so a revocation never silently promotes a broader rule.

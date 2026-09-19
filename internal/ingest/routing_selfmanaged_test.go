@@ -286,14 +286,27 @@ func TestSelfManagedRoutingNarrowsFanOutWithinTheGrant(t *testing.T) {
 		t.Fatalf("after revoke trace = %+v, want %s naming the rule", tr, routing.CauseRuleNotGranted)
 	}
 
-	// Shrink the ceiling: a queue-only rule to handoff can no longer reach it either.
+	// Issue #270: shrinking one endpoint's ceiling does NOT shrink the owner's allowed
+	// queues while another active endpoint still grants the queue. pool2 has scope_queues
+	// ["inbox", "handoff"], so the owner's grant remains ["inbox", "handoff"] and a rule
+	// to "handoff" continues to route there (SPEC-0020 REQ "Rule Validation at Save Time"
+	// plus the fix: vending an endpoint for queue Q demonstrably grants the owner Q).
 	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "to-handoff", Expr: `true`, Action: routing.Action{Queue: "handoff"}},
 	}})
 	setWebhookQueues(t, ctx, pool, owner.ID, "inbox")
-	shrunk := cairnBody("evt-h4", time.Now(), "anything")
-	if _, q := accepted202(t, postSelfManaged(ing, "cairn-handoff", shrunk, cairnHeaders(shrunk, "evt-h4"))); q != "inbox" {
-		t.Fatalf("after ceiling shrink queue = %q, want inbox", q)
+	cep := cairnBody("evt-h4", time.Now(), "anything")
+	if _, q := accepted202(t, postSelfManaged(ing, "cairn-handoff", cep, cairnHeaders(cep, "evt-h4"))); q != "handoff" {
+		t.Fatalf("after ceiling shrink queue = %q, want handoff (grant includes pool2 scope_queues)", q)
+	}
+	// Revoke pool2: now NO active endpoint grants "handoff", so the grant shrinks to ["inbox"]
+	// and the same rule falls through to the default on the owner.
+	if err := st.RevokeEndpoint(ctx, pool2.ID, h.ID); err != nil {
+		t.Fatalf("revoke pool2: %v", err)
+	}
+	after := cairnBody("evt-h5", time.Now(), "anything")
+	if _, q := accepted202(t, postSelfManaged(ing, "cairn-handoff", after, cairnHeaders(after, "evt-h5"))); q != "inbox" {
+		t.Fatalf("after revoke pool2 queue = %q, want inbox (owner grant now only inbox)", q)
 	}
 }
 

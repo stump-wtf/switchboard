@@ -25,8 +25,12 @@ import (
 )
 
 // WebhookRouting is a webhook's routing configuration plus the switchboard-side facts a grant is
-// computed from. WebhookQueues is the OWNING endpoint's webhook-queue ceiling — never the calling
-// endpoint's — because the rules route the owner's deliveries.
+// computed from. WebhookQueues is the webhook OWNER's allowed webhook queues — never the calling
+// endpoint's — because the rules route the owner's deliveries: the owning endpoint's webhook-queue
+// ceiling united with the scope and webhook queues of every active, unexpired endpoint the owner's
+// other agents hold (vending an endpoint for queue Q demonstrably grants the owner Q, so the
+// routing grant follows the endpoints the owner already has — issue #270). Revoking or expiring an
+// endpoint shrinks the union on the next read; no vend ever mutates another endpoint's ceiling.
 type WebhookRouting struct {
 	WebhookID     string
 	EndpointID    string
@@ -37,11 +41,31 @@ type WebhookRouting struct {
 	Config        routing.Config
 }
 
+// webhookRoutingSelect projects a webhook's routing row and computes the owner's allowed webhook
+// queues in one read, so the save-time grant (UpdateWebhookRouting's locked row) and the
+// delivery-time grant (WebhookRoutingByID) are the SAME union and cannot drift. The subquery runs
+// inside the caller's query — never as a separate Store read — so it is safe under the
+// "mutate must not touch the pool" rule below.
 const webhookRoutingSelect = `
 	SELECT w.id::text, w.endpoint_id::text, w.source_type, w.trust_mode, w.target_queue,
-	       e.webhook_queues, w.routing_rules, w.default_action, w.routing_params
+	       COALESCE((
+		       SELECT array_agg(DISTINCT q ORDER BY q)
+		       FROM (
+			       SELECT unnest(e.webhook_queues) AS q
+			       UNION
+			       SELECT unnest(e2.scope_queues || e2.webhook_queues)
+			       FROM endpoints e2
+			       JOIN agents a2 ON a2.id = e2.agent_id
+			       WHERE a2.owner_human_id = a.owner_human_id
+			         AND e2.state = 'active'
+			         AND (e2.expires_at IS NULL OR e2.expires_at > now())
+		       ) granted
+		       WHERE q IS NOT NULL
+	       ), '{}'),
+	       w.routing_rules, w.default_action, w.routing_params
 	FROM endpoint_webhooks w
-	JOIN endpoints e ON e.id = w.endpoint_id`
+	JOIN endpoints e ON e.id = w.endpoint_id
+	JOIN agents a ON a.id = e.agent_id`
 
 func scanWebhookRouting(row pgx.Row) (WebhookRouting, error) {
 	var wr WebhookRouting
@@ -78,7 +102,8 @@ func (s *Store) WebhookRoutingByID(ctx context.Context, webhookID string) (Webho
 	if !isUUID(webhookID) {
 		return WebhookRouting{}, ErrNotFound
 	}
-	return scanWebhookRouting(s.pool.QueryRow(ctx, webhookRoutingSelect+` WHERE w.id = $1`, webhookID))
+	return scanWebhookRouting(s.pool.QueryRow(ctx, webhookRoutingSelect+`
+	WHERE w.id = $1`, webhookID))
 }
 
 // WebhookRoutingForHuman reads a webhook's routing when ownerHumanID owns it, else ErrNotFound.
@@ -87,7 +112,6 @@ func (s *Store) WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHuma
 		return WebhookRouting{}, ErrNotFound
 	}
 	return scanWebhookRouting(s.pool.QueryRow(ctx, webhookRoutingSelect+`
-	JOIN agents a ON a.id = e.agent_id
 	WHERE w.id = $1 AND a.owner_human_id = $2`, webhookID, ownerHumanID))
 }
 
@@ -112,7 +136,6 @@ func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanI
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	wr, err := scanWebhookRouting(tx.QueryRow(ctx, webhookRoutingSelect+`
-	JOIN agents a ON a.id = e.agent_id
 	WHERE w.id = $1 AND a.owner_human_id = $2
 	FOR UPDATE OF w`, webhookID, ownerHumanID))
 	if err != nil {

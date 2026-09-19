@@ -243,8 +243,9 @@ Each verb MUST be gated by the endpoint's verb allowlist (`forbidden` outside it
 ownership of the webhook. The ownership check follows the route verbs: unknown, malformed, and
 another human's webhook ids MUST all return an identical `not_found`.
 
-Saving rules MUST validate the whole list against the webhook's grant: its target queue, its owning
-endpoint's allowed webhook queues, and its live delivery targets. A failed validation MUST leave the
+Saving rules MUST validate the whole list against the webhook's grant: its target queue, its owner's
+allowed webhook queues (as defined in [SPEC-0020](../event-routing/spec.md) REQ "Rule Validation at
+Save Time"), and its live delivery targets. A failed validation MUST leave the
 previous list in force. A rule MUST only ever narrow a delivery to targets the webhook already has;
 adding a target remains `add_webhook_route`'s job.
 

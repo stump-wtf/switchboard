@@ -14,8 +14,11 @@ package mcp
 //     UpdateWebhookRouting); unknown, malformed, and another human's webhook ids are uniformly
 //     not_found, exactly as the ADR-0022 route verbs answer.
 //  3. REACHABILITY — every save is validated by routing.Validate against a grant built from
-//     switchboard state alone: the webhook's target queue, its OWNER endpoint's webhook-queue
-//     ceiling, and its live, authorized delivery targets (ResolveWebhookTargets). A rule can narrow
+//     switchboard state alone: the webhook's target queue, its OWNER's allowed webhook queues (the
+//     owning endpoint's ceiling united with the queues of the owner's other active, unexpired
+//     endpoints — the store computes the union in the routing read, so vending an endpoint for a
+//     queue lets the owner's webhook rules route to it; issue #270), and its live, authorized
+//     delivery targets (ResolveWebhookTargets). A rule can narrow
 //     a delivery to endpoints the webhook already reaches; it can never add one. Adding a target is
 //     add_webhook_route's job, with add_webhook_route's authorization. The same grant is re-applied
 //     on every delivery, so a later revocation wins over a saved rule.
@@ -425,8 +428,9 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 	return nil, rulesOut(wr, g), nil
 }
 
-// routingGrant builds a webhook's grant from switchboard state: its target queue, its OWNER
-// endpoint's webhook-queue ceiling, and its live, authorized delivery targets.
+// routingGrant builds a webhook's grant from switchboard state: its target queue, its OWNER's
+// allowed webhook queues (the owner-wide union the routing read computes — see store.WebhookRouting),
+// and its live, authorized delivery targets.
 func (h *Handler) routingGrant(ctx context.Context, wr store.WebhookRouting) (routing.Grant, error) {
 	targets, err := h.store.ResolveWebhookTargets(ctx, wr.WebhookID, wr.EndpointID)
 	if err != nil {
