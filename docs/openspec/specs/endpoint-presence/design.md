@@ -175,7 +175,8 @@ sequenceDiagram
   the same grammar, and by the reconnect digest, which makes a missing shift degrade to "it works, a
   little less efficiently."
 - **Missed NOTIFY.** An instance could keep a stale presence for up to 30 seconds. The cost is at
-  most one extra ring or one late digest.
+  most one extra ring or one lost digest: a missed broadcast is never re-delivered, so the
+digest guarantee is at-most-once, not at-least-once (SPEC-0022 REQ "Clock-In Digest").
 - **Consumers assuming `todo_id`.** Agents told by the server instructions to claim `meta.todo_id`
   must learn the digest. The `instructions` text on `initialize` changes to describe both doorbells.
 
