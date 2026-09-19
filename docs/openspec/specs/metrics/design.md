@@ -56,7 +56,7 @@ the queue registry, not from whatever happens to appear in the count query.
 ## Auth
 
 `/metrics` is handled before endpoint-scoped authorization, with its own check
-against the operator credential. It deliberately does not participate in the
+against the dedicated scrape credential. It deliberately does not participate in the
 vended-endpoint grant model: an agent endpoint's token authorizes queue work, and
 fleet-wide operational counts are not queue work.
 
@@ -65,7 +65,9 @@ queues exist — queue names are operator-chosen and can be descriptive.
 
 ## Cardinality control
 
-The queue registry is the source of truth for the label set. A cap (default 50)
+The store's known-queue enumeration is the source of truth for the label set:
+every distinct queue name the store knows — queues todos have ridden plus queues
+scoped onto vended endpoints. A cap (default 50)
 is applied at collection; queues beyond it aggregate into `queue="__other__"`.
 The cap and the overflow bucket exist because `queue` is operator-defined, and an
 operator scripting queue-per-repo would otherwise turn a bounded label into an
@@ -78,7 +80,7 @@ unbounded one without ever being warned.
 * A test that every known queue reports all four states including zeros.
 * A collector-failure test asserting the gauges are **omitted** and the error
   counter increments, rather than zeros being emitted.
-* An auth test: unauthenticated `401`, vended-endpoint token `401`, operator
+* An auth test: unauthenticated `401`, vended-endpoint token `401`, scrape
   credential `200`.
 * A cardinality test: more queues than the cap collapses the tail into
   `__other__` rather than emitting unbounded series.
