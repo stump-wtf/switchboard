@@ -171,8 +171,8 @@ broadcasts it.
 
 The same digest goes out when an endpoint that is in gains its first open notification stream on an
 instance and has push-eligible pending todos (`meta.reason = "reconnect"`), at most once per endpoint
-per 10 minutes. This is what makes Harness work with no configuration at all: an agent held for the
-night reconnects at 09:00 and gets one doorbell for the night's backlog.
+per 10 minutes per instance. This is what makes Harness work with no configuration at all: an agent
+held for the night reconnects at 09:00 and gets one doorbell for the night's backlog.
 
 ### A ring nobody receives is not a ring
 
@@ -237,7 +237,7 @@ Tests assert:
   no override is in;
 * the presence verbs are callable on an endpoint whose scope lists none of them, and cannot name
   another endpoint;
-* a reconnect digest is sent at most once per endpoint per 10 minutes.
+* a reconnect digest is sent at most once per endpoint per 10 minutes per instance.
 
 ### Deferred
 

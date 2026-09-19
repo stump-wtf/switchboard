@@ -186,7 +186,8 @@ While an endpoint is out:
   MUST behave exactly as when it is in;
 * the reaper and retry scheduling MUST be unchanged.
 
-An instance MUST observe a presence change made on another instance within 5 seconds.
+An instance MUST observe a presence change made on another instance within 5 seconds of the
+broadcast, and within 30 seconds in all cases, when the periodic evaluator is the fallback.
 
 #### Scenario: Todo arrives while out
 
@@ -204,7 +205,8 @@ An instance MUST observe a presence change made on another instance within 5 sec
 
 When an endpoint's effective presence changes from `out` to `in` (a `clock_in`, an operator change, a
 shift start, or an override ending), Switchboard MUST send one **digest doorbell** to one session of
-that endpoint on each instance that hosts an open-stream session for it. The digest MUST be sent only
+that endpoint on each instance that hosts an open-stream session for it and either claimed the
+transition or received its broadcast. The digest MUST be sent only
 when the endpoint has at least one push-eligible pending todo.
 
 The transition MUST be decided once across all instances and restarts: an instance MUST claim it with
@@ -220,12 +222,16 @@ from losing the summary:
 * An out-to-in transition that no instance can deliver because no instance hosts a session for the
   endpoint is recorded and dropped. The endpoint is `in` and the return is covered by the reconnect
   digest, which fires when the first stream opens — so nothing is left unsurfaced.
-* A missed broadcast MUST NOT be the reason a digest is lost. If an instance's conditional update
-  loses the claim (another instance already advanced `presence_seen`, including across a restart), it
-  MUST NOT broadcast and MUST NOT send a digest; whether *it* hosts a session is irrelevant, because
-  the claim is what makes delivery exactly-once, not session locality. An instance that hosts a
-  session for an endpoint whose `presence_seen` already agrees with the effective presence has
-  nothing to deliver for that transition.
+* A hosting instance that misses the broadcast loses that transition's digest for its own session:
+  it cannot claim (the row already moved) and no later evaluation re-delivers it. The summary is not
+  left unsurfaced — the backlog stays on the board, and the next doorbell, or the reconnect digest
+  if the session drops, surfaces it. The cost is one lost digest, not a late one.
+* If an instance's conditional update loses the claim (another instance already advanced
+  `presence_seen`, including across a restart), it MUST NOT broadcast and MUST NOT send a digest of
+  its own; whether *it* hosts a session is irrelevant, because the claim is what keeps delivery
+  at-most-once per session, not session locality. An instance that hosts a session for an endpoint
+  whose `presence_seen` already agrees with the effective presence has nothing to deliver for that
+  transition.
 
 An override expiring during an instance's restart is therefore decided by whichever instance next
 runs the evaluator: the conditional update is on the row, not on process state, so a restart cannot

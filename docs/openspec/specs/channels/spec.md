@@ -2,7 +2,7 @@
 status: amended
 date: 2026-07-10
 implements: [ADR-0013, ADR-0027]
-requires: [SPEC-0007, SPEC-0008, SPEC-0014, SPEC-0022]
+requires: [SPEC-0007, SPEC-0008, SPEC-0014]
 ---
 
 # SPEC-0011: Channels Push Delivery
