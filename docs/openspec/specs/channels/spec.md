@@ -150,14 +150,15 @@ restarted does not wait for the next sweep.
 - **THEN** the push is dropped silently AND the todo MUST remain `pending` and MUST be delivered later
   when the harness reconnects and drains the queue by pull
 
-#### Scenario: Reconnecting session is rung for waiting work
+#### Scenario: Reconnecting session is digested for waiting work
 
 - **WHEN** a session opens its notification stream while push-eligible todos in its scope are
   `pending`
-- **THEN** switchboard MUST ring that stream — and only that stream — for the oldest of them, up to
-  a bounded count, charging each ring to the todo's ring budget; a todo rung this way MUST NOT be
-  rung again by a re-attach inside its cooldown, and a todo whose ring budget is spent MUST NOT be
-  rung
+- **THEN** switchboard MUST NOT ring those todos individually on the reconnect; the session receives
+  the one reconnect digest (SPEC-0022, REQ "Clock-In Digest"), which sets `last_ringed_at` on the
+  counted todos without spending ring budget, and delivery resumes through the sweep and push paths
+  afterward — a reconnect that also charged rings would spend, before the agent knows what is
+  waiting, exactly the turns the digest exists to save
 
 #### Scenario: Duplicate notifications do not double-process
 
@@ -178,6 +179,12 @@ minutes after creation, then 20 minutes, 1 hour, and 6 hours after each previous
 rings. A sweep MUST ring at most a small fixed number of todos (3), round-robin across endpoints, and
 only todos on active endpoints. The ring and its count MUST be recorded in the same statement that
 selects the row, so two sweeps rarely ring the same todo.
+
+The interval is measured from `last_ringed_at` (from creation when that is null), never selected from
+`ring_attempts` alone: a digest sets `last_ringed_at` without spending an attempt, so a todo marked
+at `ring_attempts = 0` must not fall into an arbitrary branch of the schedule. A digest mark advances
+a todo's backoff exactly as a ring would for timing, but neither spends the ring budget nor counts
+toward the 5-ring maximum.
 
 Each instance's sweep MUST select only todos whose endpoint, at sweep time, has at least one session
 attached to that instance and an effective presence of `in`. A todo whose endpoint has no such
