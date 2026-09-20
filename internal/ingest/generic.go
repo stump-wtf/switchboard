@@ -141,10 +141,15 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generic providers supply no delivery id, so the idempotency key is the body hash — derived
-	// here (before verification) ONLY to correlate the ephemeral received-lane card (SPEC-0015);
-	// nothing is persisted until the trust check below passes.
-	key := bodyHash(body)
+	// The idempotency key: the sender's own delivery id when it stamped one (genericDeliveryID),
+	// else the body hash. Derived here (before verification) ONLY to correlate the ephemeral
+	// received-lane card (SPEC-0015); nothing is persisted until the trust check below passes.
+	// Prefixed with the provider name, exactly as the self-managed path scopes with wh.ID: every
+	// operator-configured generic provider shares the single legacy receiver endpoint, so an
+	// unscoped key would let two providers stamping the same delivery id collapse onto one todo.
+	// A sender-asserted id is scoped to the provider it arrived on (SPEC-0001 REQ "Idempotency Key
+	// Extraction and Dedup"): a provider can only ever collapse its OWN deliveries.
+	key := name + ":" + idempotencyKey(genericDeliveryID(r.Header), body)
 	// The line is in flight for a CONFIGURED provider: surface it on the received lane. An
 	// unconfigured name (the 404 above) never rings the board — probe noise is not a line.
 	i.observeReceived(name, "webhook", p.Mode, key)
@@ -189,8 +194,8 @@ func (i *Ingest) Generic(w http.ResponseWriter, r *http.Request) {
 		i.observeRejected(name, "webhook", trustMode, key, "receiver not configured")
 		return
 	}
-	// key (the body hash derived above) is the idempotency key: generic providers supply no
-	// delivery id (SPEC-0001 REQ "Idempotency Key Extraction and Dedup" — body-hash fallback).
+	// key (derived above) is the idempotency key: the sender's delivery id when it stamped one,
+	// else the body hash (SPEC-0001 REQ "Idempotency Key Extraction and Dedup" — generic delivery id).
 	// Governing: SPEC-0002/0004 REQ atomic ingestion — event + todo commit in one transaction.
 	_, td, created, err := i.store.CreateEventTodo(r.Context(),
 		store.EventInput{
@@ -272,4 +277,41 @@ func providerQueue(config []byte, name string) string {
 // summarizeGeneric builds a one-line, legible todo title for a generic provider delivery.
 func summarizeGeneric(name string) string {
 	return "webhook " + name + " delivery"
+}
+
+// Generic delivery ids. A generic sender has no signing scheme and so no signed delivery id, but a
+// producer that retries can still stamp every attempt with the same id — the plain `X-Delivery-Id`,
+// or the Standard Webhooks `Webhook-Id` — and a retry whose body differs (a fresh timestamp, a
+// re-serialized payload) then collapses onto the original todo instead of minting a second one.
+// Without it the body hash is the only key a generic sender can get, and every byte-different retry
+// is a duplicate.
+//
+// The id is trusted exactly as much as the body it travels with: it is caller-asserted, and the
+// key it feeds is prefixed with the provider name (events dedup on (source, external_id), todos
+// on (endpoint_id, idempotency_key) over the shared legacy endpoint), so a caller can only ever
+// collapse ITS OWN deliveries. An id over
+// maxGenericDeliveryID bytes is ignored — the body hash applies — so a hostile sender cannot grow
+// the dedup index with the header. Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup"
+// (scenario "Generic redelivery with the same delivery id dedups").
+//
+// @justinabrahms 09/13/2026 - Added: a homelab producer retrying with a fresh timestamp in the
+// body minted one todo per attempt; the forge sources already keyed on the provider's delivery id.
+const maxGenericDeliveryID = 256
+
+// genericDeliveryIDHeaders are consulted in order; the first non-empty value wins. Header names are
+// canonicalized by net/http, so the Standard Webhooks lowercase spelling matches too.
+var genericDeliveryIDHeaders = []string{"X-Delivery-Id", "Webhook-Id"}
+
+// genericDeliveryID returns the delivery id a generic sender stamped on the request, or "" when it
+// sent none (or one too long to be a key), in which case the caller falls back to the body hash.
+func genericDeliveryID(h http.Header) string {
+	for _, name := range genericDeliveryIDHeaders {
+		if v := strings.TrimSpace(h.Get(name)); v != "" {
+			if len(v) > maxGenericDeliveryID {
+				return ""
+			}
+			return v
+		}
+	}
+	return ""
 }

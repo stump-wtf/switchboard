@@ -60,7 +60,7 @@ delivery is **at-least-once** — so **handlers must be idempotent**.
 
 - **Idempotency keys collapse duplicates.** Every todo carries an idempotency key — for webhooks, the
   webhook plus the delivery's id (`X-GitHub-Delivery`, `X-Gitea-Delivery`, Cairn's signed `event_id`,
-  or a hash of the body when there is none). A delivery whose key matches a todo that is still
+  a generic sender's own `X-Delivery-Id`, or a hash of the body when there is none). A delivery whose key matches a todo that is still
   pending, claimed, or waiting to retry returns that todo instead of creating another, so
   at-least-once webhook deliveries fold into a single work-item. Once the todo is done (or
   dead-lettered), the same key creates a new one.

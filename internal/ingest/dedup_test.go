@@ -525,3 +525,113 @@ func grantFriendEdge(t *testing.T, st *store.Store, ctx context.Context, label, 
 		t.Fatalf("approve friend edge (%s): %v", label, err)
 	}
 }
+
+// A generic sender that stamps its deliveries with an id gets provider-grade dedup: a retry whose
+// body differs (a fresh timestamp, a re-serialized payload) still collapses onto the original todo,
+// where the body hash alone would have minted a second one. The id is caller-asserted and scoped
+// to the provider, so it can only ever collapse the sender's own deliveries; an oversized id is
+// ignored and the body hash applies. Governing: SPEC-0001 REQ "Idempotency Key Extraction and
+// Dedup" (scenarios "Generic redelivery with the same delivery id dedups", "Oversized delivery id
+// falls back to the body hash").
+func TestGenericDeliveryIDDedup(t *testing.T) {
+	ing, hub, pool, ctx, endpointID := testIngestDeps(t, Config{
+		Generic: map[string]GenericProvider{
+			"homelab": {Mode: "token", Token: "tok", Queue: "ops"},
+		},
+	})
+	ch, cancel := hub.Subscribe(endpointID, []string{"ops"})
+	defer cancel()
+
+	deliver := func(payload string, hdr map[string]string) *httptest.ResponseRecorder {
+		h := map[string]string{"X-Webhook-Token": "tok"}
+		for k, v := range hdr {
+			h[k] = v
+		}
+		rec := httptest.NewRecorder()
+		ing.Generic(rec, genericRequest("homelab", payload, h, ""))
+		return rec
+	}
+
+	// Same id, different bodies: one todo, one event, one doorbell.
+	id1, queue := accepted202(t, deliver(`{"event":"deploy","at":"10:00:00"}`, map[string]string{"X-Delivery-Id": "dep-42"}))
+	if queue != "ops" {
+		t.Fatalf("queue = %q, want ops", queue)
+	}
+	id2, _ := accepted202(t, deliver(`{"event":"deploy","at":"10:00:07"}`, map[string]string{"X-Delivery-Id": "dep-42"}))
+	if id2 != id1 {
+		t.Fatalf("redelivery with the same X-Delivery-Id must dedup despite a different body: %s vs %s", id1, id2)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 1 {
+		t.Fatalf("todos = %d, want 1", n)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM events`); n != 1 {
+		t.Fatalf("events = %d, want 1", n)
+	}
+	if n := drainHub(ch); n != 1 {
+		t.Fatalf("hub publishes = %d, want 1", n)
+	}
+	// The sender's id is what was persisted as the delivery id, not a hash of the body.
+	var ext string
+	if err := pool.QueryRow(ctx, `SELECT external_id FROM events WHERE source = 'homelab'`).Scan(&ext); err != nil {
+		t.Fatalf("query event: %v", err)
+	}
+	if ext != "homelab:dep-42" {
+		t.Fatalf("external_id = %q, want the sender's delivery id namespaced by provider", ext)
+	}
+
+	// The Standard Webhooks spelling is honoured too, and a different id is a different delivery —
+	// even under a body already seen, because the id outranks the hash.
+	id3, _ := accepted202(t, deliver(`{"event":"deploy","at":"10:00:00"}`, map[string]string{"Webhook-Id": "dep-43"}))
+	if id3 == id1 {
+		t.Fatal("distinct delivery ids must create distinct todos")
+	}
+
+	// An oversized id is ignored: two different bodies under it are two todos (body-hash keys).
+	huge := strings.Repeat("x", maxGenericDeliveryID+1)
+	id4, _ := accepted202(t, deliver(`{"n":1}`, map[string]string{"X-Delivery-Id": huge}))
+	id5, _ := accepted202(t, deliver(`{"n":2}`, map[string]string{"X-Delivery-Id": huge}))
+	if id4 == id5 {
+		t.Fatal("an oversized delivery id must fall back to the body hash, not collapse distinct bodies")
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 4 {
+		t.Fatalf("todos = %d, want 4", n)
+	}
+}
+
+// Two providers that both stamp X-Delivery-Id: dep-42 share the single legacy receiver endpoint,
+// but each must still get its own todo: the key is namespaced by provider name. Without the
+// prefix the second provider's delivery collapsed onto the first's todo and was silently
+// swallowed. Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup" (a sender-asserted
+// id is scoped to the provider it arrived on).
+func TestGenericDeliveryIDNoCrossProviderCollapse(t *testing.T) {
+	ing, hub, pool, ctx, endpointID := testIngestDeps(t, Config{
+		Generic: map[string]GenericProvider{
+			"homelab": {Mode: "token", Token: "tok", Queue: "ops"},
+			"backups": {Mode: "token", Token: "tok2", Queue: "ops"},
+		},
+	})
+	ch, cancel := hub.Subscribe(endpointID, []string{"ops"})
+	defer cancel()
+
+	deliver := func(name, token, payload string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		ing.Generic(rec, genericRequest(name, payload,
+			map[string]string{"X-Webhook-Token": token, "X-Delivery-Id": "dep-42"}, ""))
+		return rec
+	}
+
+	idA, _ := accepted202(t, deliver("homelab", "tok", `{"event":"deploy","at":"10:00:00"}`))
+	idB, _ := accepted202(t, deliver("backups", "tok2", `{"event":"deploy","at":"10:00:00"}`))
+	if idA == idB {
+		t.Fatal("two providers stamping the same X-Delivery-Id must not collapse onto one todo")
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 2 {
+		t.Fatalf("todos = %d, want 2", n)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos WHERE idempotency_key = 'homelab:dep-42'`); n != 1 {
+		t.Fatalf("homelab namespaced key = %d rows, want 1", n)
+	}
+	if n := drainHub(ch); n != 2 {
+		t.Fatalf("hub publishes = %d, want 2", n)
+	}
+}
