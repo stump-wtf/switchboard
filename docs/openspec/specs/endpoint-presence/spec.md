@@ -36,7 +36,8 @@ Terms:
 ### Requirement: Presence Model
 
 Each endpoint MUST carry: an optional `shift`; an optional override of `presence_override` (`in` or
-`out`), `override_until` (timestamp or null) and `override_by` (`agent` or `operator:<human_id>`);
+`out`), `override_until` (timestamp or null), `override_set_at` (timestamp; the anchor an override's
+end at the next shift boundary is computed from) and `override_by` (`agent` or `operator:<human_id>`);
 and `presence_seen` (the effective presence last acted upon, REQ "Clock-In Digest").
 
 The effective presence at time `t` MUST be decided, in order:
@@ -71,7 +72,7 @@ behave exactly as before this spec.
 `shift` MUST use the weekly-window grammar Harness defines for `operating_hours`: an optional `TZ=` or
 `CRON_TZ=` zone prefix, then `;`-separated windows of an optional day spec (`Mon`–`Sun`, ranges that
 may wrap, comma lists) and `HH:MM-HH:MM`. The start is inclusive, the end exclusive, `24:00` is valid
-only as an end, and an end at or before its start runs into the next day. Membership MUST be decided
+only as an end, and an end before its start runs into the next day. Membership MUST be decided
 on local wall-clock time in the zone, so a DST transition shortens or lengthens a window rather than
 skipping or repeating it. The zone database MUST be embedded, so validation does not depend on the
 host. A blank, malformed or unknown-zone value, or a window whose start equals its end, MUST be
