@@ -196,13 +196,16 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The basics webhook ceiling, shared with the one-step quick vend so the two basics paths
+	// grant the same usable scope. Governing: ADR-0023, SPEC-0006.
+	whMax, whSources, whQueues := mcp.BasicWebhookCeiling(verbs, []string{in.Queue})
 	res, err := a.st.VendAgentEndpoint(r.Context(), store.VendParams{
 		OwnerHumanID: human.ID, Name: in.Name,
 		CredHash: hash, CredPrefix: prefix, Slug: slug,
 		Queues: []string{in.Queue}, Verbs: verbs,
-		WebhookMax:         1,
-		WebhookSourceTypes: []string{"generic"},
-		WebhookQueues:      []string{in.Queue},
+		WebhookMax:         whMax,
+		WebhookSourceTypes: whSources,
+		WebhookQueues:      whQueues,
 	})
 	if err != nil {
 		a.fail(w, "vend endpoint", err)
