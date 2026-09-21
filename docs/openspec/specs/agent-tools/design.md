@@ -42,7 +42,7 @@ The webhook self-management verbs (`create_webhook`, `list_webhooks`, `rotate_we
 
 ### Non-Goals
 
-- The read-only event-history tools (list/get/replay/providers) — those are SPEC-0005.
+- The read-only event-history tools (list/get/replay) — those are SPEC-0005.
 - The friending / A2A vend flow and the human web UI (separate capabilities/ADRs).
 - Defining the ceiling *storage* fields (owned by the accounts/endpoints capability); this consumes
   them.
@@ -85,8 +85,7 @@ plaintext server-side (the `signing_secret` column). For a signed-type webhook i
 to the agent **exactly once** in the result — the agent pastes it into the producer (GitHub/Stripe/
 Slack) — and every later read (`list_webhooks`) returns only the ingest URL. On delivery, the
 `/webhooks/w/{token}` receiver recomputes the provider HMAC over the raw body against the held secret
-in constant time (the same `verifyGitHub`/`verifyStripe`/`verifySlack` the operator-configured
-receivers use) and persists `verified=true`/`trust_mode=signed` on a valid signature, failing closed
+in constant time (`verifyGitHub`/`verifyStripe`/`verifySlack`, `internal/ingest`) and persists `verified=true`/`trust_mode=signed` on a valid signature, failing closed
 (401, nothing persisted) otherwise.
 **Rationale**: Self-management changes *who created* a webhook, not *how it is verified*. Provider
 HMAC verification needs the plaintext secret at both ends — the producer (to sign) and switchboard (to

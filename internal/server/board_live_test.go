@@ -39,22 +39,30 @@ import (
 	"github.com/stump-wtf/switchboard/internal/web"
 )
 
-// liveGitHubSecret signs the test deliveries; configured on ingest the same way Run's env config
-// does (the ADR-0020 registry path is exercised by the providers suite).
-const liveGitHubSecret = "live-board-test-secret"
+// liveGitHubSecret is the minted signing secret of the fixture's self-managed webhook, and
+// liveWebhookToken its ingest token: deliveries go to /webhooks/w/{token} and verify per-provider
+// against the held secret (SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and
+// Idempotency").
+const (
+	liveGitHubSecret = "live-board-test-secret"
+	liveWebhookToken = "board-live-hook-token"
+)
 
 // newLiveBoardRouter builds the production router like newDBRouter, additionally wiring the web
 // handler as the store's committed-transition observers and as the ingest instrument — the exact
 // hook set Run wires — so webhook deliveries and lifecycle transitions publish their typed SSE
 // frames end-to-end. Shares the package-dedicated test database (tests in this package run
 // serially; each harness truncates).
-// The returned endpoint is the operator-designated owner of every todo the operator-configured
-// /webhooks/github receiver mints (ingest.Config.LegacyEndpointID). Those receivers predate
-// ADR-0022 — they are configured by an operator, not vended to an agent, so nothing in their
-// configuration names a tenant — and todos.endpoint_id is NOT NULL with no sentinel, so the owner
-// must be STATED. Without it the receiver answers 503 rather than minting an unowned todo, and
-// this whole board flow would never produce a card. Governing: ADR-0022, SPEC-0001 REQ "Enqueue
-// Accepted Delivery as Endpoint-Owned Todo".
+// The returned endpoint OWNS the fixture's webhook, and so owns every todo a delivery to it mints
+// (ADR-0022: todos.endpoint_id is NOT NULL, and a self-managed webhook carries its owner). This
+// harness used to drive the operator-configured /webhooks/github receiver, which had no owner of its
+// own and needed one stated out of band; that receiver is gone, and the self-managed path is the
+// only ingestion surface.
+//
+// @joestump 09/21/2026 - Rebuilt on the self-managed webhook path for the shared-receiver teardown
+// (#181). The board frames are unchanged: the instrument and transition hooks are the same ones.
+//
+// Governing: ADR-0012, ADR-0022, SPEC-0001 REQ "Enqueue Accepted Delivery as Endpoint-Owned Todo".
 func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context, store.Endpoint) {
 	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
@@ -89,17 +97,21 @@ func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		`TRUNCATE humans, agents, endpoints, todos, events, sessions, adapters RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE humans, agents, endpoints, todos, events, sessions RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	st := store.New(pool)
-	// Vend the receiver's owning tenant before the board hooks are attached, so the fixture's own
+	// Vend the webhook's owning tenant before the board hooks are attached, so the fixture's own
 	// setup writes cannot be mistaken for board traffic on the SSE wire.
 	operator, err := st.UpsertHuman(ctx, "board-live-operator", "Board Operator", "board-op@example.com")
 	if err != nil {
 		t.Fatalf("upsert receiver-owner human: %v", err)
 	}
-	legacyEP := seedEndpoint(t, st, ctx, operator.ID, "board-live-receiver", "hash-board", "sbk_board0")
+	ownerEP := seedEndpoint(t, st, ctx, operator.ID, "board-live-receiver", "hash-board", "sbk_board0")
+	if _, err := st.CreateWebhook(ctx, ownerEP.ID, "github", "reviews", "signed",
+		liveWebhookToken, liveGitHubSecret, 3); err != nil {
+		t.Fatalf("create self-managed webhook: %v", err)
+	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{BaseURL: "https://sb.example.com"}
@@ -116,10 +128,7 @@ func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context
 	st.SetTodoTransitionHook(webh.PublishTodoTransition)
 	st.SetEventHook(webh.PublishEventReceived)
 	st.SetEndpointSeenHook(webh.PublishEndpointSeen)
-	ing := ingest.New(st, ingest.NewHub(), log, ingest.Config{
-		GitHubSecret: liveGitHubSecret, GitHubQueue: "reviews",
-		LegacyEndpointID: legacyEP.ID,
-	})
+	ing := ingest.New(st, ingest.NewHub(), log, ingest.Config{})
 	ing.SetInstrument(webh)
 	r := newRouter(routerDeps{
 		st:    st,
@@ -129,7 +138,7 @@ func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context
 		ping:  pool.Ping,
 		log:   log,
 	})
-	return r, st, ctx, legacyEP
+	return r, st, ctx, ownerEP
 }
 
 // sseFrame is one named frame captured off the live stream.
@@ -246,7 +255,7 @@ func ghSign(body []byte) string {
 // postGitHub delivers a webhook to the live server with the given delivery GUID and signature.
 func postGitHub(t *testing.T, ts *httptest.Server, delivery, sig string, body []byte) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, ts.URL+"/webhooks/github", strings.NewReader(string(body)))
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/webhooks/w/"+liveWebhookToken, strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatalf("build webhook request: %v", err)
 	}
@@ -256,7 +265,7 @@ func postGitHub(t *testing.T, ts *httptest.Server, delivery, sig string, body []
 	req.Header.Set("X-Hub-Signature-256", sig)
 	resp, err := ts.Client().Do(req)
 	if err != nil {
-		t.Fatalf("POST /webhooks/github: %v", err)
+		t.Fatalf("POST /webhooks/w/{token}: %v", err)
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
@@ -290,7 +299,7 @@ func scrapeHXCSRF(t *testing.T, body string) string {
 // (todo_claimed), and completion updates it in place (todo_completed). Sequential awaits pin the
 // wire order; the taxonomy check pins that nothing untyped rode along.
 func TestSignedWebhookCrossesTheBoardOverSSE(t *testing.T) {
-	r, st, ctx, legacyEP := newLiveBoardRouter(t)
+	r, st, ctx, ownerEP := newLiveBoardRouter(t)
 	// Subscribe as the human who OWNS the receiver's endpoint. Live frames are routed to the
 	// owning tenant now, so a session for anyone else legitimately receives nothing — that is the
 	// behaviour under test elsewhere, not a fixture detail to work around here. The subject
@@ -433,9 +442,9 @@ func TestSignedWebhookCrossesTheBoardOverSSE(t *testing.T) {
 	// is ErrNotFound here, not a wrong-looking field. That is the whole point of the scope: a todo
 	// is reachable from exactly one endpoint, never from whoever happens to share its queue name.
 	// Governing: ADR-0022, SPEC-0001 REQ "Enqueue Accepted Delivery as Endpoint-Owned Todo".
-	got, err := st.GetTodo(ctx, legacyEP.ID, accepted.ID)
+	got, err := st.GetTodo(ctx, ownerEP.ID, accepted.ID)
 	if err != nil || got.State != "done" {
-		t.Fatalf("todo after flow = %+v err=%v, want state done owned by endpoint %s", got, err, legacyEP.ID)
+		t.Fatalf("todo after flow = %+v err=%v, want state done owned by endpoint %s", got, err, ownerEP.ID)
 	}
 	stream.assertTaxonomy()
 }

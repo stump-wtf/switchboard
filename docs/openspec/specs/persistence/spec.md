@@ -17,7 +17,7 @@ append-mostly log — with transactional dedup, competing consumers, and store-t
 ingestion.
 
 The persistence layer owns the schema (humans, sessions, agents, endpoints, events, todos,
-adapters, settings), the connection pool lifecycle, the embedded migration mechanism, the partial
+settings), the connection pool lifecycle, the embedded migration mechanism, the partial
 and expression indexes that keep the hot queue scan cheap, the hybrid age + row-cap retention
 policy, and the optional `LISTEN`/`NOTIFY` wakeups. Every other capability — including the todo
 work-queue ([SPEC-0003](../todo-queue/spec.md)) — builds on the primitives this capability
@@ -32,10 +32,10 @@ data-access functions), and `internal/db/migrations/0001_init.sql` (schema DDL).
 ### Requirement: PostgreSQL as the Sole System of Record
 
 Switchboard MUST use PostgreSQL as its single system of record for all durable state: humans,
-sessions, agents, vended endpoints, events, todos, adapters, and settings. It MUST NOT use SQLite,
+sessions, agents, vended endpoints, events, todos, and settings. It MUST NOT use SQLite,
 because single-writer serialization and a single-node file are the wrong shape for a multi-tenant,
-multi-worker queue. It MUST NOT use Redis as the ledger — Redis appears only as an ingestion
-transport, never as storage. A dedicated broker (Kafka/NATS/Temporal) MUST NOT be introduced unless
+multi-worker queue. It MUST NOT use Redis as the ledger. A dedicated broker (Kafka/NATS/Temporal)
+MUST NOT be introduced unless
 PostgreSQL is demonstrably insufficient at scale; such an addition REQUIRES a new ADR.
 
 All durable state SHALL live in one database so that a vended endpoint's scope, an agent's owner,
@@ -46,12 +46,6 @@ and a todo's queue are joinable and enforceable within a single transaction.
 - **WHEN** more than one switchboard app node is deployed
 - **THEN** every node MUST connect to the same PostgreSQL database, and availability/HA MUST be
   achievable through managed or streaming replication rather than being blocked by a single-host file
-
-#### Scenario: Redis is transport, not storage
-
-- **WHEN** a pull adapter consumes a message from a Redis stream
-- **THEN** the durable record MUST be written to PostgreSQL, and Redis MUST NOT be treated as the
-  authoritative store for that work
 
 ### Requirement: Connection Pool Lifecycle and Timeouts
 
@@ -98,7 +92,7 @@ tool SHALL be required — switchboard MUST remain a single static binary.
 ### Requirement: Schema, Partial Indexes, and Rich Column Types
 
 The initial migration MUST create the core tables — `humans`, `sessions`, `agents`, `endpoints`,
-`events`, `todos`, `adapters`, `settings` — with `timestamptz` timestamps and first-class rich
+`events`, `todos`, `settings` — with `timestamptz` timestamps and first-class rich
 types (`jsonb` for payloads/config/results, `text[]` for scope and source-type arrays, `inet` for
 source IPs, `bytea` for raw event bodies). It MUST create the hot-path partial and unique indexes:
 

@@ -5,10 +5,10 @@ title: Overview
 # Switchboard, in one page
 
 Switchboard is the operator's board for inbound events. Many lines come in — webhooks from
-GitHub, Stripe, Slack, Docker Hub; messages off a Redis queue — and switchboard does three things
+GitHub, Gitea, Stripe, Slack, Cairn, your own scripts — and switchboard does three things
 with each one:
 
-1. **Receive** it on a scoped line (a *provider*).
+1. **Receive** it on a scoped line (a *webhook* an endpoint owns).
 2. **Verify** the caller at the boundary and stamp the event with a *trust mode*.
 3. **Patch it through** into a durable *todo* that an agent claims under a lease and completes.
 
@@ -17,11 +17,11 @@ verified the caller, and patched the line through. Switchboard is that exchange 
 
 ## The objects you'll work with
 
-You configure and operate switchboard through six kinds of object. Each has its own guide.
+You configure and operate switchboard through five kinds of object. Each has its own guide.
 
 | Object | What it is | Guide |
 |--------|------------|-------|
-| **Provider** | An inbound line — a webhook receiver or a pulled queue — with an enforced trust mode. | [Connect a provider](/guides/connect-a-provider) |
+| **Webhook** | An inbound line — an ingest URL an endpoint created — whose source type fixes an enforced trust mode. | [Receive your first webhook](/getting-started/first-webhook) |
 | **Todo** | A durable unit of work derived from an event. Claimed under a lease, completed with an ack. | [Drain the queue](/guides/draining-the-queue) |
 | **Endpoint** | A per-agent, scoped MCP endpoint (a URL + credential) that an agent uses to reach switchboard's verbs. | [Vend an endpoint](/guides/vend-an-endpoint) |
 | **Persona** | A named, least-privilege face of one agent, published as an A2A Agent Card. | [Personas](/guides/personas) |
@@ -30,20 +30,20 @@ You configure and operate switchboard through six kinds of object. Each has its 
 ## The core loop
 
 ```
-provider ──receive──▶ verify ──patch through──▶ todo ──claim(lease)──▶ agent ──complete──▶ done
+webhook ───receive──▶ verify ──patch through──▶ todo ──claim(lease)──▶ agent ──complete──▶ done
    │                    │                          │                                        │
- GitHub/Stripe/     signed / token /          durable, deduped,                     acked; retained
- Slack/Docker/      open / queue              at-least-once                          as an audit record
- Redis
+ GitHub/Gitea/      signed / token            durable, deduped,                     acked; retained
+ Stripe/Slack/                                at-least-once                          as an audit record
+ Cairn/generic
 ```
 
-Everything downstream of "verify" is the same regardless of which family the event came from: it
+Everything downstream of "verify" is the same regardless of which source the event came from: it
 normalizes to a common shape, persists, broadcasts over Server-Sent Events to the web UI, and
 becomes a todo the agent surface can drain.
 
 ## Who does what
 
-- **You (the human) are the accountable principal.** You connect providers, register agents, and
+- **You (the human) are the accountable principal.** You register agents, vend endpoints, and
   decide — at vend time — exactly which queues and verbs each agent may touch. Nothing an agent does
   is un-attributable to you.
 - **Agents are least-privilege workers.** An agent reaches switchboard only through an endpoint you

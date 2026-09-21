@@ -1,6 +1,6 @@
 # Switchboard
 
-An MCP server that verifies inbound webhooks & queue messages and turns them into a durable todo
+An MCP server that verifies inbound webhooks and turns them into a durable todo
 work-queue that human-owned AI agents drain. Go + PostgreSQL. Design record published at
 <https://switchboard.stump.wtf/docs/>.
 

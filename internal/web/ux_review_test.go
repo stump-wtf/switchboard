@@ -26,7 +26,7 @@ import (
 // only. Story #85.
 func TestNoUserVisibleSourceForProvider(t *testing.T) {
 	for _, tmpl := range []string{
-		"board", "todos", "endpoints", "friends", "providers",
+		"board", "todos", "endpoints", "friends",
 	} {
 		body := renderPage(t, newTestHandler(t), tmpl, view{
 			Title: "test", Human: testHuman(), CSRF: "tok",
@@ -103,7 +103,6 @@ func TestLowercaseHeadingsAndCTAs(t *testing.T) {
 		{"todos", "todos"},
 		{"endpoints", "vended mcp endpoints"},
 		{"friends", "friends · agent-to-agent"},
-		{"providers", "providers"},
 	}
 	for _, p := range pages {
 		body := renderPage(t, h, p.page, view{
@@ -122,11 +121,6 @@ func TestLowercaseHeadingsAndCTAs(t *testing.T) {
 	// Personas page CTA ("+ new persona") is covered by TestPersonasPageRendersCardsAndWizardEntry.
 	if body := renderPage(t, h, "friends", view{Title: "friends · agent-to-agent", Human: testHuman(), CSRF: "tok", Shell: shell{Active: "friends", DBConnected: true, Initials: "JS"}}); !strings.Contains(body, "+ add friend") {
 		t.Error("friends: missing lowercase CTA '+ add friend'")
-	}
-	// The provider CTA is operator-only (SPEC-0017 lifecycle gate), so this renders the operator
-	// view — the check is about the CTA's wording, not about who may see it.
-	if body := renderPage(t, h, "providers", providersView(h, nil, nil)); !strings.Contains(body, "+ connect provider") {
-		t.Error("providers: missing lowercase CTA '+ connect provider'")
 	}
 }
 

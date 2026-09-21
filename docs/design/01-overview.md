@@ -37,7 +37,7 @@ test gating both themes. Only the language on top changed.
 | `01-overview.md` | This overview |
 | `02-design-language.md` | Tokens, themes, typography, iconography |
 | `03-components.md` | Component vocabulary + provider tag table |
-| `04-screens.md` | The six views, wizards, consent surface |
+| `04-screens.md` | The five views, wizards, consent surface |
 | `05-voice.md` | Copy voice and microcopy rules |
 | `06-directions.md` | Directions explored and rejected |
 

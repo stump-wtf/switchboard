@@ -13,7 +13,7 @@ CSS/JS/fonts live in `static/`; the SSE hub is view-agnostic.
 
 ### Goals
 
-- One coherent, keyboard-first language across all six views, both themes, and every wizard.
+- One coherent, keyboard-first language across every view, both themes, and every wizard.
 - The board reads as the product metaphor: lines in, verified, patched through — live.
 - Contain the rewrite: view logic and backend contracts change minimally; templates, tokens,
   view-model structs, and `sb.js` carry the change.
@@ -22,7 +22,7 @@ CSS/JS/fonts live in `static/`; the SSE hub is view-agnostic.
 
 - No SPA, no build step, no CSS framework — ADR-0001's spine stands.
 - No backend changes to ingestion, todo queue, personas, or friending beyond what wizards surface
-  (lifetime lands via SPEC-0016; providers via SPEC-0017).
+  (lifetime lands via SPEC-0016).
 - No mouse-first affordances; mouse works, keyboard leads.
 
 ## Decisions

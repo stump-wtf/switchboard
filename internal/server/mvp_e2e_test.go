@@ -81,7 +81,7 @@ func TestMVPRegistrationToDoorbell(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		`TRUNCATE humans, agents, endpoints, todos, events, sessions, adapters, endpoint_webhooks, oauth_clients, oauth_codes, oauth_tokens RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE humans, agents, endpoints, todos, events, sessions, endpoint_webhooks, oauth_clients, oauth_codes, oauth_tokens RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	st := store.New(pool)

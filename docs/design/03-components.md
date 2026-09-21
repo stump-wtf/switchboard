@@ -9,7 +9,7 @@ Governing: [ADR-0018](../adrs/ADR-0018-charm-web-design-language.md),
 - **Top bar** — mark + lowercase `switchboard` wordmark (Space Mono) · `~/operator` breadcrumb ·
   MCP-connected indicator (`data-sb-mcp`, flat highlight bar) · LIVE throughput pill · `+ new`
   launcher (`data-sb-new`, purple, glowing) · theme control (`data-sb-theme-toggle`).
-- **Nav** — the six views as a horizontal lowercase mono strip (`.sb-rail`), active view
+- **Nav** — the five views as a horizontal lowercase mono strip (`.sb-rail`), active view
   underlined in pink; `data-sb-nav` stamps feed the `g` go-to-view chord. Collapses to dots below
   820px. The postgres connectivity line lives at its right edge.
 - **Key-hint footer** — every view ends in the terminal help line (`#sb-keys`): dim
@@ -32,7 +32,6 @@ Flat, square-cornered (3px), cell-honest — colored cells like Gum/Lip Gloss ac
 | slack | SL |
 | dockerhub | DH |
 | healthchecks | HL |
-| redis | RD |
 | *(unknown)* | first two letters, upper-cased |
 
 ## Cards, tables, tiles

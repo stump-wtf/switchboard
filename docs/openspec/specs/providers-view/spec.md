@@ -1,11 +1,20 @@
 ---
-status: draft
+status: deprecated
 date: 2026-07-18
 implements: [ADR-0020]
 requires: [SPEC-0001, SPEC-0002, SPEC-0015]
 ---
 
 # SPEC-0017: Providers View, Runtime Registry, and Connect Wizard
+
+> **Retired 2026-09-21 (#181).** The provider registry was removed whole: the Providers view, the
+> connect wizard and catalog, provider lifecycle, env seeding, `SWITCHBOARD_OPERATOR_SUBJECTS`, the
+> `list_providers` MCP tool, and the `adapters` table (dropped by migration 0021). No code implements
+> these requirements. Self-managed webhooks
+> ([ADR-0012](../../../adrs/ADR-0012-agents-self-manage-webhooks.md), `POST /webhooks/w/{token}`,
+> [SPEC-0001](../webhook-ingestion/spec.md)) are the only ingestion surface: instance-wide ingestion
+> belongs to no tenant, so it cannot name the endpoint that owns the todos it mints (ADR-0022). Kept
+> as history.
 
 ## Overview
 

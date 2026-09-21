@@ -427,7 +427,7 @@ This MUST hold at save time and again at every delivery, including for a rule ro
   - Any child failure MUST route by default with a `sandbox_failure` fault.
   - The child MUST return only the index of the matching rule and any faults, behind a protocol prefix. The parent MUST apply the action from its own configuration and grant, and MUST ignore an out-of-range index.
   - A webhook with no rules MUST NOT start a child.
-- **Egress control** *(Phase 2)*: enabling LLM triage is an explicit endpoint-owner decision naming a provider and model (via the runtime provider registry); full payload text is off by default and its enablement is recorded on the endpoint.
+- **Egress control** *(Phase 2)*: enabling LLM triage is an explicit endpoint-owner decision naming a provider and model; full payload text is off by default and its enablement is recorded on the endpoint.
 - **No privilege escalation.** Routing never changes trust mode, verification results, or ownership. Dropped events keep their audit record. A work order describes a semi-trusted task and grants no permission.
 - **Provenance over content.** Work-order eligibility MUST rest on switchboard-verified signatures and server-derived identities (forge logins, cairn's authenticated actor), evaluated against owner-set `$params`; producer-asserted tags, labels, and text never authorize work, and eligible work is still treated as potentially injected.
 - **Immutable scope.** Routing never edits an endpoint's scope ([SPEC-0007](../identity/spec.md)); there is no verb that widens one. A changed scope is a re-vended endpoint.

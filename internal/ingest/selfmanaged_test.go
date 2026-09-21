@@ -447,15 +447,11 @@ func TestVerifyGitea(t *testing.T) {
 	}
 }
 
-// summarizeSelfManagedTitle produces forge-aware titles for gitea payloads, reusing the SAME
-// summarizer the operator-configured /webhooks/gitea receiver uses so one delivery reads
-// identically on the board whichever path carried it.
+// summarizeSelfManagedTitle produces forge-aware titles for gitea payloads — the single gitea
+// summarizer since the operator-configured receivers were stripped (issue #181).
 func TestSummarizeSelfManagedTitleGitea(t *testing.T) {
 	pr := `{"action":"opened","pull_request":{"number":7,"title":"Fix login","user":{"login":"bob"}},"repository":{"full_name":"stump.wtf/switchboard"}}`
 	got := summarizeSelfManagedTitle("gitea", "pull_request", []byte(pr))
-	if want := summarizeGitea("pull_request", []byte(pr)); got != want {
-		t.Fatalf("gitea PR title = %q, want %q (parity with the operator-configured receiver)", got, want)
-	}
 	if want := "PR #7 opened in stump.wtf/switchboard — Fix login"; got != want {
 		t.Fatalf("gitea PR title = %q, want %q", got, want)
 	}
@@ -605,5 +601,45 @@ func TestSelfManagedGenericHonoursDeliveryID(t *testing.T) {
 	}
 	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 2 {
 		t.Fatalf("todos = %d, want 2", n)
+	}
+}
+
+// The Standard Webhooks spelling (Webhook-Id) is honoured like X-Delivery-Id, a different id is a
+// different delivery even under a body already seen (the id outranks the hash), and an id too long
+// to be a key is ignored so the body hash applies — a hostile sender cannot grow the dedup index
+// with the header, and two distinct bodies under one oversized id stay two todos.
+//
+// These two scenarios were only ever exercised through the operator-configured generic receiver
+// (TestGenericDeliveryIDDedup), which was removed in #181; they move here so the behaviour #285
+// added keeps its coverage on the one surface that still has it.
+// Governing: SPEC-0001 REQ "Idempotency Key Extraction and Dedup" (scenarios "Generic redelivery
+// with the same delivery id dedups", "Oversized delivery id falls back to the body hash").
+func TestSelfManagedGenericDeliveryIDSpellingsAndOversize(t *testing.T) {
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
+	st := store.New(pool)
+	seedWebhook(t, st, ctx, "generic", "token", "reviews", "route-generic-spellings", "")
+
+	post := func(body string, hdr map[string]string) string {
+		id, _ := accepted202(t, postSelfManaged(ing, "route-generic-spellings", body, hdr))
+		return id
+	}
+
+	same := `{"event":"deploy","at":"10:00:00"}`
+	first := post(same, map[string]string{"Webhook-Id": "dep-42"})
+	if again := post(`{"event":"deploy","at":"10:00:07"}`, map[string]string{"Webhook-Id": "dep-42"}); again != first {
+		t.Fatalf("redelivery with the same Webhook-Id must dedup despite a different body: %s vs %s", first, again)
+	}
+	if other := post(same, map[string]string{"Webhook-Id": "dep-43"}); other == first {
+		t.Fatal("a distinct delivery id must mint a distinct todo even under a body already seen")
+	}
+
+	huge := strings.Repeat("x", maxGenericDeliveryID+1)
+	a := post(`{"n":1}`, map[string]string{"X-Delivery-Id": huge})
+	b := post(`{"n":2}`, map[string]string{"X-Delivery-Id": huge})
+	if a == b {
+		t.Fatal("an oversized delivery id must fall back to the body hash, not collapse distinct bodies")
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 4 {
+		t.Fatalf("todos = %d, want 4", n)
 	}
 }

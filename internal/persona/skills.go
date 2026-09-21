@@ -44,8 +44,8 @@ type skillDefinition struct {
 // published card can never disagree.
 //
 // The entries are grounded in the real vended verb surface: the SPEC-0006 drain verbs
-// (list_todos/claim/complete), the SPEC-0007 delegation verb (create_for), the SPEC-0005 replay verb
-// (replay_webhook_event), and the SPEC-0017 registry read verb (list_providers).
+// (list_todos/claim/complete), the SPEC-0007 delegation verb (create_for), and the SPEC-0005 replay
+// verb (replay_webhook_event).
 // Governing: ADR-0009 (derivation rule), SPEC-0009 REQ "Skills Derived From Vended Capability".
 var skillCatalog = []skillDefinition{
 	{
@@ -74,15 +74,6 @@ var skillCatalog = []skillDefinition{
 			Tags:        []string{"webhook", "replay"},
 		},
 		requiredVerbs: []string{"replay_webhook_event"},
-	},
-	{
-		skill: Skill{
-			ID:          "inspect-providers",
-			Name:        "Inspect providers",
-			Description: "Enumerates the configured inbound providers and their trust modes (never their secrets).",
-			Tags:        []string{"providers", "read-only"},
-		},
-		requiredVerbs: []string{"list_providers"},
 	},
 }
 

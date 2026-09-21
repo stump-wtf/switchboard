@@ -2,10 +2,10 @@
 
 ## Context
 
-Switchboard is an MCP server (Go + PostgreSQL) that verifies inbound webhooks and queue messages and
+Switchboard is an MCP server (Go + PostgreSQL) that verifies inbound webhooks and
 turns them into a durable todo work-queue. Beyond turning events into todos, it exposes the raw event
-log to MCP clients so an agent can scan history, drill into a specific delivery, replay a stored
-payload to a local consumer, and enumerate configured providers. SPEC-0005 realizes
+log to MCP clients so an agent can scan history, drill into a specific delivery, and replay a stored
+payload to a local consumer. SPEC-0005 realizes
 [ADR-0005](../../../adrs/ADR-0005-mcp-tool-and-resource-contract.md), which fixed the shape of this
 contract.
 
@@ -25,8 +25,8 @@ This capability is the **shared, generic** event-history contract. The agent-fac
 
 ### Goals
 
-- Pin a stable four-tool contract (`list_webhook_events`, `get_webhook_event`,
-  `replay_webhook_event`, `list_providers`) plus a read-only recent-events resource.
+- Pin a stable three-tool contract (`list_webhook_events`, `get_webhook_event`,
+  `replay_webhook_event`) plus a read-only recent-events resource.
 - Keep agent context lean: compact summaries on `list`, full record only on `get`.
 - Make pagination correct under concurrent inserts via opaque cursors.
 - Carry trust metadata (`trust_mode`/`verified`/`verify_detail`) on every event so agents cannot
@@ -46,7 +46,7 @@ This capability is the **shared, generic** event-history contract. The agent-fac
 
 ### Tools + a read-only resource
 
-**Choice**: Expose four tools for query/detail/replay/providers, plus a read-only
+**Choice**: Expose three tools for query/detail/replay, plus a read-only
 `switchboard://events/recent` resource.
 **Rationale**: Tools naturally model parameterized filtering, detail lookup, and the side-effecting
 replay; a resource serves clients that model context as pull-able resources rather than tool calls.

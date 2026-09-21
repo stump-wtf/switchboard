@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded
 date: 2026-07-18
 decision-makers: Joe Stump
 extends: [ADR-0003, ADR-0014]
@@ -7,6 +7,13 @@ governs: [SPEC-0017]
 ---
 
 # ADR-0020: Providers Become Runtime-Configurable First-Class Objects with a Connect Wizard and Catalog
+
+> **Superseded 2026-09-21 (#181).** The provider registry was removed whole: the Providers view, the
+> connect wizard and catalog, provider lifecycle, env seeding, `SWITCHBOARD_OPERATOR_SUBJECTS`, the
+> `list_providers` MCP tool, and the `adapters` table (dropped by migration 0021). Self-managed
+> webhooks ([ADR-0012](ADR-0012-agents-self-manage-webhooks.md), `POST /webhooks/w/{token}`) are the
+> only ingestion surface: instance-wide ingestion belongs to no tenant, so it cannot name the endpoint
+> that owns the todos it mints ([ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md)).
 
 ## Context and Problem Statement
 

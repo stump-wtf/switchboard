@@ -16,10 +16,9 @@ switchboard needs and how to tell it worked.
 
 | | Requirement | Notes |
 |---|---|---|
-| **Database** | PostgreSQL | The schema uses `gen_random_uuid()` and identity columns, so **13 or newer**. Verified on 16; the project's own CI runs 18, and the Docker path below brings its own. Switchboard creates and migrates its own schema at startup — 22 migrations as of this writing. |
+| **Database** | PostgreSQL | The schema uses `gen_random_uuid()` and identity columns, so **13 or newer**. Verified on 16; the project's own CI runs 18, and the Docker path below brings its own. Switchboard creates and migrates its own schema at startup — 24 migrations as of this writing. |
 | **Identity provider** | Any OIDC provider | Needed for real logins, because every endpoint is vended by an accountable human. See [Sign-in](#sign-in-oidc). |
 | **TLS** | A reverse proxy | Switchboard speaks plain HTTP and expects something in front terminating TLS. |
-| **Redis** | Optional | Only for the queue pull-adapters. Leave `SWITCHBOARD_REDIS_URL` unset and they stay off. |
 
 There is no external secret manager, no message broker requirement, and no sidecar. One process, one
 database.
@@ -41,19 +40,12 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_GITHUB_CLIENT_SECRET` | — | |
 | `SWITCHBOARD_GITHUB_REDIRECT_URL` | `<base>/auth/callback` | Override only if your proxy rewrites paths. |
 | `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | — | Recommended. Encrypts webhook signing secrets at rest. 32 bytes, base64 or hex. |
-| `SWITCHBOARD_OPERATOR_SUBJECTS` | empty | Comma-separated OIDC subjects allowed to administer instance-wide providers. **Empty means nobody**, deliberately. |
-| `SWITCHBOARD_REDIS_URL` | — | Enables the Redis pull adapters. |
 | `SWITCHBOARD_DEV_LOGIN` | off | Unauthenticated local login. Never in production. |
 | `SWITCHBOARD_FRIENDING`, `SWITCHBOARD_PERSONAS`, `SWITCHBOARD_A2A`, `SWITCHBOARD_A2UI` | off | Advanced capabilities, hidden until switched on. |
 
-Two settings are easy to get wrong:
-
-- **`SWITCHBOARD_BASE_URL` decides whether session cookies are marked `Secure`.** Switchboard sets
-  that flag when the base URL starts with `https://`. Behind TLS, the base URL must say `https://`
-  or you serve session cookies without the flag.
-- **`SWITCHBOARD_OPERATOR_SUBJECTS` fails closed.** Unset, the instance-wide provider admin is
-  read-only for everyone. That is the safe direction, and it means your own subject has to go in
-  before you can connect instance-wide providers.
+One setting is easy to get wrong: **`SWITCHBOARD_BASE_URL` decides whether session cookies are
+marked `Secure`.** Switchboard sets that flag when the base URL starts with `https://`. Behind TLS,
+the base URL must say `https://` or you serve session cookies without the flag.
 
 Generate an encryption key with either of these:
 

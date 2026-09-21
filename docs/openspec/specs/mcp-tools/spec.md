@@ -8,7 +8,7 @@ implements: [ADR-0005]
 
 ## Overview
 
-Switchboard exposes its stored webhook/queue event log to MCP clients (Claude Code and other
+Switchboard exposes its stored webhook event log to MCP clients (Claude Code and other
 agents) as a set of tools plus a read-only resource, served by the official Go MCP SDK over
 streamable HTTP from the same process that serves the human web UI and the vended agent API
 ([ADR-0005](../../../adrs/ADR-0005-mcp-tool-and-resource-contract.md)). This capability pins the
@@ -17,8 +17,8 @@ semantics, the one side-effecting verb (`replay_webhook_event`), the tools-vs-re
 stable machine-readable error shape.
 
 This is the **shared, generic** event-history contract. It is deliberately read-oriented: an agent
-scans the event log, drills into individual events, replays a stored payload to a local consumer,
-and enumerates configured providers. The agent-facing *work* surface — claiming/completing todos and
+scans the event log, drills into individual events, and replays a stored payload to a local
+consumer. The agent-facing *work* surface — claiming/completing todos and
 self-managing ingestion sources — is a separate capability
 ([SPEC-0006](../agent-tools/spec.md)). Every event object returned here carries its trust metadata
 (`trust_mode`, `verified`, `verify_detail`) so an agent can never mistake an unverified event for a
@@ -28,22 +28,22 @@ signed, verified one.
 
 ### Requirement: Tool Surface and Naming
 
-The server MUST expose exactly four tools under the server name `switchboard`:
-`list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, and `list_providers`. Tool names
+The server MUST expose exactly three event-history tools under the server name `switchboard`:
+`list_webhook_events`, `get_webhook_event`, and `replay_webhook_event`. Tool names
 MUST be stable snake_case identifiers. Each tool MUST declare an input JSON Schema and MUST return
 SDK **structured output** validated against a declared output schema; tools MUST NOT return free-form
-text blobs in place of structured output. Of the four tools, only `replay_webhook_event` MAY produce
-a side effect; the other three MUST be read-only.
+text blobs in place of structured output. Of the three tools, only `replay_webhook_event` MAY produce
+a side effect; the other two MUST be read-only.
 
 #### Scenario: Tool discovery lists the contract set
 
 - **WHEN** an MCP client lists the tools offered by the `switchboard` server
-- **THEN** it receives `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, and
-  `list_providers`, each with a declared input schema and structured output schema
+- **THEN** it receives `list_webhook_events`, `get_webhook_event`, and `replay_webhook_event`,
+  each with a declared input schema and structured output schema
 
 #### Scenario: A read tool never mutates state
 
-- **WHEN** a client calls `list_webhook_events`, `get_webhook_event`, or `list_providers`
+- **WHEN** a client calls `list_webhook_events` or `get_webhook_event`
 - **THEN** no outbound request is made and no stored record is modified
 
 ### Requirement: Event Shape Parity and Trust Disclosure
@@ -122,19 +122,6 @@ failure), and `response_ms`.
 - **THEN** the tool MUST return `delivered: true` with the downstream `response_status`, rather than
   raising `replay_failed` (which is reserved for connection/transport failures)
 
-### Requirement: Provider Enumeration Without Secrets
-
-`list_providers` MUST return, for each configured provider, a `ProviderStatus` with `name`, `family`
-(`webhook` or `queue`), `trust_mode`, `enabled`, `secret_status` (`configured`, `missing`, or
-`none-by-design`), and the route `path` (HTTP providers) or `channel` (queue providers). It MUST NOT
-return any signing secret value. `secret_status` MUST report only the presence/absence classification,
-never the secret material itself.
-
-#### Scenario: Secret status without the secret
-
-- **WHEN** a client calls `list_providers` and a provider is a signed webhook with a configured secret
-- **THEN** the provider reports `secret_status: "configured"` and the response contains no secret value
-
 ### Requirement: Read-Only Recent-Events Resource
 
 The server MUST expose a read-only MCP resource at URI `switchboard://events/recent` with MIME type
@@ -175,7 +162,7 @@ and MUST NOT be world-readable.
 | Endpoint | Auth | Justification |
 |----------|------|---------------|
 | MCP streamable-HTTP mount (tool calls, resource reads) | Required | Event log + provider metadata are sensitive; agents authenticate before any read. |
-| `list_webhook_events` / `get_webhook_event` / `list_providers` / resource read | Required | Read tools still expose stored payloads and headers. |
+| `list_webhook_events` / `get_webhook_event` / resource read | Required | Read tools still expose stored payloads and headers. |
 | `replay_webhook_event` | Required | Side-effecting outbound POST; must be attributable. |
 | `/healthz` (server process liveness) | Public | Liveness probe only; returns `ok`/`db down`, no event data. |
 

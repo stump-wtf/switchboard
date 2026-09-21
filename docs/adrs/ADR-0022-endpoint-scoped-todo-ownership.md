@@ -145,6 +145,11 @@ secret and carry an owner endpoint. The provider registry
 ([ADR-0020](ADR-0020-runtime-provider-registry.md)) is unaffected — it sources signing
 secrets for self-managed signed webhooks, not for the retired operator receivers.
 
+> **Amended 2026-09-21 (#181).** The last sentence did not hold: the provider registry was
+> instance-wide too, and it was removed with the receivers. A self-managed webhook's signing secret
+> is minted at `create_webhook` and held on its own `endpoint_webhooks` row; nothing sources it
+> from a registry.
+
 ### Consequences
 
 * Good, because cross-tenant isolation is enforced at the data layer: no query path can

@@ -1,15 +1,20 @@
-// Package ingest turns inbound deliveries into verified events + durable todos (ADR-0003/007/014).
+// Package ingest turns inbound deliveries into verified events + durable todos (ADR-0003/007/012).
 //
-// The GitHub adapter is the reference `signed` webhook: HMAC-SHA256 over the raw body, verified in
-// constant time; a bad or missing signature is a 401 and the payload is NOT persisted (only a
-// redacted rejection is logged). Stripe and Slack follow the same contract with their provider
-// signature schemes plus a replay window over the signed timestamp (signed.go). A successful
-// delivery is recorded as an event and enqueued as a todo, then published to the hub so any
-// attached Channels session is nudged.
+// There is one ingestion surface: the per-endpoint self-managed webhook, POST /webhooks/w/{token}
+// (selfmanaged.go). The unguessable path token routes the delivery to the webhook an agent created
+// for its own endpoint, and the body is then verified per the webhook's source type — HMAC-SHA256
+// over the raw body in constant time for GitHub and Gitea, Stripe's and Slack's signature schemes
+// plus a replay window over the signed timestamp (verify.go), or a shared token for generic
+// senders. A bad or missing signature is a 401 and the payload is NOT persisted (only a redacted
+// rejection is logged). A successful delivery is recorded as an event and enqueued as a todo owned
+// by the webhook's endpoint, then published to the hub so any attached Channels session is nudged.
+//
+// @joestump 09/21/2026 - Rewrote after the instance-wide receivers
+// (/webhooks/{github,gitea,stripe,slack,generic/*}) were removed (#181): they belonged to no tenant,
+// so they could not name the endpoint that owns their todos (ADR-0022).
 package ingest
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -66,24 +71,14 @@ func sensitiveHeaderName(name string) bool {
 
 // Ingest holds the ingestion dependencies.
 type Ingest struct {
-	store        *store.Store
-	hub          *Hub
-	log          *slog.Logger
-	githubSecret string
-	githubQueue  string
-	giteaSecret  string
-	giteaQueue   string
-	stripeSecret string
-	stripeQueue  string
-	slackSecret  string
-	slackQueue   string
-	generic      map[string]GenericProvider // token/open providers by name (generic.go)
-	// legacyEndpointID owns todos minted by the operator-configured receivers. INTERIM — see
-	// Config.LegacyEndpointID; removed with those receivers in PR 2.
-	legacyEndpointID string
-	tolerance        time.Duration    // replay window for timestamped signatures
-	now              func() time.Time // injectable clock for replay-window tests
-	devLogin         bool
+	store *store.Store
+	hub   *Hub
+	log   *slog.Logger
+	// tolerance/now: replay window + injectable clock for signed-webhook verification, kept from
+	// the shared receivers because self-managed signed webhooks verify the same way.
+	tolerance time.Duration
+	now       func() time.Time
+	devLogin  bool
 	// instrument observes in-flight deliveries for the board's ephemeral received lane
 	// (instrument.go). Nil = no observation. Governing: SPEC-0015 REQ "Patch Panel Board".
 	instrument Instrument
@@ -93,68 +88,16 @@ type Ingest struct {
 	router routing.Router
 }
 
-// Config carries the per-provider ingestion settings (secrets + target queues).
+// Config carries the ingestion settings that are not per-tenant. Nothing else is configured here:
+// the only ingestion surface is the per-endpoint self-managed webhook (ADR-0012), which carries its
+// own owner, secret and target queue.
 type Config struct {
-	GitHubSecret string
-	GitHubQueue  string
-	GiteaSecret  string
-	GiteaQueue   string
-	StripeSecret string
-	StripeQueue  string
-	SlackSecret  string
-	SlackQueue   string
-	// Generic maps provider name → token/open configuration for the generic endpoint
-	// (POST /webhooks/generic/{name}); build it with ParseGenericProviders so every entry carries
-	// an explicit, validated trust mode. Governing: SPEC-0001 REQ "Explicit Open Trust Mode".
-	Generic  map[string]GenericProvider
 	DevLogin bool
-	// LegacyEndpointID is the operator-designated endpoint that owns every todo minted by the
-	// OPERATOR-CONFIGURED receivers — /webhooks/github, /webhooks/stripe, /webhooks/slack,
-	// /webhooks/generic/{name} — and by the dev helper when it names no endpoint of its own.
-	//
-	// INTERIM, REMOVED IN PR 2. Those receivers predate ADR-0022: they are configured by an
-	// operator via environment/registry, not vended to an agent, so nothing in their configuration
-	// names a tenant. todos.endpoint_id is now NOT NULL with no sentinel (ADR-0022 decision 1), so
-	// they have to name one, and there is no honest way to DERIVE it: resolving an endpoint from
-	// the target queue would reinstate exactly the shared-queue-string collision this whole change
-	// exists to remove. So the operator states it explicitly, once
-	// (SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID), and every legacy delivery lands in that one
-	// operator-owned tenant. Unset means those receivers are not configured for endpoint-scoped
-	// todos and answer 503 rather than 500-ing on a not-null violation — see legacyEndpoint.
-	//
-	// PR 2 retires these receivers in favour of the self-managed, endpoint-vended path
-	// (/webhooks/w/{token}), which carries its own owner, and resolves the ADR-0020 provider-
-	// registry question. This field dies with them.
-	LegacyEndpointID string
 }
 
-// Normalized returns the config with defaults applied: queue names (github→reviews,
-// stripe→stripe, slack→slack, generic→provider name) and a non-nil Generic map. New applies it
-// internally; the server's boot seed (SPEC-0017 REQ "Environment Config Import") uses it too, so
-// the seeded registry rows carry exactly the effective queues the receivers would have used.
+// Normalized returns the config with defaults applied. Nothing to default today; kept as the
+// seam New applies so future non-secret knobs have a home.
 func (c Config) Normalized() Config {
-	if c.GitHubQueue == "" {
-		c.GitHubQueue = "reviews"
-	}
-	if c.GiteaQueue == "" {
-		c.GiteaQueue = "gitea"
-	}
-	if c.StripeQueue == "" {
-		c.StripeQueue = "stripe"
-	}
-	if c.SlackQueue == "" {
-		c.SlackQueue = "slack"
-	}
-	if c.Generic == nil {
-		c.Generic = map[string]GenericProvider{}
-	}
-	for name, p := range c.Generic {
-		// ParseGenericProviders already defaults the queue; re-apply for hand-built maps.
-		if p.Queue == "" {
-			p.Queue = name
-			c.Generic[name] = p
-		}
-	}
 	return c
 }
 
@@ -163,14 +106,8 @@ func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 	cfg = cfg.Normalized()
 	ing := &Ingest{
 		store: st, hub: hub, log: log,
-		githubSecret: cfg.GitHubSecret, githubQueue: cfg.GitHubQueue,
-		giteaSecret: cfg.GiteaSecret, giteaQueue: cfg.GiteaQueue,
-		stripeSecret: cfg.StripeSecret, stripeQueue: cfg.StripeQueue,
-		slackSecret: cfg.SlackSecret, slackQueue: cfg.SlackQueue,
-		generic:   cfg.Generic,
 		tolerance: defaultReplayTolerance, now: time.Now,
-		devLogin:         cfg.DevLogin,
-		legacyEndpointID: cfg.LegacyEndpointID,
+		devLogin: cfg.DevLogin,
 	}
 	if sb, err := routing.NewSandbox(""); err == nil {
 		ing.router = sb
@@ -178,31 +115,6 @@ func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 		log.Error("routing sandbox unavailable; webhooks with rules will route by default", "err", err)
 	}
 	return ing
-}
-
-// legacyEndpoint resolves the owning endpoint for an OPERATOR-CONFIGURED receiver, writing the
-// rejection itself and returning false when none is configured.
-//
-// INTERIM, REMOVED IN PR 2 (see Config.LegacyEndpointID). Every todo is now owned by exactly one
-// endpoint (ADR-0022; todos.endpoint_id NOT NULL), but the operator-configured receivers carry no
-// vended endpoint of their own. Rather than derive an owner — which would mean picking an endpoint
-// by queue name and re-introducing the very cross-tenant collision ADR-0022 removes — an
-// unconfigured receiver refuses the delivery.
-//
-// 503, not 500: this is a server-side configuration gap, the delivery is well-formed, and 503 is
-// what every other "receiver exists but is not configured to persist" case in this package already
-// answers (signedSecret's missing-secret path, the self-managed missing-secret path, the empty
-// route-target set). Providers retry a 503, so a delivery is deferred rather than lost, and
-// NOTHING is persisted — the same fail-closed posture as a rejected signature.
-// Governing: ADR-0022, SPEC-0001 REQ "Error Handling Standards".
-func (i *Ingest) legacyEndpoint(w http.ResponseWriter, provider string) (string, bool) {
-	if i.legacyEndpointID == "" {
-		i.log.Error("operator-configured receiver has no owning endpoint; refusing delivery",
-			"provider", provider, "hint", "set SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID")
-		writeErr(w, http.StatusServiceUnavailable, "receiver not configured")
-		return "", false
-	}
-	return i.legacyEndpointID, true
 }
 
 // readBody drains the raw request body under the 5 MiB cap, writing the rejection itself on
@@ -228,123 +140,6 @@ func (i *Ingest) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool)
 		return nil, false
 	}
 	return body, true
-}
-
-// resolveRegistry is the dispatch-path provider registry read (ADR-0020): the provider's registry
-// row plus its decrypted held secret, resolved fresh (through the store's short cache) on every
-// request so registry changes bind without a restart. A store-less Ingest — the nil-store rejection
-// tests, which prove no persist path runs — has no registry and reports ErrNotFound, exactly like a
-// missing row. Governing: SPEC-0017 REQ "Runtime Provider Registry".
-func (i *Ingest) resolveRegistry(ctx context.Context, name string) (store.Adapter, string, error) {
-	if i.store == nil {
-		return store.Adapter{}, "", store.ErrNotFound
-	}
-	return i.store.ResolveProvider(ctx, name)
-}
-
-// signedSecret resolves a signed adapter's HMAC secret registry-or-env at request time: when the
-// provider's registry row exists it is authoritative — its enabled flag gates the route, and its
-// (envelope-decrypted) secret wins over env config when one is held (SPEC-0017 REQ "Environment
-// Config Import": the registry row wins). ErrNotFound falls back to the env secret alone, which
-// after the boot seed covers only store-less test wiring and the pre-seed window; any other
-// registry failure fails CLOSED (500), never open on stale trust. On a false return the rejection
-// response has already been written. Governing: ADR-0020, SPEC-0017 REQ "Runtime Provider
-// Registry"; SPEC-0001 verification semantics themselves are untouched.
-func (i *Ingest) signedSecret(w http.ResponseWriter, r *http.Request, name, envSecret string) (string, bool) {
-	secret := envSecret
-	reg, regSecret, err := i.resolveRegistry(r.Context(), name)
-	switch {
-	case err == nil && reg.Family == "webhook" && reg.TrustMode == "signed":
-		if !reg.Enabled {
-			// Disabled stops the line; nothing is persisted (SPEC-0017 REQ "Provider Lifecycle").
-			i.log.Warn("signed webhook rejected: provider disabled", "provider", name, "remote", clientIP(r))
-			writeErr(w, http.StatusForbidden, "provider disabled")
-			return "", false
-		}
-		if regSecret != "" {
-			secret = regSecret
-		}
-	case err == nil:
-		// A registry row of some other shape (name collision with a generic/queue provider): this
-		// signed route is not what the row configures — keep the env behavior for the route.
-	case errors.Is(err, store.ErrNotFound):
-		// No registry row: env config alone decides, as before the registry existed.
-	default:
-		i.log.Error("signed provider registry lookup", "provider", name, "err", err)
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return "", false
-	}
-	if secret == "" {
-		// Governing: SPEC-0001 scenario "Signature secret not configured" — reject without
-		// comparing any signature.
-		writeErr(w, http.StatusServiceUnavailable, name+" adapter not configured")
-		return "", false
-	}
-	return secret, true
-}
-
-// GitHub is the signed GitHub webhook receiver: POST /webhooks/github.
-func (i *Ingest) GitHub(w http.ResponseWriter, r *http.Request) {
-	body, ok := i.readBody(w, r)
-	if !ok {
-		return
-	}
-	event := r.Header.Get("X-GitHub-Event")
-	// Idempotency key from the GitHub delivery GUID; body-hash fallback if the header is absent so a
-	// redelivery can never bypass dedup with a NULL key (SPEC-0001 REQ "Idempotency Key Extraction
-	// and Dedup").
-	key := idempotencyKey(r.Header.Get("X-GitHub-Delivery"), body)
-	// The line is in flight: surface it on the board's ephemeral received lane (SPEC-0015).
-	i.observeReceived("github", event, "signed", key)
-	// Secret registry-or-env at request time (ADR-0020); verification itself is unchanged.
-	secret, ok := i.signedSecret(w, r, "github", i.githubSecret)
-	if !ok {
-		i.observeRejected("github", event, "signed", key, "provider unavailable")
-		return
-	}
-	sig := r.Header.Get("X-Hub-Signature-256")
-	if !verifyGitHub(secret, body, sig) {
-		// Reject without persisting; log a redacted line (never the signature value).
-		i.log.Warn("github signature rejected", "delivery", r.Header.Get("X-GitHub-Delivery"),
-			"event", r.Header.Get("X-GitHub-Event"), "remote", clientIP(r))
-		i.observeRejected("github", event, "signed", key, "signature verification failed")
-		writeErr(w, http.StatusUnauthorized, "signature verification failed")
-		return
-	}
-	// INTERIM (PR 2): this operator-configured receiver has no vended endpoint of its own, so the
-	// todo is owned by the operator-designated legacy endpoint. Unconfigured → 503, nothing
-	// persisted (legacyEndpoint). ADR-0022.
-	endpointID, ok := i.legacyEndpoint(w, "github")
-	if !ok {
-		i.observeRejected("github", event, "signed", key, "receiver not configured")
-		return
-	}
-	// Governing: SPEC-0002/0004 REQ atomic ingestion — persist the event and enqueue its todo in a
-	// single transaction so a CreateTodo failure can never leave an orphaned event row behind.
-	_, td, created, err := i.store.CreateEventTodo(r.Context(),
-		store.EventInput{
-			Source: "github", Family: "webhook", EventType: event, ExternalID: key,
-			TrustMode: "signed", Verified: true, VerifyDetail: "hmac-sha256 ok",
-			ContentType: r.Header.Get("Content-Type"), Headers: sanitizeHeaders(r.Header),
-			Payload: body, SourceIP: clientIP(r),
-		},
-		store.CreateTodoParams{
-			EndpointID: endpointID,
-			Queue:      i.githubQueue, Source: "github", Kind: event, Title: summarizeGitHub(event, body),
-			Payload: body, IdempotencyKey: key,
-		})
-	if err != nil {
-		i.log.Error("ingest github delivery", "err", err)
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if created {
-		i.hub.Publish(td)
-	} else {
-		// Idempotent redelivery: resolve the in-flight card without a lane advance (SPEC-0015).
-		i.observeDeduped("github", event, "signed", key)
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"id": td.ID, "queue": td.Queue, "verified": true})
 }
 
 // DevCreateTodo creates a todo directly, for exercising the vend → agent drain loop (list_todos /
@@ -376,18 +171,13 @@ func (i *Ingest) DevCreateTodo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Every todo is owned by exactly one endpoint (ADR-0022). The dev helper exists to exercise the
-	// vend → agent drain loop, so the caller has just vended an endpoint and can name it: an
-	// explicit endpoint_id in the body wins. It falls back to the operator-designated legacy
-	// endpoint so an existing dev flow that names none keeps working. INTERIM on the fallback only
-	// — PR 2 removes Config.LegacyEndpointID and endpoint_id becomes required here.
-	endpointID := in.EndpointID
-	if endpointID == "" {
-		endpointID = i.legacyEndpointID
-	}
-	if endpointID == "" {
+	// vend → agent drain loop, so the caller has just vended an endpoint and can name it:
+	// endpoint_id is required — there is no instance-wide owner to fall back to.
+	if in.EndpointID == "" {
 		writeErr(w, http.StatusBadRequest, "endpoint_id is required")
 		return
 	}
+	endpointID := in.EndpointID
 	td, created, err := i.store.CreateTodo(r.Context(), store.CreateTodoParams{
 		EndpointID: endpointID,
 		Queue:      in.Queue, Source: "dev", Kind: in.Kind, Title: in.Title, Payload: in.Payload,

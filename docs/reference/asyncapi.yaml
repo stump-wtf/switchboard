@@ -58,8 +58,8 @@ operations:
     action: send
     title: Broadcast a newly accepted event
     description: |
-      Emitted once per accepted event (from ANY ingestion path — signed HTTP, generic HTTP, or the
-      Redis consumer) immediately after it is persisted. The log screen prepends a row; the
+      Emitted once per accepted event (from any self-managed webhook, signed or `generic`)
+      immediately after it is persisted. The log screen prepends a row; the
       dashboard updates its per-provider counters.
     channel:
       $ref: '#/channels/events'
@@ -82,7 +82,7 @@ components:
     EventReceived:
       name: event-received
       title: New event accepted
-      summary: A webhook/queue event was accepted and persisted.
+      summary: A webhook event was accepted and persisted.
       contentType: application/json
       x-sse-event-name: event-received
       payload:
@@ -100,7 +100,7 @@ components:
         - name: dockerhubUnverified
           payload:
             id: 4214
-            provider: 'generic:dockerhub'
+            provider: generic
             event_type: null
             trust_mode: token
             verified: false
@@ -126,22 +126,17 @@ components:
                 enabled: true
                 recent_count: 12
                 last_event_at: '2026-07-05T18:03:21.442Z'
-              - name: 'generic:dockerhub'
+              - name: generic
                 trust_mode: token
                 enabled: true
                 recent_count: 1
                 last_event_at: '2026-07-05T18:04:02.101Z'
-              - name: 'redis:deploys'
-                trust_mode: queue
-                enabled: true
-                recent_count: 3
-                last_event_at: '2026-07-05T17:58:40.000Z'
 
   schemas:
     TrustMode:
       type: string
-      description: How the event's authenticity is established (ADR-0003).
-      enum: [signed, token, open, queue]
+      description: How the event's authenticity is established (ADR-0003). Identical to openapi.yaml.
+      enum: [signed, token, operator]
 
     EventSummary:
       type: object

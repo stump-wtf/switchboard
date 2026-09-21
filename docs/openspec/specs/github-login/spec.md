@@ -122,7 +122,7 @@ database. GitHub API calls in steady state MUST be zero.
 | GET | /auth/callback | Public | OAuth callback for either provider; state-validated |
 | POST | /auth/logout | Required | Unchanged |
 | GET | / (operator board) | Required | GitHub sessions allowed |
-| GET/POST | todo queue, providers view, webhook inspection | Required | GitHub sessions allowed |
+| GET/POST | todo queue, webhook inspection | Required | GitHub sessions allowed |
 | POST | friending approve/reject (consent) | Required + **passkey issuer** | GitHub sessions rejected 403 per ADR-0026 |
 | POST | any future capability-minting action | Required + **passkey issuer** | Same gate by policy |
 

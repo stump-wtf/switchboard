@@ -5,14 +5,14 @@
 Switchboard is a self-hosted, multi-tenant service: one deployment serves many humans and many agent
 personas. It verifies inbound events, turns them into a durable todo work-queue that competing agent
 workers drain, and holds the relational metadata behind that (humans, agents, vended endpoints,
-adapters, settings) plus an event history the MCP read tools and web UI expose. This capability
+settings) plus an event history the MCP read tools and web UI expose. This capability
 (SPEC-0004) is the datastore layer that all of that sits on. It realizes
 [ADR-0002](../../../adrs/ADR-0002-postgres-persistence-and-retention.md).
 
 The decisive constraint is that the hot path is a **concurrent job queue**, not an append-mostly log:
 claim → lease → complete/retry with competing consumers, at-least-once + idempotent dedup, and a
-store-then-ack coupling to pull ingestion (a pull adapter must persist a todo before it acks its
-source). That shape drives every choice below and is what
+store-then-ack coupling to ingestion (a webhook delivery is answered 202 only after its event and
+todos commit). That shape drives every choice below and is what
 [SPEC-0003 (todo-queue)](../todo-queue/spec.md) depends on.
 
 The reference implementation already exists: `internal/db/db.go` (pool + migrator),
@@ -58,7 +58,7 @@ Postgres.
 - Dedicated broker (Kafka/Temporal/etc.): splits the source of truth from the durable todo ADR-0007
   made authoritative and re-implements lease/dead-letter/dedup that Postgres gives transactionally.
 - Redis as ledger: conflates ingestion transport with storage and splits the trust/durability
-  boundary; Redis stays a pull-ingestion transport only.
+  boundary.
 
 ### Raw SQL over pgx, not a heavy ORM
 
@@ -90,13 +90,13 @@ range partitioning of `events` can later turn pruning into a near-free `DROP PAR
 ## Architecture
 
 The persistence layer is a pool + migrator (`internal/db`) plus a typed data-access module
-(`internal/store`) over one PostgreSQL database. Producers (ingestion adapters, agents, switchboard
+(`internal/store`) over one PostgreSQL database. Producers (the webhook receiver, agents, switchboard
 itself) write events and todos; agent workers claim and complete todos; a background reaper +
 pruner maintain crash-safety and bounded growth; MCP read tools and the web UI read.
 
 ```mermaid
 flowchart LR
-  ingest["Push + pull adapters<br/>(ADR-0014)"] -->|"INSERT event + todo<br/>ON CONFLICT dedup"| db[("PostgreSQL")]
+  ingest["Webhook receiver<br/>(ADR-0012)"] -->|"INSERT event + todo<br/>ON CONFLICT dedup"| db[("PostgreSQL")]
   workers["Agent workers<br/>(many personas)"] -->|"claim: FOR UPDATE SKIP LOCKED"| db
   db -->|"RETURNING todo"| workers
   reaper[["Lease reaper +<br/>retention prune"]] --> db
@@ -167,13 +167,6 @@ erDiagram
     int max_attempts
     bigint event_id FK
     timestamptz created_at
-  }
-  adapters {
-    text name PK
-    text family
-    text trust_mode
-    boolean enabled
-    jsonb config
   }
   settings {
     text key PK

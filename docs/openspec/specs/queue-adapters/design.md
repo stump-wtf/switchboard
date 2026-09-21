@@ -1,5 +1,8 @@
 # Design: Queue Adapters (Pull Ingestion)
 
+> **Retired 2026-09-21 (#181).** Pull ingestion was removed; see the note on
+> [SPEC-0002](spec.md). Kept as history.
+
 ## Context
 
 Switchboard ingests external deliveries and turns them into durable todos. This design realizes the

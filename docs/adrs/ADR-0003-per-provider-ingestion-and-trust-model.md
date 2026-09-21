@@ -7,6 +7,14 @@ related: [ADR-0000, ADR-0002, ADR-0005, ADR-0014]
 
 # ADR-0003: Ingestion Provider Types & Trust Model (webhooks vs. queues)
 
+> **Amended 2026-09-21 (#181).** The per-provider verification model below is unchanged, but it is now
+> reached only through self-managed webhooks ([ADR-0012](ADR-0012-agents-self-manage-webhooks.md),
+> `POST /webhooks/w/{token}`), where the source type fixes the trust mode (`signed` or `token`) and
+> switchboard mints the secret. The operator-configured receiver routes (`/webhooks/{provider}`,
+> `/webhooks/generic/{name}`), their env-configured secrets and tokens, and the `queue` family
+> ([ADR-0014](ADR-0014-ingestion-adapters-push-pull.md), superseded) are gone, so no ingestion path
+> produces `open` or `queue` events.
+
 ## Context and Problem Statement
 
 `switchboard` ingests events through **two provider families**, and they have fundamentally different security stories:

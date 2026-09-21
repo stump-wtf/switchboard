@@ -1,11 +1,19 @@
 ---
-status: implemented
+status: deprecated
 date: 2026-07-06
 implements: [ADR-0014, ADR-0003]
 requires: [SPEC-0001]
 ---
 
 # SPEC-0002: Queue Adapters (Pull Ingestion)
+
+> **Retired 2026-09-21 (#181).** Pull ingestion was removed whole: the adapter interface and runner,
+> the Redis reference adapter, `SWITCHBOARD_REDIS_URL`, and the `adapters` table (dropped by migration
+> 0021). No code implements these requirements. Self-managed webhooks
+> ([ADR-0012](../../../adrs/ADR-0012-agents-self-manage-webhooks.md), `POST /webhooks/w/{token}`,
+> [SPEC-0001](../webhook-ingestion/spec.md)) are the only ingestion surface: instance-wide ingestion
+> belongs to no tenant, so it cannot name the endpoint that owns the todos it mints (ADR-0022). Kept
+> as history.
 
 ## Overview
 

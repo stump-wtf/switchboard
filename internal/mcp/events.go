@@ -1,7 +1,7 @@
 package mcp
 
 // This file is the SPEC-0005 event-history tool registry served over MCP: the four-tool contract
-// `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, and `list_providers`, each
+// `list_webhook_events`, `get_webhook_event`, and `replay_webhook_event`, each
 // with an SDK-declared input schema and structured output schema. Only `replay_webhook_event` may
 // ever side-effect; the other three are strictly read-only. Like the SPEC-0006 agent verbs
 // (tools.go), each tool is registered only when its name is in the vended endpoint's verb
@@ -184,44 +184,6 @@ type replayWebhookEventOut struct {
 	ResponseMs     int64  `json:"response_ms" jsonschema:"elapsed milliseconds for the replay POST"`
 }
 
-// ProviderStatus is the SPEC-0005 provider enumeration row: presence/absence classification only,
-// never secret material. Governing: SPEC-0005 REQ "Provider Enumeration Without Secrets".
-type ProviderStatus struct {
-	Name         string `json:"name" jsonschema:"provider name"`
-	Family       string `json:"family" jsonschema:"provider family: webhook or queue"`
-	TrustMode    string `json:"trust_mode" jsonschema:"trust mode: signed, token, open, or queue"`
-	Enabled      bool   `json:"enabled" jsonschema:"whether the provider currently accepts deliveries"`
-	SecretStatus string `json:"secret_status" jsonschema:"secret presence classification: configured, missing, or none-by-design"`
-	Path         string `json:"path,omitempty" jsonschema:"HTTP route path (webhook providers)"`
-	Channel      string `json:"channel,omitempty" jsonschema:"broker channel (queue providers)"`
-}
-
-type listProvidersIn struct{}
-
-type listProvidersOut struct {
-	Providers []ProviderStatus `json:"providers" jsonschema:"configured inbound providers, without any secret values"`
-}
-
-// SetProviders installs the configured-provider snapshot served by list_providers. Called at
-// wiring time (internal/server) with statuses projected from the ingestion config; safe to call
-// concurrently with live sessions (atomic swap, read-only consumers).
-func (h *Handler) SetProviders(ps []ProviderStatus) {
-	h.providers.Store(&ps)
-}
-
-// SetProviderSource installs a LIVE provider enumeration source consulted on each list_providers
-// call — the registry-backed wiring (internal/server) uses it so providers created at runtime
-// enumerate without a restart, with the SPEC-0005 output shape unchanged. Takes precedence over
-// any SetProviders snapshot; passing nil reverts to the snapshot. Safe to call concurrently with
-// live sessions (atomic swap). Governing: ADR-0020, SPEC-0017 REQ "Runtime Provider Registry".
-func (h *Handler) SetProviderSource(fn func(context.Context) []ProviderStatus) {
-	if fn == nil {
-		h.providerSource.Store(nil)
-		return
-	}
-	h.providerSource.Store(&fn)
-}
-
 // registerEventTools installs the endpoint's allowlisted SPEC-0005 event-history tools on the
 // per-session server, mirroring the SPEC-0006 verb registry: tools/list advertises exactly the
 // allowlist. Governing: SPEC-0005 REQ "Tool Surface and Naming", SPEC-0014 REQ "Agent Tool
@@ -244,12 +206,6 @@ func (h *Handler) registerEventTools(srv *sdk.Server, ep store.AuthEndpoint) {
 			Name:        "replay_webhook_event",
 			Description: "Re-POST a stored event's raw payload to a target URL. The only side-effecting tool.",
 		}, h.replayWebhookEventTool(ep))
-	}
-	if hasScope(ep.ScopeVerbs, "list_providers") {
-		sdk.AddTool(srv, &sdk.Tool{
-			Name:        "list_providers",
-			Description: "Enumerate configured inbound providers and their trust posture. Never returns secret values. Read-only.",
-		}, h.listProvidersTool(ep))
 	}
 }
 
@@ -374,22 +330,6 @@ func (h *Handler) replayWebhookEventTool(ep store.AuthEndpoint) sdk.ToolHandlerF
 		out, err := h.replay(ctx, ep.Slug, ep.ID, in.ID, toEventDetailOut(d), in.TargetURL)
 		if err != nil {
 			return nil, replayWebhookEventOut{}, err
-		}
-		return nil, out, nil
-	}
-}
-
-func (h *Handler) listProvidersTool(_ store.AuthEndpoint) sdk.ToolHandlerFor[listProvidersIn, listProvidersOut] {
-	return func(ctx context.Context, _ *sdk.CallToolRequest, _ listProvidersIn) (*sdk.CallToolResult, listProvidersOut, error) {
-		out := listProvidersOut{Providers: []ProviderStatus{}}
-		// Registry-backed source first (resolved per call, so runtime provider changes are visible
-		// without restart — ADR-0020); the wiring-time snapshot is the legacy/test fallback.
-		if src := h.providerSource.Load(); src != nil {
-			out.Providers = append(out.Providers, (*src)(ctx)...)
-			return nil, out, nil
-		}
-		if ps := h.providers.Load(); ps != nil {
-			out.Providers = append(out.Providers, *ps...)
 		}
 		return nil, out, nil
 	}

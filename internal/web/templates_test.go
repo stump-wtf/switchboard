@@ -369,7 +369,7 @@ func TestVendVerbOptionsEnumerateAgentToolsSurface(t *testing.T) {
 		}
 	}
 	for _, v := range []string{"create_webhook", "list_webhooks", "rotate_webhook", "delete_webhook",
-		"list_webhook_events", "get_webhook_event", "replay_webhook_event", "list_providers"} {
+		"list_webhook_events", "get_webhook_event", "replay_webhook_event"} {
 		checked, ok := byName[v]
 		if !ok {
 			t.Errorf("verb %q from the agent-tools surface must be offered", v)

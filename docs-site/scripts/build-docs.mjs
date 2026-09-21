@@ -128,7 +128,7 @@ writeFileSync(
 
 // ---- user guides (docs/guides/NN-slug.md) -> guides/ ----
 // User-facing usage docs. Numeric filename prefix orders the sidebar and the emitted filename drops
-// it, so routes are clean (/guides/overview, /guides/connect-a-provider, …). Guides are authored with
+// it, so routes are clean (/guides/overview, /guides/vend-an-endpoint, …). Guides are authored with
 // site-absolute links already; the standard rewrites run anyway for safety. format: md (CommonMark)
 // keeps machine-ish `<host>`/`<slug>` tokens (always inside code spans) harmless.
 for (const f of guideFiles) {

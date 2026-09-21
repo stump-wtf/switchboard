@@ -1,10 +1,9 @@
 # Charm-Web Screens
 
-Governing: [SPEC-0015](../openspec/specs/operator-board-v2/spec.md) (six-view IA),
-[SPEC-0016](../openspec/specs/mcp-oauth/spec.md) (consent surface),
-[SPEC-0017](../openspec/specs/providers-view/spec.md) (providers backend).
+Governing: [SPEC-0015](../openspec/specs/operator-board-v2/spec.md) (view IA),
+[SPEC-0016](../openspec/specs/mcp-oauth/spec.md) (consent surface).
 
-Six views — **board · todos · endpoints · personas · friends · providers** — under one shell
+Five views — **board · todos · endpoints · personas · friends** — under one shell
 (top bar, horizontal nav, key-hint footer), plus login and the full-page wizards.
 
 ## board — the live patch panel
@@ -38,12 +37,6 @@ create/edit wizard's final step live-previews the A2A Agent Card from unsaved fo
 revoke). The approval flow presents "approving **is** the vend" and surfaces the minted endpoint
 explicitly.
 
-## providers — inbound lines
-
-The sixth IA entry (SPEC-0015 "Providers joins the IA"): the runtime provider registry
-(ADR-0020/SPEC-0017) backs it; until that lands the view renders the shared chrome with an
-explanatory empty state.
-
 ## login
 
 Same language, public: wordmark, tagline, a single glowing primary action (Pocket ID), the
@@ -51,6 +44,6 @@ dev-login fallback, and the theme control.
 
 ## Wizards (interaction pattern)
 
-Create/vend/connect flows are full pages, not overlays: server-side step state, back navigation
+Create/vend flows are full pages, not overlays: server-side step state, back navigation
 preserving entered values, a no-JS fallback completing the same flow, and explicit confirmation
 before destructive steps (vend, revoke).

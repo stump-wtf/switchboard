@@ -34,8 +34,6 @@ func TestDeriveSkills_AllOfSemantics(t *testing.T) {
 			[]string{"create_for"}, []string{"delegate-work"}},
 		{"replay advertises replay-events",
 			[]string{"replay_webhook_event"}, []string{"replay-events"}},
-		{"list_providers advertises inspect-providers",
-			[]string{"list_providers"}, []string{"inspect-providers"}},
 		{"unrelated verbs advertise nothing",
 			[]string{"heartbeat", "fail", "list_webhook_events", "get_webhook_event"}, []string{}},
 	}

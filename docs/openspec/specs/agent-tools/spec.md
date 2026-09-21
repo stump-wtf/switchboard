@@ -285,8 +285,8 @@ producer; it MUST NOT return the secret on any later call (e.g. `list_webhooks`)
 signed-type webhook MUST be verified exactly as
 [SPEC-0003](../../../adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) mandates: switchboard
 recomputes the provider HMAC-SHA256 over the raw body against the held secret in constant time, and on
-a valid signature persists the delivery as `verified=true` under `trust_mode=signed` — identical to a
-human-configured signed webhook — while a missing or invalid signature is rejected and nothing is
+a valid signature persists the delivery as `verified=true` under `trust_mode=signed`, while a
+missing or invalid signature is rejected and nothing is
 persisted. Switchboard — not the agent — owns the trust mode: the agent MUST NOT be able to downgrade
 the trust mode, disable signature checks, or otherwise alter how a delivery is verified, and
 switchboard MUST NOT report a delivery as `verified` unless it verified the body signature per

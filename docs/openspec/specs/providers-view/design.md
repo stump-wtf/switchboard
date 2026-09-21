@@ -1,5 +1,8 @@
 # Design: Providers View, Runtime Registry, and Connect Wizard
 
+> **Retired 2026-09-21 (#181).** The provider registry was removed; see the note on
+> [SPEC-0017](spec.md). Kept as history.
+
 ## Context
 
 Providers today are boot-time plumbing: signed adapters compiled in and configured by env, generic

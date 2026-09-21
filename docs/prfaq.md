@@ -4,17 +4,17 @@
 
 ## Press Release
 
-**Switchboard turns inbound webhooks and queue messages into a durable, verified work queue that AI agents drain safely — even when you're away from the terminal.**
+**Switchboard turns inbound webhooks into a durable, verified work queue that AI agents drain safely — even when you're away from the terminal.**
 
 Developers and homelab operators increasingly want their AI agents to react to things that happen in the real world: a CI run fails, a deploy finishes, a payment lands, a monitoring alert fires, someone posts in chat. The common hack is to point a webhook straight at an LLM or a script. That approach is fragile. Events arrive once and are gone. Nobody verifies who sent them. There's no retry when the agent crashes mid-task, no dedup when a provider sends the same webhook twice, and no way to scope what a given agent is actually allowed to touch. A read-once message fired at an LLM is not a foundation you can trust with production events.
 
-Switchboard is a self-hosted MCP server, written in Go and backed by PostgreSQL, that fixes this by treating inbound events as durable, least-privilege units of work. It receives events two ways: as inbound **webhooks** (GitHub, Stripe, and Slack are cryptographically verified via HMAC signatures; unsigned senders like Docker Hub or homelab tools authenticate with a shared-secret token, or run explicitly open on a trusted network), and by pulling from a **queue** broker (Redis is the reference implementation, extending to SQS, NATS, and AMQP), where trust is the broker connection itself. Every event that arrives becomes a **todo** with a real lifecycle — pending, claimed, done or failed, retry. An agent claims a todo, which hides it from other workers for a visibility window; if that agent crashes or times out, the todo pops back into the queue for someone else. At-least-once delivery plus idempotency-key dedup mean a duplicate webhook collapses into a single todo, and nothing is silently lost.
+Switchboard is a self-hosted MCP server, written in Go and backed by PostgreSQL, that fixes this by treating inbound events as durable, least-privilege units of work. It receives events as inbound **webhooks** that each agent creates on its own endpoint: GitHub, Gitea, Stripe, Slack, and Cairn deliveries are cryptographically verified via HMAC signatures against a secret Switchboard mints and holds; unsigned senders like Docker Hub or homelab tools authenticate with the unguessable token in their ingest URL. Every event that arrives becomes a **todo** with a real lifecycle — pending, claimed, done or failed, retry. An agent claims a todo, which hides it from other workers for a visibility window; if that agent crashes or times out, the todo pops back into the queue for someone else. At-least-once delivery plus idempotency-key dedup mean a duplicate webhook collapses into a single todo, and nothing is silently lost.
 
 Access is governed by accountable humans, not floating credentials. A human signs in with OIDC, registers an agent, and Switchboard vends that agent a scoped MCP endpoint — a URL plus credential that *is* the capability, limited to specific queues and allowed verbs. Revoking access means killing the endpoint. One agent can present multiple least-privilege **personas**, each advertised as an A2A Agent Card, and agents can request scoped grants from one another through human-approved "friending" — the request arrives as a todo in the owner's own queue, and approval mints a per-direction, revocable, non-transitive endpoint. When a Claude Code harness is attached, Switchboard pushes new todos straight into the live session over the Claude Code Channels standard, like a doorbell; when nothing is attached, the durable queue holds the work until it's pulled. The queue is always the system of record. A small local web UI (Go, HTMX, server-sent events) lets you watch events and todos live, with each event's trust level shown honestly: signed, token, open, or queue.
 
 "I was tired of gluing webhooks directly onto agents and hoping nothing got dropped," said Joe Stump of StumpCloud. "Inbound events shouldn't be read-once messages you fire at an LLM. They should be durable, verified, least-privilege units of work that an accountable human governs. Switchboard is the switchboard — many lines come in, every caller is verified, and each line gets patched through to the right place."
 
-To get started, download the single Go binary, point it at a Postgres database, and run it. Register a webhook or connect a queue, sign in, register your agent, and Switchboard vends it a scoped endpoint to start draining todos. It runs entirely on your own infrastructure.
+To get started, download the single Go binary, point it at a Postgres database, and run it. Sign in, register your agent, and Switchboard vends it a scoped endpoint; the agent creates its own webhooks and starts draining todos. It runs entirely on your own infrastructure.
 
 Switchboard is the board an operator sits behind — so your agents can safely answer the events that matter, whether you're watching or not.
 
@@ -26,11 +26,11 @@ It gives AI agents a safe, durable way to react to real-world events. Instead of
 
 **How is this different from just pointing a webhook at a script or an LLM?**
 
-A webhook pointed straight at a script or LLM is read-once and unverified. If the receiver is down or crashes halfway through, the event is lost. If the provider retries, you process it twice. Nobody checks that the sender is who it claims to be, and the agent has whatever broad access the script was given. Switchboard adds the missing layer: cryptographic (or token/broker) verification on the way in, a durable todo with a real lifecycle, at-least-once delivery with idempotency dedup, and least-privilege scoping on who can act. The event becomes a governed unit of work instead of a fire-and-forget message.
+A webhook pointed straight at a script or LLM is read-once and unverified. If the receiver is down or crashes halfway through, the event is lost. If the provider retries, you process it twice. Nobody checks that the sender is who it claims to be, and the agent has whatever broad access the script was given. Switchboard adds the missing layer: cryptographic (or token) verification on the way in, a durable todo with a real lifecycle, at-least-once delivery with idempotency dedup, and least-privilege scoping on who can act. The event becomes a governed unit of work instead of a fire-and-forget message.
 
 **Is it secure? How does trust work?**
 
-Trust is explicit and shown honestly for every event. Signed webhooks (GitHub, Stripe, Slack) are HMAC-verified, so you know the body is authentic. Unsigned senders (Docker Hub, homelab tools) authenticate with a shared-secret token, which verifies the caller but not the body — or run explicitly **open** on a trusted network when you accept that tradeoff. Queue sources trust the broker connection (ACL and TLS). The web UI labels each event with its actual trust level — signed, token, open, or queue — so you're never guessing. On the agent side, access is a scoped, vended endpoint tied to an accountable human, not a shared floating credential.
+Trust is explicit and shown honestly for every event. Signed webhooks (GitHub, Gitea, Stripe, Slack, Cairn) are HMAC-verified, so you know the body is authentic. Unsigned senders (Docker Hub, homelab tools) authenticate with the unguessable token in their ingest URL, which verifies the caller but not the body. A webhook's source type fixes its trust mode when it is created, so an agent can never downgrade it. The web UI labels each event with its actual trust level — signed or token — so you're never guessing. On the agent side, access is a scoped, vended endpoint tied to an accountable human, not a shared floating credential.
 
 **What happens if my agent crashes in the middle of a task?**
 
@@ -42,7 +42,7 @@ No. Switchboard is an MCP server, so any MCP-capable agent or harness can regist
 
 **What does it cost, and what do I have to run?**
 
-Switchboard is self-hosted. You run a single Go binary and a PostgreSQL database — that's the whole footprint. There's no hosted service to subscribe to and no per-event pricing; you provide the infrastructure. If you use the queue-pull ingestion path, you also bring your own broker (Redis is the reference; SQS, NATS, and AMQP are supported).
+Switchboard is self-hosted. You run a single Go binary and a PostgreSQL database — that's the whole footprint. There's no hosted service to subscribe to and no per-event pricing; you provide the infrastructure.
 
 **How do agents get access, and how do I revoke it?**
 
@@ -60,7 +60,7 @@ Because agents don't just consume messages — they do work that can fail, hang,
 
 **Why Postgres instead of a dedicated broker?**
 
-Because `SELECT ... FOR UPDATE SKIP LOCKED` gives us competing-consumer semantics — atomic claims, no two workers grabbing the same todo — directly in the database we already need for state, ownership, personas, grants, and audit. A dedicated broker would add an operational component and split our source of truth across two systems. Postgres keeps the deploy to one binary plus one database, gives us transactional guarantees around claim/complete, and is more than fast enough for the event volumes our users actually see. The queue-pull ingestion path still integrates with real brokers (Redis, SQS, NATS, AMQP) as *sources*; those feed todos into Postgres, which remains the system of record.
+Because `SELECT ... FOR UPDATE SKIP LOCKED` gives us competing-consumer semantics — atomic claims, no two workers grabbing the same todo — directly in the database we already need for state, ownership, personas, grants, and audit. A dedicated broker would add an operational component and split our source of truth across two systems. Postgres keeps the deploy to one binary plus one database, gives us transactional guarantees around claim/complete, and is more than fast enough for the event volumes our users actually see.
 
 **Why Go?**
 
@@ -68,7 +68,7 @@ Single static binary, trivial self-hosting, strong concurrency for the receive/c
 
 **What's explicitly out of scope for the MVP?**
 
-No hosted/multi-tenant SaaS offering — self-hosted only. No broad catalog of pre-built connectors beyond the verified webhook families (GitHub, Stripe, Slack) and the token/open path; queue sources beyond the Redis reference are supported but not all first-class polished. No complex workflow engine, branching, or DAG orchestration on top of todos — a todo is a unit of work, not a pipeline. No agent runtime of our own; we vend endpoints and push doorbells, but harnesses like Claude Code do the actual work.
+No hosted/multi-tenant SaaS offering — self-hosted only. No broad catalog of pre-built connectors beyond the verified webhook source types (GitHub, Gitea, Stripe, Slack, Cairn) and the generic token path, and no queue/broker ingestion — webhooks are the only way in. No complex workflow engine, branching, or DAG orchestration on top of todos — a todo is a unit of work, not a pipeline. No agent runtime of our own; we vend endpoints and push doorbells, but harnesses like Claude Code do the actual work.
 
 **What's the biggest technical risk?**
 

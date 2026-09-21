@@ -5,12 +5,9 @@ package server
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -19,7 +16,6 @@ import (
 
 	switchboard "github.com/stump-wtf/switchboard"
 	"github.com/stump-wtf/switchboard/internal/a2a"
-	"github.com/stump-wtf/switchboard/internal/adapter/runner"
 	"github.com/stump-wtf/switchboard/internal/auth"
 	"github.com/stump-wtf/switchboard/internal/config"
 	"github.com/stump-wtf/switchboard/internal/cred"
@@ -134,67 +130,13 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Revoking an endpoint in the web UI also closes its live notification streams promptly
 	// (SPEC-0014 scenario "Revocation closes live streams").
 	webh.SetEndpointRevokedHook(mcph.CloseEndpointSessions)
-	// Generic (token/open) providers are explicit operator opt-in via SWITCHBOARD_GENERIC_PROVIDERS;
-	// a malformed or invalid-mode config fails startup loudly rather than silently opening an
-	// endpoint. Governing: SPEC-0001 REQ "Explicit Open Trust Mode".
-	generic, err := ingest.ParseGenericProviders(os.Getenv("SWITCHBOARD_GENERIC_PROVIDERS"))
-	if err != nil {
-		return err
-	}
-	icfg := ingest.Config{
-		GitHubSecret: os.Getenv("SWITCHBOARD_GITHUB_SECRET"),
-		GitHubQueue:  os.Getenv("SWITCHBOARD_GITHUB_QUEUE"),
-		GiteaSecret:  os.Getenv("SWITCHBOARD_GITEA_SECRET"),
-		GiteaQueue:   os.Getenv("SWITCHBOARD_GITEA_QUEUE"),
-		StripeSecret: os.Getenv("SWITCHBOARD_STRIPE_SECRET"),
-		StripeQueue:  os.Getenv("SWITCHBOARD_STRIPE_QUEUE"),
-		SlackSecret:  os.Getenv("SWITCHBOARD_SLACK_SECRET"),
-		SlackQueue:   os.Getenv("SWITCHBOARD_SLACK_QUEUE"),
-		Generic:      generic,
-		DevLogin:     cfg.DevLogin,
-		// INTERIM (PR 2): the operator-configured receivers and the queue adapters have no vended
-		// endpoint of their own, but every todo must name exactly one owner (ADR-0022). The
-		// operator states it once here rather than having it derived from a queue name.
-		LegacyEndpointID: os.Getenv("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID"),
-	}.Normalized()
-	// Fail LOUDLY at boot on a misconfigured legacy endpoint rather than quietly at every delivery.
-	// legacyEndpoint() guards only the EMPTY case (→ 503, retriable, nothing persisted). A value
-	// that is non-empty but wrong sails past that guard and dies at the INSERT: a non-uuid string
-	// is a 22P02, and a well-formed uuid naming no endpoint is a 23503 FK violation — both surface
-	// as a 500 on EVERY delivery to /webhooks/{github,stripe,slack,generic/*}, forever. That is the
-	// far more likely operator error (pasting an endpoint slug instead of its uuid), and it defeats
-	// the whole point of the 503 design: providers retry a 503, but GitHub disables a webhook after
-	// repeated 5xx and Stripe retries then drops. The same value backs every queue adapter that
-	// states no EndpointID of its own, where the failure mode is worse still — un-acked messages
-	// redelivered by the broker forever (see adapter.NewStoreSink).
-	// Governing: ADR-0022, SPEC-0001 REQ "Error Handling Standards".
-	if err := validateLegacyEndpointID(ctx, st, icfg.LegacyEndpointID); err != nil {
-		return err
-	}
+	icfg := ingest.Config{}.Normalized()
 	ing := ingest.New(st, hub, log, icfg)
 	// Ephemeral received-lane instrumentation (SPEC-0015 REQ "Patch Panel Board"): the receivers
 	// report in-flight deliveries — arrival, redacted rejection, dedup collapse — so the board's
 	// received lane renders the moment of verification live. SSE-only; nothing new is persisted,
 	// and the SPEC-0001 rejection doctrine is unchanged.
 	ing.SetInstrument(webh)
-	// Env config becomes an idempotent boot seed into the provider registry (create-if-absent,
-	// never clobber operator edits); the registry is authoritative thereafter, and dispatch
-	// resolves it live. Governing: ADR-0020, SPEC-0017 REQ "Environment Config Import".
-	if err := seedEnvProviders(ctx, st, icfg, log); err != nil {
-		return err
-	}
-	// list_providers (SPEC-0005) reads the provider registry LIVE, so runtime-created providers
-	// enumerate without a restart; the output shape (presence/absence classification only, never
-	// secret material) is unchanged. Governing: SPEC-0005 REQ "Provider Enumeration Without
-	// Secrets"; ADR-0020, SPEC-0017 REQ "Runtime Provider Registry".
-	mcph.SetProviderSource(func(pctx context.Context) []mcpsrv.ProviderStatus {
-		rows, err := st.ListProviders(pctx)
-		if err != nil {
-			log.Error("list providers from registry", "err", err)
-			return nil
-		}
-		return providerStatuses(rows)
-	})
 
 	r := newRouter(routerDeps{
 		st:    st,
@@ -242,26 +184,6 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		nudgeDoorbells(nctx, st, doorbells, mcph.PublishTodoReady, payload, log)
 	})
 
-	// Pull-adapter poll loops (ADR-0014; SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety"):
-	// each queue-family registry row (adapters table) attaches one context-managed worker — enabled-
-	// flag gated, backing off on broker errors, health-stamped on the adapters table — and shuts
-	// down cleanly with the server. Registry rows hold the NON-SECRET consume topology; the broker
-	// DSN comes from SWITCHBOARD_REDIS_URL. Row membership/config is read once here, so adding or
-	// editing rows takes a restart; the enabled flag alone is honored at runtime (the full semantics
-	// live on registerQueueAdapters). closeAdapters releases the shared broker client and runs (via
-	// defer, LIFO) only after the <-runnerDone join below — no worker outlives its client.
-	adapters := runner.New(st, log, runner.Options{})
-	closeAdapters, err := registerQueueAdapters(ctx, st, adapters, cfg.RedisURL, icfg.LegacyEndpointID, log)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = closeAdapters() }()
-	runnerDone := make(chan struct{})
-	go func() {
-		defer close(runnerDone)
-		_ = adapters.Run(ctx) // returns only after every poll loop has been joined
-	}()
-
 	srv := &http.Server{Addr: cfg.Addr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -275,10 +197,6 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
-	// http.ErrServerClosed means ctx was cancelled (the shutdown goroutine above ran); join the
-	// adapter poll loops so no worker goroutine outlives Run — the graceful-shutdown half of
-	// SPEC-0002 REQ "Poll-Loop Lifecycle — Concurrency Safety".
-	<-runnerDone
 	return nil
 }
 
@@ -334,13 +252,6 @@ func newRouter(d routerDeps) chi.Router {
 	// fabricated (SPEC-0001 REQ "Replay-Window Enforcement for Timestamped Signatures").
 	r.Group(func(wr chi.Router) {
 		wr.Use(webhookRL.middleware)
-		wr.Post("/webhooks/github", d.ing.GitHub)
-		wr.Post("/webhooks/gitea", d.ing.Gitea)
-		wr.Post("/webhooks/stripe", d.ing.Stripe)
-		wr.Post("/webhooks/slack", d.ing.Slack)
-		// Generic token/open providers (SPEC-0001): shared-secret token compared constant-time, or
-		// explicit operator-opted-in open mode; unknown names 404, never a fall-through to open.
-		wr.Post("/webhooks/generic/{name}", d.ing.Generic)
 		// Agent self-managed webhooks (SPEC-0006): the ingest_url create_webhook/rotate_webhook hand
 		// back. The unguessable 128-bit path token routes to exactly one webhook; an unknown token
 		// 404s. Delivery → dedup → todo. Governing: ADR-0012.
@@ -493,26 +404,6 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/endpoints/vend", d.webh.Vend)
 		pr.Get("/agents", d.webh.AgentsRedirect)
 		pr.Get("/agents/{id}", d.webh.AgentsRedirect)
-		// Providers view over the runtime registry (SPEC-0017 REQ "Providers View" / "Provider
-		// Catalog") + the lifecycle surface: disable/rotate/remove behind a confirmation modal,
-		// enable inline (SPEC-0017 REQ "Provider Lifecycle"). CSRF via the layout hx-headers /
-		// hidden field; the group's RequireCSRF validates every POST. Governing: ADR-0020,
-		// SPEC-0015 REQ "Application Shell And Navigation".
-		pr.Get("/providers", d.webh.Providers)
-		// Connect-provider wizard (SPEC-0017 REQ "Connect Provider Wizard"; SPEC-0015 wizard
-		// pattern): GET /providers/connect starts it (server-side step state, 303 → source);
-		// GET/POST /providers/connect/{step} are the routed step pages — the confirm POST
-		// registers the provider (enabled) and renders the completion reveal. The static
-		// "connect" segment wins over {name} in chi, which is why the wizard refuses to create
-		// a provider named "connect". Governing: ADR-0020, ADR-0003.
-		pr.Get("/providers/connect", d.webh.ConnectStart)
-		pr.Get("/providers/connect/{step}", d.webh.ConnectStep)
-		pr.Post("/providers/connect/{step}", d.webh.ConnectStepSubmit)
-		pr.Get("/providers/{name}/confirm/{action}", d.webh.ProviderConfirmModal)
-		pr.Post("/providers/{name}/disable", d.webh.DisableProvider)
-		pr.Post("/providers/{name}/enable", d.webh.EnableProvider)
-		pr.Post("/providers/{name}/rotate", d.webh.RotateProvider)
-		pr.Post("/providers/{name}/remove", d.webh.RemoveProvider)
 		// Live updates stream (SPEC-0012): session-authenticated SSE; per-session stream cap inside.
 		pr.Get("/events", d.webh.Events)
 		// Operator todo lifecycle actions (SPEC-0013 endpoints table). Each dispatches to a SPEC-0003
@@ -753,34 +644,4 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 			}
 		}
 	}
-}
-
-// validateLegacyEndpointID checks the operator-designated legacy receiver endpoint at BOOT, so a
-// typo is a refused startup with an actionable message instead of a permanent 500 on every legacy
-// delivery. Unset is valid and stays valid: the receivers then answer 503 ("receiver not
-// configured"), which is the documented interim behaviour until PR 2 retires them.
-//
-// The probe is EndpointOwnerHuman, which resolves only ACTIVE endpoints. That deliberately rejects a
-// revoked or expired endpoint too: it is well-formed and really exists, but every todo minted onto
-// it would be undrainable, which is a configuration error worth catching at boot rather than
-// discovering as a silently growing pile of unreachable work.
-//
-// INTERIM, REMOVED IN PR 2 alongside Config.LegacyEndpointID and the receivers it serves.
-// Governing: ADR-0022, SPEC-0001 REQ "Error Handling Standards".
-func validateLegacyEndpointID(ctx context.Context, st *store.Store, id string) error {
-	if id == "" {
-		return nil // unset is a supported configuration; the receivers answer 503.
-	}
-	if !store.IsUUID(id) {
-		return fmt.Errorf("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID=%q is not a uuid "+
-			"(it must be an endpoint's id, not its slug or name)", id)
-	}
-	if _, err := st.EndpointOwnerHuman(ctx, id); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return fmt.Errorf("SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID=%s names no active endpoint "+
-				"(unknown, revoked, or expired); todos minted onto it would be undrainable", id)
-		}
-		return fmt.Errorf("validating SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID: %w", err)
-	}
-	return nil
 }

@@ -75,7 +75,8 @@
 </header>
 <div class="sb-shell">
 {{if .Human}}
-{{/* Six-view nav (SPEC-0015: board · todos · endpoints · personas · friends · providers).
+{{/* Five-view nav (SPEC-0015: board · todos · endpoints · personas · friends). The sixth,
+     Providers, left with the instance-wide provider registry (#181).
      Personas/Friends render only when their backing capability is enabled (SPEC-0013
      hidden-not-broken carries over). data-sb-nav keys feed the `g` go-to-view keymap
      (sb-keys.js reads them, so bindings and nav can never disagree). */}}
@@ -88,9 +89,6 @@
     {{/* Friends: revealed only when the friending capability is enabled (SPEC-0013 hidden-not-broken);
          the pending-incoming badge shows only when nonzero. */}}
     {{if .Shell.FriendsEnabled}}<li><a class="sb-rail__item" data-sb-nav="f" href="/friends"{{if eq .Shell.Active "friends"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Friends</span>{{template "friend_badge" dict "Count" .Shell.FriendsIncoming}}</a></li>{{end}}
-    {{/* Providers joins the IA (SPEC-0015 scenario "Providers joins the IA"); the SPEC-0017
-         registry backs the view in a later story. */}}
-    <li><a class="sb-rail__item" data-sb-nav="r" href="/providers"{{if eq .Shell.Active "providers"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Providers</span></a></li>
   </ul>
   <p class="sb-rail__foot sb-conn{{if not .Shell.DBConnected}} sb-conn--down{{end}}"><span class="sb-conn__dot" aria-hidden="true"></span><span class="sb-conn__label">postgres · {{if .Shell.DBConnected}}connected{{else}}disconnected{{end}}</span></p>
 </nav>

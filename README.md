@@ -7,11 +7,8 @@ providers (GitHub, Stripe, Slack, Docker Hub, and self-hosted/homelab senders), 
 normalizes each one, stores them in PostgreSQL, and patches them through to **two consumers of the same
 backend**:
 
-- **MCP clients** (Claude Code, other agents) — via MCP tools (`list` / `get` / `replay` / `list_providers`) and a recent-events resource.
-- **A human** — via a small, local-only web UI (4 screens) that updates live over Server-Sent Events.
-
-A fourth incoming line — a **Redis queue consumer** — feeds the same pipeline without any HTTP
-endpoint, proving the abstraction generalizes beyond HTTP webhooks.
+- **MCP clients** (Claude Code, other agents) — via MCP tools: the todo drain verbs, webhook self-management, and event history (`list_webhook_events` / `get_webhook_event` / `replay_webhook_event`), plus a recent-events resource.
+- **A human** — via a web UI (five views) that updates live over Server-Sent Events.
 
 The name is the architecture: a manual telephone exchange took many incoming lines, an operator
 verified the caller, and patched the line through to its destination. That's exactly this — and it's
@@ -32,8 +29,8 @@ patch-cable tones — see [`static/tokens.css`](static/tokens.css) and
 
 ## Two layers
 
-- **Event-store core (ADR-0000–005):** receive, verify, persist, and expose inbound webhooks/queue
-  events — the pipeline described in this README.
+- **Event-store core (ADR-0000–005):** receive, verify, persist, and expose inbound webhooks
+  — the pipeline described in this README.
 - **Agent layer (ADR-0007–015):** inbound events become durable **todos** that agents claim and
   complete; humans register agents and are vended scoped MCP endpoints; personas are advertised as A2A
   Agent Cards; and cross-agent work is granted by human-approved friending. See
@@ -50,19 +47,24 @@ were the same thing. See [ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-an
 ## Architecture
 
 ```
-Provider (GitHub/Stripe/Slack/Docker/…)        Redis (pub/sub or stream)
-      │  HTTPS POST + signature header               │  in-process consumer subscribes
-      ▼                                               ▼
-[Go app: /webhooks/{provider}]        [Redis consumer task, in-process]
-      │  verify signature → normalize                │  normalize (trust = Redis ACL/TLS,
-      │  (or: generic/no-verify path)                │   no HTTP signature concept)
-      ▼                                               ▼
-   PostgreSQL (events + todo queue) ◄─────────────────────┘
+Producer (GitHub/Gitea/Stripe/Slack/Cairn/your script)
+      │  HTTPS POST + signature header (or the unguessable URL alone, for `generic`)
+      ▼
+[Go app: POST /webhooks/w/{token}]   one ingest URL per webhook; each webhook belongs to an endpoint
+      │  verify per source type → normalize → routing rules (queue / drop) → route fan-out
+      ▼
+   PostgreSQL (events + todo queue, every todo owned by an endpoint)
       │
-      ├──► MCP tools/resources  (list / get / replay / list_providers)
+      ├──► MCP tools per endpoint (/mcp/{endpoint}): todos, webhooks, event history + doorbells
       ├──► SSE broadcast (/events) ──► Web UI (html/template + HTMX + Pico.css)
       └──► retention pruning (age + row-cap)
 ```
+
+Every webhook is **self-managed** ([ADR-0012](docs/adrs/ADR-0012-agents-self-manage-webhooks.md)): an
+agent calls `create_webhook` on its own endpoint, switchboard mints and holds the signing secret, and
+every todo a delivery makes is owned by an endpoint — the webhook's own, plus any it fans out to
+([ADR-0022](docs/adrs/ADR-0022-endpoint-scoped-todo-ownership.md)). There is no instance-wide
+receiver: ingestion that belongs to no tenant cannot name the endpoint that owns its todos.
 
 One service, single repo. The MCP server and the web server share the same Go HTTP server
 (different route groups) and the same PostgreSQL layer. Stack rationale — net/http + chi over a framework, HTMX
@@ -71,19 +73,17 @@ over a SPA, Pico over Tailwind, inline SVG over icon fonts — is in
 
 ## Trust model at a glance (ADR-0003)
 
-Two provider families — **webhook** (push) and **queue** (pull) — and every event's trust level is
-explicit and shown.
+A webhook's **source type** fixes its trust mode at create time — the agent never chooses it and
+cannot downgrade it — and every event's trust level is explicit and shown.
 
-| Family · `trust_mode` | Providers | How it's trusted | On failure |
-|------------------------|-----------|------------------|-----------|
-| webhook · **signed** | GitHub, Stripe, Slack | Mandatory HMAC verification of the body (constant-time; Stripe/Slack also enforce a timestamp window). Integrity + authenticity. | **401, payload NOT persisted**, redacted rejection logged |
-| webhook · **token** | Docker Hub, homelab/self-hosted | **No signing scheme exists.** A configured **shared-secret** the caller presents — `Authorization: Bearer` (or a header), or a `?token=` URL fallback for URL-only senders like Docker Hub. Authenticates the *caller*, **not** the body; no replay protection. Required by default. | 403 on missing/bad token |
-| webhook · **open** | senders that can't present any secret | No check. **Off by default**, trusted-network only, loudest-labeled. Prefer `token`. | n/a (accepted, labeled `open`) |
-| queue · **queue** | Redis (reference), SQS/NATS/AMQP later | No per-message signature; trust is the **broker connection** (auth/ACL + TLS) — "who may publish to this queue." | connection-level |
+| `trust_mode` | Source types | How it's trusted | On failure |
+|--------------|--------------|------------------|-----------|
+| **signed** | `github`, `gitea`, `stripe`, `slack`, `cairn` | Mandatory HMAC-SHA256 verification of the raw body against the secret switchboard minted (constant-time; Stripe, Slack and Cairn also enforce a timestamp window). Integrity + authenticity. | **401, payload NOT persisted**, redacted rejection logged |
+| **token** | `generic` (Docker Hub, homelab/self-hosted senders) | **No signing scheme exists.** The unguessable token in the ingest URL authenticates the *caller*, **not** the body; no replay protection. Persisted honestly as `verified=false`. | 404 on an unknown token |
 
-Docker Hub has no native webhook signing, so it is a **token** webhook (URL token) rather than a faked
+Docker Hub has no native webhook signing, so it is a **token** webhook rather than a faked
 "signed" one — inventing verification where none exists would make the `signed` badge meaningless for
-every other provider. A shared-secret **token** is a real tier *between* `signed` and `open`: it proves
+every other provider. A **token** is an honest, weaker tier than `signed`: it proves
 the caller knows a secret, but unlike HMAC it can't attest the payload.
 
 ## Documentation
@@ -93,19 +93,21 @@ the caller knows a secret, but unlike HMAC it can't attest the payload.
 | [ADR-0000](docs/adrs/ADR-0000-project-naming-and-scope.md) | Project name + MVP/session scope |
 | [ADR-0001](docs/adrs/ADR-0001-web-stack-go-htmx-pico.md) | Web/UI stack (Go net/http + chi, html/template, HTMX + Pico) — and why not a framework / Tailwind / icon fonts |
 | [ADR-0002](docs/adrs/ADR-0002-postgres-persistence-and-retention.md) | PostgreSQL persistence, queue mechanics, schema sketch, retention |
-| [ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types (webhook / queue) & the trust model (signed / token / open / queue) |
+| [ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) | Per-provider verification & the trust model |
 | [ADR-0005](docs/adrs/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract shape |
+| [ADR-0012](docs/adrs/ADR-0012-agents-self-manage-webhooks.md) | Self-managed webhooks (`POST /webhooks/w/{token}`) — the ingestion surface |
 | [openapi.yaml](docs/reference/openapi.yaml) | HTTP surface: webhook ingestion + web-UI endpoints |
 | [asyncapi.yaml](docs/reference/asyncapi.yaml) | SSE event/message schema |
 | [SPEC-0005 mcp-tools](docs/openspec/specs/mcp-tools/spec.md) | MCP tool + resource contract & JSON Schemas |
 | [SPEC-0014 mcp-transport](docs/openspec/specs/mcp-transport/spec.md) | Vended MCP endpoints served over Streamable HTTP (`/mcp/{endpoint}`) |
 
-## Web UI (4 screens)
+## Web UI (five views)
 
-1. **Dashboard / status** — live connection strip (`● receiving` / `○ idle`), recent event count per provider, last-event timestamp per provider.
-2. **Webhook log** — paginated table (provider icon, event type, timestamp, verify status, size); row → detail (raw payload, sanitized headers, verification result).
-3. **Provider config** — each provider's type, path/channel, secret status (`configured` / `missing` / `none-by-design` — never the secret itself), enable/disable toggle.
-4. **Settings** — retention policy (age + row cap), SSE reconnect behavior, general config.
+1. **Board** — the live patch panel: three lanes (received · verified · patched through), cards moving between them over SSE.
+2. **Todos** — the durable queue: filterable table with live row updates; row → drawer (lifecycle timeline, idempotency key, lease, payload, retry/release actions).
+3. **Endpoints** — vended capabilities: scope chips, MCP URL, expiry, revoke; the vend wizard and one-page quick vend.
+4. **Personas** — least-privilege faces of an agent, published as A2A Agent Cards (`SWITCHBOARD_PERSONAS=1`).
+5. **Friends** — the human-approved A2A ledger (`SWITCHBOARD_FRIENDING=1`).
 
 ## The basics (ADR-0023 MVP): webhook → todo → doorbell
 
@@ -149,7 +151,7 @@ make build                                   # compile ./bin/switchboard (assets
 export SWITCHBOARD_DATABASE_URL='postgres://user@127.0.0.1:5432/switchboard?sslmode=disable'
 export SWITCHBOARD_OIDC_ISSUER=https://pocket-id.example \
        SWITCHBOARD_OIDC_CLIENT_ID=… SWITCHBOARD_OIDC_CLIENT_SECRET=…
-./bin/switchboard serve                      # web UI + /webhooks/* + /mcp/{endpoint} on 127.0.0.1:8080
+./bin/switchboard serve                      # web UI + /webhooks/w/{token} + /mcp/{endpoint} on 127.0.0.1:8080
 ```
 
 Migrations apply on startup. For a local spin without a real Pocket ID, set `SWITCHBOARD_DEV_LOGIN=1`
@@ -168,43 +170,45 @@ Migrations apply on startup. For a local spin without a real Pocket ID, set `SWI
    The endpoint serves the work tools (`list_todos` / `claim` / `complete` / `fail` / `heartbeat`) and
    pushes new todos into the session as `notifications/claude/channel` doorbells on the notification
    stream (ADR-0017; SPEC-0014).
-3. Send a signed webhook (`POST /webhooks/github`) — or, in dev mode, `POST /dev/todos` — and the todo
-   arrives in your session.
+3. Have the agent call `create_webhook`, then POST a delivery to the returned `ingest_url` — or, in
+   dev mode, `POST /dev/todos` — and the todo arrives in your session.
 
 The service is **loopback-bound by default and ships no in-app auth**. If you ever expose it on the
 homelab LAN it **must** sit behind Caddy `forward_auth`, like everything else in the stack — auth is
 the reverse proxy's job, not this app's (ADR-0001, brief §8).
 
-Secrets (provider HMAC secrets, the Postgres/Redis DSNs, generic tokens, the OIDC client secret) are
-injected via **environment/deployment config** — never committed. Switchboard-*minted* secrets (agent
-credentials and agent-created webhook signing secrets) are generated by switchboard and stored
-**hashed** in PostgreSQL.
+Deployment secrets (the Postgres DSN, the OIDC/GitHub client secrets, the secret-encryption key) are
+injected via **environment/deployment config** — never committed. Switchboard-*minted* secrets live in
+PostgreSQL: agent credentials are stored **hashed**; webhook signing secrets must stay recoverable to
+recompute the HMAC, so they are **encrypted at rest** under `SWITCHBOARD_SECRET_ENCRYPTION_KEY` —
+and sit in plaintext if that key is unset.
 
 ### Pointing a provider at this service (for testing)
 
 Because the service is localhost-bound, expose it to a provider during testing with a tunnel
-(e.g. `cloudflared tunnel`, `tailscale funnel`, or an SSH reverse tunnel), then set the provider's
-webhook URL to the tunnel's public URL + the provider path:
+(e.g. `cloudflared tunnel`, `tailscale funnel`, or an SSH reverse tunnel) and set
+`SWITCHBOARD_BASE_URL` to the tunnel's public URL, so the `ingest_url` that `create_webhook` returns
+is reachable. Then, from an agent connected to your endpoint:
 
-- GitHub → `https://<tunnel>/webhooks/github`
-- Stripe → `https://<tunnel>/webhooks/stripe`
-- Slack → `https://<tunnel>/webhooks/slack`
-- Docker Hub (token) → `https://<tunnel>/webhooks/generic/dockerhub?token=<shared-token>`
+1. `create_webhook` with `{"source_type": "github", "target_queue": "inbox"}` (or `gitea`, `stripe`,
+   `slack`, `cairn`, `generic`).
+2. Paste the returned `ingest_url` (`https://<tunnel>/webhooks/w/<token>`) into the provider's webhook
+   config, along with the `signing_secret` — shown **once** — for a signed source type.
 
-Set the corresponding signing secret in the environment/config first,
-or the signed endpoint will (correctly) 401.
+A delivery with a missing or wrong signature (correctly) gets a 401 and nothing is stored. The
+walkthrough per provider is [Receive your first webhook](docs/getting-started/04-first-webhook.md).
 
-## Adding a new provider (intended shape)
+## Adding a new source type (intended shape)
 
-1. **Signed provider:** add an adapter (`<name>.go`) implementing the verification
-   for its signature scheme (raw-body HMAC, constant-time compare, timestamp window if the scheme
-   signs one), register it with `trust_mode=signed`, and set its secret in the environment/config.
-2. **Unsigned / homelab sender:** don't write an adapter — create a **generic** provider
-   (`/webhooks/generic/<name>`), which requires a shared-secret token (or explicit `open`) and is disabled until you opt in.
-3. **Queue source:** point the Redis consumer at another channel/stream; the trust boundary is that
-   channel's Redis ACL.
+1. **Signed provider:** implement the verification for its signature scheme in `internal/ingest`
+   (raw-body HMAC, constant-time compare, timestamp window if the scheme signs one), dispatch to it
+   from `verifySelfManagedSigned`, and map the source type to `signed` in `webhookTrustModes`
+   (`internal/mcp/webhooks.go`). Switchboard mints the secret at `create_webhook`; nothing goes in
+   the environment.
+2. **Unsigned / homelab sender:** don't write a verifier — create a **`generic`** webhook, whose
+   unguessable ingest URL is the credential.
 
-The trust mode is always declared per provider and shown in the UI — never silently assumed. See
+The trust mode is always fixed per source type and shown in the UI — never silently assumed. See
 [ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-and-trust-model.md).
 
 ## Development

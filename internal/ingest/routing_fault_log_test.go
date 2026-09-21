@@ -52,7 +52,6 @@ func ingestWithLogCapture(t *testing.T, cfg Config) (*Ingest, *pgxpool.Pool, con
 	st := store.New(pool)
 	logs := &lockedBuffer{}
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	cfg.LegacyEndpointID = seedLegacyEndpoint(t, st, ctx)
 	return New(st, NewHub(), log, cfg), pool, ctx, logs
 }
 

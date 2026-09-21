@@ -5,9 +5,9 @@ openapi: 3.1.0
 # and server-rendered HTML, neither of which is model-driven, so there is no framework
 # generating this spec. It is the contract the code session implements against.
 #
-# Trust model (ADR-0003): signed providers are verified-or-401; the generic endpoint is
-# a shared-secret token (or open); Redis is a separate pull ingestion path (see
-# docs/reference/asyncapi.yaml, not here — it has no HTTP endpoint).
+# Trust model (ADR-0003, ADR-0012): every webhook is self-managed and served at
+# /webhooks/w/{token}. A signed source type is verified-or-401; a `generic` webhook is
+# authenticated by the unguessable token in its URL.
 #
 # Live-update stream schema (SSE): docs/reference/asyncapi.yaml.
 # MCP tool contract: docs/openspec/specs/mcp-tools/spec.md. Vended MCP endpoints are served over
@@ -20,11 +20,12 @@ info:
     Inbound webhook ingestion and the local-only web UI for **switchboard**.
 
     ## Three groups of endpoints
-    - **Webhook ingestion** (`/webhooks/*`): providers POST here. Signed providers are
-      verified-or-rejected (401, not persisted); the generic endpoint uses a shared-secret token (or open).
+    - **Webhook ingestion** (`/webhooks/w/{token}`): producers POST to the ingest URL an endpoint's
+      `create_webhook` returned. Signed source types are verified-or-rejected (401, not persisted);
+      a `generic` webhook is authenticated by the unguessable token in its URL.
     - **Operator API** (`/api/v1/*`): OAuth-guarded (operator grants) — register agents, vend
       endpoints, list what you own. The `switchboard` CLI is its reference client.
-    - **Web UI** (`/`, `/log`, `/providers`, `/settings`) + the SSE stream (`/events`):
+    - **Web UI** (`/`, `/log`, `/settings`) + the SSE stream (`/events`):
       server-rendered HTML (html/template + HTMX) plus a `text/event-stream` for live updates.
 
     ## Authentication posture (ADR-0001, brief §8)
@@ -64,33 +65,34 @@ tags:
       `switchboard` CLI obtains gh-style. There is no static API token.
 
 paths:
-  /webhooks/{provider}:
+  /webhooks/w/{token}:
     post:
       tags: [ingestion]
-      operationId: ingestSignedWebhook
-      summary: Receive a signed provider webhook (GitHub / Stripe / Slack)
+      operationId: ingestWebhook
+      summary: Receive a delivery on a self-managed webhook
       description: |
-        Receiver for a **signed** provider. The raw request body is read and the provider's
-        signature is verified **before any parsing** (a re-serialize would break the HMAC).
+        The one ingestion receiver (ADR-0012). `{token}` is the unguessable ingest token minted by
+        `create_webhook` / `rotate_webhook`; it routes the delivery to exactly one webhook, owned by
+        one endpoint. The webhook's source type fixes how the delivery is verified (ADR-0003):
 
-        - **Verification is mandatory.** A missing, malformed, or failing signature returns **401**
-          and the payload is **NOT persisted** — only a redacted rejection is logged (ADR-0003).
-        - On success the event is normalized, persisted (`verified=true`, `trust_mode=signed`),
-          broadcast over SSE, and exposed to the MCP tools.
-        - Signature comparison is constant-time; Stripe/Slack additionally enforce a timestamp
-          freshness window (default 300s) to blunt replay.
+        - **Signed source types** (`github`, `gitea`, `stripe`, `slack`, `cairn`): the raw request
+          body is read and the provider's signature is verified **before any parsing**, in constant
+          time, against the secret switchboard minted. A missing, malformed, or failing signature
+          returns **401** and the payload is **NOT persisted**. Stripe, Slack, and Cairn additionally
+          enforce a timestamp freshness window (default 300s) to blunt replay.
+        - **`generic`** (`trust_mode=token`): the token in the URL authenticates the caller; the body
+          is not verified, and the event persists with `verified=false`.
 
-        Provider-specific handshakes: Slack `url_verification` returns **200** echoing the
-        `challenge` value instead of persisting an event.
+        On success the event is persisted, routing rules pick a queue (or drop the delivery), and one
+        todo is created per target endpoint — the webhook's owner plus any route fan-out (ADR-0022).
+        A redelivery with the same delivery id (or body) collapses onto the existing todo.
       security: []
       parameters:
-        - name: provider
+        - name: token
           in: path
           required: true
-          description: The signed provider slug.
-          schema:
-            type: string
-            enum: [github, stripe, slack]
+          description: The webhook's ingest token, from the `ingest_url` that `create_webhook` returned.
+          schema: { type: string }
       requestBody:
         required: true
         description: Raw provider payload (bytes preserved for HMAC verification).
@@ -105,105 +107,36 @@ paths:
               additionalProperties: true
       responses:
         '202':
-          description: Verified and persisted.
+          description: Accepted. The body lists the todos the delivery produced, or says it was dropped.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/IngestAck'
-        '200':
-          description: Provider handshake handled (e.g. Slack `url_verification` challenge echo).
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: Malformed request (unreadable body, missing required headers).
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
         '401':
           description: |
             Signature missing, malformed, or failed verification. **Payload not persisted.**
           content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '403':
-          description: Provider is configured but disabled.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestError' }
         '404':
-          description: Unknown/unconfigured provider slug.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '413':
-          description: Body exceeds the configured maximum size.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-
-  /webhooks/generic/{name}:
-    post:
-      tags: [ingestion]
-      operationId: ingestGenericWebhook
-      summary: Receive a token-authenticated (or open) generic webhook — incl. Docker Hub
-      description: |
-        Catch-all receiver for senders with **no signature scheme at all** — self-hosted /
-        homelab-internal tooling and **Docker Hub** (which has no native webhook signing).
-
-        - **Shared-secret token (or open).** Events are persisted with `verified=false`,
-          `trust_mode=token`, `verify_detail="token ok"`, and are labeled
-          per their trust level everywhere in the UI and API (ADR-0003).
-        - **Opt-in and disabled by default.** A generic provider does not exist until an operator
-          explicitly creates one; an unknown `{name}` returns 404.
-        - Requires a configured **shared-secret token** the caller presents — `Authorization: Bearer`
-          (or a header) preferred, `?token=`/path token as a URL fallback (Docker Hub). It authenticates
-          the caller but **not** the body; constant-time compare; required by default. A bad/missing
-          token returns 403 (ADR-0003).
-        - Appropriate **only on a trusted network** already isolated by Caddy `forward_auth` /
-          UniFi segmentation.
-      security: []
-      parameters:
-        - name: name
-          in: path
-          required: true
-          description: Operator-assigned generic provider name (e.g. `dockerhub`, `homelab`).
-          schema: { type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,63}$' }
-        - name: token
-          in: query
-          required: false
-          description: Shared-secret token (URL fallback; authenticates the caller, not the body). May instead be a path token.
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-      responses:
-        '202':
-          description: Accepted and persisted (token-authenticated).
+          description: Unknown ingest token — the URL is wrong, or the webhook was rotated or deleted.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/IngestAck' }
-        '403':
-          description: Shared token missing or incorrect, or provider disabled.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '404':
-          description: No generic provider configured under this name.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+              schema: { $ref: '#/components/schemas/IngestError' }
         '413':
-          description: Body exceeds the configured maximum size.
+          description: Body exceeds 5 MiB.
           content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestError' }
+        '429':
+          description: Rate limited. Honor `Retry-After`.
+        '503':
+          description: |
+            The webhook cannot produce work: no live target endpoint remains, or a signed webhook
+            has no stored secret. Nothing is persisted, so the producer retries.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestError' }
 
   /:
     get:
@@ -292,57 +225,6 @@ paths:
               schema: { type: string }
         '404':
           description: No event with that id.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-
-  /providers:
-    get:
-      tags: [ui]
-      operationId: getProviders
-      summary: Provider config (UI screen 3)
-      description: |
-        Lists configured providers with family (`webhook` / `queue`) and trust_mode (`signed` / `token` / `open` / `queue`), the
-        webhook URL path or Redis channel, secret/verification status
-        (`configured` / `missing` / `none-by-design` — the secret itself is **never** shown), and an
-        enable/disable toggle. HTML page.
-      security: []
-      responses:
-        '200':
-          description: HTML page.
-          content:
-            text/html:
-              schema: { type: string }
-
-  /providers/{name}/enabled:
-    post:
-      tags: [ui]
-      operationId: setProviderEnabled
-      summary: Enable/disable a provider (HTMX toggle)
-      description: Flips `providers.enabled`. Returns the re-rendered toggle fragment (HTMX).
-      security: []
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              properties:
-                enabled: { type: boolean }
-              required: [enabled]
-      responses:
-        '200':
-          description: Re-rendered toggle fragment (HTML).
-          content:
-            text/html:
-              schema: { type: string }
-        '404':
-          description: No such provider.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -540,7 +422,7 @@ components:
       name: provider
       in: query
       required: false
-      description: Filter by provider (`github`, `stripe`, `slack`, `generic:<name>`, `redis:<channel>`).
+      description: Filter by source type (`github`, `gitea`, `stripe`, `slack`, `cairn`, `generic`).
       schema: { type: string }
     FilterEventType:
       name: event_type
@@ -575,19 +457,9 @@ components:
       type: string
       description: >-
         How the event's trust is established (ADR-0003). `signed` = HMAC-verified webhook;
-        `token` = shared-secret-authenticated webhook (caller, not body); `open` = unchecked
-        webhook (trusted-network only); `queue` = pull adapter, trust = broker connection.
-      enum: [signed, token, open, queue]
-
-    ProviderFamily:
-      type: string
-      description: Ingestion family (ADR-0003) — webhook (push) or queue (pull).
-      enum: [webhook, queue]
-
-    SecretStatus:
-      type: string
-      description: Runtime secret status (configured/missing/none-by-design). Never the secret value.
-      enum: [configured, missing, none-by-design]
+        `token` = webhook authenticated by its unguessable ingest URL (caller, not body);
+        `operator` = a todo pushed by the signed-in operator over `/api/v1`.
+      enum: [signed, token, operator]
 
     EventSummary:
       type: object
@@ -619,7 +491,7 @@ components:
               description: Provider delivery id used for idempotency.
               example: 8f6c...-de
             content_type: { type: [string, "null"], example: application/json }
-            source_ip: { type: [string, "null"], description: Null for Redis-ingested events. }
+            source_ip: { type: [string, "null"] }
             headers:
               type: object
               description: |
@@ -631,34 +503,37 @@ components:
               type: string
               description: Raw body exactly as received (bytes preserved for replay).
 
-    ProviderStatus:
-      type: object
-      required: [name, kind, trust_mode, enabled, secret_status]
-      properties:
-        name: { type: string, example: 'generic:dockerhub' }
-        family: { $ref: '#/components/schemas/ProviderFamily' }
-        trust_mode: { $ref: '#/components/schemas/TrustMode' }
-        enabled: { type: boolean }
-        secret_status: { $ref: '#/components/schemas/SecretStatus' }
-        path:
-          type: [string, "null"]
-          description: Webhook route path for HTTP providers (null for redis).
-          example: /webhooks/generic/dockerhub
-        channel:
-          type: [string, "null"]
-          description: Redis channel/stream for redis providers (null for HTTP).
-          example: deploys
-
     IngestAck:
       type: object
-      description: Acknowledgement returned to the provider on a successfully received event.
-      required: [id, provider, trust_mode, verified, received_at]
+      description: |
+        Acknowledgement returned to the producer on an accepted delivery. A routed delivery yields
+        one todo per target endpoint; `id`/`queue` name the first (the owner's, unless a rule
+        narrowed it out) and are absent when `todos` is empty.
+      required: [todos, created, trust_mode, verified]
       properties:
-        id: { type: integer, format: int64 }
-        provider: { type: string }
+        todos:
+          type: array
+          items:
+            type: object
+            required: [id, endpoint_id, queue, created]
+            properties:
+              id: { type: string, example: td_69315ae1-… }
+              endpoint_id: { type: string }
+              queue: { type: string, example: inbox }
+              created: { type: boolean, description: false when the delivery collapsed onto an existing todo. }
+        created: { type: integer, description: Count of newly created todos; 0 for a wholly idempotent redelivery. }
+        id: { type: string }
+        queue: { type: string }
         trust_mode: { $ref: '#/components/schemas/TrustMode' }
         verified: { type: boolean }
-        received_at: { type: string, format: date-time }
+        dropped: { type: boolean, description: true when a routing rule dropped the delivery (event recorded, no todo). }
+        repeat: { type: boolean, description: true when a `once` rule already made a todo about the same subject. }
+
+    IngestError:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, example: signature verification failed, description: Never contains secret or signature values. }
 
     Settings:
       type: object
@@ -678,7 +553,6 @@ components:
       properties:
         status: { type: string, enum: [ok, degraded, error] }
         db: { type: string, enum: [ok, error] }
-        redis: { type: string, enum: [ok, disabled, error] }
         database: { type: string, enum: [ok, error] }
         version: { type: string }
 
@@ -823,11 +697,6 @@ components:
       in: header
       name: X-Slack-Signature
       description: '`v0=` HMAC-SHA256 over "v0:{ts}:{body}"; paired with X-Slack-Request-Timestamp.'
-    genericToken:
-      type: apiKey
-      in: query
-      name: token
-      description: Shared-secret token — authenticates the caller, not the body (ADR-0003).
     operatorOAuth:
       type: http
       scheme: bearer

@@ -11,11 +11,15 @@ package server
 // failure list WAS the leak inventory (#176), and each test flipped green as the corresponding
 // scoping fix landed. A green-only suite added after the fix would prove nothing about the class.
 //
-// They are now GREEN against #179 (store + handler scoping) and #180 (the provider-registry
-// operator gate). Two of them earned their keep the hard way: the provider cases showed the
-// registry was not merely readable across tenants but MUTABLE — bob could POST
-// /providers/{name}/remove and delete alice's provider, which #176's read-focused inventory had
-// missed entirely, and which #180 then closed.
+// They are now GREEN against #179 (store + handler scoping). Two provider cases used to live here
+// too, and earned their keep the hard way: they showed the instance-wide provider registry was not
+// merely readable across tenants but MUTABLE — bob could POST /providers/{name}/remove and delete
+// alice's provider, which #176's read-focused inventory had missed entirely. #180 gated it behind an
+// operator allowlist; #181 then removed the registry outright, because a surface that belongs to no
+// tenant has no honest scoping. Those cases left with it — the coverage walk below is what proves
+// no /providers route survived to need them.
+//
+// @joestump 09/21/2026 - Dropped the provider cases and route-table entries with the registry.
 //
 // The store-side calls below moved with the fix: *AnyEndpoint became *OperatorOwned and the read
 // models take an owner. The verification re-reads deliberately pass ALICE's id — the assertion is
@@ -206,22 +210,6 @@ func TestTenancyEndpointsListLeaksNothing(t *testing.T) {
 	}
 }
 
-// TestTenancyProvidersListLeaksNothing: bob's /providers view shows no provider alice configured.
-// Governing: issue #177 assertion 1.
-func TestTenancyProvidersListLeaksNothing(t *testing.T) {
-	f := newTenancyFixture(t)
-
-	if _, err := f.st.RegisterAdapter(f.ctx, "provider-alice-only", "webhook", "signed", []byte(`{}`)); err != nil {
-		t.Fatalf("register alice's provider: %v", err)
-	}
-
-	rec := f.bobGet(t, "/providers")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /providers as bob: status %d", rec.Code)
-	}
-	assertNotIn(t, "GET /providers", rec.Body.String(), "provider-alice-only")
-}
-
 // TestTenancyCountsAndStatsLeakNothing: the rail pill, the filter pills, and the Board stats are
 // computed globally today; bob's rendered counts must reflect ONLY bob's rows. Nothing in this
 // HTML looks like an id, which is exactly why it is easy to forget.
@@ -342,40 +330,6 @@ func TestTenancyEndpointMutationsLeaveAliceUntouched(t *testing.T) {
 	}
 }
 
-// TestTenancyProviderMutationsRefuseAndLeaveStateUntouched: bob must not disable, enable, rotate,
-// or remove a provider line alice configured. Governing: issue #177 assertion 3.
-func TestTenancyProviderMutationsRefuseAndLeaveStateUntouched(t *testing.T) {
-	f := newTenancyFixture(t)
-
-	if _, err := f.st.RegisterAdapter(f.ctx, "provider-tenancy-f12", "webhook", "signed", []byte(`{}`)); err != nil {
-		t.Fatalf("register provider: %v", err)
-	}
-	before, err := f.st.GetAdapter(f.ctx, "provider-tenancy-f12")
-	if err != nil {
-		t.Fatalf("read provider before: %v", err)
-	}
-
-	for _, path := range []string{
-		"/providers/provider-tenancy-f12/disable",
-		"/providers/provider-tenancy-f12/enable",
-		"/providers/provider-tenancy-f12/rotate",
-		"/providers/provider-tenancy-f12/remove",
-	} {
-		rec := f.bobPost(t, path)
-		if rec.Code >= 200 && rec.Code < 300 {
-			t.Errorf("POST %s as bob: status %d is a success — cross-tenant provider mutation went through", path, rec.Code)
-		}
-	}
-
-	after, err := f.st.GetAdapter(f.ctx, "provider-tenancy-f12")
-	if err != nil {
-		t.Fatalf("read provider after: %v", err)
-	}
-	if after.Enabled != before.Enabled {
-		t.Errorf("provider enabled = %v after bob's mutations, want unchanged (%v)", after.Enabled, before.Enabled)
-	}
-}
-
 // TestTenancyFriendsListLeaksNothing: bob's /friends page shows only bob's edges — alice's
 // handles and edge ids must not appear. (No friend edge exists in the default fixture on
 // purpose: friending is a real grant and would mask the bug.) Governing: issue #177 assertion 1.
@@ -416,8 +370,6 @@ var tenancyExcluded = []struct {
 	{"/agents", "redirect-only to /endpoints (AgentsRedirect performs no store lookup)"},
 	{"/endpoints/quick", "creation flow: mints for the caller"},
 	{"/endpoints/vend", "creation flow: mints for the caller"},
-	{"/providers/connect", "creation flow: mints for the caller"},
-	{"/providers/{name}/confirm/", "pre-action modal render: existence signal only, action routes are in the table"},
 	{"/personas/wizard", "creation flow: mints for the caller"},
 	{"/personas", "POST /personas creates for the caller; {id} mutations are tenant-directed and in the table"},
 	{"/friends/new", "modal render"},
@@ -444,7 +396,7 @@ func tenancyCovered() map[string]bool {
 	m := map[string]bool{}
 	for _, k := range []string{
 		// Collection reads — deep (assert alice's identifiers absent).
-		"GET /todos", "GET /endpoints", "GET /events", "GET /providers", "GET /friends",
+		"GET /todos", "GET /endpoints", "GET /events", "GET /friends",
 		// Todo direct-id + mutations — deep.
 		"GET /todos/{id}",
 		"POST /todos/{id}/claim", "POST /todos/{id}/complete", "POST /todos/{id}/fail",
@@ -452,9 +404,6 @@ func tenancyCovered() map[string]bool {
 		// Endpoint direct-id — deep (revoke/delete scoped; pinned so they cannot regress).
 		"GET /endpoints/{id}/revoke",
 		"POST /endpoints/{id}/revoke", "POST /endpoints/{id}/delete",
-		// Provider direct-name — deep.
-		"POST /providers/{name}/disable", "POST /providers/{name}/enable",
-		"POST /providers/{name}/rotate", "POST /providers/{name}/remove",
 	} {
 		m[k] = true
 	}

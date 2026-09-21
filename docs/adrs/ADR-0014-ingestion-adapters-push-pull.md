@@ -1,11 +1,18 @@
 ---
-status: accepted
+status: superseded
 date: 2026-07-05
 decision-makers: Joe Stump
 related: [ADR-0003, ADR-0007, ADR-0012]
 ---
 
 # ADR-0014: Ingestion Adapters — Push (webhook) and Pull (queue) Families
+
+> **Superseded 2026-09-21 (#181).** The pull family — the Redis reference adapter, the adapter runner,
+> `SWITCHBOARD_REDIS_URL`, and the `adapters` table (dropped by migration 0021) — and the
+> operator-configured push receivers were removed. Self-managed webhooks
+> ([ADR-0012](ADR-0012-agents-self-manage-webhooks.md), `POST /webhooks/w/{token}`) are the only
+> ingestion surface: instance-wide ingestion belongs to no tenant, so it cannot name the endpoint that
+> owns the todos it mints ([ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md)).
 
 ## Context and Problem Statement
 

@@ -2,44 +2,47 @@
 status: amended
 date: 2026-07-21
 amends: [ADR-0003, ADR-0014]
-implements: [ADR-0003, ADR-0014, ADR-0022]
+implements: [ADR-0003, ADR-0012, ADR-0022]
 ---
 
 # SPEC-0001: Webhook Ingestion (Push Adapters)
 
 ## Overview
 
-Webhook ingestion is Switchboard's **push** ingestion family: inbound HTTP endpoints that receive
-provider deliveries, verify their trust (per-provider signature or a shared-secret token), normalize
-the delivery, persist an event for history, and enqueue a durable todo. It realizes the webhook half
-of [ADR-0003](../../../adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) (the `webhook`
-provider family and its ordered trust modes `signed` / `token` / `open`) and the push family of
-[ADR-0014](../../../adrs/ADR-0014-ingestion-adapters-push-pull.md) (push vs. pull adapters sharing
-one normalization contract into the todo queue).
+Webhook ingestion is Switchboard's only ingestion surface: inbound HTTP endpoints that receive
+provider deliveries, verify their trust (per-provider signature or the ingest-URL token), normalize
+the delivery, persist an event for history, and enqueue a durable todo. It realizes the verification
+and trust model of
+[ADR-0003](../../../adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) on the self-managed
+webhooks of [ADR-0012](../../../adrs/ADR-0012-agents-self-manage-webhooks.md).
 
 A webhook is *push*: the sender initiates an HTTP request, and the "ack" is the HTTP response.
-Verification happens at receive, before any parsing, against the raw request body. The three trust
+Verification happens at receive, before any parsing, against the raw request body. The trust
 modes are honest and ordered — `signed` (HMAC verified, `verified=true`) is strictly stronger than
-`token` (shared secret authenticates the caller, not the body, `verified=false`), which is stronger
-than `open` (no check, `verified=false`, off by default). The trust mode is stored on every event and
+`token` (the unguessable ingest URL authenticates the caller, not the body, `verified=false`). The
+trust mode is stored on every event and
 surfaced everywhere so a human never has to guess whether a delivery was authenticated.
 
-**As of ADR-0022, all webhook ingestion flows through agent self-managed webhooks**
+**All webhook ingestion flows through agent self-managed webhooks**
 ([ADR-0012](../../../adrs/ADR-0012-agents-self-manage-webhooks.md)) served at
 `POST /webhooks/w/{ingest_token}` (`internal/ingest/selfmanaged.go`). Every webhook is owned by
 exactly one vended MCP endpoint, and every todo produced by a delivery is pinned to that endpoint
-(per the [todo-queue spec](../todo-queue/spec.md) "Endpoint Ownership" requirement). The
-operator-configured signed receivers for GitHub/Stripe/Slack and the generic token/open receiver are
-retired: they carried no endpoint owner and could not satisfy the tenant-isolation invariant.
-Self-managed signed webhooks cover the same providers plus Gitea (the agent creates the webhook; switchboard
-mints and holds the HMAC secret exactly as before). This capability covers *only* the push family;
-pull (queue) ingestion is SPEC-0002.
+(per the [todo-queue spec](../todo-queue/spec.md) "Endpoint Ownership" requirement). The agent
+creates the webhook; switchboard derives the trust mode from the source type and mints and holds the
+HMAC secret.
+
+> **Amended 2026-09-21 (#181).** The operator-configured receivers (`/webhooks/{provider}`,
+> `/webhooks/generic/{name}`), their env-configured secrets and tokens, and the `open` trust mode
+> they alone could produce were removed, along with pull ingestion
+> ([SPEC-0002](../queue-adapters/spec.md), retired): instance-wide ingestion belongs to no tenant, so
+> it cannot name the endpoint that owns the todos it mints (ADR-0022). The verification, replay,
+> dedup, and sanitization requirements below are unchanged.
 
 ## Requirements
 
 ### Requirement: Signed Webhook Verification
 
-For a webhook provider declared `signed` (GitHub, Gitea, Stripe, Slack), the receiver MUST verify a
+For a webhook whose source type is `signed` (GitHub, Gitea, Stripe, Slack, Cairn), the receiver MUST verify a
 cryptographic signature over the **raw request body** before parsing the payload, using a
 constant-time comparison. A missing, malformed, or failing signature MUST return HTTP 401 and MUST
 NOT persist the payload; only a redacted rejection line MAY be logged (provider, event type if
@@ -50,11 +53,11 @@ plain byte equality.
 
 #### Scenario: Valid GitHub signature is accepted
 
-- **WHEN** a `POST /webhooks/github` request arrives whose `X-Hub-Signature-256` header matches the
-  HMAC-SHA256 of the raw body under the configured secret
+- **WHEN** a self-managed github webhook delivery arrives whose `X-Hub-Signature-256` header matches
+  the HMAC-SHA256 of the raw body under the minted signing secret
 - **THEN** the event is persisted with `source='github'`, `family='webhook'`,
   `trust_mode='signed'`, `verified=true`, `verify_detail='hmac-sha256 ok'`, a todo is created, and
-  the response is HTTP 202 with `{id, queue, verified: true}`
+  the response is HTTP 202 with `{todos, created, verified: true, trust_mode: 'signed'}`
 
 #### Scenario: Valid Gitea self-managed signature is accepted
 
@@ -70,11 +73,15 @@ plain byte equality.
 - **THEN** the response is HTTP 401, no event row and no todo are written, and a redacted rejection
   line (no secret, no full signature) MAY be logged
 
-#### Scenario: Signature secret not configured
+#### Scenario: Signed webhook with no stored secret
 
-- **WHEN** a signed-provider request arrives but no signing secret is configured for that provider
-- **THEN** the request is rejected without persisting (HTTP 503 for a globally-required-but-unset
-  secret, or HTTP 404/403 for a provider that is not configured) and no signature is compared
+- **WHEN** a delivery arrives for a `signed` webhook whose signing secret is absent from the store
+- **THEN** the request is rejected with HTTP 503 without persisting, and no signature is compared
+
+#### Scenario: Unknown ingest token
+
+- **WHEN** a request arrives at `POST /webhooks/w/{ingest_token}` with a token that matches no webhook
+- **THEN** the response is HTTP 404 and no event or todo is written
 
 ### Requirement: Replay-Window Enforcement for Timestamped Signatures
 
@@ -139,50 +146,43 @@ signed body's `kind`. The todo title MUST name the kind, the artifact title, and
 
 ### Requirement: Shared-Secret Token Authentication for Unsigned Webhooks
 
-For webhook providers with no signing scheme (Docker Hub, homelab/self-hosted senders) served via
-the generic endpoint, the receiver MUST require a configured **shared-secret token** the caller
-presents on every request, compared in constant time. The token SHOULD be presented in an HTTP
-header (`Authorization: Bearer <token>` or a dedicated token header) and MAY fall back to a URL
-token (`?token=` or a path token) for senders that can only be configured with a URL. A generic
-provider MUST be disabled until a token is configured, and MUST reject a request with a
-missing/incorrect token with HTTP 403 without persisting. An accepted token request MUST persist the
+For senders with no signing scheme (Docker Hub, homelab/self-hosted senders), served by a webhook of
+source type `generic`, the **shared-secret token** is the webhook's unguessable ingest token, minted
+by switchboard and presented in the URL path (`POST /webhooks/w/{ingest_token}`). The receiver MUST
+reject a request whose token matches no webhook with HTTP 404 without persisting. An accepted token
+request MUST persist the
 event with `trust_mode='token'`, `verified=false`, and a `verify_detail` that states the caller is
 authenticated but the body is not verified. `token` MUST NOT ever be presented as `signed`.
 
 #### Scenario: Correct token is accepted as token trust
 
-- **WHEN** a `POST /webhooks/generic/{name}` request presents the configured shared secret (header
-  or URL fallback)
+- **WHEN** a request arrives at the ingest URL of a `generic` webhook
 - **THEN** the event is persisted with `family='webhook'`, `trust_mode='token'`, `verified=false`, a
   todo is created, and the response is HTTP 202
 
 #### Scenario: Missing or wrong token is rejected
 
-- **WHEN** a generic request presents a missing or incorrect token
-- **THEN** the response is HTTP 403 and no event or todo is written
+- **WHEN** a request presents an ingest token that matches no webhook (wrong, rotated, or deleted)
+- **THEN** the response is HTTP 404 and no event or todo is written
 
-#### Scenario: Generic provider disabled until token set
+### Requirement: Trust Mode Derived From Source Type
 
-- **WHEN** an operator configures a generic provider without a token
-- **THEN** the provider is disabled and every request to it is rejected (403) until a token is set
+A webhook's trust mode MUST be derived by switchboard from its source type when the webhook is
+created (`github`, `gitea`, `stripe`, `slack`, `cairn` ⇒ `signed`; `generic` ⇒ `token`). The agent
+MUST NOT be able to supply or downgrade it, and a source type with no derivation MUST be refused at
+create. An ingestion path MUST NOT produce `trust_mode='open'`: a sender that can present no signature
+is served by a `generic` webhook, which is `token`.
 
-### Requirement: Explicit Open Trust Mode
+#### Scenario: Generic webhook is token, never open
 
-A provider MAY be explicitly set to `open` (no verification) only by deliberate operator opt-in.
-Open providers MUST default to disabled, MUST persist events with `trust_mode='open'`,
-`verified=false`, and a plain `verify_detail` (e.g. `open — no verification`), and MUST be labeled as
-the loudest/weakest tier everywhere. The system MUST NOT default any provider to `open`.
+- **WHEN** an agent creates a webhook with source type `generic`
+- **THEN** the webhook's trust mode is `token`, and its deliveries persist with `trust_mode='token'`,
+  `verified=false`
 
-#### Scenario: Open provider only exists when explicitly created
+#### Scenario: Unsupported source type is refused
 
-- **WHEN** no operator has explicitly created an `open` provider
-- **THEN** no `open` provider accepts deliveries; an unknown provider name returns HTTP 404
-
-#### Scenario: Open delivery is labeled unverified
-
-- **WHEN** a delivery arrives at an explicitly-created `open` provider
-- **THEN** the event is persisted with `trust_mode='open'`, `verified=false` and labeled as
-  unverified in the API and UI
+- **WHEN** `create_webhook` names a source type switchboard cannot derive a trust mode for
+- **THEN** the call is refused and no webhook is created
 
 ### Requirement: Idempotency Key Extraction and Dedup
 
@@ -193,7 +193,7 @@ where the provider supplies no delivery id (Slack). A generic sender has no prov
 stamp its own on each delivery as `X-Delivery-Id` (or the Standard Webhooks `Webhook-Id`); when one
 is present and no longer than 256 bytes the receiver MUST use it as the delivery id, and MUST
 otherwise fall back to the body hash. A sender-asserted id is trusted exactly as much as the body it
-travels with: it MUST be scoped to the provider (or self-managed webhook) it arrived on, so a sender
+travels with: it MUST be scoped to the self-managed webhook it arrived on, so a sender
 can only ever collapse its own deliveries. If a non-terminal todo already exists
 in the target queue for the derived key, ingestion MUST return the existing todo and create nothing
 new. Events MUST additionally dedup on `(source, external_id)` so a duplicate delivery does not
@@ -330,8 +330,8 @@ narrowed the owner out.
 ### Requirement: Error Handling Standards
 
 Ingestion errors MUST be wrapped with context at each boundary (read, verify, insert event, create
-todo) and MUST NOT be silently swallowed. Domain rejections (bad signature, bad token, disabled
-provider, unknown provider, oversized body) MUST map to specific HTTP status codes (401 / 403 / 404 /
+todo) and MUST NOT be silently swallowed. Domain rejections (bad signature, unknown ingest
+token, oversized body) MUST map to specific HTTP status codes (401 / 404 /
 413) rather than a generic 500. Unexpected internal failures MUST return HTTP 500 without leaking
 internal detail, and MUST be logged with structured context.
 
@@ -345,9 +345,8 @@ internal detail, and MUST be logged with structured context.
 
 ### Authentication
 
-All ingestion endpoints authenticate the *delivery*, not a Switchboard human/agent session. As of
-ADR-0022, the only ingestion endpoint is the self-managed webhook receiver; the operator-configured
-signed/token/open receivers are retired (they carried no endpoint owner).
+All ingestion endpoints authenticate the *delivery*, not a Switchboard human/agent session. The
+only ingestion endpoint is the self-managed webhook receiver.
 
 | Endpoint | Auth | Justification |
 |----------|------|---------------|

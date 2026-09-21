@@ -36,7 +36,7 @@ var tmplFS embed.FS
 // Startup parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
 // "Application Shell And Navigation" (providers joins the IA).
-var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "quickvend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "providers", "authorize", "connect"}
+var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "quickvend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "authorize"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -158,7 +158,7 @@ func dict(pairs ...any) (map[string]any, error) {
 // live counts, database connectivity, and the avatar initials.
 // Governing: SPEC-0015 REQ "Application Shell And Navigation" (six-view IA).
 type shell struct {
-	Active          string // board | todos | endpoints | personas | friends | providers — marks aria-current on the nav
+	Active          string // board | todos | endpoints | personas | friends — marks aria-current on the nav
 	TodoCount       int    // total todos (every state), shown beside the Todos rail entry (design record, #179)
 	LiveRate        int    // events/min for the LIVE pill (hidden when zero)
 	DBConnected     bool   // pool ping result — the rail footer indicator
@@ -197,19 +197,6 @@ type view struct {
 	// create/edit wizard step page (templates/personawiz.html) with its live A2A card preview.
 	Personas   *personasView
 	PersonaWiz *personaWizStepView
-
-	// Providers view (SPEC-0017 REQ "Providers View"/"Provider Catalog"/"Provider Lifecycle").
-	Providers *providersPanelView // families + catalog panel
-	// ProviderReveal renders the post-rotate one-time secret reveal inline on the page (no-JS
-	// fallback, mirroring the vend flow's Reveal); the HTMX path gets the modal fragment instead.
-	ProviderReveal *providerRevealView
-	// ProviderConfirm renders the lifecycle confirmation inline on the page (no-JS fallback for
-	// the overlay confirmation modal).
-	ProviderConfirm *providerConfirmView
-	// Connect wizard (SPEC-0017 REQ "Connect Provider Wizard"; templates/connect.html): the active
-	// step page, or the completion page with the copyable URL + one-time token reveal.
-	Connect     *connectStepView
-	ConnectDone *connectDoneView
 
 	// OAuth consent screen (SPEC-0016 REQ "Authorization Code Flow With Consent"): the
 	// "authorize access" surface (templates/authorize.html) or its dead-end error state.
@@ -594,11 +581,11 @@ func trustDef(mode string) string {
 }
 
 // providerTags maps known source names to their design-doc two-letter chips
-// (GH/ST/SL/DH/HL/RD per docs/design/03-components.md). Used as fallback when
+// (GH/ST/SL/DH/HL/GT per docs/design/03-components.md). Used as fallback when
 // no SVG icon is available.
 var providerTags = map[string]string{
 	"github": "GH", "stripe": "ST", "slack": "SL", "dockerhub": "DH",
-	"healthchecks": "HL", "redis": "RD", "gitea": "GT",
+	"healthchecks": "HL", "gitea": "GT",
 }
 
 // eventIconSlugs maps an event kind onto the icon slug that represents it; several kinds share one

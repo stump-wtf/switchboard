@@ -10,13 +10,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http/httptest"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -28,7 +26,7 @@ import (
 
 // eventVerbNames is the full SPEC-0005 tool surface, used to vend all-granted test endpoints.
 var eventVerbNames = []string{
-	"list_webhook_events", "get_webhook_event", "replay_webhook_event", "list_providers",
+	"list_webhook_events", "get_webhook_event", "replay_webhook_event",
 }
 
 // --- fakeStore event-history methods (the struct lives in mcp_test.go) ---
@@ -159,7 +157,7 @@ func TestEventToolsAdvertisedByScope(t *testing.T) {
 		}
 	}
 	sort.Strings(names)
-	want := []string{"get_webhook_event", "list_providers", "list_webhook_events", "replay_webhook_event"}
+	want := []string{"get_webhook_event", "list_webhook_events", "replay_webhook_event"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("advertised tools = %v, want %v", names, want)
 	}
@@ -308,130 +306,6 @@ func TestReplayWebhookEventSurface(t *testing.T) {
 	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 999}, "not_found")
 	// No explicit target and no configured replay_default_target: a hard invalid_argument.
 	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 3}, "invalid_argument")
-}
-
-// TestListProviders: list_providers reports the configured snapshot — name, family, trust mode,
-// enabled, secret_status, path — and the raw response never carries secret material.
-// Governing: SPEC-0005 scenario "Secret status without the secret".
-func TestListProviders(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	f := newFakeStore()
-	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, eventVerbNames)
-	h := New(f, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	t.Cleanup(h.Close)
-	h.SetProviders([]ProviderStatus{
-		{Name: "github", Family: "webhook", TrustMode: "signed", Enabled: true,
-			SecretStatus: "configured", Path: "/webhooks/github"},
-		{Name: "homelab", Family: "webhook", TrustMode: "open", Enabled: true,
-			SecretStatus: "none-by-design", Path: "/webhooks/generic/homelab"},
-	})
-	ts := httptest.NewServer(routesFor(h))
-	t.Cleanup(ts.Close)
-	cs, err := connect(t, ctx, ts.URL+"/mcp/agent-a-11111111", token)
-	if err != nil {
-		t.Fatalf("initialize handshake: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
-
-	res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "list_providers", Arguments: map[string]any{}})
-	if err != nil {
-		t.Fatalf("tools/call list_providers: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("list_providers tool error: %s", contentText(res))
-	}
-	raw, err := json.Marshal(res.StructuredContent)
-	if err != nil {
-		t.Fatalf("marshal structured content: %v", err)
-	}
-	var out listProvidersOut
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("unmarshal structured content: %v", err)
-	}
-	if len(out.Providers) != 2 {
-		t.Fatalf("providers = %+v, want 2", out.Providers)
-	}
-	gh := out.Providers[0]
-	if gh.Name != "github" || gh.Family != "webhook" || gh.TrustMode != "signed" ||
-		!gh.Enabled || gh.SecretStatus != "configured" || gh.Path != "/webhooks/github" {
-		t.Fatalf("github provider = %+v", gh)
-	}
-	if out.Providers[1].SecretStatus != "none-by-design" {
-		t.Fatalf("open provider secret_status = %q, want none-by-design", out.Providers[1].SecretStatus)
-	}
-	// The classification is the whole story: no key or value on the wire resembles a secret.
-	if s := string(raw); strings.Contains(s, "secret\":") && !strings.Contains(s, "secret_status") {
-		t.Fatalf("provider response carries a secret-like field: %s", s)
-	}
-}
-
-// TestListProvidersLiveSource: with a provider source installed (the registry-backed wiring),
-// list_providers resolves the enumeration PER CALL — a provider added between calls appears with
-// no restart and no re-wiring — and the source takes precedence over any snapshot. The output
-// shape is the same SPEC-0005 contract as the snapshot path.
-// Governing: ADR-0020, SPEC-0017 REQ "Runtime Provider Registry" (scenario "Wizard-created
-// provider is live immediately").
-func TestListProvidersLiveSource(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	f := newFakeStore()
-	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, eventVerbNames)
-	h := New(f, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	t.Cleanup(h.Close)
-	// A stale snapshot that the live source must shadow.
-	h.SetProviders([]ProviderStatus{{Name: "stale", Family: "webhook", TrustMode: "open"}})
-	var mu sync.Mutex
-	live := []ProviderStatus{
-		{Name: "github", Family: "webhook", TrustMode: "signed", Enabled: true,
-			SecretStatus: "configured", Path: "/webhooks/github"},
-	}
-	h.SetProviderSource(func(context.Context) []ProviderStatus {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]ProviderStatus(nil), live...)
-	})
-	ts := httptest.NewServer(routesFor(h))
-	t.Cleanup(ts.Close)
-	cs, err := connect(t, ctx, ts.URL+"/mcp/agent-a-11111111", token)
-	if err != nil {
-		t.Fatalf("initialize handshake: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
-
-	list := func() listProvidersOut {
-		t.Helper()
-		res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "list_providers", Arguments: map[string]any{}})
-		if err != nil {
-			t.Fatalf("tools/call list_providers: %v", err)
-		}
-		raw, err := json.Marshal(res.StructuredContent)
-		if err != nil {
-			t.Fatalf("marshal structured content: %v", err)
-		}
-		var out listProvidersOut
-		if err := json.Unmarshal(raw, &out); err != nil {
-			t.Fatalf("unmarshal structured content: %v", err)
-		}
-		return out
-	}
-
-	out := list()
-	if len(out.Providers) != 1 || out.Providers[0].Name != "github" {
-		t.Fatalf("live source must shadow the snapshot: %+v", out.Providers)
-	}
-
-	// A provider "created" after the session connected enumerates on the next call — no restart.
-	mu.Lock()
-	live = append(live, ProviderStatus{Name: "wizard", Family: "webhook", TrustMode: "token",
-		Enabled: true, SecretStatus: "configured", Path: "/webhooks/generic/wizard"})
-	mu.Unlock()
-	out = list()
-	if len(out.Providers) != 2 || out.Providers[1].Name != "wizard" {
-		t.Fatalf("runtime-created provider must enumerate without restart: %+v", out.Providers)
-	}
 }
 
 // TestEventStoreFailureIsGenericToClient: a DB failure inside an event read reaches the client

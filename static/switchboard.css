@@ -2560,205 +2560,14 @@ pre code {
   gap: 8px;
 }
 
-/* ============================================================================
-   Providers view (SPEC-0017; ADR-0020): family sections over the runtime
-   registry, per-line trust chips + health + lifecycle, and the two-tier
-   catalog — connectable (implemented) vs available (planned, visually
-   distinct, no connect path). Governing: ADR-0018.
-   ========================================================================== */
-.sb-prfam {
-  margin: 0 0 22px;
-}
 /* Family heading mirrors the ledger group heading: mono uppercase + count + rule line. */
-.sb-prfam__head {
-  font-family: var(--sb-font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--sb-secondary);
-  margin: 0 0 9px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.sb-prfam__glyph {
-  color: var(--sb-accent);
-}
-.sb-prfam__n {
-  font-family: var(--sb-font-mono);
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--sb-faint);
-}
-.sb-prfam__rule {
-  flex: 1;
-  height: 1px;
-  background: var(--sb-border);
-}
-.sb-prcards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  gap: 12px;
-}
-.sb-prcard {
-  background: var(--sb-panel);
-  border: 1px solid var(--sb-border);
-  border-radius: var(--sb-radius-card);
-  padding: 13px 15px 11px;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-/* A disabled line stays legible but reads dead — the chip says why (SPEC-0017 lifecycle). */
-.sb-prcard--disabled {
-  opacity: 0.62;
-  border-style: dashed;
-}
-.sb-prcard__head {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex-wrap: wrap;
-}
-.sb-prcard__ident {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  margin-right: auto;
-}
-.sb-prcard__name {
-  font-weight: 600;
-  color: var(--sb-ink);
-}
-.sb-prcard__kind {
-  font-size: 11px;
-  color: var(--sb-faint-2);
-}
-.sb-prcard__meta {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-.sb-prcard__row {
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-}
-.sb-prcard__row dt {
-  flex: none;
-  min-width: 52px;
-}
-.sb-prcard__row dd {
-  margin: 0;
-  font-size: 12.5px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.sb-prcard__secret {
-  font-family: var(--sb-font-mono);
-  font-size: 11px;
-  color: var(--sb-trust-signed);
-}
-/* A held-secret gap is a rejected line, not a warning footnote — token/signed reject everything. */
-.sb-prcard__secret--missing {
-  color: var(--sb-trust-open);
-}
-.sb-prcard__err {
-  font-family: var(--sb-font-mono);
-  font-size: 11px;
-  color: var(--sb-trust-open);
-}
-.sb-prcard__foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  border-top: 1px solid var(--sb-divider);
-  padding-top: 9px;
-  margin-top: 2px;
-}
-.sb-prcard__rate {
-  font-family: var(--sb-font-mono);
-  font-size: 11px;
-  color: var(--sb-cyan);
-}
-.sb-prcard__seen {
-  font-family: var(--sb-font-mono);
-  font-size: 10.5px;
-}
-/* Configure affordance: a native disclosure so the lifecycle controls work with no JS. */
-.sb-prcard__config {
-  margin-left: auto;
-}
-.sb-prcard__config summary {
-  list-style: none;
-  cursor: pointer;
-}
-.sb-prcard__config summary::-webkit-details-marker {
-  display: none;
-}
-.sb-prcard__acts {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  padding-top: 8px;
-}
 
-/* Catalog (SPEC-0017 REQ "Provider Catalog"): connectable vs available must read differently at a
-   glance — available is dashed, dimmed, badged "planned", and contains nothing interactive. */
-.sb-prcat {
-  margin: 4px 0 8px;
-}
-.sb-prcat__grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
-}
-.sb-catcard {
-  background: var(--sb-panel);
-  border: 1px solid var(--sb-border);
-  border-radius: var(--sb-radius-card);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.sb-catcard--available {
-  border-style: dashed;
-  background: transparent;
-  opacity: 0.72;
-}
-.sb-catcard__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.sb-catcard__title {
-  font-weight: 600;
-  color: var(--sb-ink);
-  margin-right: auto;
-}
-.sb-catcard__desc {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--sb-body);
-}
-.sb-catcard__foot {
-  border-top: 1px solid var(--sb-divider);
-  padding-top: 7px;
-}
-.sb-catcard__state {
-  font-family: var(--sb-font-mono);
-  font-size: 10.5px;
-  color: var(--sb-secondary);
-}
+/* A disabled line stays legible but reads dead — the chip says why (SPEC-0017 lifecycle). */
+
+/* A held-secret gap is a rejected line, not a warning footnote — token/signed reject everything. */
+
+/* Configure affordance: a native disclosure so the lifecycle controls work with no JS. */
+
 /* Planned badge: neutral — deliberately NOT a trust tint; there is no enforced mode to claim. */
 .sb-badge--planned {
   color: var(--sb-secondary);
@@ -2767,16 +2576,6 @@ pre code {
 
 /* No-JS inline slot for the confirmation / rotate-reveal panels: the shared modal fragments
    render statically in-flow (the overlay positioning only applies inside #sb-overlay). */
-.sb-prinline {
-  margin: 0 0 18px;
-}
-.sb-prinline .sb-modal {
-  position: static;
-  transform: none;
-  animation: none;
-  width: min(560px, 100%);
-  box-shadow: none;
-}
 
 /* ── OAuth consent — the "authorize access" surface (SPEC-0016 REQ "Authorization Code Flow
    With Consent"; ADR-0019). One centered card in the SPEC-0015 full-page pattern: the client's
@@ -3453,9 +3252,8 @@ pre code {
   width: 16px;
   height: 16px;
 }
-/* Standalone icons (not inside a chip wrap): the wizard choice list, the vend chipset, and the
-   inline event glyph beside a todo's kind. */
-.sb-choice-icon,
+/* Standalone icons (not inside a chip wrap): the vend chipset and the inline event glyph beside
+   a todo's kind. */
 .sb-chip-icon,
 .sb-event-icon {
   display: inline-block;
@@ -3498,14 +3296,12 @@ pre code {
    tokens.css: prefers-color-scheme unless data-theme="day", plus the explicit data-theme="night". */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="day"]) .sb-icon-wrap img,
-  :root:not([data-theme="day"]) .sb-choice-icon,
   :root:not([data-theme="day"]) .sb-chip-icon,
   :root:not([data-theme="day"]) .sb-event-icon {
     filter: invert(1);
   }
 }
 [data-theme="night"] .sb-icon-wrap img,
-[data-theme="night"] .sb-choice-icon,
 [data-theme="night"] .sb-chip-icon,
 [data-theme="night"] .sb-event-icon {
   filter: invert(1);

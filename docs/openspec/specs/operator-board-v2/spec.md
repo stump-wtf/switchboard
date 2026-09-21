@@ -10,12 +10,14 @@ requires: [SPEC-0003, SPEC-0007, SPEC-0012]
 
 ## Overview
 
-The redesigned human surface: the charm-web design language (ADR-0018) applied across a six-view
-information architecture — **board · todos · endpoints · personas · friends · providers** — with a
+The redesigned human surface: the charm-web design language (ADR-0018) applied across a five-view
+information architecture — **board · todos · endpoints · personas · friends** — with a
 three-lane live patch-panel board, full-page wizards, a global keyboard map, and day/night themes.
 Supersedes SPEC-0013 (Operator Board). The durable architecture of SPEC-0012 (embedded templates,
-HTMX + SSE, CSRF, error standards, no-JS fallbacks) is inherited, not restated. The Providers view's
-backend contract is SPEC-0017; this spec owns its placement in the IA and shared chrome.
+HTMX + SSE, CSRF, error standards, no-JS fallbacks) is inherited, not restated.
+
+> **Amended 2026-09-21 (#181).** The sixth view, Providers, was removed with the provider registry
+> ([SPEC-0017](../providers-view/spec.md), retired).
 
 ## Requirements
 
@@ -47,14 +49,14 @@ The font-coverage test SHALL retarget to the new files.
 ### Requirement: Application Shell And Navigation
 
 The shell SHALL present the top bar (wordmark, `~/operator` breadcrumb, MCP-connected indicator,
-"+ new" wizard launcher, theme control) and a six-view navigation: board, todos, endpoints,
-personas, friends, providers. Every view SHALL end in a key-hint footer rendering the active
+"+ new" wizard launcher, theme control) and a five-view navigation: board, todos, endpoints,
+personas, friends. Every view SHALL end in a key-hint footer rendering the active
 keymap. The login page SHALL be restyled in the same language.
 
-#### Scenario: Providers joins the IA
+#### Scenario: Navigation offers every view
 
 - **WHEN** an operator opens any view
-- **THEN** navigation offers all six views, with the active view indicated
+- **THEN** navigation offers all five views, with the active view indicated
 
 ### Requirement: Theme Toggle
 

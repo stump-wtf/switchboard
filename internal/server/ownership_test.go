@@ -42,30 +42,6 @@ const sessionCookieName = "sb_session"
 // carving out a separate database keeps these end-to-end tests (and theirs) deterministic.
 func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 	t.Helper()
-	r, st, ctx, _ := newDBRouterOpts(t, false)
-	return r, st, ctx
-}
-
-// newReceiverDBRouter is newDBRouter for tests that drive an OPERATOR-CONFIGURED receiver
-// (/webhooks/github, /webhooks/generic/{name}, …). Those receivers are not vended to an agent, so
-// nothing in their configuration names a tenant — yet todos.endpoint_id is NOT NULL with no
-// sentinel, so their owner has to be stated once by the operator. Unset, every such delivery
-// answers 503 ("receiver not configured") instead of minting a todo, which would silently hollow
-// out any test that posts one. This harness vends that owning endpoint exactly as an operator would
-// set SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID, and returns it so the test can assert ownership.
-//
-// It is a SEPARATE harness on purpose: seeding an endpoint is not free. Vending one puts an agent,
-// an endpoint and a queue in the store, and surfaces that read the store's queue vocabulary (the
-// vend wizard's queues step) render differently against a non-empty store. Only the tests that need
-// a configured receiver pay that cost. INTERIM: dies with those receivers in PR 2.
-// Governing: ADR-0022, SPEC-0001 REQ "Enqueue Accepted Delivery as Endpoint-Owned Todo".
-func newReceiverDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context, store.Endpoint) {
-	t.Helper()
-	return newDBRouterOpts(t, true)
-}
-
-func newDBRouterOpts(t *testing.T, withReceiverEndpoint bool) (chi.Router, *store.Store, context.Context, store.Endpoint) {
-	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set SWITCHBOARD_TEST_DATABASE_URL to run ownership-scoping tests")
@@ -96,21 +72,14 @@ func newDBRouterOpts(t *testing.T, withReceiverEndpoint bool) (chi.Router, *stor
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		`TRUNCATE humans, agents, endpoints, todos, events, sessions, adapters, oauth_clients RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE humans, agents, endpoints, todos, events, sessions, oauth_clients RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	st := store.New(pool)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// The DB-backed suites exercise the personas + A2A advanced surfaces, so they opt into the
 	// ADR-0023 capability flags explicitly (the production default is off).
-	// The provider registry is instance-wide and gated on cfg.OperatorSubjects, which matches
-	// NOBODY when empty. Tests that administer providers mint a session under one of these
-	// subjects; every other fixture human is deliberately a non-operator, so a handler that
-	// forgets the gate shows up as a test that suddenly passes for the wrong human.
-	cfg := config.Config{
-		BaseURL: "https://sb.example.com", PersonasEnabled: true, A2AEnabled: true,
-		OperatorSubjects: testOperatorSubjects,
-	}
+	cfg := config.Config{BaseURL: "https://sb.example.com", PersonasEnabled: true, A2AEnabled: true}
 	authr, err := auth.New(ctx, cfg, st, log)
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
@@ -122,16 +91,6 @@ func newDBRouterOpts(t *testing.T, withReceiverEndpoint bool) (chi.Router, *stor
 	// The personas capability has landed (store + well-known route wired), so the DB-backed router
 	// enables it exactly as Run does — the Personas view and its routes are live for these tests.
 	webh.SetPersonasEnabled(true)
-	// See newReceiverDBRouter: only receiver-driving tests vend the operator's owning endpoint.
-	var legacyEP store.Endpoint
-	if withReceiverEndpoint {
-		receiverOwner, err := st.UpsertHuman(ctx, "legacy-receiver-owner", "Receiver Owner", "receiver@example.com")
-		if err != nil {
-			t.Fatalf("upsert receiver-owner human: %v", err)
-		}
-		legacyEP = seedEndpoint(t, st, ctx, receiverOwner.ID, "legacy-receiver", "hash-legacy", "sbk_legacy")
-	}
-
 	hub := ingest.NewHub()
 	r := newRouter(routerDeps{
 		cfg:   cfg,
@@ -141,11 +100,11 @@ func newDBRouterOpts(t *testing.T, withReceiverEndpoint bool) (chi.Router, *stor
 		// The AS surface (token endpoint included) is part of the real route table: the operator
 		// grant tests exchange codes and rotate refresh tokens through it.
 		oauth: oauthsrv.New(st, cfg.BaseURL, log),
-		ing:   ingest.New(st, hub, log, ingest.Config{LegacyEndpointID: legacyEP.ID}),
+		ing:   ingest.New(st, hub, log, ingest.Config{}),
 		ping:  pool.Ping,
 		log:   log,
 	})
-	return r, st, ctx, legacyEP
+	return r, st, ctx
 }
 
 // mintSession creates a human plus a live server-side session and returns the plaintext cookie
@@ -317,8 +276,3 @@ func TestLogoutRevokesSessionAndClearsCookie(t *testing.T) {
 		t.Fatalf("replayed cookie after logout: got %d → %q, want 302 → /login", rec.Code, rec.Header().Get("Location"))
 	}
 }
-
-// testOperatorSubjects are the fixture identities allowed to administer the instance-wide provider
-// registry. Kept as one list so a new provider test opts in by using one of these subjects rather
-// than by widening the gate.
-var testOperatorSubjects = []string{"prov-op", "test|connie", "test|otto", "test|quinn", "test|vera"}

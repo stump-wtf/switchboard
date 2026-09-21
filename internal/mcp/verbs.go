@@ -39,7 +39,7 @@ func WebhookVerbs() []string {
 
 // EventVerbs returns the SPEC-0005 event-history surface in display order.
 func EventVerbs() []string {
-	return []string{"list_webhook_events", "get_webhook_event", "replay_webhook_event", "list_providers"}
+	return []string{"list_webhook_events", "get_webhook_event", "replay_webhook_event"}
 }
 
 // AllVerbs returns the full verb set a vend can grant: every drain, webhook, and event verb

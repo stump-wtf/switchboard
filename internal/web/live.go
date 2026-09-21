@@ -600,7 +600,7 @@ func (h *Handler) laneCardFromItem(ctx context.Context, it store.TodoItem) laneC
 }
 
 // laneCardFromTodo builds the durable lane card for a todo transition, resolving the originating
-// event for provenance (source, event type, trust chip). Event-less todos (queue adapters, dev
+// event for provenance (source, event type, trust chip). Event-less todos (operator pushes, dev
 // seeds) fall back to the todo's own fields under the queue trust mode.
 func (h *Handler) laneCardFromTodo(ctx context.Context, t store.Todo) laneCard {
 	source := t.Source

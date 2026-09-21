@@ -19,11 +19,6 @@ type Config struct {
 	BaseURL string
 	// DatabaseURL is the PostgreSQL DSN (ADR-0002).
 	DatabaseURL string
-	// RedisURL is the Redis DSN (redis:// or rediss://) for the pull-adapter family — trust is the
-	// broker connection itself (auth/ACL + TLS), so credentials live in this DSN and are never
-	// logged. Empty disables the Redis adapters. (SWITCHBOARD_REDIS_URL)
-	// Governing: ADR-0014 (Redis reference pull adapter), SPEC-0002 REQ "Redis Reference Transport Modes".
-	RedisURL string
 
 	// --- OIDC relying-party config (ADR-0011: switchboard is an RP against Pocket ID, a passkey IdP) ---
 	OIDCIssuer       string // e.g. https://pocket-id.stump.rocks
@@ -57,23 +52,6 @@ type Config struct {
 	// Navigation" (views whose backing capability is not enabled are hidden, not rendered broken).
 	// (SWITCHBOARD_FRIENDING=1)
 	FriendingEnabled bool
-
-	// OperatorSubjects are the OIDC subjects allowed to administer the INSTANCE-WIDE provider
-	// registry: the configured-receiver rows on /providers and their disable/enable/rotate/remove
-	// lifecycle. Comma-separated in SWITCHBOARD_OPERATOR_SUBJECTS.
-	//
-	// This exists because `adapters` has no owner column and cannot get one meaningfully: an
-	// operator-configured receiver is a property of the deployment, seeded from this very config,
-	// not of any tenant. Every other operator surface is scoped by owner_human_id; this one has no
-	// owner to scope by, so it is gated by identity instead.
-	//
-	// EMPTY MEANS NOBODY, deliberately. Before this existed the routes were open to every
-	// signed-in human, and "every signed-in human" included anyone the instance had ever invited —
-	// who could read the configured receiver list and, worse, REMOVE another tenant's provider
-	// outright. Failing closed makes an unconfigured instance read-only rather than
-	// administrable-by-all, which is the right way round for a gate whose whole job is to say no.
-	// Governing: SPEC-0017 REQ "Provider Lifecycle"; SPEC-0007 REQ "Human as Accountable Principal".
-	OperatorSubjects []string
 
 	// PushAllowHTTP is the explicit operator opt-in that lets A2A push-notification webhook targets
 	// use http:// instead of https://. It exists only for a documented non-production scope (local
@@ -120,7 +98,6 @@ func FromEnv() Config {
 		Addr:                getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
 		BaseURL:             base,
 		DatabaseURL:         os.Getenv("SWITCHBOARD_DATABASE_URL"),
-		RedisURL:            os.Getenv("SWITCHBOARD_REDIS_URL"),
 		OIDCIssuer:          os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
 		OIDCClientID:        os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
 		OIDCClientSecret:    os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
@@ -131,7 +108,6 @@ func FromEnv() Config {
 		SecretEncryptionKey: os.Getenv("SWITCHBOARD_SECRET_ENCRYPTION_KEY"),
 		DevLogin:            os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
 		FriendingEnabled:    os.Getenv("SWITCHBOARD_FRIENDING") == "1",
-		OperatorSubjects:    splitSubjects(os.Getenv("SWITCHBOARD_OPERATOR_SUBJECTS")),
 		PushAllowHTTP:       os.Getenv("SWITCHBOARD_PUSH_ALLOW_HTTP") == "1",
 		PersonasEnabled:     os.Getenv("SWITCHBOARD_PERSONAS") == "1",
 		A2AEnabled:          os.Getenv("SWITCHBOARD_A2A") == "1",
@@ -155,21 +131,3 @@ func getenv(key, def string) string {
 	}
 	return def
 }
-
-// splitSubjects parses the comma-separated SWITCHBOARD_OPERATOR_SUBJECTS list, trimming whitespace
-// and dropping empties — so a trailing comma or a stray space cannot silently mint an operator
-// whose subject is the empty string, which would then match any human whose subject failed to load.
-func splitSubjects(raw string) []string {
-	var out []string
-	for _, part := range strings.Split(raw, ",") {
-		if s := strings.TrimSpace(part); s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// SplitSubjectsForTest exposes splitSubjects to sibling-package tests. The parse is half of the
-// operator gate — an empty entry here would mint an operator matching any human whose subject
-// failed to load — so it is worth testing directly rather than only through Load's environment.
-func SplitSubjectsForTest(raw string) []string { return splitSubjects(raw) }

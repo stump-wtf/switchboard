@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -82,12 +81,6 @@ type Store struct {
 	endpointSeenHook atomic.Pointer[EndpointSeenHook]
 	// doorbellHook mirrors todoHook for push-eligible creations (the MCP channel doorbell).
 	doorbellHook atomic.Pointer[TodoDoorbellHook]
-	// provMu guards provCache, the short dispatch-path provider-registry cache (ADR-0020
-	// "resolve-at-request, cache-lightly"): ResolveProvider fills it, every registry write through
-	// this store clears it, and providerCacheTTL bounds staleness against out-of-process writes.
-	// Lazily allocated; nil means empty. Governing: SPEC-0017 REQ "Runtime Provider Registry".
-	provMu    sync.Mutex
-	provCache map[string]providerCacheEntry
 }
 
 // New builds a Store over the given pool, applying any options (e.g. WithSecretCipher).

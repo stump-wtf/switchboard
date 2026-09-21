@@ -65,10 +65,11 @@ func TestThemeBootPrecedesStylesheets(t *testing.T) {
 	}
 }
 
-// TestNavOffersAllSixViews: with every capability enabled, navigation offers board, todos,
-// endpoints, personas, friends, and providers — the active view indicated (SPEC-0015 scenario
-// "Providers joins the IA").
-func TestNavOffersAllSixViews(t *testing.T) {
+// TestNavOffersEveryView: with every capability enabled, navigation offers board, todos, endpoints,
+// personas and friends — the active view indicated — and NOT providers, whose view left with the
+// instance-wide provider registry (#181). The negative assertion is the point: a rail link to a
+// route that no longer exists is a dead end the route-table guard cannot see.
+func TestNavOffersEveryView(t *testing.T) {
 	h := newTestHandler(t)
 	body := renderPage(t, h, "board", view{
 		Title: "The Board", Human: testHuman(),
@@ -76,12 +77,15 @@ func TestNavOffersAllSixViews(t *testing.T) {
 			PersonasEnabled: true, FriendsEnabled: true},
 	})
 	for key, href := range map[string]string{
-		"b": "/", "t": "/todos", "e": "/endpoints", "p": "/personas", "f": "/friends", "r": "/providers",
+		"b": "/", "t": "/todos", "e": "/endpoints", "p": "/personas", "f": "/friends",
 	} {
 		want := `data-sb-nav="` + key + `" href="` + href + `"`
 		if !strings.Contains(body, want) {
 			t.Errorf("nav: missing view entry %q", want)
 		}
+	}
+	if strings.Contains(body, `href="/providers"`) {
+		t.Error("nav: still links to /providers, a route that was removed")
 	}
 	if got := strings.Count(body, `aria-current="page"`); got != 1 {
 		t.Errorf("nav: aria-current count = %d, want exactly 1", got)
@@ -111,30 +115,5 @@ func TestKeyHintFooterSlotIsEmptyServerSide(t *testing.T) {
 				t.Errorf("%s: rendered page hardcodes key hint %q — a second source of truth beside the registry", page, hint)
 			}
 		}
-	}
-}
-
-// TestProvidersPageRendersShellPlacement: the registry-backed providers page (SPEC-0017) renders
-// with the shared chrome, marks its nav entry active, and — with an empty registry — shows the
-// explanatory empty state over the catalog rather than 404ing or faking lines.
-func TestProvidersPageRendersShellPlacement(t *testing.T) {
-	h := newTestHandler(t)
-	panel := providersPanel(nil, nil, "tok")
-	body := renderPage(t, h, "providers", view{
-		Title: "Providers", Human: testHuman(), CSRF: "tok",
-		Shell:     shell{Active: "providers", DBConnected: true, Initials: "JS"},
-		Providers: &panel,
-	})
-	for _, want := range []string{
-		`href="/providers" aria-current="page"`, // nav marks Providers active
-		"data-sb-providers-empty",               // explanatory empty state (nothing connected)
-		`data-sb-catalog-state="available"`,     // the catalog still renders (static honesty)
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("providers view: missing %q", want)
-		}
-	}
-	if got := strings.Count(body, `aria-current="page"`); got != 1 {
-		t.Errorf("providers view: aria-current count = %d, want exactly 1", got)
 	}
 }

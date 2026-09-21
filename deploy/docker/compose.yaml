@@ -51,7 +51,6 @@ services:
       SWITCHBOARD_OIDC_ISSUER: ${SWITCHBOARD_OIDC_ISSUER:-}
       SWITCHBOARD_OIDC_CLIENT_ID: ${SWITCHBOARD_OIDC_CLIENT_ID:-}
       SWITCHBOARD_OIDC_CLIENT_SECRET: ${SWITCHBOARD_OIDC_CLIENT_SECRET:-}
-      SWITCHBOARD_GITHUB_SECRET: ${SWITCHBOARD_GITHUB_SECRET:-}
       # Encrypts at rest the secrets switchboard must keep recoverable — currently self-managed
       # webhook HMAC signing secrets, which cannot be hashed because verification recomputes the
       # HMAC. Empty leaves the legacy plaintext behavior SILENTLY: the stack looks healthy and the

@@ -41,7 +41,7 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
   | Webhooks | `create_webhook`, `list_webhooks`, `rotate_webhook`, `delete_webhook` |
   | Fan-out routes | `add_webhook_route`, `list_webhook_routes`, `remove_webhook_route` |
   | Routing rules | `list_webhook_rules`, `set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`, `move_webhook_rule`, `remove_webhook_rule`, `test_webhook_rules` |
-  | Event history | `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, `list_providers` |
+  | Event history | `list_webhook_events`, `get_webhook_event`, `replay_webhook_event` |
 
   The web wizard pre-checks the six todo verbs. `switchboard endpoint vend` grants all of them.
 - **A webhook ceiling** — how many webhooks the endpoint may create, which source types (`github`,

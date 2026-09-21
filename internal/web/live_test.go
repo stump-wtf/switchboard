@@ -296,12 +296,12 @@ func TestTodoResurfacedReturnsCardToVerified(t *testing.T) {
 	}
 }
 
-// TestEventlessTodoCardFallsBackToQueueTrust: a todo without an originating event (queue adapter /
-// dev seed) still renders a coherent card keyed by its todo id under the queue trust mode.
+// TestEventlessTodoCardFallsBackToQueueTrust: a todo without an originating event (an operator
+// push or a dev seed) still renders a coherent card keyed by its todo id under the queue trust mode.
 func TestEventlessTodoCardFallsBackToQueueTrust(t *testing.T) {
 	h := newTestHandler(t)
 	card := h.laneCardFromTodo(t.Context(), store.Todo{
-		ID: "td_dev", Source: "redis", Kind: "job", State: "pending", CreatedAt: time.Now(),
+		ID: "td_dev", Source: "ops", Kind: "job", State: "pending", CreatedAt: time.Now(),
 	})
 	if card.DomID != "sb-td-td_dev" || card.TrustMode != "queue" || card.Lane != laneVerified {
 		t.Fatalf("eventless card = %+v", card)

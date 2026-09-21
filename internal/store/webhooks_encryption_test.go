@@ -33,7 +33,7 @@ func testStoreWithCipher(t *testing.T) (*Store, context.Context, *cred.SecretBox
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		`TRUNCATE humans, agents, endpoints, personas, friend_edges, todos, events, sessions, adapters RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE humans, agents, endpoints, personas, friend_edges, todos, events, sessions RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	key := make([]byte, 32)

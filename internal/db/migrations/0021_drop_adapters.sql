@@ -1,0 +1,21 @@
+-- Drop The Provider Registry
+--
+-- The adapters table was the instance-wide provider registry (ADR-0014, ADR-0020): rows for the
+-- operator-configured webhook receivers (/webhooks/{github,gitea,stripe,slack,generic/*}) and the
+-- Redis pull adapters, with each row's held secret. Every consumer of it is gone (#181) — the
+-- receivers, the pull-adapter runner, the /providers view and connect wizard, and the
+-- list_providers MCP tool — because instance-wide ingestion belongs to no tenant and so cannot
+-- name the endpoint that owns the todos it mints (ADR-0022). The one ingestion surface left is the
+-- self-managed webhook, which lives in endpoint_webhooks and carries its own owner.
+--
+-- Nothing references this table: events and todos record a provider NAME in text columns, never a
+-- foreign key, so every delivery ever ingested through a registry row is untouched. What goes is
+-- configuration for code that no longer exists, including secrets that would otherwise sit in the
+-- database forever with nothing able to use, rotate or remove them.
+--
+-- NOT REVERSIBLE in place: the rows are deleted, not archived. Migrations 0001, 0003 and 0011 still
+-- create and extend the table on a fresh database and this one then removes it; they are left
+-- alone because applied migrations are history, not source.
+--
+-- @joestump 09/21/2026 - Added with the shared-receiver teardown.
+DROP TABLE IF EXISTS adapters;

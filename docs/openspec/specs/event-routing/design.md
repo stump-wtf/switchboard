@@ -21,7 +21,6 @@ Ingestion was linear: verify → normalize → derive idempotency key → create
 
 - Producer-side filtering (cairn `ring=true` et al.) — producers may set advisory tags (cairn `data.tags`, e.g. `handoff`, `lane:m`) that rules can match, but the mechanism lives here
 - Broadcast routing beyond the webhook's existing targets — an action may **narrow** fan-out to a subset of the webhook's delivery targets, but never add one
-- Pull-adapter routing ([ADR-0014](../../../adrs/ADR-0014-ingestion-adapters-push-pull.md) pull family) — the same stage applies once pull adapters exist
 - A rules UI in the operator board (MCP surface first)
 
 ## Decisions
@@ -145,7 +144,7 @@ Every jq subset that closes those also stops being useful for routing, and the s
 
 ### LLM triage: registry-backed, schema-validated, always-fallback *(Phase 2)*
 
-**Choice.** `llm_triage` config on the endpoint: `{provider, model, queues: [{name, description}], min_confidence, prompt_budget_per_minute, prompt_budget_per_day, include_payload: false}`. The call uses the runtime provider registry ([ADR-0020](../../../adrs/ADR-0020-runtime-provider-registry.md)). The model must answer `{"queue": "...", "confidence": 0..1, "reason": "..."}`, validated strictly. Fallback on:
+**Choice.** `llm_triage` config on the endpoint: `{provider, model, queues: [{name, description}], min_confidence, prompt_budget_per_minute, prompt_budget_per_day, include_payload: false}`. Where the LLM provider's configuration lives is open: the runtime provider registry ([ADR-0020](../../../adrs/ADR-0020-runtime-provider-registry.md)) it was to use was removed (#181). The model must answer `{"queue": "...", "confidence": 0..1, "reason": "..."}`, validated strictly. Fallback on:
 - unknown queue;
 - low confidence;
 - transport failure;

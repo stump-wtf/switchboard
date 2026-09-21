@@ -108,25 +108,16 @@ var sessionRoutes = map[string]bool{
 	"POST /endpoints/vend/{step}": true, // step submit / confirm-step mint
 	// Providers view + lifecycle (SPEC-0017): the view over the runtime registry, the shared
 	// confirmation modal, and the disable/enable/rotate/remove POSTs — all session-gated.
-	"GET /providers":                         true, // Providers view (SPEC-0015 six-view IA; SPEC-0017 registry-backed)
-	"GET /providers/connect":                 true, // connect wizard start (SPEC-0017 REQ "Connect Provider Wizard")
-	"GET /providers/connect/{step}":          true, // connect wizard step pages (SPEC-0015 wizard pattern)
-	"POST /providers/connect/{step}":         true, // step submit / confirm-step registration
-	"GET /providers/{name}/confirm/{action}": true, // lifecycle confirmation modal (SPEC-0017)
-	"POST /providers/{name}/disable":         true, // stop the line, keep history (SPEC-0017)
-	"POST /providers/{name}/enable":          true, // restore a disabled line (SPEC-0017)
-	"POST /providers/{name}/rotate":          true, // rotate secret + one-time reveal (SPEC-0017)
-	"POST /providers/{name}/remove":          true, // remove line, never its events/todos (SPEC-0017)
-	"POST /endpoints/vend":                   true, // direct single-form mint + one-time reveal
-	"GET /agents":                            true, // retired SPEC-0012 screen — 303-redirects to /endpoints
-	"GET /agents/{id}":                       true, // retired SPEC-0012 screen — 303-redirects to /endpoints
-	"GET /events":                            true,
-	"POST /todos/{id}/claim":                 true, // operator claim (Board feed + Todos view)
-	"POST /todos/{id}/complete":              true, // operator complete · ack (SPEC-0013)
-	"POST /todos/{id}/fail":                  true, // operator fail (SPEC-0013)
-	"POST /todos/{id}/retry":                 true, // operator retry a dead-lettered todo (SPEC-0013)
-	"POST /todos/{id}/extend":                true, // operator extend lease / heartbeat (SPEC-0013)
-	"POST /todos/{id}/release":               true, // operator release lease back to pending (SPEC-0013)
+	"POST /endpoints/vend":      true, // direct single-form mint + one-time reveal
+	"GET /agents":               true, // retired SPEC-0012 screen — 303-redirects to /endpoints
+	"GET /agents/{id}":          true, // retired SPEC-0012 screen — 303-redirects to /endpoints
+	"GET /events":               true,
+	"POST /todos/{id}/claim":    true, // operator claim (Board feed + Todos view)
+	"POST /todos/{id}/complete": true, // operator complete · ack (SPEC-0013)
+	"POST /todos/{id}/fail":     true, // operator fail (SPEC-0013)
+	"POST /todos/{id}/retry":    true, // operator retry a dead-lettered todo (SPEC-0013)
+	"POST /todos/{id}/extend":   true, // operator extend lease / heartbeat (SPEC-0013)
+	"POST /todos/{id}/release":  true, // operator release lease back to pending (SPEC-0013)
 	// OAuth consent (SPEC-0016 "Authorization Code Flow With Consent"): the authorize endpoint IS
 	// the flow's human gate, so both the screen and the decision POST are session-gated — an
 	// anonymous authorize request must land on /login (scenario "Human absent").
@@ -182,14 +173,11 @@ var publicRoutes = map[string]bool{
 	// surface — registered only when SWITCHBOARD_A2A=1, so they are deliberately ABSENT from this
 	// default table. TestA2AAdvancedRoutesRegisterWhenEnabled asserts the flag-on table.
 
-	// Webhook receivers authenticate per-provider (HMAC/token; SPEC-0001), not via session.
-	"POST /webhooks/github":         true,
-	"POST /webhooks/gitea":          true,
-	"POST /webhooks/stripe":         true,
-	"POST /webhooks/slack":          true,
-	"POST /webhooks/generic/{name}": true,
-	// Self-managed webhook receiver: the unguessable path token both routes and authenticates
-	// (SPEC-0006); an unknown token 404s, so it is deliberately session-free.
+	// The self-managed webhook receiver is the ONLY ingestion route (ADR-0012; the instance-wide
+	// /webhooks/{github,gitea,stripe,slack,generic/*} receivers were removed in #181). The
+	// unguessable path token both routes and authenticates (SPEC-0006), and the delivery is then
+	// verified per-provider (HMAC/token; SPEC-0001); an unknown token 404s, so it is deliberately
+	// session-free.
 	"POST /webhooks/w/{token}": true,
 	// OAuth AS surface (ADR-0019; SPEC-0016): discovery documents are how an unauthenticated MCP
 	// client learns to authorize at all, and RFC 7591 dynamic registration is anonymous by design
