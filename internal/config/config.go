@@ -6,6 +6,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 )
@@ -81,7 +83,20 @@ type Config struct {
 	// rendering of the same data the tools already serve. (SWITCHBOARD_A2UI=1)
 	// Governing: ADR-0023 REQ "Feature Flags Hide Advanced Surfaces".
 	A2UIEnabled bool
+
+	// MetricsToken is the dedicated scrape credential for GET /metrics, presented by the scraper as
+	// "Authorization: Bearer <token>". It is its own credential class: no vended endpoint token,
+	// OAuth grant, or human session authorizes a scrape. Empty leaves /metrics closed (every
+	// request 401), never open; when set it must be at least MinMetricsTokenLen bytes of printable
+	// ASCII, or Validate fails startup. Surrounding whitespace is trimmed so a token read from a
+	// file with a trailing newline still matches. (SWITCHBOARD_METRICS_TOKEN)
+	// Governing: SPEC-0023 REQ-1 "The endpoint", ADR-0028.
+	MetricsToken string
 }
+
+// MinMetricsTokenLen is the shortest scrape token Validate accepts. The bound is on length only; the
+// documented generator (openssl rand -hex 32) yields 64 characters carrying 256 random bits.
+const MinMetricsTokenLen = 32
 
 // FromEnv builds a Config from environment variables, applying defaults.
 func FromEnv() Config {
@@ -112,7 +127,27 @@ func FromEnv() Config {
 		PersonasEnabled:     os.Getenv("SWITCHBOARD_PERSONAS") == "1",
 		A2AEnabled:          os.Getenv("SWITCHBOARD_A2A") == "1",
 		A2UIEnabled:         os.Getenv("SWITCHBOARD_A2UI") == "1",
+		MetricsToken:        strings.TrimSpace(os.Getenv("SWITCHBOARD_METRICS_TOKEN")),
 	}
+}
+
+// Validate rejects configuration that must fail startup rather than run degraded. It never echoes
+// a secret value into its error.
+func (c Config) Validate() error {
+	if c.MetricsToken != "" {
+		if len(c.MetricsToken) < MinMetricsTokenLen {
+			return fmt.Errorf("config: SWITCHBOARD_METRICS_TOKEN is %d bytes; it must be at least %d (generate one with: openssl rand -hex 32)",
+				len(c.MetricsToken), MinMetricsTokenLen)
+		}
+		// A bearer token travels in an HTTP header, so it must be printable ASCII with no spaces:
+		// anything else is either mangled in transit or can never match the presented credential.
+		for i := 0; i < len(c.MetricsToken); i++ {
+			if b := c.MetricsToken[i]; b <= ' ' || b > '~' {
+				return errors.New("config: SWITCHBOARD_METRICS_TOKEN must be printable ASCII with no whitespace")
+			}
+		}
+	}
+	return nil
 }
 
 // OIDCConfigured reports whether the OIDC relying-party settings are present.

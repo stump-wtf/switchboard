@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -21,5 +22,54 @@ func TestFromEnvOverride(t *testing.T) {
 	t.Setenv("SWITCHBOARD_ADDR", "0.0.0.0:9000")
 	if got := FromEnv().Addr; got != "0.0.0.0:9000" {
 		t.Fatalf("override Addr: got %q, want 0.0.0.0:9000", got)
+	}
+}
+
+// TestMetricsTokenValidation pins SPEC-0023 REQ-1's startup contract for the scrape credential:
+// unset is valid (the endpoint is then closed), a set token shorter than 32 bytes or carrying
+// whitespace / non-ASCII fails startup, and the error never echoes the token.
+func TestMetricsTokenValidation(t *testing.T) {
+	const good = "0123456789abcdef0123456789abcdef" // exactly 32 bytes; a fixed test value
+	for name, tc := range map[string]struct {
+		token string
+		ok    bool
+	}{
+		"unset":            {"", true},
+		"exactly 32 bytes": {good, true},
+		"longer":           {good + good, true},
+		"31 bytes":         {good[:31], false},
+		"inner space":      {good[:16] + " " + good[16:], false},
+		"control char":     {good + "\x01", false},
+		"non-ascii":        {good + "é", false},
+	} {
+		err := Config{MetricsToken: tc.token}.Validate()
+		if tc.ok && err != nil {
+			t.Errorf("%s: Validate() = %v, want nil", name, err)
+		}
+		if !tc.ok {
+			if err == nil {
+				t.Errorf("%s: Validate() = nil, want an error", name)
+			} else if tc.token != "" && strings.Contains(err.Error(), tc.token) {
+				t.Errorf("%s: validation error echoes the token", name)
+			}
+		}
+	}
+}
+
+// TestMetricsTokenFromEnvTrimsWhitespace: a token read from a secret file often carries a trailing
+// newline; it must still match the credential a scraper presents.
+func TestMetricsTokenFromEnvTrimsWhitespace(t *testing.T) {
+	const tok = "0123456789abcdef0123456789abcdef"
+	t.Setenv("SWITCHBOARD_METRICS_TOKEN", " "+tok+"\n")
+	cfg := FromEnv()
+	if cfg.MetricsToken != tok {
+		t.Fatalf("MetricsToken not trimmed (len %d, want %d)", len(cfg.MetricsToken), len(tok))
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	t.Setenv("SWITCHBOARD_METRICS_TOKEN", "")
+	if FromEnv().MetricsToken != "" {
+		t.Fatal("unset SWITCHBOARD_METRICS_TOKEN should leave MetricsToken empty")
 	}
 }

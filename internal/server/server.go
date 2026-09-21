@@ -22,6 +22,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/ingest"
 	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/metrics"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
 	"github.com/stump-wtf/switchboard/internal/store"
 	"github.com/stump-wtf/switchboard/internal/web"
@@ -29,6 +30,11 @@ import (
 
 // Run connects to Postgres, migrates, builds the router, and serves until ctx is cancelled.
 func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
+	// Configuration that would otherwise run degraded (a guessable scrape token) fails here, before
+	// anything connects or listens.
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -138,6 +144,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// and the SPEC-0001 rejection doctrine is unchanged.
 	ing.SetInstrument(webh)
 
+	// Prometheus metrics (SPEC-0023, ADR-0028): one dedicated registry for the process. The store
+	// and the ingest receivers increment their lifecycle and routing counters inline, after commit,
+	// through the narrow seams they declare (store.Metrics, ingest.Metrics); scrape-time collectors
+	// register on mtr.Registry(). GET /metrics is mounted in newRouter behind the scrape token.
+	// Governing: SPEC-0023 REQ-1, REQ-3, REQ-4; design.md "Shape".
+	mtr := metrics.New(metrics.Options{Log: log})
+	st.SetMetrics(mtr)
+	ing.SetMetrics(mtr)
+
 	r := newRouter(routerDeps{
 		st:    st,
 		cfg:   cfg,
@@ -151,6 +166,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		a2a:     a2a.New(st, log),
 		oauth:   oauthsrv.New(st, cfg.BaseURL, log),
 		friends: newFriendIntake(st, authr, log),
+		metrics: mtr,
 		ping:    pool.Ping,
 		log:     log,
 	})
@@ -193,7 +209,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}()
 
 	log.Info("switchboard listening", "addr", cfg.Addr, "base_url", cfg.BaseURL,
-		"oidc", cfg.OIDCConfigured(), "dev_login", cfg.DevLogin)
+		"oidc", cfg.OIDCConfigured(), "dev_login", cfg.DevLogin, "metrics", cfg.MetricsToken != "")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
@@ -212,6 +228,7 @@ type routerDeps struct {
 	a2a     *a2a.Handler                // the A2A JSON-RPC task surface (ADR-0021, SPEC-0018); same vended-endpoint auth as MCP
 	oauth   *oauthsrv.Handler           // OAuth AS surface: discovery metadata + dynamic client registration (ADR-0019)
 	friends *friendIntake               // A2A friend-request intake (OIDC-provenance authenticated)
+	metrics *metrics.Metrics            // SPEC-0023 metric surface; nil leaves GET /metrics closed (401)
 	ping    func(context.Context) error // /healthz DB probe
 	log     *slog.Logger
 }
@@ -245,6 +262,17 @@ func newRouter(d routerDeps) chi.Router {
 		}
 		_, _ = w.Write([]byte("ok\n"))
 	})
+
+	// Prometheus scrape endpoint (ADR-0028; SPEC-0023 REQ-1). An operator surface, not an agent one,
+	// so it sits outside every endpoint-scoped and human-session group and authenticates with its own
+	// credential class: the dedicated scrape token (SWITCHBOARD_METRICS_TOKEN), compared in constant
+	// time inside the handler. A vended endpoint token, an OAuth access token, and a session cookie
+	// all get the same 401 with an empty body as no credential at all, and an unset token closes the
+	// endpoint outright. GET-only, no request body is read, and a per-IP throttle bounds probing —
+	// a real scraper asks once every 15-60s, so 1 req/s with burst 20 never touches it.
+	// Governing: SPEC-0023 REQ-1 "The endpoint", design.md "Auth".
+	metricsRL := newRateLimiter(1, 20)
+	r.With(metricsRL.middleware).Method(http.MethodGet, "/metrics", d.metrics.Handler(d.cfg.MetricsToken))
 
 	// Inbound ingestion (verified per-provider; ADR-0003). MaxBytesReader inside each receiver
 	// bounds the body to 5 MiB → 413 before HMAC verification (SPEC-0001). Stripe/Slack add a

@@ -253,6 +253,14 @@ func TestEveryRouteClassifiedAndAnonymousRejected(t *testing.T) {
 			if rec.Code != http.StatusUnauthorized {
 				t.Errorf("%s: anonymous got %d, want 401", key, rec.Code)
 			}
+		case key == "GET /metrics":
+			// Prometheus scrape endpoint (ADR-0028; SPEC-0023 REQ-1): its own scrape-token bearer,
+			// outside every session and endpoint group. Anonymous → 401 with an empty body, so an
+			// unauthenticated prober learns no metric or queue names.
+			rec := anonRequest(t, r, method, routePath(route))
+			if rec.Code != http.StatusUnauthorized || rec.Body.Len() != 0 {
+				t.Errorf("%s: anonymous got %d with %d body bytes, want 401 with an empty body", key, rec.Code, rec.Body.Len())
+			}
 		case strings.HasPrefix(route, "/static/"):
 			// Embedded assets are public by design (SPEC-0012 "Static assets served from embed").
 		case publicRoutes[key]:

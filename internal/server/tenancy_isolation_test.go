@@ -375,6 +375,7 @@ var tenancyExcluded = []struct {
 	{"/friends/new", "modal render"},
 	{"/friends/resolve", "handle resolution preview"},
 	{"/friends/{id}", "party-to-edge actions: both humans are endpoints of the relationship"},
+	{"/metrics", "operator scrape surface with its own credential class (SPEC-0023 REQ-1); tenant isolation is asserted by the live vended-endpoint → 401 case in TestMetricsRefusesLiveForeignCredentials"},
 }
 
 // tenancyExcludedReason reports whether a walked protected route is deliberately excluded from

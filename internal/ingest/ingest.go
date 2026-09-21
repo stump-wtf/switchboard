@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/stump-wtf/switchboard/internal/routing"
@@ -86,6 +87,8 @@ type Ingest struct {
 	// nil means none could be built, and rule-bearing webhooks then route by default with a recorded
 	// fault. Governing: ADR-0024, SPEC-0020.
 	router routing.Router
+	// metricsSink receives the SPEC-0023 REQ-4 ingest and routing counters (metrics.go). Nil = no-op.
+	metricsSink atomic.Pointer[Metrics]
 }
 
 // Config carries the ingestion settings that are not per-tenant. Nothing else is configured here:

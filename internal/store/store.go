@@ -81,6 +81,8 @@ type Store struct {
 	endpointSeenHook atomic.Pointer[EndpointSeenHook]
 	// doorbellHook mirrors todoHook for push-eligible creations (the MCP channel doorbell).
 	doorbellHook atomic.Pointer[TodoDoorbellHook]
+	// metricsSink receives the SPEC-0023 REQ-3 lifecycle counters (metrics.go). Nil = no-op.
+	metricsSink atomic.Pointer[Metrics]
 }
 
 // New builds a Store over the given pool, applying any options (e.g. WithSecretCipher).

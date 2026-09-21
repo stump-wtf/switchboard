@@ -41,6 +41,7 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_GITHUB_REDIRECT_URL` | `<base>/auth/callback` | Override only if your proxy rewrites paths. |
 | `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | — | Recommended. Encrypts webhook signing secrets at rest. 32 bytes, base64 or hex. |
 | `SWITCHBOARD_DEV_LOGIN` | off | Unauthenticated local login. Never in production. |
+| `SWITCHBOARD_METRICS_TOKEN` | — | Scrape token for `GET /metrics`. Unset, the endpoint answers `401` to everything. At least 32 bytes. See [Metrics](#metrics). |
 | `SWITCHBOARD_FRIENDING`, `SWITCHBOARD_PERSONAS`, `SWITCHBOARD_A2A`, `SWITCHBOARD_A2UI` | off | Advanced capabilities, hidden until switched on. |
 
 One setting is easy to get wrong: **`SWITCHBOARD_BASE_URL` decides whether session cookies are
@@ -155,8 +156,9 @@ network, use `sslmode=verify-full`.
 | `db: empty DATABASE_URL` | `SWITCHBOARD_DATABASE_URL` is unset. |
 | `db: ping: … connection refused` | The DSN is right but nothing is listening. |
 | `cred: secret encryption key must decode (base64 or hex) to exactly 32 bytes` | The key is the wrong length or encoding. |
+| `config: SWITCHBOARD_METRICS_TOKEN is N bytes; it must be at least 32 …` | The scrape token is too short. It must also be printable ASCII with no spaces. |
 
-All three exit immediately and say which one it is.
+Each of these exits immediately and says which one it is.
 
 ### Behind a reverse proxy
 
@@ -293,6 +295,56 @@ immediate: the credential stops authenticating and live sessions are torn down.
 
 Grant the smallest useful scope. The event-history tools in particular should go only to endpoints
 whose job needs them.
+
+## Metrics
+
+`GET /metrics` serves Prometheus text format (`text/plain; version=0.0.4`) for VictoriaMetrics,
+Prometheus, or anything else that scrapes it. It covers queue liveness, the todo lifecycle, webhook
+deliveries and routing decisions, plus the Go runtime and process collectors. The
+[metrics spec](/specs/metrics/spec) names every series, and
+[ADR-0028](/decisions/ADR-0028-prometheus-metrics-endpoint) explains why the queue gauges lead.
+
+The endpoint is closed until you give it a scrape token:
+
+```bash
+export SWITCHBOARD_METRICS_TOKEN="$(openssl rand -hex 32)"
+```
+
+The scrape token is a credential of its own. A vended endpoint token, an operator OAuth token, and a
+signed-in browser session all get the same answer as no credential at all: `401` with an empty
+body, so an unauthenticated prober learns no queue names. With the variable unset, every request
+gets `401`. A token shorter than 32 bytes, or one containing spaces or non-ASCII characters, stops
+the service at startup. Surrounding whitespace is trimmed, so a token read from a file that ends in
+a newline still works. The route is throttled per client address at 1 request per second with a
+burst of 20, far above any real scrape interval.
+
+Check it by hand:
+
+```
+$ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/metrics
+401
+$ curl -s -H "Authorization: Bearer $SWITCHBOARD_METRICS_TOKEN" http://127.0.0.1:8080/metrics | grep '^go_goroutines'
+go_goroutines 14
+```
+
+A scrape job with bearer auth (Prometheus and vmagent read the same block):
+
+```yaml
+scrape_configs:
+  - job_name: switchboard
+    scheme: https
+    metrics_path: /metrics
+    scrape_interval: 30s
+    authorization:
+      type: Bearer
+      # Keeps the token out of the config file. `credentials: <token>` inline also works.
+      credentials_file: /etc/prometheus/secrets/switchboard-metrics-token
+    static_configs:
+      - targets: ["switchboard.example.com"]
+```
+
+A series appears only once there is something to count. A counter nothing has incremented yet is
+absent rather than zero, because a zero and an unmeasured value look identical once scraped.
 
 ## Where to go next
 
