@@ -16,10 +16,17 @@ Getting todos into the agent works two ways:
 
 Push is faster; pull is universal. Because the queue is the record, you can mix them freely.
 
+"Push" is two things, and a client needs both. **Delivery** is switchboard writing the doorbell to
+the session's open notification stream. **Wake** is the client turning that notification into a
+model turn while it sits idle. Switchboard only controls delivery: its log says
+`mcp doorbell delivered` the moment the write succeeds, whether or not the client does anything with
+it. A client that holds the stream open but hasn't opted the server in as a channel is the usual
+reason a doorbell is delivered and nothing happens.
+
 | Client | Push | Status |
 |---|---|---|
 | Crush, the `joestump-agent` fork | yes, with `--channels` or `channel_enabled` | Runs the always-on workers this service was built around. |
-| Claude Code | research-preview channels | Not verified with switchboard; see below. |
+| Claude Code | yes, with a channels flag | Verified: an idle session wakes, claims, and completes. Needs a startup flag; see below. |
 | Any other MCP client | no | Poll. |
 
 ## Crush
@@ -97,20 +104,50 @@ claude mcp add --transport http --scope user switchboard https://switchboard.stu
 
 That form expands the variable immediately, so the literal token is saved in your user config.
 
-The tools work in any Claude Code session. **Push is a different matter, so here is exactly where it
-stands.** Claude Code's channels are a
-[research preview](https://code.claude.com/docs/en/channels-reference). A server that isn't a
-Claude Code plugin has to be loaded with a development flag:
+The tools work in any Claude Code session. **Push needs one more thing: the server has to be loaded
+as a channel.** Listing it in `.mcp.json` is not enough. Claude Code keeps the notification stream
+open either way, so switchboard reports every doorbell as delivered, and Claude Code silently
+discards each one unless the server was named as a channel at startup. There is no error on either
+side.
+
+Claude Code's channels are a [research preview](https://code.claude.com/docs/en/channels). A server
+that isn't on the preview's allowlist is loaded with the development flag:
 
 ```bash
 claude --dangerously-load-development-channels server:switchboard
 ```
 
-Channels also require a claude.ai login, and on Team and Enterprise plans an admin has to enable
-them. Switchboard implements the channel contract, but **nobody has confirmed a Claude Code session
-turning a switchboard doorbell into work**. The one attempt to run always-on Claude Code workers
-failed for an unrelated reason (the sessions weren't logged in) and was retired. If you depend on
-Claude Code picking up work, poll as described below, or run the worker in Crush.
+With that flag, push works end to end over switchboard's HTTP transport — no local adapter process.
+Measured against Claude Code 2.1.270, with a real webhook delivery each time:
+
+| Session | Doorbell delivered | What Claude Code did |
+|---|---|---|
+| Interactive, idle, **no** channels flag | yes | Nothing. Dropped silently. |
+| Interactive, idle, with the flag | yes | Started a turn on its own, claimed the todo, completed it. |
+| Same session, after that turn finished and 45s more idle | yes | Woke again, claimed, completed. |
+| `claude -p` (print mode) | n/a | Answered its prompt and exited. No process is left to wake. |
+
+What to know before you rely on it:
+
+- **The flag asks for confirmation at startup**, every launch. An unattended worker sits at that
+  prompt until someone answers it, so a supervised restart is not hands-off. Run it somewhere you
+  can attach to.
+- **It wants a claude.ai or Console login** — not Bedrock, Vertex, or Foundry — and on Team and
+  Enterprise plans an admin has to enable channels.
+- **A startup line reading `server:switchboard · no MCP server configured with that name` can be
+  wrong.** It appears when the server comes from `--mcp-config` rather than a settings file, and
+  the channel works regardless. Judge by whether a doorbell starts a turn.
+- **Print mode can't be woken.** `claude -p` exits when its turn ends. For one-shot or scheduled
+  runs, poll with `claim_next` as described below.
+- **The worker still needs permission to use the tools.** A woken session that stops on a
+  permission prompt for `claim` has been rung and can't act. Allow the switchboard tools up front,
+  for example `--allowedTools mcp__switchboard`.
+
+For how channels behave inside Claude Code — event queueing while a turn is running, the
+`<channel>` wrapper the model sees, permission relay, org policy — read Anthropic's
+[Channels guide](https://code.claude.com/docs/en/channels) and
+[Channels reference](https://code.claude.com/docs/en/channels-reference). An agent setting this up
+for you should read both before changing anything.
 
 ## Sign in with OAuth instead of a token
 

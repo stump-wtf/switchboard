@@ -13,10 +13,12 @@ Todos pile up as `pending` in **Todos**, and nothing claims them.
 1. **Is a worker connected?** Each card on **Endpoints** shows when the endpoint was last used
    (`seen 5m ago`, or `never seen`). `never seen` means no client has ever connected with that
    credential.
-2. **Is the worker receiving doorbells?** Push only reaches a session that opted in: Crush with
-   `channel_enabled` or `--channels server:switchboard`. A session without it holds the connection
-   and hears nothing. Poll, or enable the channel. See
-   [Connect an agent](/getting-started/connect-an-agent).
+2. **Did the worker opt in to doorbells?** Push only reaches a session that loaded switchboard as a
+   channel: Crush with `channel_enabled` or `--channels server:switchboard`, Claude Code with
+   `--dangerously-load-development-channels server:switchboard`. A session without it still holds
+   the connection, so switchboard logs `mcp doorbell delivered` for every todo while the client
+   discards each one. **A delivered doorbell is not evidence the agent heard it.** Poll, or enable
+   the channel. See [Connect an agent](/getting-started/connect-an-agent).
 3. **Can the worker actually act?** The doorbell is delivered to the session even when the session
    can't use it: its model login expired, it's waiting on a permission prompt, or its model quota
    ran out. Attach to it (`harness attach <name>`) and look. This is the most common cause of
