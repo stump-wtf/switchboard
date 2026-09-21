@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/stump-wtf/switchboard/internal/auth"
+	"github.com/stump-wtf/switchboard/internal/mcp"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -100,8 +101,14 @@ func (h *Handler) QuickVendSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The quick page has no ceiling step, so it grants the basics webhook ceiling: a usable
+	// generic scope on the vended queues when create_webhook is granted, none otherwise — never
+	// the verb without a scope it could ever succeed within (issue #293). Governing: ADR-0023,
+	// ADR-0012, SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling".
+	whMax, whSources, whQueues := mcp.BasicWebhookCeiling(verbs, queues)
 	h.executeVendOn(w, r, &human, vendSubmission{
 		Name: name, Queues: queues, Verbs: verbs, Lifetime: lifetime,
+		WebhookMax: whMax, WebhookSourceTypes: whSources, WebhookQueues: whQueues,
 	}, "quickvend")
 }
 

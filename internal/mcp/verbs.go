@@ -10,6 +10,8 @@ package mcp
 // Governing: SPEC-0006 REQ "Todo Drain Verbs", REQ "Webhook Self-Management"; SPEC-0005 (event
 // history tools); SPEC-0014 REQ "Agent Tool Surface over MCP".
 
+import "slices"
+
 // DrainVerbs returns the SPEC-0006 todo drain surface in display order.
 //
 // claim_next sits beside claim rather than replacing it. claim takes an id and is what a single
@@ -58,4 +60,25 @@ func verbSet(verbs []string) map[string]bool {
 		m[v] = true
 	}
 	return m
+}
+
+// BasicWebhookMax is the self-managed webhook ceiling the basics vend paths grant: one webhook, the
+// single generic ingestion URL an MVP loop needs. The operator API's basics vend and the one-step
+// quick vend both grant it, so the two paths cannot drift; the full wizard keeps its own explicit
+// ceiling step. Governing: ADR-0023 (MVP basics), ADR-0012, SPEC-0006 REQ "Webhook Self-Management
+// Within a Vended Ceiling".
+const BasicWebhookMax = 1
+
+// BasicWebhookCeiling returns the webhook ceiling a basics vend grants for the given verbs and
+// queues. When the grant carries create_webhook the ceiling is usable end to end — BasicWebhookMax
+// webhooks of the generic source type, routed only to the vended queues — because a create_webhook
+// grant with no allowed source types or a zero max can never succeed (issue #293). Without
+// create_webhook it grants no webhook scope at all: max 0 and nil slices, which disables webhook
+// self-management. Governing: ADR-0023, ADR-0012, SPEC-0006 REQ "Webhook Self-Management Within a
+// Vended Ceiling".
+func BasicWebhookCeiling(verbs, queues []string) (maxWebhooks int, sourceTypes, webhookQueues []string) {
+	if !slices.Contains(verbs, "create_webhook") {
+		return 0, nil, nil
+	}
+	return BasicWebhookMax, []string{"generic"}, slices.Clone(queues)
 }
