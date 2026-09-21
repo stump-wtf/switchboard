@@ -1,14 +1,21 @@
 {{/* Board fragments — the three-lane patch panel (SPEC-0015 REQ "Patch Panel Board"; split per
      view by SPEC-0015 REQ "Live Fragment Architecture" — a todos fragment change touches no board
      file). Lane movement is typed events carrying an out-of-band REMOVAL (hx-swap-oob="delete")
-     plus an out-of-band INSERTION (hx-swap-oob="afterbegin:#sb-lane-…-cards"), rendered by
-     internal/web/live.go. Governing: ADR-0018. */}}
+     plus an out-of-band INSERTION (a carrier <ul hx-swap-oob="afterbegin:#sb-lane-…-cards"> around
+     the card), rendered by internal/web/live.go. Governing: ADR-0018. */}}
 
 {{/* lane_card — one patch-panel card: provider glyph, headline (event type/kind), title line,
      trust chip, state chip, and the detail · age foot. Ephemeral received-lane cards stamp
      data-sb-ephemeral (ms) so sb-live.js expires them — they are SSE-only and never persisted.
-     OOB renders the card as an insertion into its lane. Data: web.laneCard. */}}
-{{define "lane_card"}}<li id="{{.DomID}}" class="sb-lcard sb-lcard--{{.State}}" data-sb-lane-card="{{.Lane}}"{{if .TTLMS}} data-sb-ephemeral="{{.TTLMS}}"{{end}}{{if .OOB}} hx-swap-oob="afterbegin:#sb-lane-{{.Lane}}-cards"{{end}}>
+     OOB renders the card as an insertion into its lane. Data: web.laneCard.
+
+     The insertion's hx-swap-oob sits on a CARRIER <ul>, never on the <li>: for every strategy but
+     outerHTML htmx inserts the out-of-band element's children and drops the element, so a card
+     that carried the attribute itself arrived as three bare <div>s with no id, class, or
+     data-sb-ephemeral — the next lane_move could not find it to delete, and it never expired.
+
+     @joestump 09/21/2026 - Added the carrier; found while reproducing the toast report. */}}
+{{define "lane_card"}}{{if .OOB}}<ul hx-swap-oob="afterbegin:#sb-lane-{{.Lane}}-cards">{{end}}<li id="{{.DomID}}" class="sb-lcard sb-lcard--{{.State}}" data-sb-lane-card="{{.Lane}}"{{if .TTLMS}} data-sb-ephemeral="{{.TTLMS}}"{{end}}>
   <div class="sb-lcard__head">
     {{with iconpath .Source}}<span class="sb-icon-wrap sb-icon-wrap--{{$.TrustMode}}" aria-hidden="true"><img src="{{.}}" alt="" width="16" height="16"></span>{{else}}<span class="sb-tag sb-tag--{{.TrustMode}}" aria-hidden="true">{{tag .Source}}</span>{{end}}
     <div class="sb-lcard__text">
@@ -22,7 +29,7 @@
     {{if and (eq .State "pending") .TodoID}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.TodoID}}/claim" hx-swap="none">Claim</button>{{end}}
   </div>
   <div class="sb-lcard__foot">{{if .Detail}}<span class="sb-lcard__detail">{{.Detail}}</span><span aria-hidden="true"> · </span>{{end}}<span class="sb-lcard__age">{{reltime .At}}</span></div>
-</li>{{end}}
+</li>{{if .OOB}}</ul>{{end}}{{end}}
 
 {{/* lane_move — the OOB removal + insertion pair (SPEC-0015 REQ "Live Fragment Architecture"):
      delete the card's previous node by id, then insert the refreshed card into its destination

@@ -56,9 +56,21 @@
      data-sb-live-row so sb-live.js can drop ones that don't match the viewer's active
      filter/search — except an insert replacing a row already on screen (a re-surface), which
      survives an active search because its searchable fields don't change. Data: web.todoRow.
+
+     Every out-of-band rendering is wrapped in <template>, and the insertion rides a carrier
+     <tbody>. Both are load-bearing. A live frame is lane_move + todo_row + toast concatenated, so
+     it opens with an <li>; that puts the HTML parser in "in body" mode, where <tr> and <td> start
+     tags are parse errors and are DROPPED — the row never reached htmx as an element, so neither
+     the delete nor the swap happened and the open table simply never updated. A nested <template>
+     gets its own insertion mode, which htmx unwraps and processes after the top-level swaps. The
+     carrier exists because, for every strategy but outerHTML, htmx inserts the out-of-band
+     element's children and discards the element itself.
+
+     @joestump 09/21/2026 - Added the <template> wrappers and the carrier <tbody>.
+
      Governing: SPEC-0015 REQ "Todos View And Drawer"
      (scenario "Live claim"), REQ "Live Fragment Architecture" (OOB removal + insertion). */}}
-{{define "todo_row"}}{{if .Insert}}<tr id="sb-tr-{{.ID}}" hx-swap-oob="delete"></tr>{{end}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}" data-sb-row-open{{if .Flash}} data-sb-flash{{end}}{{if .Insert}} data-sb-live-row{{end}} tabindex="0"{{if .Insert}} hx-swap-oob="afterbegin:#sb-todos-body"{{else if .OOB}} hx-swap-oob="true"{{end}}>
+{{define "todo_row"}}{{if .Insert}}<template><tr id="sb-tr-{{.ID}}" hx-swap-oob="delete"></tr></template><template><tbody hx-swap-oob="afterbegin:#sb-todos-body">{{else if .OOB}}<template>{{end}}<tr id="sb-tr-{{.ID}}" class="sb-trow{{if .Flash}} sb-trow--flash{{end}}" data-sb-row-open{{if .Flash}} data-sb-flash{{end}}{{if .Insert}} data-sb-live-row{{end}} tabindex="0"{{if and .OOB (not .Insert)}} hx-swap-oob="true"{{end}}>
   <td><button type="button" class="sb-linklike sb-mono" data-sb-row-trigger hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>
   <td>{{if .Source}}{{with iconpath .Source}}<span class="sb-icon-wrap" data-sb-tag aria-hidden="true"><img src="{{.}}" alt="" width="16" height="16"></span>{{else}}<span class="sb-tag" data-sb-tag aria-hidden="true">{{tag .Source}}</span>{{end}} {{end}}<span class="sb-trow__source" data-sb-source>{{if .Source}}{{.Source}}{{else}}—{{end}}</span> {{with eventiconpath .Kind}}<span class="sb-icon-wrap sb-icon-wrap--event" aria-hidden="true"><img src="{{.}}" alt="" width="14" height="14"></span>{{end}}<span class="sb-trow__kind" data-sb-kind>{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" data-sb-dedup title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
   <td><span class="sb-badge sb-badge--{{.TrustMode}}" data-sb-trust="{{.TrustMode}}" title="{{trustdef .TrustMode}}">{{.TrustMode}}</span></td>
@@ -66,7 +78,7 @@
   <td class="sb-mono">{{if .OwnerLabel}}{{.OwnerLabel}}{{else}}—{{end}}</td>
   <td class="sb-trow__age">{{reltime .CreatedAt}}</td>
   <td class="sb-trow__act">{{if eq .State "pending"}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.ID}}/claim" hx-target="closest tr" hx-swap="outerHTML">Claim</button>{{else if eq .State "claimed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/complete" hx-target="closest tr" hx-swap="outerHTML">Complete</button>{{else if eq .State "failed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/retry" hx-target="closest tr" hx-swap="outerHTML">Retry</button>{{else}}<span class="sb-muted">—</span>{{end}}</td>
-</tr>{{end}}
+</tr>{{if .Insert}}</tbody></template>{{else if .OOB}}</template>{{end}}{{end}}
 
 {{/* drawer — the todo detail overlay: identity block, lease/retry cards, metadata, escaped
      payload, glyph lifecycle timeline, and state-appropriate footer actions. Rendered into

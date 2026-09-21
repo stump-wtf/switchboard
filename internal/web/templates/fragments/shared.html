@@ -43,8 +43,17 @@
 {{define "todo_pill_counts"}}<span id="sb-tc-all" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.All}}</span><span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Pending}}</span><span id="sb-tc-claimed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Claimed}}</span><span id="sb-tc-done" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Done}}</span><span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Failed}}</span>{{end}}
 
 {{/* toast — a transient announcement prepended into the aria-live toast region. Data: toastMsg
-     (Kind drives the accent color + icon, Text is the one-line summary). */}}
-{{define "toast"}}<div class="sb-toast sb-toast--{{.Kind}}" role="status" hx-swap-oob="afterbegin:#sb-toasts"><span class="sb-toast__icon" aria-hidden="true">{{if eq .Kind "claimed"}}⏵{{else if eq .Kind "completed"}}✓{{else if eq .Kind "failed"}}✗{{else if eq .Kind "resurfaced"}}↻{{end}}</span>{{.Text}}</div>{{end}}
+     (Kind drives the accent color + icon, Text is the one-line summary).
+
+     The OOB attribute lives on a CARRIER div, never on the toast itself: for every swap strategy
+     except outerHTML htmx inserts the out-of-band element's CHILDREN and discards the element, so a
+     toast that carried its own hx-swap-oob="afterbegin:…" landed as a bare icon span plus a loose
+     text node. sb-live.js expires toasts by walking #sb-toasts' element children, so the icons
+     timed out while the text nodes piled up forever and ran together ("…to queuetd_b258 …").
+
+     @joestump 09/21/2026 - Moved hx-swap-oob onto a carrier; reported by an outside self-hoster as
+     an unstyled "activity ticker" overflowing the Board. */}}
+{{define "toast"}}<div hx-swap-oob="afterbegin:#sb-toasts"><div class="sb-toast sb-toast--{{.Kind}}" role="status"><span class="sb-toast__icon" aria-hidden="true">{{if eq .Kind "claimed"}}⏵{{else if eq .Kind "completed"}}✓{{else if eq .Kind "failed"}}✗{{else if eq .Kind "resurfaced"}}↻{{end}}</span>{{.Text}}</div></div>{{end}}
 
 {{/* overlay_clear — empties the shared overlay OOB in the same response (sb.js's overlay watcher
      then hides it), so a successful add-friend submit dismisses its modal (#175). innerHTML swap on
