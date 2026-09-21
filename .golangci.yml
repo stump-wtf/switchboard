@@ -1,6 +1,24 @@
+# golangci-lint configuration
+#
+# `make lint` runs golangci-lint with the standard linter set, and CI's `lint` job pins the
+# exact golangci-lint version (see .gitea/workflows/ci.yaml) so local and CI cannot disagree.
+#
+# One deliberate exclusion: errcheck on fmt.Fprint/Fprintf/Fprintln inside the operator CLI
+# (cmd/switchboard). Those calls write human-facing text to the terminal
+# (stdout/stderr), to a tabwriter whose Flush is already explicitly discarded, or to the
+# loopback login callback page. A failed write there has no channel left to report on, and the
+# process exit code already carries the command's outcome — so there is nothing to handle.
+# Server code is NOT covered: an unchecked write anywhere under internal/ still fails lint.
+#
+# @joestump-agent 09/21/2026 - Added the scoped CLI-output errcheck exclusion (issue #292).
 version: "2"
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  exclusions:
+    rules:
+      - path: ^cmd/switchboard/[^/]+\.go$
+        linters: [errcheck]
+        text: "Error return value of `fmt\\.Fprint(f|ln)?` is not checked"
 formatters:
   enable:
     - gofmt

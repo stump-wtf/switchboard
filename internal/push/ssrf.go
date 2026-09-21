@@ -86,9 +86,7 @@ func WithResolver(r Resolver) Option {
 func WithOwnListenAddrs(addrs ...string) Option {
 	return func(v *Validator) {
 		for _, a := range addrs {
-			for _, ip := range parseListenIPs(a) {
-				v.ownIPs = append(v.ownIPs, ip)
-			}
+			v.ownIPs = append(v.ownIPs, parseListenIPs(a)...)
 		}
 	}
 }

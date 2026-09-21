@@ -20,20 +20,20 @@ func TestAttachHookFiresOnlyOn200Head(t *testing.T) {
 	}{
 		{"explicit 200 head fires once", func(a *attachHook) {
 			a.WriteHeader(http.StatusOK)
-			a.Write([]byte("x"))
-			a.Write([]byte("y"))
+			_, _ = a.Write([]byte("x"))
+			_, _ = a.Write([]byte("y"))
 		}, true},
 		{"implicit 200 via first Write", func(a *attachHook) {
-			a.Write([]byte("x"))
-			a.Write([]byte("y"))
+			_, _ = a.Write([]byte("x"))
+			_, _ = a.Write([]byte("y"))
 		}, true},
 		{"explicit 409 head suppresses, body write included", func(a *attachHook) {
 			a.WriteHeader(http.StatusConflict)
-			a.Write([]byte("stream already open"))
+			_, _ = a.Write([]byte("stream already open"))
 		}, false},
 		{"explicit 400 head suppresses", func(a *attachHook) {
 			a.WriteHeader(http.StatusBadRequest)
-			a.Write([]byte("bad request"))
+			_, _ = a.Write([]byte("bad request"))
 		}, false},
 		{"409 head with no body", func(a *attachHook) {
 			a.WriteHeader(http.StatusConflict)

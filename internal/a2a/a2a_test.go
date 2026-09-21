@@ -109,7 +109,7 @@ func rpcCall(t *testing.T, url, token, method string, params any) (int, rpcRespo
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out rpcResponse
 	if resp.Header.Get("Content-Type") == "application/json" {
 		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -182,7 +182,7 @@ func TestUnauthorizedResponseShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
 	}
@@ -269,7 +269,7 @@ func TestBodyLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", resp.StatusCode)
 	}
@@ -287,7 +287,7 @@ func TestSecurityHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	want := map[string]string{
 		"Content-Security-Policy": "default-src 'none'",
 		"X-Frame-Options":         "DENY",
@@ -318,7 +318,7 @@ func TestResponseEchoesID(t *testing.T) {
 		if err != nil {
 			t.Fatalf("do request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var env map[string]json.RawMessage
 		if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 			t.Fatalf("decode: %v", err)
@@ -335,7 +335,7 @@ func TestResponseEchoesID(t *testing.T) {
 		if err != nil {
 			t.Fatalf("do request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var env map[string]json.RawMessage
 		if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 			t.Fatalf("decode: %v", err)
@@ -360,7 +360,7 @@ func rawPost(t *testing.T, url, token, raw string) (int, rpcResponse) {
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out rpcResponse
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	return resp.StatusCode, out

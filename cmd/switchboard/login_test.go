@@ -43,7 +43,7 @@ func TestLoginFlowEndToEnd(t *testing.T) {
 	tc := newTestCLI(t)
 	f := newFakeDeployment(t)
 	seen := make(chan *url.URL, 1)
-	tc.cli.openBrowser = browserThatApproves(t, seen)
+	tc.openBrowser = browserThatApproves(t, seen)
 
 	if code := tc.run(t, "login", f.base()+"/"); code != exitOK {
 		t.Fatalf("login: code %d\nstdout: %s\nstderr: %s", code, tc.stdout.String(), tc.stderr.String())
@@ -100,7 +100,7 @@ func TestLoginFlowEndToEnd(t *testing.T) {
 func TestLoginNoBrowserPrintsTheURL(t *testing.T) {
 	tc := newTestCLI(t)
 	f := newFakeDeployment(t)
-	tc.cli.openBrowser = func(string) error { t.Error("--no-browser must not open a browser"); return nil }
+	tc.openBrowser = func(string) error { t.Error("--no-browser must not open a browser"); return nil }
 	tc.env["SWITCHBOARD_URL"] = f.base()
 
 	done := make(chan int, 1)
@@ -136,7 +136,7 @@ func TestLoginDeniedAndUsage(t *testing.T) {
 	f := newFakeDeployment(t)
 	f.deny = true
 	seen := make(chan *url.URL, 1)
-	tc.cli.openBrowser = browserThatApproves(t, seen)
+	tc.openBrowser = browserThatApproves(t, seen)
 	if code := tc.run(t, "login", f.base()); code != exitFailure {
 		t.Fatalf("denied login: code %d, want 1 (stdout %q)", code, tc.stdout.String())
 	}
@@ -167,7 +167,7 @@ func TestLoginReusesTheSavedDeployment(t *testing.T) {
 	f := newFakeDeployment(t)
 	tc.loggedIn(t, f, tc.clock.Add(-time.Hour)) // an old login to the same deployment
 	seen := make(chan *url.URL, 1)
-	tc.cli.openBrowser = browserThatApproves(t, seen)
+	tc.openBrowser = browserThatApproves(t, seen)
 	if code := tc.run(t, "login"); code != exitOK {
 		t.Fatalf("re-login without a URL: code %d, stderr %q", code, tc.stderr.String())
 	}
@@ -179,7 +179,7 @@ func TestLoginReusesTheSavedDeployment(t *testing.T) {
 func TestLoginIgnoresStrayCallbacks(t *testing.T) {
 	tc := newTestCLI(t)
 	f := newFakeDeployment(t)
-	tc.cli.openBrowser = func(raw string) error {
+	tc.openBrowser = func(raw string) error {
 		u, err := url.Parse(raw)
 		if err != nil {
 			return err
@@ -225,8 +225,8 @@ func TestLoginIgnoresStrayCallbacks(t *testing.T) {
 func TestLoginTimesOut(t *testing.T) {
 	tc := newTestCLI(t)
 	f := newFakeDeployment(t)
-	tc.cli.loginTimeout = 50 * time.Millisecond
-	tc.cli.openBrowser = func(string) error { return nil } // "opened", but the human never comes back
+	tc.loginTimeout = 50 * time.Millisecond
+	tc.openBrowser = func(string) error { return nil } // "opened", but the human never comes back
 	if code := tc.run(t, "login", f.base()); code != exitFailure {
 		t.Fatalf("code %d, want 1", code)
 	}

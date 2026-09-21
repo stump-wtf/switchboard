@@ -68,7 +68,7 @@ func TestTenancyListTodoItemsExcludesOtherHumans(t *testing.T) {
 		}
 		out := map[string]bool{}
 		for _, it := range items {
-			out[it.Todo.ID] = true
+			out[it.ID] = true
 		}
 		return out
 	}

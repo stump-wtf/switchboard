@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"flag"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,11 +36,11 @@ func newTestCLI(t *testing.T) *testCLI {
 		clock:  time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC),
 	}
 	tc.cli.stdout, tc.cli.stderr = tc.stdout, tc.stderr
-	tc.cli.getenv = func(k string) string { return tc.env[k] }
-	tc.cli.openBrowser = func(string) error { return errors.New("no browser in tests") }
-	tc.cli.serve = func(_ *cli, args []string) int { tc.serveCalls = append(tc.serveCalls, args); return exitOK }
-	tc.cli.now = func() time.Time { return tc.clock }
-	tc.cli.loginTimeout = 5 * time.Second
+	tc.getenv = func(k string) string { return tc.env[k] }
+	tc.openBrowser = func(string) error { return errors.New("no browser in tests") }
+	tc.serve = func(_ *cli, args []string) int { tc.serveCalls = append(tc.serveCalls, args); return exitOK }
+	tc.now = func() time.Time { return tc.clock }
+	tc.loginTimeout = 5 * time.Second
 	return tc
 }
 
@@ -191,7 +190,6 @@ func TestParseArgsHelpAndErrors(t *testing.T) {
 		t.Fatalf("unknown flag: ok=%v code=%d", ok, code)
 	}
 	mustContain(t, "unknown flag", tc.stderr.String(), "flag provided but not defined: -bogus", "usage: switchboard t")
-	var _ *flag.FlagSet = fs
 }
 
 func TestNormalizeBaseURL(t *testing.T) {
@@ -510,7 +508,7 @@ func TestEndpointRevokeConfirmation(t *testing.T) {
 			tc := newTestCLI(t)
 			f := newFakeDeployment(t)
 			tc.loggedIn(t, f, tc.clock.Add(time.Hour))
-			tc.cli.stdin = strings.NewReader(tc2.answer)
+			tc.stdin = strings.NewReader(tc2.answer)
 
 			if code := tc.run(t, "endpoint", "revoke", "ep-slug"); code != exitOK {
 				t.Fatalf("code %d (stderr %q)", code, tc.stderr.String())
@@ -573,7 +571,7 @@ func TestTodoPushPostsAndPrints(t *testing.T) {
 	}
 
 	// @file payloads go through the injected reader; a matched key is reported as such.
-	tc.cli.readFile = func(name string) ([]byte, error) {
+	tc.readFile = func(name string) ([]byte, error) {
 		if name != "order.json" {
 			t.Fatalf("readFile(%q), want order.json", name)
 		}
@@ -593,7 +591,7 @@ func TestTodoPushPostsAndPrints(t *testing.T) {
 	}
 
 	// @- reads stdin; --json prints the API document verbatim.
-	tc.cli.stdin = strings.NewReader(`{"pr": 9}`)
+	tc.stdin = strings.NewReader(`{"pr": 9}`)
 	tc.stdout.Reset()
 	if code := tc.run(t, "todo", "push", "--json", "--payload", "@-", "my-agent-k3x9", "look at PR 9"); code != exitOK {
 		t.Fatalf("todo push --json: code %d, stderr %q", code, tc.stderr.String())

@@ -147,18 +147,6 @@ func testIngestDeps(t *testing.T, cfg Config) (*Ingest, *Hub, *pgxpool.Pool, con
 	return New(st, hub, log, cfg), hub, pool, ctx, ep.ID
 }
 
-// post drives a handler with the given raw body and headers, returning the recorder.
-func post(t *testing.T, handler http.HandlerFunc, target, body string, headers map[string]string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	rec := httptest.NewRecorder()
-	handler(rec, req)
-	return rec
-}
-
 // acceptedTodo is one entry of the 202 body's `todos` array: where a delivery actually landed.
 // endpoint_id is part of the contract because a fan-out is only auditable if the response says which
 // tenant each todo was minted for. Governing: SPEC-0001 REQ "Deterministic Route Fan-Out

@@ -23,6 +23,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    # golangci-lint via `make lint`, the same target run locally. The version is PINNED so a
+    # new golangci-lint release cannot turn main red on its own, and so local and CI agree —
+    # bump GOLANGCI_LINT_VERSION deliberately, in its own PR, after fixing what it finds
+    # (issue #292). Separate from `ci` so a lint failure is identifiable from the check name.
+    runs-on: ubuntu-latest
+    env:
+      GOLANGCI_LINT_VERSION: v2.13.2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: install golangci-lint
+        run: |
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: make lint
+        run: |
+          golangci-lint --version
+          make lint
+
   ci:
     runs-on: ubuntu-latest
     services:

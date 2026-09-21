@@ -113,7 +113,7 @@ func (g *githubProvider) Finish(ctx context.Context, st oidcState, code string) 
 	if err != nil {
 		return identity{}, fmt.Errorf("github: fetch emails: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return identity{}, fmt.Errorf("github: fetch emails: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -179,7 +179,7 @@ func (g *githubProvider) getJSON(ctx context.Context, client *http.Client, path 
 	if err != nil {
 		return fmt.Errorf("github: fetch %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("github: fetch %s: status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
