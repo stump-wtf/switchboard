@@ -34,6 +34,11 @@ credential class, not a reused one: the service recognises no static shared
 credential today, operator surfaces authenticate per-human, and nothing
 existing can authorize a scrape.
 
+The scrape credential is configured as `SWITCHBOARD_METRICS_TOKEN` and MUST be
+at least 32 bytes; a shorter value MUST fail configuration at startup. With the
+variable unset, the endpoint MUST refuse every request: it is closed by default,
+never open.
+
 The endpoint MUST NOT be part of any endpoint-scoped grant: it is an operator
 surface, not an agent surface. A vended endpoint credential MUST NOT authorize it.
 
@@ -51,6 +56,12 @@ switchboard_queue_oldest_pending_seconds{queue}  gauge
 be reported for every state, **including zero values** — an absent series is
 indistinguishable from a series that is genuinely zero, and this pair exists
 precisely to make a zero legible.
+
+The known queues are every queue a todo has ridden plus every queue scoped on an
+endpoint, so a queue that has no todos yet still reports four zero-valued series.
+Only these four states are reported. Todos in the A2A states (`canceled`,
+`rejected`, `input-required`, `auth-required`) are not counted; extending `state`
+to cover them is a possible later addition, not a requirement of this spec.
 
 `switchboard_queue_oldest_pending_seconds` MUST report the age of the oldest
 `pending` todo, or `0` when none is pending.
@@ -79,6 +90,18 @@ metric. A lapsed lease returns a todo to `pending` and a second worker redoes
 work the first is still doing; the tracker shows one claim and one completion,
 so the duplication is otherwise invisible. Any non-zero rate here is a finding.
 
+A lease expires by two paths, and both MUST count: the reaper finding a lapsed
+lease, and a claim that takes over a lapsed lease before the reaper runs. The
+takeover is the same duplicate-work signal, reached faster. A single lapse MUST
+count once, whichever path reaches it first. A todo the reaper dead-letters at
+its attempt cap counts as a lease expiry only, not also as `outcome="fail"`,
+because no claimant reported a failure.
+
+`source` MUST be bounded: the webhook source types Switchboard accepts, plus
+`operator` (the push API), `dev`, and `friend` (friend handoffs). Any other value
+is reported as `__other__`. A friend handoff's persona name is free text and MUST
+NOT become a label.
+
 ### REQ-4: Ingest and routing
 
 ```
@@ -99,6 +122,20 @@ operator-chosen; at most 32 exist per webhook, so it is acceptable as a label.
 held to REQ-5: distinct values MUST be capped, with overflow aggregated under
 `webhook="__other__"`. Rule *names* MUST NOT be used — they are free text.
 
+Webhooks arrive only at `POST /webhooks/w/{token}`. Each delivery MUST count
+exactly one `verdict`: `accepted` when the event persisted (an idempotent
+redelivery included), `dropped` when routing dropped it, and `rejected`
+otherwise. A refusal the sender caused records exactly one `reason`. A refusal
+the server caused, such as a store error or no deliverable target, records none,
+so `rejected` minus `verify_failures` is the server's own share. `reason` is one
+of `missing_signature`, `malformed_signature`, `stale_timestamp`,
+`bad_signature`, `malformed`, `event_id_mismatch`, `too_large`, `unreadable`,
+`unknown_webhook`, `not_configured`, `unsupported_source`, or `__other__`; the
+client-facing rejection message is free text and MUST NOT become a label.
+
+A routing decision is counted once per persisted delivery, not once per target.
+A decision no rule made is reported as `rule_id="default"`.
+
 ### REQ-5: Cardinality
 
 Labels MUST be drawn from bounded sets. The following MUST NOT appear as labels:
@@ -118,6 +155,11 @@ whole spec exists because an unmeasured condition looked like a healthy one.
 Where a collector fails, it MUST increment
 `switchboard_metrics_collection_errors_total{collector}` so a broken collector is
 itself visible rather than silently flattening a graph.
+
+The error series MUST be present at `0` from the first scrape, so an alert on its
+`increase()` works before anything has failed. Collectors are gathered
+concurrently, so a failure's increment MAY first appear in the following scrape;
+an alert on it SHOULD use a window of a few scrapes.
 
 ## Scenarios
 
