@@ -101,8 +101,8 @@ the same visible, reviewable place instead of in a work lane or nowhere.
   producer retries. This follows the existing precedent: a webhook with no resolvable target
   already answers `503 webhook not configured`.
 * **A rule that faults on real traffic is refused at save time.** `set_webhook_rules`,
-  `add_webhook_rule` and `update_webhook_rule` dry-run the candidate configuration against the
-  webhook's most recent stored deliveries (up to 50), using the machinery `test_webhook_rules`
+  `add_webhook_rule`, `update_webhook_rule` and `move_webhook_rule` dry-run the candidate
+  configuration against the webhook's most recent stored deliveries (up to 50), using the machinery `test_webhook_rules`
   already has. The save fails if any rule faults on any of them. `$params` values are also
   type-checked: every value must be a string, number, boolean, or a list of strings or numbers.
 

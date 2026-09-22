@@ -266,7 +266,7 @@ treated as satisfied. The envelope MUST carry `.release = {by, at}`, where `by` 
 skipped. A released todo MUST keep its id. It MUST move to the routed queue or queues on the owner
 endpoint and the webhook's fan-out targets, as the routing decision says, and MUST ring doorbells
 and fire hooks exactly as a freshly routed todo would. If routing places it back in quarantine, or
-faults, the release MUST fail with `failed_precondition`, and the todo MUST stay quarantined.
+faults, the release MUST fail with `conflict`, and the todo MUST stay quarantined.
 
 **Discard** MUST complete the todo with state `done` and the result `{"discarded": true, "reason",
 "by"}`.
@@ -285,7 +285,7 @@ Every release, discard and expiry MUST be recorded on the todo with who, when an
 
 - **GIVEN** rules whose first match for the released delivery is `{"quarantine": true}`
 - **WHEN** the owner releases it without naming a queue
-- **THEN** the release fails with `failed_precondition`, and the todo stays quarantined
+- **THEN** the release fails with `conflict`, and the todo stays quarantined
 
 ### REQ-8: Classifier Endpoints
 
@@ -426,13 +426,13 @@ Every error MUST be wrapped with the webhook id and the stage (verify, trust gat
 quarantine, release). A quarantine write MUST happen in the same transaction as the event insert,
 so a delivery is never persisted without its disposition. Release MUST lock the todo row
 (`FOR UPDATE`) so that concurrent release and discard resolve once. The loser MUST get
-`failed_precondition`. Queries MUST be parameterized. Background expiry MUST be a single statement,
+`conflict`. Queries MUST be parameterized. Background expiry MUST be a single statement,
 safe under concurrent instances, and MUST pass `go test -race`.
 
 #### Scenario: Concurrent release and discard
 
 - **WHEN** a human releases an item at the same moment a classifier discards it
-- **THEN** exactly one succeeds, the other gets `failed_precondition`, and the todo records one
+- **THEN** exactly one succeeds, the other gets `conflict`, and the todo records one
   outcome
 
 ## Security Requirements
@@ -444,7 +444,7 @@ safe under concurrent instances, and MUST pass `go test -race`.
 | MCP `set_trusted_actors`, `clear_trusted_actors`, rules verbs | Required | Endpoint credential, webhook-family grant, owner scope |
 | MCP `list_quarantined`, `get_quarantined`, `release_quarantined`, `discard_quarantined` | Required | Classifier-role endpoint credential only |
 | Web UI Quarantine view and actions | Required | Signed-in human, owner scope, CSRF token |
-| `POST /webhooks/w/{token}` | Public | Inbound delivery, authenticated by signature or unguessable URL (unchanged, SPEC-0006) |
+| `POST /webhooks/w/{token}` | Public | Inbound delivery, authenticated by signature or unguessable URL (unchanged, SPEC-0001 and SPEC-0006) |
 
 ### Rate Limiting
 
