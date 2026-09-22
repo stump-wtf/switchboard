@@ -289,8 +289,9 @@ and at refusal. The collector registers `collection_errors_total{collector="admi
 ### Board
 
 The queue header fragment gains a budget strip: used of limit, in-flight of cap, status, and "resets at"
-in both zones. Deferred cards get a reason chip. The endpoint card gets a "Budget" editor, a modal
-wizard in the SPEC-0015 pattern, and an audit list. The header is pushed over the existing SSE live
+in both zones. Deferred cards get a reason chip. The endpoint card links to a "Budget" editor, a full
+page with server-side state and a no-JS fallback per SPEC-0015 REQ "Wizard Interaction Pattern" (not an
+overlay modal), and to the audit list. The header is pushed over the existing SSE live
 fragments on every claim and at reopen.
 
 ## Risks / Trade-offs

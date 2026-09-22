@@ -105,7 +105,7 @@ A fixed window allows a burst at the boundary: a full budget spent at 23:59, the
 
 Over-budget todos stay in `pending`. There is no new state, because a new state would break every consumer's state machine and every existing count by state (SPEC-0023 REQ-2). A deferred todo's `attempt`, `max_attempts` and `next_retry_at` are untouched. It never dead-letters for being deferred, keeps its dedup slot, and retention never prunes it.
 
-Its admission status is derived when it is read, never stored, so it can't go stale: `state` (`admitted` or `deferred`), `reason` (`window_exhausted`, `in_flight_full`, `paused` or `admission_unavailable`) and `next_eligible_at`. `next_eligible_at` is exact for a window (the next boundary). For in-flight it is an upper bound (the earliest live lease expiry), because a slot usually frees sooner when a worker completes.
+Its admission status is derived when it is read, never stored, so it can't go stale: `state` (`admitted` or `deferred`), `reason` (`window_exhausted`, `in_flight_full`, `paused` or `admission_unavailable`) and `next_eligible_at`. `next_eligible_at` is exact for a window (the next boundary). For in-flight it is only a hint, marked `exact: false`: the earliest live lease expiry plus the reaper interval. It is neither bound. A slot usually frees sooner when a worker completes, and a heartbeat can push a lease out, so a worker that wakes at the hint may be refused again.
 
 The status appears in four places:
 
@@ -226,7 +226,7 @@ sequenceDiagram
 ## More Information
 
 * **Composes with the other products.**
-  * **Harness:** budgets and usage-limit backoff (Harness ADR-0027) cap one harness. When `claim_next` answers `deferred`, Harness should park until `next_eligible_at` rather than poll or count it as a failure. Relay attempts (Harness ADR-0025; attempt history, ADR-0039) claim once per attempt, so each attempt is charged, which is what bounds a relay loop's spend.
+  * **Harness:** budgets and usage-limit backoff (Harness ADR-0027) cap one harness. When `claim_next` answers `deferred`, Harness should not count it as a failure. For `window_exhausted` it should park until `next_eligible_at`, which is exact. For `in_flight_full` the time is a hint, so it should wait for the queue's doorbell, which rings when a slot frees (or back off and retry). Relay attempts (Harness ADR-0025; attempt history, ADR-0039) claim once per attempt, so each attempt is charged, which is what bounds a relay loop's spend.
   * **Cairn:** no change. The queue digest (ADR-0034) reports budget-deferred work with its reasons, which is the "budget-deferred work" line the customer's daily sweep asks for.
 * **Parallel records.** Teams and the queue-identity contract are in ADR-0038 / SPEC-0033. Attempt history is in ADR-0039 / SPEC-0034. The notify-hook spec is SPEC-0024. Notification sinks and the digest are in ADR-0034 / SPEC-0029. They are cited here in prose and become front-matter edges once they merge.
 * **Out of scope.** Operator-imposed ceilings on a tenant (for example, an instance maximum of claims per owner per day) are a different control. ADR-0038 lets the operator bound tenant usage but not configure it, and that belongs in its own record. Priority and fair share across queues stay deferred, as #160 says.

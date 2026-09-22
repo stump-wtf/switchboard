@@ -235,8 +235,10 @@ Each pending todo's admission status MUST be derived when it is read, never stor
 * `state`: `admitted` or `deferred`;
 * `reason`: `window_exhausted`, `in_flight_full`, `paused` or `admission_unavailable`;
 * `next_eligible_at`: for `window_exhausted`, the next window boundary, and `exact: true`. For
-  `in_flight_full`, the earliest live lease expiry among the in-flight todos, and `exact: false`,
-  because a slot usually frees sooner. For `paused` and `admission_unavailable`, null.
+  `in_flight_full`, a hint marked `exact: false`: the earliest live lease expiry among the in-flight
+  todos plus the reaper interval. It is neither an upper nor a lower bound, because a completion can
+  free a slot sooner and a heartbeat can push a lease out. A client MUST NOT treat it as a promise, and
+  SHOULD rely on the reopen doorbell (REQ-8). For `paused` and `admission_unavailable`, null.
 
 `list_todos`, the todo drawer and the board MUST include it on every pending todo of a queue
 identity with a policy.
@@ -483,6 +485,8 @@ the board does (SPEC-0015):
 * the live header counts MUST sit in an `aria-live="polite"` region, and a change to exhausted, paused
   or unavailable MUST be announced;
 * the reason chip MUST carry a text label, not colour alone;
-* the policy editor MUST be keyboard-operable, and MUST follow the board's modal focus-trap and return
-  rules;
+* the policy editor MUST be a full page with server-side state and a no-JS fallback, as SPEC-0015 REQ
+  "Wizard Interaction Pattern" requires of create flows (not an overlay modal). It MUST be keyboard
+  operable, and focus MUST land on its first field and return to the queue header's edit control on
+  save or cancel;
 * icon-only controls, such as "edit budget", MUST carry an `aria-label`.
