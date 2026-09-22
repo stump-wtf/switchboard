@@ -1,9 +1,9 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-22
 decision-makers: Joe Stump
 extends: [ADR-0024, ADR-0025]
-related: [ADR-0012, ADR-0022, ADR-0028]
+related: [ADR-0012, ADR-0022, ADR-0028, ADR-0031, ADR-0038]
 ---
 
 # ADR-0036: Rule Packs Are Installable, Versioned Presets That Must Prove Themselves on Real Traffic Before They Save
@@ -222,7 +222,7 @@ flowchart TD
 * **How it composes with the other products.**
   * **Harness:** the stack installer (Harness ADR-0024 / SPEC-0018) should install packs through the plan-then-confirm path, and show the operator the replay before it confirms. A fresh stack has no stored deliveries, so its installs are `proven: false` until real traffic arrives, and the installer should say so. Harness personas and lanes consume the queues `handoff-lanes` routes to.
   * **Cairn:** `handoff-lanes` pins Cairn's handoff tag vocabulary (`handoff`, `lane:*`, `size:*`). A change to that vocabulary ships as a new pack version with a diff, not as a silent edit. The annotation events Cairn is adding (Cairn ADR-0022) are new event kinds, and `drop-ci-noise` does not drop them.
-* **Parallel records.** The fail-closed trusted-actor gate and quarantine are ADR-0031 / SPEC-0026. Teams and ownership are ADR-0038 / SPEC-0033. They are cited here in prose and become front-matter edges once they merge.
-* **Out of scope.** User-published packs, which need ADR-0038 ownership and a review model. An operator web UI for routing, since rules are MCP-managed today (ADR-0012). An operator CLI path is an open question in the spec.
+* **Companion records.** The fail-closed trusted-actor gate and quarantine are ADR-0031 / SPEC-0026. Teams and ownership are ADR-0038 / SPEC-0033. They were accepted together on 2026-09-22 and are linked as front-matter edges.
+* **Out of scope.** User-published packs, which need ADR-0038 ownership and a review model. An operator web UI for routing, since rules are MCP-managed today (ADR-0012). An operator CLI or HTTP install path, deferred to a P2 follow-up, and operator ceilings per tenant (design review 2026-09-22).
 * **Prior art in the repo.** The rule-packs README's "three things that look wrong until you know why" is what a pack's fixtures and tests encode. That knowledge moves from prose that agents must read into tests that fail.
 * Implementation: [SPEC-0031](../openspec/specs/rule-packs/spec.md).

@@ -100,6 +100,12 @@ the caller knows a secret, but unlike HMAC it can't attest the payload.
 | [asyncapi.yaml](docs/reference/asyncapi.yaml) | SSE event/message schema |
 | [SPEC-0005 mcp-tools](docs/openspec/specs/mcp-tools/spec.md) | MCP tool + resource contract & JSON Schemas |
 | [SPEC-0014 mcp-transport](docs/openspec/specs/mcp-transport/spec.md) | Vended MCP endpoints served over Streamable HTTP (`/mcp/{endpoint}`) |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release, and every breaking change |
+| [Upgrading](docs/guides/15-upgrading.md) | **Read before upgrading.** The breaking changes, who they affect, and what a release cannot undo |
+
+Released builds are published to `ghcr.io/stump-wtf/switchboard`, tagged `latest` and by
+version. Tag `latest` by digest, not by name: it moves only when a `v*` tag is pushed, so
+it can be a release or two behind without saying so.
 
 ## Web UI (five views)
 

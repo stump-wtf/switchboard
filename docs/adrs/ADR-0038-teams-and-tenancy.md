@@ -1,9 +1,9 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-22
 decision-makers: Joe Stump
 extends: [ADR-0008, ADR-0022]
-related: [ADR-0010, ADR-0011, ADR-0012, ADR-0024, ADR-0025, ADR-0026, ADR-0027, ADR-0028, ADR-0029]
+related: [ADR-0010, ADR-0011, ADR-0012, ADR-0024, ADR-0025, ADR-0026, ADR-0027, ADR-0028, ADR-0029, ADR-0031, ADR-0033, ADR-0034, ADR-0035, ADR-0036, ADR-0037, ADR-0039]
 ---
 
 # ADR-0038: Teams and Tenancy — Every Resource Has a User or Team Owner, and the Operator Owns None
@@ -40,7 +40,7 @@ because an operator allowlist was empty.
 
 **3. Unscoped surfaces remain, and new ones are being designed right now.** #194
 is the known P0: the event-history tools read and replay every tenant's deliveries. The audit below
-finds the rest. Meanwhile, eight records in flight add owned resources: notify hooks (ADR-0029,
+finds the rest. Meanwhile, eight companion records add owned resources: notify hooks (ADR-0029,
 SPEC-0024), trusted actors and quarantine (ADR-0031), reply-to-source credentials (ADR-0033),
 notification sinks (ADR-0034), admission budgets (ADR-0035), rule packs (ADR-0036), provider secrets
 (ADR-0037) and attempt history (ADR-0039). Without one owner model each will invent its own, and the
@@ -89,7 +89,7 @@ the person who runs the instance do that a user cannot?**
 
 Chosen option: **"(B) Teams as first-class owners, with roles and team queues"**, because it is the
 only option that gives people a shared, durable owner without making anything global, keeps a grant
-legible, and lets the rest of the in-flight records share one answer.
+legible, and lets the rest of the companion records share one answer.
 
 > **A resource belongs to a user or to a team. The operator runs the instance and owns nothing in it.**
 
@@ -180,7 +180,7 @@ Any user may create a team (subject to the operator's per-user ceiling) and beco
 | Role | Can |
 |---|---|
 | **member** | use team resources: see team queues, todos, events and attempt history on the board; claim, heartbeat, complete and fail team-queue todos through their agents; grant a team queue to their own endpoints; create human-authored todos on team queues |
-| **admin** | everything a member can, plus configure: vend and revoke team endpoints; create, edit and delete team webhooks, routes, rules and rule-pack installs, notify hooks, sinks, credentials and secrets, admission budgets, trusted actors; invite and remove members and admins |
+| **admin** | everything a member can, plus configure: vend and revoke team endpoints; create, edit and delete team webhooks, routes, rules and rule-pack installs, notify hooks, sinks, credentials and secrets, admission budgets, trusted actors; invite and remove members and admins. A team owner may let members create webhooks with the off-by-default `members_create_webhooks` setting |
 | **owner** | everything an admin can, plus govern: promote and demote owners, rename, transfer, delete the team |
 
 *Members use, admins configure, owners govern.* A team always has at least one owner; the last owner
@@ -315,7 +315,7 @@ A human with no teams sees no difference anywhere except the removal of the leak
 
 * Good, because people can finally share work without sharing a login: one queue, several agents,
   config that outlives whoever set it up.
-* Good, because every in-flight record gets its owner model from one place: exactly-one-of owner
+* Good, because every companion record gets its owner model from one place: exactly-one-of owner
   columns, same-scope references, credentials that follow the todo.
 * Good, because the operator gets a real, bounded role — and "operator" stops meaning "whoever is
   logged in".
@@ -381,7 +381,7 @@ A human with no teams sees no difference anywhere except the removal of the leak
 * Good, because it is maximally flexible: share one webhook with one person for one day.
 * Bad, because a grant stops being legible — "who can claim from this queue" becomes a query over
   every ACL row, which is the audit ambiguity ADR-0008 rejected mutable scope to avoid.
-* Bad, because every new resource type needs its own ACL semantics, and the in-flight records would
+* Bad, because every new resource type needs its own ACL semantics, and the companion records would
   each design one.
 
 ### (E) Teams are IdP groups
@@ -417,11 +417,10 @@ flowchart TB
 
 ## More Information
 
-* Records this composes with, cited by number because they are in flight in parallel: ADR-0029 and
+* Companion records, accepted together on 2026-09-22 and linked as front-matter edges: ADR-0029 and
   SPEC-0024 (notify hooks), ADR-0031 (trusted actors and quarantine), ADR-0033 (reply-to-source
   credentials), ADR-0034 (notification sinks and digest), ADR-0035 (admission control), ADR-0036
-  (rule packs), ADR-0037 (provider secrets), ADR-0039 (attempt history). Front-matter edges to them
-  are added once they merge.
+  (rule packs), ADR-0037 (provider secrets), ADR-0039 (attempt history), and their specs.
 * The same model in Cairn: its ADR-0029 and SPEC-0023 ("Teams and tenancy"). A person in team
   `stump` in both products has two independent memberships with the same slug and role names; with
   group sync on, both derive from the same IdP group at next login. A Cairn team's outbound

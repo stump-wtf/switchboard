@@ -126,7 +126,7 @@ flowchart LR
 
 ## More Information
 
-* **Open question — presence.** [ADR-0027](ADR-0027-endpoint-presence-clock-in-clock-out.md) withholds doorbells while an endpoint is clocked out. A hook exists precisely to reach a consumer that is not running, so "clocked out" may not mean "do not start me". Proposed: hooks respect presence by default, with a per-hook `ignore_presence` for on-demand consumers. To settle in the spec.
-* **Open question — digest.** Whether a burst should coalesce into one `todos.ready` call, as ADR-0027's digest doorbell does. Proposed: no for v1; `webhook-id` dedup and the receiver's own debounce are enough until someone measures a problem.
+* **Presence.** [ADR-0027](ADR-0027-endpoint-presence-clock-in-clock-out.md) withholds doorbells while an endpoint is clocked out. A hook exists precisely to reach a consumer that is not running, so "clocked out" may not mean "do not start me". Resolved (design review 2026-09-22): hooks respect presence by default, with a per-hook `ignore_presence` opt-out for on-demand consumers ([SPEC-0024](../openspec/specs/notify-hooks/spec.md) REQ-9).
+* **Digest.** Whether a burst should coalesce into one `todos.ready` call, as ADR-0027's digest doorbell does. Resolved (design review 2026-09-22): no for v1; `webhook-id` dedup and the receiver's own debounce are enough until the measurement plan in SPEC-0024's design shows a problem.
 * The doorbell this extends: [ADR-0013](ADR-0013-channels-push-delivery.md). Ownership: [ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md). The inbound symmetry: [ADR-0012](ADR-0012-agents-self-manage-webhooks.md). The shared SSRF guard: [ADR-0021](ADR-0021-a2a-task-delegation-transport.md), `internal/push/ssrf.go`.
 * Standard Webhooks signature scheme: <https://www.standardwebhooks.com/>.

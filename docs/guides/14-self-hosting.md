@@ -349,6 +349,8 @@ absent rather than zero, because a zero and an unmeasured value look identical o
 ## Where to go next
 
 - [Concepts in five minutes](/getting-started/concepts) — the model your users will work in.
+- [Upgrading](/guides/upgrading) — read this before moving between releases. It names the breaking
+  changes, and anything a release cannot undo.
 - [Vend an endpoint](/guides/vend-an-endpoint) — the full scope surface.
 - [Receive your first webhook](/getting-started/first-webhook) — GitHub, Gitea, Cairn, and signing
   your own producer.

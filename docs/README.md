@@ -41,6 +41,23 @@ Two layers:
 | [ADR-0016](adrs/ADR-0016-operator-design-language.md) | **Operator design language** | Direction 1a "Operator" (brass & bakelite) is canonical; owned `tokens.css` + `.sb-*` layer replaces the never-shipped Pico.css; fonts vendored. |
 | [ADR-0017](adrs/ADR-0017-mcp-streamable-http-only.md) | **MCP over Streamable HTTP only** | Vended endpoints served HTTP/S-direct from the central service; URL + bearer credential is the whole client; stdio adapter retired. |
 
+### Operation Stumply (accepted 2026-09-22)
+
+ADR-0018 to ADR-0029 are not indexed here yet; browse [`adrs/`](adrs/) for them.
+
+| ADR | Title | One-line |
+|-----|-------|----------|
+| [ADR-0030](adrs/ADR-0030-doorbell-acknowledgement-and-self-test.md) | **Doorbell acknowledgement + self-test** | A claim acknowledges a ring, unheard rings are counted, and `test_doorbell` / `switchboard doctor` prove the loop. |
+| [ADR-0031](adrs/ADR-0031-fail-closed-trusted-actor-intake-and-quarantine.md) | **Fail-closed trusted intake** | Rule faults stop evaluation; `trusted_actors` is a first-class field; everything else is quarantined. |
+| [ADR-0032](adrs/ADR-0032-release-version-reporting-and-upgrade-contract.md) | **Release and upgrade contract** | One stamped version on every surface, a CI-enforced CHANGELOG, upgrade notes, and superseded surfaces removed outright pre-1.0. |
+| [ADR-0033](adrs/ADR-0033-reply-to-source.md) | **Reply to source** | Todos carry a verified reply address; the opt-in `reply` verb posts back with an owner-scoped connection. |
+| [ADR-0034](adrs/ADR-0034-notification-sinks-and-queue-digests.md) | **Notification sinks + digests** | Gotify and Apprise sinks through a durable outbox, plus queue digests. Notifications, not ticketing. |
+| [ADR-0035](adrs/ADR-0035-per-queue-admission-control.md) | **Per-queue admission control** | In-flight and per-window budgets, enforced inside the claim transaction; every claim is charged. |
+| [ADR-0036](adrs/ADR-0036-rule-packs-as-installable-presets.md) | **Rule packs** | Versioned, tested presets that must replay green against the webhook's own deliveries before they save. |
+| [ADR-0037](adrs/ADR-0037-provider-issued-signing-secrets.md) | **Provider-issued signing secrets** | `awaiting_secret`, the write-only `set_webhook_secret` verb, Slack URL verification, Linear and Plain kinds. |
+| [ADR-0038](adrs/ADR-0038-teams-and-tenancy.md) | **Teams and tenancy** | Every resource has one user or team owner; the operator bounds tenant data and never reads it. |
+| [ADR-0039](adrs/ADR-0039-attempt-history-on-todos.md) | **Attempt history on todos** | Every committed claim opens an attempt record; `get_todo`, `release` and an opt-in lease-token fence. |
+
 ## OpenSpec Specifications
 
 Each capability is a paired artifact: `spec.md` (requirements) + `design.md` (architecture &
@@ -62,6 +79,24 @@ rationale). Grouped by layer, in dependency order.
 | [SPEC-0012](openspec/specs/web-ui/spec.md) | Web UI | ADR-0001 | Baseline web surface: embedded templates, sessions, SSE, security & a11y (screen set refined by SPEC-0013). |
 | [SPEC-0013](openspec/specs/operator-board/spec.md) | Operator board | ADR-0016, 0001 | Five-view operator UI (Board/Todos/Endpoints/Personas/Friends), drawer + modals, live SSE, design-language conformance. |
 | [SPEC-0014](openspec/specs/mcp-transport/spec.md) | MCP Streamable HTTP transport | ADR-0017 | `/mcp/{endpoint}` HTTP-only MCP: bearer auth, scoped tools incl. heartbeat, channels doorbells, stdio retirement. |
+
+### Operation Stumply specifications (approved 2026-09-22)
+
+SPEC-0015 to SPEC-0023 are not indexed here yet; browse [`openspec/specs/`](openspec/specs/) for them.
+
+| SPEC | Capability | Realizes | Covers |
+|------|-----------|----------|--------|
+| [SPEC-0024](openspec/specs/notify-hooks/spec.md) | Outbound notify hooks | ADR-0029 | Endpoint-owned, signed, payload-free HTTPS wake-ups for consumers with no live session; presence-aware. |
+| [SPEC-0025](openspec/specs/doorbell-acknowledgement/spec.md) | Doorbell acknowledgement + self-test | ADR-0030 | Ring records, claim-as-ack, unheard sweep and metrics, `test_doorbell`, `switchboard doctor`, synthetic todos. |
+| [SPEC-0026](openspec/specs/trusted-intake/spec.md) | Fail-closed trusted intake | ADR-0031 | Fault-stops-evaluation, `trusted_actors`, quarantine, classifier endpoints, the public-mirror recipe. |
+| [SPEC-0027](openspec/specs/release-contract/spec.md) | Release and upgrade contract | ADR-0032 | `internal/buildinfo`, `/healthz`, CHANGELOG and upgrade-note checks, release-honest docs, opt-in release check. |
+| [SPEC-0028](openspec/specs/reply-to-source/spec.md) | Reply to source | ADR-0033 | Reply addresses, the connection vault, the `reply` verb, echo suppression, content limits. |
+| [SPEC-0029](openspec/specs/notification-sinks/spec.md) | Notification sinks + digests | ADR-0034 | Gotify/Apprise sinks, subscriptions, outbox delivery, budgets, the `notify` action, queue digests. |
+| [SPEC-0030](openspec/specs/admission-control/spec.md) | Per-queue admission control | ADR-0035 | Policy model, charging rule, atomic enforcement at claim, deferred status, withheld doorbells and hooks. |
+| [SPEC-0031](openspec/specs/rule-packs/spec.md) | Rule packs | ADR-0036 | Catalog, replay over stored deliveries, two-phase install, upgrades and removal, the built-in packs. |
+| [SPEC-0032](openspec/specs/provider-signing-secrets/spec.md) | Provider-issued signing secrets | ADR-0037 | Secret origin, `awaiting_secret`, `set_webhook_secret`, rotation, replay guard, Slack handshake, Linear and Plain. |
+| [SPEC-0033](openspec/specs/teams-tenancy/spec.md) | Teams and tenancy | ADR-0038 | Owner model, reach, team roles and invites, team queues, operator surfaces, enrollment, the audit fixes. |
+| [SPEC-0034](openspec/specs/todo-attempts/spec.md) | Attempt history | ADR-0039 | Attempt records, died-versus-failed, prior attempts on claim, `get_todo`, `release`, the lease-token fence. |
 
 ## Reference Contracts
 

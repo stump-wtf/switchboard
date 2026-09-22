@@ -1,8 +1,9 @@
 ---
-status: draft
+status: approved
 date: 2026-09-22
 implements: [ADR-0038]
 requires: [SPEC-0003, SPEC-0006, SPEC-0007, SPEC-0008, SPEC-0011, SPEC-0020, SPEC-0021]
+related: [SPEC-0024, SPEC-0026, SPEC-0028, SPEC-0029, SPEC-0030, SPEC-0031, SPEC-0032, SPEC-0034]
 ---
 
 # SPEC-0033: Teams and Tenancy
@@ -27,8 +28,8 @@ It amends, without renaming any requirement code cites: [SPEC-0007](../vended-en
 accept a team queue), [SPEC-0011](../channels/spec.md) (team-queue doorbells) and
 [SPEC-0021](../github-login/spec.md) (the issuer gate is reused for team consent actions).
 
-Records in flight that take their owner model from this spec, cited by number until they merge:
-SPEC-0024 (notify hooks), ADR-0031 (trusted actors and quarantine), ADR-0033 (reply-to-source
+Companion records that take their owner model from this spec, accepted together on 2026-09-22 and
+linked as front-matter edges: SPEC-0024 (notify hooks), ADR-0031 (trusted actors and quarantine), ADR-0033 (reply-to-source
 credentials), ADR-0034 (notification sinks), ADR-0035 (admission control), ADR-0036 (rule packs),
 ADR-0037 (provider secrets), ADR-0039 (attempt history).
 
@@ -81,8 +82,9 @@ normally; operator routes MUST then answer `404`.
 
 Operator surfaces MUST be limited to instance configuration and governance:
 
-* the user and team directory: display name, email, created and last-login times, suspension state,
-  and **counts** of endpoints, webhooks, queues and todos per owner;
+* the user and team directory: display name (a team's name), email, created and last-login times,
+  suspension state, and **counts** of endpoints, webhooks, queues and todos per owner. A team's name
+  is visible to the operator; its contents never are;
 * per-user and per-team ceilings (endpoints, webhooks, teams per human, notify hooks, sinks);
 * suspending and unsuspending a user or a team;
 * instance settings, login policy, and the metrics scrape credential (SPEC-0023).
@@ -246,14 +248,27 @@ A team membership MUST carry exactly one role: `owner`, `admin` or `member`. Per
 | Invite and remove members and admins; revoke invites | no | yes | yes |
 | Grant or revoke `owner`; rename, transfer, delete the team | no | no | yes |
 
+The webhook row above is the default. A team owner MAY turn on the team setting
+`members_create_webhooks`, which MUST default to `false`. While it is on, a member MAY create, edit and
+delete webhooks on team endpoints their own grant covers; nothing else in that row changes for members.
+Changing the setting MUST be recorded in the team's audit and shown on the team settings page.
+
 A team MUST always have at least one owner: the last owner MUST NOT leave, be removed or be demoted.
 A secret or credential value MUST NOT be returned to anyone, owners included, after the response that
 created or rotated it.
 
 #### Scenario: Member tries to add a webhook
 
+- **GIVEN** team T has `members_create_webhooks = false` (the default)
 - **WHEN** a member of team T calls the board's create-webhook route for a T endpoint
 - **THEN** the request is refused with `403 role_required` and nothing is created
+
+#### Scenario: Owner lets members add webhooks
+
+- **GIVEN** an owner of team T turned on `members_create_webhooks`
+- **WHEN** a member creates a webhook on a T endpoint their grant covers
+- **THEN** the webhook is created, owned through the team endpoint, and the setting change is in T's
+  audit
 
 #### Scenario: Last owner leaves
 
@@ -505,6 +520,10 @@ Each unscoped surface listed in the Audit Findings table of design.md MUST be br
 "Reach and Effective Reach" or REQ "Operator Surfaces Bound Tenant Data and Never Read It", and each
 MUST gain a tenancy-suite case that fails against the unfixed code.
 
+For F11, an owner MAY opt one of its own queues into the instance scrape under its real name. The
+opt-in MUST default to off, MUST stay bounded by the shared label cap, and is specified in the SPEC-0023
+amendment F11 requires.
+
 #### Scenario: Friend grant cannot carry webhook verbs (F3)
 
 - **WHEN** a friend request asks for `set_webhook_rules`, and the target human approves it
@@ -540,6 +559,13 @@ MUST gain a tenancy-suite case that fails against the unfixed code.
 - **WHEN** the operator scrapes `/metrics`
 - **THEN** no series carries `queue="payroll-escalations"`; U's queues are counted under
   `queue="__tenant__"`, and the operator's own queues keep their names
+
+#### Scenario: Owner opts a queue name into the scrape (F11)
+
+- **GIVEN** user U turned on the metrics-name opt-in for queue `reviews`
+- **WHEN** the operator scrapes `/metrics`
+- **THEN** series for that queue carry `queue="reviews"`, U's other queues stay under
+  `queue="__tenant__"`, and the opt-in counts against the shared label cap
 
 #### Scenario: Consent screen shows where tokens go (F12)
 

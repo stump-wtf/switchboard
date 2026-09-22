@@ -1,9 +1,9 @@
 ---
-status: draft
+status: approved
 date: 2026-09-22
 implements: [ADR-0036]
 requires: [SPEC-0006, SPEC-0020]
-related: [SPEC-0023]
+related: [SPEC-0023, SPEC-0026, SPEC-0033]
 ---
 
 # SPEC-0031: Rule Packs as Installable Presets
@@ -24,7 +24,7 @@ and it adds verbs to REQ "Rule Management Tools" and to the webhook family of
 [SPEC-0006](../agent-tools/spec.md). It changes no evaluation semantics: installed pack rules are
 ordinary rules. The built-in packs' seed is `docs/routing/rule-packs/`.
 
-Parallel records, cited by number until they merge: the fail-closed trusted-actor gate, `.actor` and
+Companion records, accepted together on 2026-09-22 and linked as front-matter edges: the fail-closed trusted-actor gate, `.actor` and
 quarantine are ADR-0031 / SPEC-0026; owner scopes and team roles are ADR-0038 / SPEC-0033.
 
 Terms:

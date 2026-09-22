@@ -35,6 +35,8 @@ design only depends on their outcomes, and does not duplicate them.
 * A web UI for routing.
 * Changing evaluation semantics. Fault handling belongs to ADR-0031 / SPEC-0026.
 * An LLM-suggested pack. ADR-0024's triage stage stays separate.
+* Operator ceilings per tenant on installed packs (design review 2026-09-22).
+* An operator CLI or HTTP install path. It is a P2 follow-up; v1 installs through MCP.
 
 ## Decisions
 
@@ -262,10 +264,10 @@ exactly as it did. The provenance column is inert.
 
 ## Open Questions
 
-* Should the operator CLI and API gain a `webhook pack plan|install` path for owners who do not run an
-  agent? Webhooks are MCP-managed today (ADR-0012). It is proposed as a follow-up once ADR-0038 settles
-  the operator API's owner-scope shape.
-* Should replay also estimate the decision SPEC-0023's live counters will show, and a later job compare
-  the prediction with the counters a day after install? That would close the loop the precedent opened.
-* Can a future user-pack feature store packs in this same format, owned per ADR-0038? The format is
-  designed so, but it is not specified here.
+* **Should the operator CLI and API gain a `webhook pack plan|install` path?** Resolved (design review 2026-09-22): deferred to a P2
+  follow-up story, once ADR-0038's operator-API owner-scope shape is implemented. v1 installs through
+  MCP only.
+* **Operator ceilings per tenant on installed packs.** Resolved (design review 2026-09-22): out of scope for this program.
+* **Should replay predict the decision counters and a later job compare them?** Resolved (design review 2026-09-22): not in v1.
+* **Can a future user-pack feature reuse this format, owned per ADR-0038?** Resolved (design review 2026-09-22): out of scope here.
+  The format is kept compatible with it, and user packs need their own ADR.

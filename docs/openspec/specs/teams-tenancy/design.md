@@ -52,7 +52,7 @@ with `ON DELETE CASCADE`, and `CHECK (num_nonnulls(owner_human_id, owner_team_id
 
 **Rationale**: referential integrity and cascades come from Postgres for free, a partial index per
 column keeps both lookups cheap, and the constraint makes "owned by nothing" and "owned by both"
-unrepresentable. The in-flight records (sinks, credentials, provider secrets) copy the same three
+unrepresentable. The companion records (sinks, credentials, provider secrets) copy the same three
 lines.
 
 **Alternatives considered**:
@@ -137,7 +137,7 @@ consistent, which is exactly the property the rule exists to deny.
 * `todos.claimed_by_endpoint_id` records the lease holder for team todos (the existing `owner` column
   is the lease-holder string and stays as it is).
 
-**Rationale**: the `(endpoint_id | team_id, queue)` pair is the queue identity every in-flight record
+**Rationale**: the `(endpoint_id | team_id, queue)` pair is the queue identity every companion record
 keys on (admission, digests, rule-pack targets, attempts). A queues table for endpoint queues too
 would be cleaner, but it would be a migration across every endpoint for no tenancy gain; it can come
 later if admission control (ADR-0035) needs rows for endpoint queues.
@@ -344,7 +344,7 @@ CREATE TABLE operator_audit (
 ALTER TABLE humans ADD COLUMN suspended_at timestamptz;
 ```
 
-Directly owned tables added by the in-flight records (sinks, outbound credentials, provider
+Directly owned tables added by the companion records (sinks, outbound credentials, provider
 secrets) carry the three owner lines from ADR-0038 section 2.
 
 ## API
@@ -435,7 +435,7 @@ line citations are in ADR-0038 section 9.
 | F20 | Route-target routing trace (#191) | redacted across scopes | Closing the Audited Surfaces |
 | F21 | Instance feature flags and encryption key | accepted as instance policy | — |
 
-## The Contract for Records in Flight
+## The Contract for Companion Records
 
 | Record | Resource | Owner under this spec | Who writes it |
 |---|---|---|---|
@@ -504,13 +504,13 @@ team todo exists (`DELETE FROM todos WHERE team_id IS NOT NULL` then restore `NO
 
 ## Open Questions
 
-- **Webhook creation by members.** This design makes team webhooks admin-only, because a webhook
-  mints an ingress capability. Should members be allowed to create webhooks on team endpoints they
-  were granted? Proposed, following Joe's 2026-09-22 guidance that risky options are fine when they
-  are configurable and off by default: a per-team setting an owner can turn on, off by default.
-- **Operator visibility of team names.** The directory shows team names and counts. Is a team's name
-  itself tenant data the operator should not see?
-- **Metrics labels.** Is aggregating non-operator queues under `__tenant__` acceptable, or should an
-  owner be able to opt their queue names into the instance scrape? Proposed, on the same guidance: a
-  per-queue owner opt-in, off by default and still bounded by the shared label cap, specified in the
-  SPEC-0023 amendment F11 already requires.
+- **Webhook creation by members.** Resolved (design review 2026-09-22): configurable and off by default. Team webhooks stay
+  admin-only unless a team owner turns on the team setting `members_create_webhooks`, which lets a
+  member create webhooks on team endpoints their grant covers (REQ "Team Roles").
+- **Operator visibility of team names.** Resolved (design review 2026-09-22): the operator sees team names and counts, and never a
+  team's contents (REQ "Operator Surfaces Bound Tenant Data and Never Read It").
+- **Metrics labels.** Resolved (design review 2026-09-22): non-operator queues aggregate under `__tenant__` by default. An owner may
+  opt a queue's name into the instance scrape; the opt-in is off by default and still bounded by the
+  shared label cap (REQ "Closing the Audited Surfaces", F11).
+- **Enrollment default.** Resolved (design review 2026-09-22) (Joe): `SWITCHBOARD_ENROLLMENT_MODE`, configurable, defaulting to
+  `invite` when GitHub login is on.
