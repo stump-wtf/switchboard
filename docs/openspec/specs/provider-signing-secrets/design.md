@@ -114,7 +114,10 @@ routing rules the owner has not written yet.
 
 **Choice**: the endpoint card's webhook row gets a password-type secret field (never pre-filled) with a
 "keep the old secret for" select (none, 1 hour, 24 hours), and the operator API gets
-`PUT /api/v1/webhooks/{id}/secret`. The MCP verb exists for automation but is not in basics vends.
+`PUT /api/v1/webhooks/{id}/secret`. The MCP verb exists for automation. Joining `WebhookVerbs()` puts it
+in `AllVerbs()`, which the operator API's basics vend grants verbatim today, so that path switches to a
+`BasicVerbs()` helper that leaves it out (the same helper SPEC-0028 introduces for `reply`; whichever
+lands first adds it).
 
 **Rationale**: a vendor secret pasted through an agent passes through a model transcript; the UI path
 avoids that entirely.

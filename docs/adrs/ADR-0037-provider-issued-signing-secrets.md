@@ -121,7 +121,8 @@ than lost.
    (ADR-0038, in parallel). This is the recommended path: the vendor secret never enters an agent's
    context.
 2. **`set_webhook_secret {webhook_id, signing_secret, keep_previous_for?}`**, a new verb in the webhook
-   family, separately grantable and absent from basics vends.
+   family, separately grantable, offered unchecked in the vend wizard, and left out of the operator
+   API's basics grant (which today grants every verb).
 3. **`create_webhook {…, signing_secret}`**, for a provider-origin type when the secret is already known.
    Slack's is: it exists before any Request URL, and it must be set before the URL is entered because
    the handshake is signed.

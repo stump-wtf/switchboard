@@ -86,7 +86,10 @@ A provider-issued secret MUST be settable, for a webhook in the caller's own sco
 1. the web UI, on the webhook's row, by the owning human or, for a team-owned endpoint, a role
    SPEC-0033 (Teams and tenancy, in flight) allows to configure the team;
 2. the MCP verb `set_webhook_secret {webhook_id, signing_secret, keep_previous_for?}`, a member of the
-   webhook verb family, enforced by the scope guard, and absent from the basics and quick vends;
+   webhook verb family and enforced by the scope guard. The vend wizard, quick vend and consent screen
+   MUST list it unchecked by default. The operator API's basics vend grants `AllVerbs()` verbatim today
+   (`internal/server/api.go`); that path MUST exclude this verb, so taking a vendor secret over MCP is
+   always a deliberate grant;
 3. `create_webhook` with `signing_secret`, for a provider-origin type only.
 
 The secret MUST be at least 16 bytes and at most 512 bytes of printable ASCII, and MUST pass the
