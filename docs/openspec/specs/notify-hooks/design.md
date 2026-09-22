@@ -88,8 +88,12 @@ validator stays the single source of truth for "allowed", as ADR-0021 intended.
 ### Private ranges are an operator bound, off by default
 
 **Choice**: `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` (comma-separated CIDRs) exempts listed ranges
-from the private-address rejection. Loopback, link-local (including cloud metadata addresses) and
-Switchboard's own listen addresses stay rejected even when listed.
+from the private-address rejection. Loopback and link-local (including cloud metadata addresses) are
+exempted only by an entry lying wholly inside them, such as `127.0.0.1/32` for a Harness listener on
+the same host; a broad entry like `0.0.0.0/0` never opens them. Switchboard's own listen address and
+port stay rejected even when listed, compared as address plus port. Today `WithOwnListenAddrs` in
+`internal/push/ssrf.go` records IPs only and leaves loopback binds to the loopback rule, so the story
+extends it to ports.
 
 **Rationale**: a self-hoster running Switchboard and Harness on one LAN needs the "server it can
 reach" path to work without a public hop. On a multi-tenant instance this opens those ranges to
@@ -332,7 +336,7 @@ Errors use the stable error shape from SPEC-0006 REQ "Structured Output and Stab
 | Variable | Default | Meaning |
 |---|---|---|
 | `SWITCHBOARD_NOTIFY_HOOK_MAX` | `5` | Per-endpoint hook ceiling (operator bound) |
-| `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` | empty | Private CIDRs exempt from the SSRF private-range rule; every tenant can reach them |
+| `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` | empty | CIDRs exempt from the SSRF private-range rule; loopback and link-local only via entries wholly inside them; every tenant can reach them |
 | `SWITCHBOARD_PUSH_ALLOW_HTTP` | unset | Existing opt-in; also permits `http://` hook URLs |
 
 Fixed values (constants, not configuration): attempt timeout 5s, 3 attempts, disable after 10

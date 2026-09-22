@@ -146,10 +146,14 @@ most 2048 bytes. It MUST NOT resolve to a loopback, private, link-local, unique-
 unspecified, multicast or carrier-grade NAT address, or to one of Switchboard's own listen
 addresses.
 
-The operator MAY permit specific private ranges instance-wide with an explicit CIDR allowlist
+The operator MAY permit specific ranges instance-wide with an explicit CIDR allowlist
 (`SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS`). This is an operator bound for single-tenant or homelab
-installs, and the self-hosting guide MUST say that it exposes those ranges to every tenant. The
-default MUST be empty.
+installs. The default MUST be empty. A listed range MUST exempt the private, unique-local and
+carrier-grade NAT addresses it covers. Loopback and link-local addresses MUST be exempted only by an
+entry that lies wholly inside those ranges (for example `127.0.0.1/32`), never by a broader entry
+such as `0.0.0.0/0`. Switchboard's own listen address and port MUST stay rejected even when listed.
+The self-hosting guide MUST say that the allowlist exposes those ranges to every tenant, and that
+exempting link-local exposes cloud metadata services.
 
 The connection MUST be made to an IP address from the **same** resolution that passed validation.
 A second, unvalidated lookup between validation and dial MUST NOT be possible. TLS MUST verify the
@@ -163,6 +167,19 @@ the status code, and its `Location` MUST NOT be dialled.
 - **WHEN** an endpoint calls `create_notify_hook` with a URL whose host resolves to `10.0.0.5`
 - **THEN** the call fails with `invalid_argument` naming the rejected address class, and nothing is
   stored
+
+#### Scenario: Same-host receiver when the operator opts in
+
+- **GIVEN** `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS=127.0.0.1/32`, and Switchboard listening on
+  `127.0.0.1:8080`
+- **WHEN** an endpoint creates a hook whose host resolves to `127.0.0.1` on port `9443`
+- **THEN** the hook is stored, while a hook targeting `127.0.0.1:8080` is still refused
+
+#### Scenario: A broad entry does not open loopback or metadata
+
+- **GIVEN** `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS=0.0.0.0/0`
+- **WHEN** a hook's host resolves to `169.254.169.254` or to `127.0.0.1`
+- **THEN** the call fails with `invalid_argument`
 
 #### Scenario: DNS rebinding between create and delivery
 
