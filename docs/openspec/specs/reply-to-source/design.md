@@ -29,7 +29,8 @@ Ownership is the owning human today, and exactly one of human or team once ADR-0
 ### Goals
 
 - An address fixed by verified provenance and stored on the todo row.
-- Agents answer without ever holding, seeing or choosing a credential.
+- Agents answer without ever holding, seeing or choosing a credential. An agent granted the
+  off-by-default connection verbs can store one, and still never reads one back.
 - One outbound credential vault, owner-scoped and write-only, that SPEC-0029's notification sinks reuse.
 - Exactly-once posting from the caller's point of view, with honest `unknown` when the provider cannot
   tell us.
@@ -37,7 +38,9 @@ Ownership is the owning human today, and exactly one of human or team once ADR-0
 
 ### Non-Goals
 
-- Posting anywhere other than the origin. There is no `post_message`.
+- Posting anywhere other than the origin, in this spec. A target-choosing `post_message` is deferred,
+  not refused: if built, it is its own verb family, off by default, never in the basics vend, and
+  usable only through a connection with a non-empty targets allowlist.
 - Reading from providers (fetching thread history, reactions). Agents that need that use their own
   tools.
 - Editing or deleting a posted reply. A correction is another reply.
@@ -116,14 +119,17 @@ sender-login check alone would drop real work if the connection's identity is a 
 
 ### The verb lives in its own family
 
-**Choice**: `ReplyVerbs() = ["reply"]`, included in `AllVerbs()` so the vend wizard, quick vend and
-consent screen enumerate it (their chips default to the drain verbs, so it starts unchecked). A new
-`BasicVerbs()` returns `AllVerbs()` without the reply family, and the operator API's basics vend
-(`internal/server/api.go`, which grants `AllVerbs()` verbatim today) switches to it. Other verbs that
-must never ride along in a basics grant (SPEC-0032's `set_webhook_secret`) are excluded the same way.
+**Choice**: `ReplyVerbs() = ["reply"]` and `ConnectionVerbs() = ["list_connections",
+"create_connection", "rotate_connection", "delete_connection"]`, both included in `AllVerbs()` so the
+vend wizard, quick vend and consent screen enumerate them (their chips default to the drain verbs, so
+they start unchecked). A new `BasicVerbs()` returns `AllVerbs()` without those two families, and the
+operator API's basics vend (`internal/server/api.go`, which grants `AllVerbs()` verbatim today)
+switches to it. SPEC-0032's `set_webhook_secret` is not excluded: Joe decided on 2026-09-22 that it
+is granted wherever `create_webhook` is, the basics vend included.
 
-**Rationale**: posting publicly is a different power from draining. An owner should grant it on
-purpose.
+**Rationale**: posting publicly as the owner, and holding the owner's outbound credentials, are
+different powers from draining. Both are available to agents, and both are off until an owner grants
+them (Joe, 2026-09-22: risky options are fine when they are configurable and off by default).
 
 ## Schema
 

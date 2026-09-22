@@ -170,13 +170,21 @@ credential itself can reach.
 
 ### REQ-4: Connection Management
 
-Connections MUST be managed only by humans, through the web UI and the operator API, and only within
+Connections MUST be manageable by humans, through the web UI and the operator API, and only within
 their own scope: a human manages connections they own; for a team, only a role ADR-0038 permits to
 configure the team (team owners and admins) may create, rotate or delete, and members MAY see names,
 kinds, account keys and fingerprints but nothing more.
 
-There MUST be no MCP verb that creates, rotates, deletes, lists or reads a connection. The `reply` verb
-MUST be the only agent-facing use of one.
+Connections MAY also be managed over MCP through `ConnectionVerbs()`: `list_connections`,
+`create_connection`, `rotate_connection` and `delete_connection`. The family MUST be off by default:
+it MUST NOT be in the operator API's basics vend, the vend wizard, quick vend and consent screen MUST
+list it unchecked, and the consent screen MUST say that the holder can create, replace and delete the
+owner's outbound credentials. A granted endpoint MUST act within its owner scope with the permissions
+REQ-4 gives that owner, so a team endpoint may manage team connections only while ADR-0038 lets its
+grant configure the team. Secrets passed to `create_connection` and `rotate_connection` are
+write-only input under REQ-3; they MUST be replaced with `«redacted»` in any log or trace of tool
+arguments. `list_connections` MUST return names, kinds, account keys, allowlists and fingerprints
+only. Every write MUST record the acting endpoint and its accountable human alongside `created_by`.
 
 The management surface MUST offer: create, list, rotate secret (replace), edit allowlists, delete, and
 **test**. Test MUST make one harmless authenticated read against the provider (for example Slack
@@ -197,10 +205,24 @@ the reply.
 - **WHEN** they try to rotate it
 - **THEN** the request is refused with `forbidden` and the secret is unchanged
 
-#### Scenario: Agent cannot see connections
+#### Scenario: Connection verbs are off by default
 
-- **WHEN** a vended endpoint calls `tools/list`
-- **THEN** no connection-management tool is listed, whatever the endpoint's scope
+- **WHEN** an endpoint minted by the basics vend, or vended in the wizard without touching the
+  connection chips, calls `tools/list`
+- **THEN** no connection-management tool is listed
+
+#### Scenario: Granted endpoint stores a connection
+
+- **GIVEN** an endpoint whose owner granted `create_connection` and `list_connections`
+- **WHEN** it creates a Slack connection with a bot token
+- **THEN** the connection is sealed under REQ-3 and owned by the endpoint's owner scope,
+  `list_connections` shows its fingerprint and no secret, and no log line carries the token
+
+#### Scenario: Granted endpoint stays in its scope
+
+- **GIVEN** endpoint E, granted `rotate_connection`, owned by human A
+- **WHEN** E names human B's connection id
+- **THEN** the call fails with `not_found`, indistinguishable from an unknown id
 
 ### REQ-5: Credential Resolution
 
@@ -260,8 +282,9 @@ connection, provider or URL.
 `reply` MUST be a grantable verb, enforced by the scope guard like every other verb. The vend wizard,
 the quick vend and the consent screen MUST list it, unchecked by default. It MUST NOT be granted by the
 operator API's basics vend, which today grants `AllVerbs()` verbatim (`internal/server/api.go`): that
-path MUST grant `BasicVerbs()`, which is `AllVerbs()` without the reply family, so that posting to a
-third party is always a deliberate grant.
+path MUST grant `BasicVerbs()`, which is `AllVerbs()` without the reply and connection families
+(REQ-4), so that posting to a third party and handling the owner's outbound credentials are always
+deliberate grants.
 
 A call MUST be refused, before any dial, when:
 
@@ -467,6 +490,7 @@ code), never with the text, the credential, or a provider response body.
 | Surface | Auth | Justification |
 |---|---|---|
 | MCP `reply` | Required | Vended endpoint credential; `reply` must be in the endpoint's scope. |
+| MCP connection verbs | Required | Vended endpoint credential; the verb must be in scope (off by default, REQ-4). |
 | Web UI connection pages | Required | Human session with CSRF; owner or team role per REQ-4. |
 | `GET /api/v1/connections` | Required | Operator OAuth bearer; results limited to the caller's scopes. |
 | `POST /api/v1/connections` | Required | As above; owner or team admin. |

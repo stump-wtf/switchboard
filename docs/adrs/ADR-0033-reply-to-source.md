@@ -52,8 +52,9 @@ being able to post anywhere else?**
 
 * **The address comes from the verified delivery, never from the model.** A reply target the agent can
   choose is a target a prompt injection can choose.
-* **Credentials stay out of agent context.** A secret that reaches a model transcript is burned. The
-  agent should hold the *right to reply to this todo*, not a token.
+* **Credentials stay out of agent context by default.** A secret that reaches a model transcript is
+  burned. Replying needs the *right to reply to this todo*, not a token. An owner who wants an agent
+  to manage connections may grant it that, off by default, and even then no surface returns a secret.
 * **Multi-tenancy is a hard rule.** Every credential is owned by one human or one team (the owner shape
   of ADR-0038, Teams, being written in parallel) and never crosses owners, including across a fan-out
   route to another human's endpoint ([ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md)).
@@ -110,8 +111,11 @@ URL), the secret, and two optional allowlists: targets (repository globs such as
 ids) and endpoints. The secret is stored through the `internal/cred` envelope, is **write-only** (no
 surface ever returns it; the UI shows a fingerprint), and **cannot be stored at all** when
 `SWITCHBOARD_SECRET_ENCRYPTION_KEY` is unset. Connections are created, rotated and deleted by the
-owning human, or by a team admin for a team, in the web UI and the operator API. **No MCP verb creates,
-lists secrets of, or reads a connection.**
+owning human, or by a team admin for a team, in the web UI and the operator API. An owner **may also
+grant an endpoint the connection verbs** (`list_connections`, `create_connection`,
+`rotate_connection`, `delete_connection`), which are **off by default**: never in the basics vend,
+unchecked in the vend wizard, and flagged on the consent screen as handing the agent the owner's
+outbound credentials. No surface, MCP included, ever returns a secret.
 
 **Credential selection follows the todo's owner scope**, never the claimer's and never the webhook
 owner's when they differ. A fan-out todo on another human's endpoint replies with that human's
@@ -239,6 +243,10 @@ public issue comment is the worst place for an agent to paste a token.
   but leaves the prompt-injection problem fully intact, and turns the owner's credential into a posting
   primitive for any endpoint that holds the verb.
 * Bad, because allowlists would have to carry the whole security model, and allowlists rot.
+* Neutral: rejected as the default path, not refused forever. If a target-choosing verb is built
+  later, it is its own verb family, off by default, never in the basics vend, and usable only through
+  a connection with a non-empty targets allowlist (Joe, 2026-09-22: risky options are fine when they
+  are configurable and off by default).
 
 ### (D) Outcome events to a relay the owner runs
 
