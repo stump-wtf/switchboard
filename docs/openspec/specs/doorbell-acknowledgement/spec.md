@@ -25,9 +25,12 @@ It defines:
   `POST /api/v1/endpoints/{ref}/doorbell-tests`, and `switchboard doctor`;
 * **synthetic todos**: marked, auto-cleaned, and excluded from metrics, pulls and hooks.
 
-It amends [SPEC-0011](../channels/spec.md) REQ "Push Notification Shape" (a new `meta.ring_id`)
-and the deaf-consumer handling in REQ "Best-Effort Lossy Delivery and Degradation to Pull". It
-relies on the **self verb** mechanism that [SPEC-0022](../endpoint-presence/spec.md) REQ "Self
+It amends [SPEC-0011](../channels/spec.md) REQ "Push Notification Shape" (a new `meta.ring_id`).
+The existing write-failure "deaf consumer" warning is not specified in SPEC-0011. It exists only
+in code (`doorbellDeafThreshold` in `internal/mcp/doorbell.go`) and is referenced by SPEC-0022 REQ
+"Operator Presence Controls". This spec keeps that warning unchanged, and specifies the new
+per-session unheard mark (REQ-5) alongside it. The spec cites SPEC-0024 (notify hooks, open in
+design PR #312) by number only until it merges. It relies on the **self verb** mechanism that [SPEC-0022](../endpoint-presence/spec.md) REQ "Self
 Verbs Are Unscoped" defines. If this spec is implemented first, it introduces that mechanism
 exactly as SPEC-0022 describes it.
 
@@ -226,7 +229,7 @@ The test doorbell's content MUST tell the agent that this is a Switchboard self-
 should claim the todo, and that no other action is needed.
 
 Each endpoint MUST have at most one test outstanding and at most 6 tests per rolling hour. A call
-over either limit MUST fail with `resource_exhausted`, and MUST name when the next test is allowed.
+over either limit MUST fail with `rate_limited`, and MUST name when the next test is allowed.
 
 #### Scenario: Test returns before ringing
 
@@ -248,7 +251,7 @@ over either limit MUST fail with `resource_exhausted`, and MUST name when the ne
 
 - **GIVEN** an endpoint with a test outstanding
 - **WHEN** it calls `test_doorbell` again
-- **THEN** the call fails with `resource_exhausted`, and the outstanding test is unaffected
+- **THEN** the call fails with `rate_limited`, and the outstanding test is unaffected
 
 ### REQ-8: The Test Report
 

@@ -61,9 +61,22 @@ by the ring budget (at most 5 pushes per todo plus digests), and a 7-day prune k
 
 **Choice**: `Claim` and `ClaimNext` run
 `UPDATE doorbell_rings SET acked_at = now(), ack_via = 'claim', acked_session_id = $s
- WHERE endpoint_id = $e AND todo_id = $t AND acked_at IS NULL AND unheard_at IS NULL`
-in the same transaction. For digests, the same transaction also acknowledges
-`kind = 'digest' AND sent_at <= now()` rings for the endpoint that are still open.
+ WHERE endpoint_id = $e AND todo_id = $t AND acked_at IS NULL
+ RETURNING kind, (unheard_at IS NULL) AS in_window`
+in the same transaction. For digests, the same transaction also acknowledges the endpoint's
+`kind = 'digest' AND sent_at <= now() AND acked_at IS NULL` rings.
+
+The predicate deliberately does **not** filter on `unheard_at`. A claim that arrives after the
+window still records `acked_at` and `ack_via` on the ring, which REQ-3 and REQ-4's "A late claim"
+scenario require. The terminal state and the counters are decided by `in_window`:
+
+- `acknowledged_total` increments only for returned rows where `in_window` is true;
+- a late ack changes neither the terminal state (`unheard_at` stays set) nor any counter.
+
+The unheard sweep keeps its `acked_at IS NULL AND unheard_at IS NULL` predicate. Both statements
+are conditional on the same row, so the row lock serializes a claim and a sweep that race.
+Whichever commits first decides the terminal state, and the other either records a late ack or
+finds nothing to do (REQ-12 "Concurrent claim and unheard sweep").
 
 **Rationale**: it is free. The agent was always going to claim, and the extra statement is an
 indexed update. A separate "ack" message would cost a tool call per ring, which is exactly the
