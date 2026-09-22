@@ -391,6 +391,26 @@ func TestWebhookSourceTypesAreMetricSources(t *testing.T) {
 	}
 }
 
+// TestWebhookSourceTypesMatchesTrustModes: the exported list the vend wizard offers as source-type
+// chips is exactly the set create_webhook accepts, sorted — no type missing (unpickable in the
+// wizard), none extra (a chip the server refuses as unsupported).
+// Governing: SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling", SPEC-0015 REQ
+// "Endpoints View And Vend Wizard".
+func TestWebhookSourceTypesMatchesTrustModes(t *testing.T) {
+	got := WebhookSourceTypes()
+	if len(got) != len(webhookTrustModes) {
+		t.Fatalf("WebhookSourceTypes() = %v, want the %d keys of webhookTrustModes", got, len(webhookTrustModes))
+	}
+	for sourceType := range webhookTrustModes {
+		if !slices.Contains(got, sourceType) {
+			t.Errorf("WebhookSourceTypes() = %v, missing accepted source type %q", got, sourceType)
+		}
+	}
+	if !slices.IsSorted(got) {
+		t.Errorf("WebhookSourceTypes() = %v, want sorted", got)
+	}
+}
+
 // TestCreateWebhookGiteaForbiddenWhenNotInCeiling: gitea outside the ceiling is refused with
 // forbidden_source_type, same as any other unsupported type.
 func TestCreateWebhookGiteaForbiddenWhenNotInCeiling(t *testing.T) {

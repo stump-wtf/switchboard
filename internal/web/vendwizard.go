@@ -339,11 +339,7 @@ func (h *Handler) renderVendStep(w http.ResponseWriter, r *http.Request, human *
 		}
 	case "webhooks":
 		v.WebhookMax = values.Get("webhook_max")
-		knownSources := []string{"gitea", "github", "stripe", "slack", "cairn", "generic"}
-		chosenSources := values["webhook_source_types"]
-		for _, s := range knownSources {
-			v.WebhookSourceTypes = append(v.WebhookSourceTypes, vendChipOption{Name: s, Checked: slices.Contains(chosenSources, s)})
-		}
+		v.WebhookSourceTypes = vendSourceTypeOptions(values["webhook_source_types"])
 		knownQueues := h.vendQueueOptions(r)
 		chosenWhQueues := values["webhook_queues"]
 		for _, q := range knownQueues {
