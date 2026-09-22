@@ -257,8 +257,11 @@ connection from any other owner scope MUST never be considered.
 `idempotency_key` (optional, at most 128 bytes of printable ASCII). It MUST NOT accept an address,
 connection, provider or URL.
 
-`reply` MUST be a grantable verb, enforced by the scope guard like every other verb, and MUST NOT be
-included in the basics vend or the quick vend. The vend wizard and consent screen MUST list it.
+`reply` MUST be a grantable verb, enforced by the scope guard like every other verb. The vend wizard,
+the quick vend and the consent screen MUST list it, unchecked by default. It MUST NOT be granted by the
+operator API's basics vend, which today grants `AllVerbs()` verbatim (`internal/server/api.go`): that
+path MUST grant `BasicVerbs()`, which is `AllVerbs()` without the reply family, so that posting to a
+third party is always a deliberate grant.
 
 A call MUST be refused, before any dial, when:
 

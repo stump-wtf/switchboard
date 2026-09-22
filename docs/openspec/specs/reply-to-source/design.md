@@ -116,8 +116,11 @@ sender-login check alone would drop real work if the connection's identity is a 
 
 ### The verb lives in its own family
 
-**Choice**: `ReplyVerbs() = ["reply"]`, included in `AllVerbs()` so the vend wizard and consent screen
-list it, and excluded from `BasicWebhookCeiling`-style basics grants.
+**Choice**: `ReplyVerbs() = ["reply"]`, included in `AllVerbs()` so the vend wizard, quick vend and
+consent screen enumerate it (their chips default to the drain verbs, so it starts unchecked). A new
+`BasicVerbs()` returns `AllVerbs()` without the reply family, and the operator API's basics vend
+(`internal/server/api.go`, which grants `AllVerbs()` verbatim today) switches to it. Other verbs that
+must never ride along in a basics grant (SPEC-0032's `set_webhook_secret`) are excluded the same way.
 
 **Rationale**: posting publicly is a different power from draining. An owner should grant it on
 purpose.

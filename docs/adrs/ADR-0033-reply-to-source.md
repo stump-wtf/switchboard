@@ -120,7 +120,8 @@ the address exactly (at most one, by a unique index). A connection's targets all
 admit the address.
 
 **The `reply` verb.** `reply {todo_id, text, idempotency_key?}`. The agent never passes an address or a
-connection. It is a grantable verb like any other, absent from the basics vend. It is allowed when the
+connection. It is a grantable verb like any other, offered unchecked in the vend wizard and never included
+in the operator API's basics grant (which today grants every verb). It is allowed when the
 todo belongs to the calling endpoint and is either claimed by the caller or reached `done`/`failed`
 through the caller within a short grace window (15 minutes), so the outcome can be posted after
 `complete`. The result says `sent`, `failed` or `refused`, with the provider's permalink when there is
