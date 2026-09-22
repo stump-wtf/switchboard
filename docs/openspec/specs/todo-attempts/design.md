@@ -141,7 +141,9 @@ SELECT … FROM reaped;
 
 `deadLetterEndpointTodos` gains the same `closed` arm with `outcome = 'revoked'`, and `CancelTodo`
 with `outcome = 'canceled'`. `RequeueDueRetries` and `RetryTodo` touch no attempt, because they end
-no lease.
+no lease. `RequeueDueRetries` does gain one side effect outside the store: each re-queued id is
+cleared from the server's doorbell gate (`internal/server/listen.go`), so the `todo_ready` nudge
+that follows rings it even inside the gate's one-minute window (SPEC-0034 REQ-16).
 
 ### The fence is a hash on the open attempt
 

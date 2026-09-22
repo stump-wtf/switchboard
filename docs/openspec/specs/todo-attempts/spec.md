@@ -383,13 +383,24 @@ is the input SPEC-0029's notification sinks render. This spec SHALL NOT itself s
 
 A todo re-queued by the retry scheduler after a failed attempt SHALL remain push-eligible under the
 same sender gate as a fresh todo (SPEC-0011), so a relay consumer is woken for its next attempt. The
-channel path already does this through the `todo_ready` wake-up. For notify hooks, this is an
-interface requirement on SPEC-0024, which SHALL fire `todo.ready` for re-queued retries.
+channel path rings through the `todo_ready` wake-up today, but the in-process doorbell gate
+(`doorbellGateTTL`, one minute) suppresses a second ring of the same todo id inside its window, so
+an attempt that fails within about 30 seconds of the first ring is re-queued unrung and waits for
+the doorbell heartbeat. A re-queue SHALL therefore clear that todo's gate entry, so the re-queue
+rings. For notify hooks, this is an interface requirement on SPEC-0024, which SHALL fire
+`todo.ready` for re-queued retries.
 
 #### Scenario: Retry rings again
 
 - **WHEN** a failed todo's backoff elapses and the retry scheduler re-queues it
 - **THEN** an in-scope live session receives a doorbell for it
+
+#### Scenario: A quick failure is not swallowed by the gate
+
+- **GIVEN** a todo rung at creation, claimed, and failed 5 seconds later
+- **WHEN** the retry scheduler re-queues it 30 seconds after that, inside the gate's window
+- **THEN** an in-scope live session receives a doorbell for the re-queue, without waiting for the
+  doorbell heartbeat
 
 ### REQ-17: Migration and Compatibility
 
