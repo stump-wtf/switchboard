@@ -124,9 +124,10 @@ func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 // failure. It is the single body-limit boundary every receiver shares, so oversize semantics (413,
 // nothing persisted) and error shapes are uniform across providers. MaxBytesReader (not
 // io.LimitReader) so an over-limit body is REJECTED with 413 rather than silently truncated and
-// then HMAC-verified against a short read. Governing: SPEC-0001 REQ "Request Body Size Limits",
-// REQ "Error Handling Standards".
-func (i *Ingest) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+// then HMAC-verified against a short read. On failure it also names the bounded verify-failure
+// reason (reasonTooLarge or reasonUnreadable) for the receiver to count. Governing: SPEC-0001 REQ
+// "Request Body Size Limits", REQ "Error Handling Standards"; SPEC-0023 REQ-4.
+func (i *Ingest) readBody(w http.ResponseWriter, r *http.Request) (body []byte, reason string, ok bool) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -134,15 +135,73 @@ func (i *Ingest) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool)
 			i.log.Warn("webhook body over limit", "path", r.URL.Path, "limit", maxBody,
 				"remote", clientIP(r))
 			writeErr(w, http.StatusRequestEntityTooLarge, "payload too large")
-			return nil, false
+			return nil, reasonTooLarge, false
 		}
 		// Wrap with boundary context before logging; the client sees only a generic message.
 		i.log.Warn("webhook body read failed", "path", r.URL.Path, "remote", clientIP(r),
 			"err", fmt.Errorf("read request body: %w", err))
 		writeErr(w, http.StatusBadRequest, "read error")
-		return nil, false
+		return nil, reasonUnreadable, false
 	}
-	return body, true
+	return body, "", true
+}
+
+// Delivery Accounting
+//
+// Every delivery a receiver handles counts exactly one switchboard_webhook_deliveries_total verdict,
+// however the handler returns. A receiver opens a deliveryCount at the top and defers its record, so
+// an early return can never skip the count or count twice. The verdict starts at rejected because
+// every early return is a refusal (nothing persisted, a non-2xx to the sender, server faults
+// included); only a committed outcome overwrites it — accepted when the event persisted (an
+// idempotent redelivery and an at-most-once repeat included), dropped when the persisted outcome is
+// a drop.
+//
+// provider and trust_mode start as "unknown": a 413 or an unknown token names no webhook. Once the
+// token resolves they are the webhook's source type and trust mode, both switchboard-derived at
+// create time from a fixed map (mcp webhookTrustModes; the push API mints generic/token), so the
+// label set stays bounded. The metrics side coerces anything off its alphabet as a backstop.
+//
+// These literals are the documented values of ingest.Metrics (metrics.go); this package does not
+// import internal/metrics, so they are spelled out here once.
+//
+// Governing: SPEC-0023 REQ-4 "Ingest and routing", REQ-5 "Cardinality"; ADR-0028.
+const (
+	verdictAccepted = "accepted"
+	verdictRejected = "rejected"
+	verdictDropped  = "dropped"
+
+	actionQueue = "queue"
+	actionDrop  = "drop"
+
+	// labelUnknown is the provider and trust_mode of a delivery refused before its webhook resolved.
+	labelUnknown = "unknown"
+)
+
+// deliveryCount is one delivery's verdict, recorded once when the receiver returns.
+type deliveryCount struct {
+	provider, trustMode, verdict string
+}
+
+// newDeliveryCount opens a delivery's count: rejected, from an unknown webhook, until the receiver
+// learns otherwise.
+func newDeliveryCount() *deliveryCount {
+	return &deliveryCount{provider: labelUnknown, trustMode: labelUnknown, verdict: verdictRejected}
+}
+
+// resolved attributes the delivery to the webhook its token named.
+func (d *deliveryCount) resolved(wh store.Webhook) {
+	d.provider, d.trustMode = wh.SourceType, wh.TrustMode
+}
+
+// record counts the delivery. Deferred by the receiver, so it runs exactly once.
+func (d *deliveryCount) record(m Metrics) {
+	m.WebhookDelivery(d.provider, d.trustMode, d.verdict)
+}
+
+// verifyFailed counts one refusal the delivery's own inputs caused, under its bounded reason, against
+// whichever provider the count has resolved so far.
+func (d *deliveryCount) verifyFailed(m Metrics, reason string) {
+	m.WebhookVerifyFailure(d.provider, reason)
 }
 
 // DevCreateTodo creates a todo directly, for exercising the vend → agent drain loop (list_todos /
@@ -158,7 +217,7 @@ func (i *Ingest) DevCreateTodo(w http.ResponseWriter, r *http.Request) {
 	}
 	// Same bounded-body contract as the webhook receivers: over-limit is 413, never a truncated
 	// read (SPEC-0001 REQ "Request Body Size Limits").
-	body, ok := i.readBody(w, r)
+	body, _, ok := i.readBody(w, r)
 	if !ok {
 		return
 	}

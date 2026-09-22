@@ -25,6 +25,12 @@
 // SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency" (mint/hold/verify → dedup → todo),
 // SPEC-0001 REQ "Request Body Size Limits", REQ "Idempotency Key Extraction and Dedup",
 // REQ "Header and Secret Sanitization Before Persist".
+//
+// Every delivery is counted: one verdict (accepted, rejected or dropped), one bounded reason for each
+// refusal its own inputs caused, and one routing decision for each delivery that persisted.
+// Governing: SPEC-0023 REQ-4 "Ingest and routing", ADR-0028.
+//
+// @joestump-agent 09/21/2026 - Added the SPEC-0023 delivery, verify-failure and routing counters (#273).
 package ingest
 
 import (
@@ -44,14 +50,23 @@ import (
 
 // SelfManaged is the receiver for agent self-managed webhooks: POST /webhooks/w/{token}.
 func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
+	// One delivery, one verdict: the deferred record counts this delivery exactly once on every
+	// return path, as rejected unless a committed outcome below says otherwise (deliveryCount,
+	// ingest.go). Governing: SPEC-0023 REQ-4 "Ingest and routing", ADR-0028.
+	m := i.metricsOrNop()
+	count := newDeliveryCount()
+	defer count.record(m)
+
 	// Bound the body first (413, nothing persisted) — same contract as every other receiver.
-	body, ok := i.readBody(w, r)
+	body, reason, ok := i.readBody(w, r)
 	if !ok {
+		count.verifyFailed(m, reason)
 		return
 	}
 
 	token := chi.URLParam(r, "token")
 	if token == "" {
+		count.verifyFailed(m, reasonUnknownWebhook)
 		writeErr(w, http.StatusNotFound, "unknown webhook")
 		return
 	}
@@ -61,6 +76,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, store.ErrNotFound) {
 		// An unknown token is indistinguishable from a guess; 404 without persisting.
 		i.log.Warn("self-managed webhook unknown token", "remote", clientIP(r))
+		count.verifyFailed(m, reasonUnknownWebhook)
 		writeErr(w, http.StatusNotFound, "unknown webhook")
 		return
 	}
@@ -69,6 +85,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	count.resolved(wh)
 
 	// Idempotency key scoped to this webhook so a redelivery to the SAME webhook dedups but identical
 	// payloads to different self-managed webhooks (which share a source namespace like "github") never
@@ -105,6 +122,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			// Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency".
 			i.log.Error("self-managed signed webhook missing secret", "webhook", wh.ID, "remote", clientIP(r))
 			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "webhook not configured")
+			count.verifyFailed(m, reasonNotConfigured)
 			writeErr(w, http.StatusServiceUnavailable, "webhook not configured")
 			return
 		}
@@ -113,6 +131,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			// An unsupported signed source type is a server-side misconfiguration, not a client fault.
 			i.log.Error("self-managed signed webhook verify", "webhook", wh.ID, "source", wh.SourceType, "err", err)
 			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "verification unavailable")
+			count.verifyFailed(m, reasonUnsupportedSource)
 			writeErr(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -122,6 +141,8 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			i.log.Warn("self-managed webhook signature rejected", "webhook", wh.ID, "source", wh.SourceType,
 				"delivery", deliveryID, "remote", clientIP(r))
 			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "signature verification failed")
+			// The counter gets the bounded failure mode, never the client-safe message above.
+			count.verifyFailed(m, verifyFailureReason(wh.SourceType, secret, r.Header, body, i.now(), i.tolerance))
 			writeErr(w, http.StatusUnauthorized, "signature verification failed")
 			return
 		}
@@ -237,7 +258,16 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// The event committed, so count the decision it was routed on and the delivery's verdict.
+	// Counting here rather than where the decision is made means every counted decision belongs to a
+	// persisted event that carries its trace: a delivery refused after routing (a 500 the producer
+	// retries) counts none, and the retry that lands counts it once. The verdict follows the
+	// persisted outcome, so a redelivery of an already-dropped delivery reports dropped even when
+	// today's rules would queue it (the store's sticky drop). Governing: SPEC-0023 REQ-4.
+	countRoutingDecision(m, wh.ID, decision)
+	count.verdict = verdictAccepted
 	if dropped {
+		count.verdict = verdictDropped
 		// Recorded, not work: the event row and its trace persist and the dedup slot is spent, but
 		// there is no todo, no hub publish, and no doorbell. The in-flight card resolves without a
 		// lane advance, as a deduped redelivery's does. The trace is NOT echoed to the producer — the

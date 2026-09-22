@@ -17,6 +17,9 @@
 // verifyStripe/verifySlack inline rather than relocating them, and predated genericDeliveryID
 // (#285), which selfmanaged.go calls and which lived in the deleted generic.go.
 //
+// @joestump-agent 09/21/2026 - Added verifyFailureReason and the bounded reason set the SPEC-0023
+// verify-failure counter reads (#273). It labels a refusal after the fact; no verifier changed.
+//
 // Governing: SPEC-0001 REQ "Replay-Window Enforcement for Timestamped Signatures", REQ
 // "Idempotency Key Extraction and Dedup"; SPEC-0006 "Signed Webhook Verification"; ADR-0012.
 
@@ -30,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/stump-wtf/switchboard/internal/routing"
 )
 
 // verifyStripe checks a `Stripe-Signature: t=<unix>,v1=<hex>[,v1=...]` header over the raw body.
@@ -177,4 +182,136 @@ func genericDeliveryID(h http.Header) string {
 		}
 	}
 	return ""
+}
+
+// Verification Failure Reasons
+//
+// The bounded `reason` label on switchboard_webhook_verify_failures_total. A verifier answers only
+// valid or not, which is all the receiver's decision needs, so the failure mode is recovered
+// afterwards: verifyFailureReason re-reads the same inputs in the order the verifier checked them and
+// names the first check that fails. It runs only on a delivery the verifier already refused and never
+// feeds the verdict, so a misclassification mislabels a counter and cannot admit a delivery.
+//
+// The label is one of the constants below and nothing else: never the client-safe rejection message
+// the received lane carries, a header value, or anything from the body. Every refusal the delivery's
+// own inputs caused (an oversized body, an unknown token, a failed check) counts exactly one reason,
+// and a server-side fault after verification counts none, so rejected deliveries minus verify
+// failures is the server's own share.
+//
+// Governing: SPEC-0023 REQ-4 "Ingest and routing", REQ-5 "Cardinality"; ADR-0028.
+const (
+	// The delivery's signature material.
+	reasonMissingSignature   = "missing_signature"   // the scheme's signature header is absent
+	reasonMalformedSignature = "malformed_signature" // present, but not in the scheme's shape
+	reasonStaleTimestamp     = "stale_timestamp"     // the signed timestamp is outside the replay window
+	reasonBadSignature       = "bad_signature"       // well-formed, but the HMAC does not match
+	reasonMalformedBody      = "malformed"           // a signed body missing fields the scheme requires
+	reasonEventIDMismatch    = "event_id_mismatch"   // an unsigned event id disagreeing with the signed one
+
+	// Refusals before or around the check itself.
+	reasonTooLarge          = "too_large"          // over maxBody (413)
+	reasonUnreadable        = "unreadable"         // the body could not be read (400)
+	reasonUnknownWebhook    = "unknown_webhook"    // no webhook holds the path token (404)
+	reasonNotConfigured     = "not_configured"     // a signed webhook with no stored secret (503)
+	reasonUnsupportedSource = "unsupported_source" // a signed source type with no verifier (500)
+
+	// reasonOther is the label for a failure mode not named above. It matches the metrics side's
+	// overflow value, spelled out here because this package does not import internal/metrics.
+	reasonOther = "__other__"
+)
+
+// verifyFailureReason names why a signed delivery the verifier refused failed, for the reason label.
+// It mirrors verifySelfManagedSigned's dispatch and each verifier's order of checks. The HMAC is the
+// last check in every scheme but cairn's, so a delivery that clears the earlier checks failed on its
+// signature; cairn checks the HMAC first, which is why this needs the secret. A source type with no
+// verifier reports reasonOther.
+func verifyFailureReason(sourceType, secret string, h http.Header, body []byte, now time.Time, tolerance time.Duration) string {
+	switch sourceType {
+	case "github":
+		return prefixedHMACReason(h.Get("X-Hub-Signature-256"))
+	case "gitea":
+		// verifyGitea fails a present X-Gitea-Signature only on a mismatch; without one, the
+		// GitHub-compatible header decides, exactly as verifySelfManagedSigned falls back.
+		if h.Get("X-Gitea-Signature") != "" {
+			return reasonBadSignature
+		}
+		return prefixedHMACReason(h.Get("X-Hub-Signature-256"))
+	case "stripe":
+		header := h.Get("Stripe-Signature")
+		if header == "" {
+			return reasonMissingSignature
+		}
+		ts, sigs := parseStripeSignature(header)
+		if ts == 0 || len(sigs) == 0 {
+			return reasonMalformedSignature
+		}
+		if !freshTimestamp(ts, now, tolerance) {
+			return reasonStaleTimestamp
+		}
+		return reasonBadSignature
+	case "slack":
+		sig := h.Get("X-Slack-Signature")
+		if sig == "" {
+			return reasonMissingSignature
+		}
+		sigHex, ok := strings.CutPrefix(sig, "v0=")
+		if !ok {
+			return reasonMalformedSignature
+		}
+		// The timestamp header is signed material: a missing or non-numeric one leaves nothing to
+		// check the signature against.
+		ts, err := strconv.ParseInt(strings.TrimSpace(h.Get("X-Slack-Request-Timestamp")), 10, 64)
+		if err != nil || ts <= 0 {
+			return reasonMalformedSignature
+		}
+		if !freshTimestamp(ts, now, tolerance) {
+			return reasonStaleTimestamp
+		}
+		if _, err := hex.DecodeString(sigHex); err != nil {
+			return reasonMalformedSignature
+		}
+		return reasonBadSignature
+	case routing.SourceCairn:
+		sig := h.Get("X-Cairn-Signature")
+		if sig == "" {
+			return reasonMissingSignature
+		}
+		if !strings.HasPrefix(sig, "sha256=") {
+			return reasonMalformedSignature
+		}
+		if !verifyGitHub(secret, body, sig) {
+			return reasonBadSignature
+		}
+		d, ok := parseCairn(body)
+		if !ok || d.EventID == "" || d.CreatedAt == "" {
+			return reasonMalformedBody
+		}
+		if hdr := h.Get("X-Cairn-Event-Id"); hdr != "" && hdr != d.EventID {
+			return reasonEventIDMismatch
+		}
+		created, err := time.Parse(time.RFC3339Nano, d.CreatedAt)
+		if err != nil {
+			return reasonMalformedBody
+		}
+		if !freshTimestamp(created.Unix(), now, tolerance) {
+			return reasonStaleTimestamp
+		}
+		// Every check verifyCairn makes passed, so the verifier did not refuse this delivery.
+		return reasonOther
+	default:
+		return reasonOther
+	}
+}
+
+// prefixedHMACReason classifies a refused `sha256=<hex>` signature header (GitHub's scheme, which
+// Gitea also sends).
+func prefixedHMACReason(sig string) string {
+	switch {
+	case sig == "":
+		return reasonMissingSignature
+	case !strings.HasPrefix(sig, "sha256="):
+		return reasonMalformedSignature
+	default:
+		return reasonBadSignature
+	}
 }

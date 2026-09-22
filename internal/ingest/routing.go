@@ -20,6 +20,8 @@
 // Signatures", REQ "Idempotency Key Extraction and Dedup"; ADR-0012.
 //
 // @joestump-agent 09/11/2026 - Routing stage + cairn as a first-class signed source.
+//
+// @joestump-agent 09/21/2026 - Count every routing decision, drops included (SPEC-0023 REQ-4, #273).
 package ingest
 
 import (
@@ -62,6 +64,37 @@ func (i *Ingest) routeDelivery(ctx context.Context, wh store.Webhook, targets []
 	}
 	g := routing.Grant{TargetQueue: wh.TargetQueue, Queues: rt.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
 	return router.Route(ctx, rt.Config, g, in), in, nil
+}
+
+// decisionLabels names a routing decision for switchboard_routing_decisions_total: the id of the rule
+// that decided it and whether it dropped or queued. Drops are counted as well as routes because a jq
+// rule that matches nothing installs green and behaves exactly like one never added; a series stuck
+// at zero for its rule_id is how that becomes visible.
+//
+// ruleID is the server-minted id (rule_<24 hex>), never the rule's name, which is operator free text.
+// It is set only when a rule decided (Trace.Stage "rule"). A decision the default made reports "",
+// which the metrics side labels "default". That includes a rule that matched but named a queue or
+// target the webhook can no longer reach: its trace keeps the rule's id for the operator, but the
+// action taken was the default's, and labelling it with the rule would credit the rule with a drop or
+// a route it did not make.
+//
+// Governing: SPEC-0023 REQ-4 "Ingest and routing" (rule_id, drops counted), REQ-5; ADR-0028.
+func decisionLabels(d routing.Decision) (ruleID, action string) {
+	if d.Trace.Stage == routing.StageRule {
+		ruleID = d.Trace.RuleID
+	}
+	if d.Drop {
+		return ruleID, actionDrop
+	}
+	return ruleID, actionQueue
+}
+
+// countRoutingDecision counts one delivery's routing decision, once per delivery however many
+// targets it fans out to. The webhook label is the server-minted id; the metrics side holds it to
+// the capped webhook limiter.
+func countRoutingDecision(m Metrics, webhookID string, d routing.Decision) {
+	ruleID, action := decisionLabels(d)
+	m.RoutingDecision(webhookID, ruleID, action)
 }
 
 // cairnDelivery is the part of cairn's signed body the receiver itself depends on.
