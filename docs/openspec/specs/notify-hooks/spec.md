@@ -58,7 +58,7 @@ A todo that no endpoint owns (a system todo) MUST NOT fire any hook.
 
 Each endpoint MUST be limited to a ceiling on its hook count. The default is 5, and the operator
 MAY lower or raise it instance-wide. Creating a hook past the ceiling MUST fail with
-`resource_exhausted` and persist nothing.
+`ceiling_exceeded` and persist nothing.
 
 #### Scenario: A hook fires only for its own endpoint's todos
 
@@ -84,7 +84,7 @@ MAY lower or raise it instance-wide. Creating a hook past the ceiling MUST fail 
 
 - **GIVEN** an endpoint that already has 5 hooks and the default ceiling
 - **WHEN** it calls `create_notify_hook`
-- **THEN** the call fails with `resource_exhausted`, and no hook row, secret or URL is stored
+- **THEN** the call fails with `ceiling_exceeded`, and no hook row, secret or URL is stored
 
 ### REQ-2: Management Verbs
 
@@ -104,7 +104,7 @@ These four verbs MUST be grantable per endpoint like any other verb. They MUST b
 vend wizard, the quick-vend grant list and the MCP OAuth consent screen, grouped and labeled as
 granting **outbound HTTP calls**. They MUST NOT be part of any default or "all verbs" grant. An
 endpoint vended before this spec does not hold them until its human grants them. An endpoint that
-lacks a verb MUST receive the same `permission_denied` as for any other unscoped verb.
+lacks a verb MUST receive the same `forbidden` as for any other unscoped verb.
 
 Every verb MUST act only on the caller's own endpoint. A `hook_id` that belongs to another
 endpoint, including another endpoint of the same human, MUST be answered exactly like an unknown
@@ -120,7 +120,7 @@ id: `not_found`.
 
 - **GIVEN** an endpoint whose scope does not include `create_notify_hook`
 - **WHEN** it calls `create_notify_hook`
-- **THEN** the call fails with `permission_denied`, and no outbound request is ever made
+- **THEN** the call fails with `forbidden`, and no outbound request is ever made
 
 #### Scenario: Another endpoint's hook id
 
@@ -285,6 +285,10 @@ A hook MUST fire for these transitions into `pending`:
 * `requeued`: a claimed todo returns to `pending` because its lease expired, or a failed todo
   re-enters `pending` when its retry is due.
 
+The sender gate MUST be evaluated for `requeued` transitions as well as for `created` ones. The
+re-queue statements do not apply it today, so the re-queue path MUST re-apply the SPEC-0011
+predicate to the rows it moved before it considers any hook.
+
 A hook MUST NOT fire for the doorbell heartbeat's re-rings (SPEC-0011 REQ "Doorbell Heartbeat"),
 for redeliveries that dedup onto an existing todo, or for a todo that leaves `pending`.
 
@@ -310,6 +314,13 @@ cited here by number until those specs merge.
 - **WHEN** the reaper returns the todo to `pending`
 - **THEN** the hook receives one `todo.ready` notification with `reason = "requeued"` and the new
   `attempt` number
+
+#### Scenario: Requeue re-applies the sender gate
+
+- **GIVEN** a todo whose delivery did not verify, which a worker claimed by id and then abandoned
+- **WHEN** the reaper or the retry scheduler returns it to `pending`
+- **THEN** no hook is called, because the re-queue fan-out re-applies the SPEC-0011 sender-gate
+  predicate to the rows it moved
 
 #### Scenario: Redelivery does not re-fire
 
@@ -405,7 +416,8 @@ instances and restarts. Its body MUST carry only counts, queue names, and the ol
  "queues": ["lane-m", "reviews"], "oldest_pending_seconds": 5400, "created_at": "…"}
 ```
 
-`reason` MUST be one of SPEC-0022's digest reasons, excluding `reconnect`, which is a session
+`reason` MUST be one of the digest reasons defined in SPEC-0011 REQ "Push Notification Shape"
+(`clock_in`, `operator`, `shift_start`, `override_end`), excluding `reconnect`, which is a session
 event and does not apply to hooks. The body MUST NOT contain any todo id, title or payload.
 
 A hook with `ignore_presence = true` MUST fire under REQ-6 regardless of presence, and MUST NOT
@@ -494,7 +506,7 @@ ingest or claim paths wait on.
 
 - **GIVEN** an endpoint with 4 hooks and a ceiling of 5
 - **WHEN** two `create_notify_hook` calls race
-- **THEN** exactly one succeeds, and the other fails with `resource_exhausted`
+- **THEN** exactly one succeeds, and the other fails with `ceiling_exceeded`
 
 ## Security Requirements
 

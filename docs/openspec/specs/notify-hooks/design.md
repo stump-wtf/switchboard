@@ -130,14 +130,21 @@ every receiver, to save one receiver a story.
 
 ### Fire from the existing doorbell hook, plus the requeue paths
 
-**Choice**: `store.SetDoorbellHook` gains a second subscriber, the hook dispatcher, next to
+**Choice**: `store.SetTodoDoorbellHook` gains a second subscriber, the hook dispatcher, next to
 `mcp.PublishTodoReady`. The two re-queue paths call the same fan-out after their statement
 returns rows:
 
-* the lease reaper (`claimed` → `pending`);
-* the retry scheduler (`failed` with a due `next_retry_at` → `pending`).
+* the lease reaper (`ReapExpired`, `claimed` → `pending`);
+* the retry scheduler (`RequeueDueRetries`, `failed` with a due `next_retry_at` → `pending`).
 
-Both paths already use the sender-gate predicate.
+**Neither re-queue statement applies the sender gate today.** They move rows and emit the
+`todo_ready` wakeup, and the gate lives only in the doorbell read queries (`RingUnclaimed`,
+`RingOnAttach`, `PendingDoorbellTodos`). So the re-queue fan-out MUST re-apply the SPEC-0011
+predicate to the rows it returns before any hook is considered. That predicate is: the event
+exists, and `verified OR trust_mode = 'token'`. The statement becomes a CTE:
+`WITH moved AS (UPDATE … RETURNING …) SELECT moved.*, (e.verified OR e.trust_mode = 'token') AS
+push_eligible FROM moved LEFT JOIN events e ON e.id = moved.event_id`. Only `push_eligible` rows
+reach the dispatcher. A test re-queues an unverified todo and asserts that no hook fires.
 
 **Rationale**: one trigger, one gate. A second notification path with a looser gate is the one
 attackers would use (ADR-0029 driver "One sender gate"). The requeue fire is what lets a
@@ -318,7 +325,7 @@ registrations.
 ```
 
 Errors use the stable error shape from SPEC-0006 REQ "Structured Output and Stable Error Shape":
-`invalid_argument`, `permission_denied`, `not_found` and `resource_exhausted`.
+`invalid_argument`, `forbidden`, `not_found` and `ceiling_exceeded`.
 
 ### Configuration
 
