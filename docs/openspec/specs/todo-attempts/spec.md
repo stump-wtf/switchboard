@@ -146,8 +146,11 @@ Window, Lease, and Heartbeat") SHALL set the open attempt's `last_heartbeat_at` 
 `artifact`. `claim` and `claim_next` SHALL accept an optional string argument, `claimant`.
 
 * `summary` SHALL be stored in the closing attempt, cut to 2048 bytes on a UTF-8 boundary, with
-  `summary_truncated` set when cut. When `summary` is absent and `result` is present, the stored
-  summary SHALL be the compact JSON serialization of `result`, cut the same way.
+  `summary_truncated` set when cut. When `summary` is absent, the stored summary SHALL be null,
+  unless the operator has set `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT=true`, in which case it SHALL
+  be the compact JSON serialization of `result` when present, cut the same way. The option SHALL
+  default to off, because it would replay what existing clients wrote to `result` to later claimers
+  and to notification sinks.
 * `artifact` SHALL be at most 512 bytes and SHALL match `^mcp://cairn/[A-Za-z0-9_-]{1,64}$` or be an
   absolute `https` URL. Anything else SHALL fail the call with error code `invalid`, naming the
   argument, and no transition SHALL apply. Switchboard SHALL NOT fetch, resolve or dereference an
@@ -157,8 +160,15 @@ Window, Lease, and Heartbeat") SHALL set the open attempt's `last_heartbeat_at` 
 
 All inputs SHALL be stored and returned as data, and SHALL NOT be interpreted.
 
-#### Scenario: Summary from result
+#### Scenario: No summary from result by default
 
+- **GIVEN** `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT` is unset
+- **WHEN** a worker calls `fail` with `result = {"error": "tests red"}` and no `summary`
+- **THEN** the closing attempt's summary is null, and `result` is stored on the todo as today
+
+#### Scenario: Summary from result when the operator opts in
+
+- **GIVEN** the operator set `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT=true`
 - **WHEN** a worker calls `fail` with `result = {"error": "tests red"}` and no `summary`
 - **THEN** the closing attempt's summary is `{"error":"tests red"}`
 

@@ -34,7 +34,7 @@ Three consumers need it now:
 * **Tenant isolation is a hard rule** ([ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md); the teams model in ADR-0038 / SPEC-0033, in flight). An attempt is visible exactly where its todo is, and nowhere else. An unknown id and a foreign id must be indistinguishable.
 * **"Died" must be distinguishable from "failed".** An attempt that ended because its lease lapsed carries no report. The next claimer must be told that, not shown an empty failure.
 * **Bounded.** Per-attempt text is capped, attempts per todo are capped, and history ages out with its todo under the existing retention policy ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)).
-* **Backward compatible.** Existing clients keep working unchanged. `result` keeps its meaning, and every new argument is optional.
+* **Additive.** Every new argument is optional and every new response field is additive. Nothing is renamed or superseded, so existing clients keep working unchanged, and `result` keeps its meaning.
 * **Text is data.** Attempt summaries are written by agents that read attacker-reachable input. Switchboard stores and returns them as data, and never interprets them.
 * **Minimal verb surface.** Endpoints are frozen at their vend-time verb set (issue #163), so history should reach existing endpoints without re-vending.
 
@@ -87,7 +87,7 @@ Tenancy is not a column on the row. An attempt is reachable only through its tod
 
 ### Summaries, artifacts and the fence
 
-* `complete`, `fail` and `release` accept an optional `summary` and `artifact`. When `summary` is absent and `result` is present, the stored summary is the compact JSON of `result`, truncated. `result` itself keeps its meaning on the todo.
+* `complete`, `fail` and `release` accept an optional `summary` and `artifact`. A missing `summary` is stored as null. An operator can set `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT=true` to derive it from `result` instead (compact JSON, truncated). That is off by default, because it would replay what existing clients wrote to `result`, which no read returns today, to later claimers and to notification sinks (Joe, 2026-09-22: risky options are fine when configurable and off by default). `result` itself keeps its meaning on the todo.
 * **The lease-token fence.** `claim` and `claim_next` accept `require_fence`. With it, the response carries an opaque `lease_token`, returned once and stored only as a hash. `heartbeat`, `complete`, `fail` and `release` accept `lease_token`. A token that does not match the todo's open attempt is `conflict`. On a fenced attempt, a call with no token is `conflict` too. This lets Harness hold an attempt that an agent holding the same endpoint credential cannot close. It also fixes #160's stale-worker case for any client that opts in, without changing `owner`.
 
 ### Reading it back

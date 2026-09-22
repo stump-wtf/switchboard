@@ -178,6 +178,17 @@ long.
 
 **Rationale**: a reporter's verdict must never be lost because its prose ran long.
 
+### No summary from `result` unless the operator opts in
+
+**Choice**: a close without `summary` stores a null summary. `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT`
+(default `false`) makes the store derive it from the compact JSON of `result`, truncated like any
+summary.
+
+**Rationale**: no read returns `result` today (`todoOut` in `internal/mcp/tools.go` omits it). Deriving summaries from it would start
+showing existing clients' results to later claimers and to notification sinks without their knowing.
+An operator whose clients write safe results can turn it on; the default stays closed (Joe, 2026-09-22:
+risky options are fine when configurable and off by default).
+
 ### `get_todo` is implied by `list_todos`
 
 **Choice**: `registerTools` registers `get_todo` when the scope holds `list_todos` or `get_todo`, and
