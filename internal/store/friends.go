@@ -525,6 +525,9 @@ func (s *Store) CreateForFriend(ctx context.Context, p CreateForFriendParams) (T
 		Title:          p.Title,
 		Payload:        p.Payload,
 		IdempotencyKey: idempotencyKey,
+		// Source is the persona name, free text that must never reach a metric label; count the
+		// creation as source="friend" instead. Governing: SPEC-0023 REQ-3, REQ-5.
+		origin: "friend",
 	})
 }
 

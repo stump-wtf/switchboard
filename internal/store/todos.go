@@ -64,13 +64,15 @@ const todoCols = `id, endpoint_id::text, queue, COALESCE(source,''), COALESCE(ki
 	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at,
 	next_retry_at, routing_trace, work_order`
 
-func scanTodo(row pgx.Row) (Todo, error) {
+// scanTodo scans a todoCols row. extra receives any columns a query returns after todoCols (the
+// claim paths' lease-takeover flag).
+func scanTodo(row pgx.Row, extra ...any) (Todo, error) {
 	var t Todo
 	var endpointID *string
-	err := row.Scan(&t.ID, &endpointID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
+	err := row.Scan(append([]any{&t.ID, &endpointID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
 		&t.IdempotencyKey, &t.Assignee, &t.State, &t.Owner, &t.LeaseExpiresAt, &t.Attempt,
 		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt, &t.NextRetryAt, &t.RoutingTrace,
-		&t.WorkOrder)
+		&t.WorkOrder}, extra...)...)
 	if endpointID != nil {
 		t.EndpointID = *endpointID
 	}
@@ -138,6 +140,32 @@ type CreateTodoParams struct {
 	// mints its todos only if no earlier delivery already claimed the key (ADR-0025).
 	OnceKey   string
 	WorkOrder []byte // routing.WorkOrder JSON stored on each minted todo (ADR-0025)
+	// origin overrides Source as the created counter's source label, for callers whose Source is
+	// free text (a friend handoff stores the persona name). Metrics-only: never persisted, never
+	// shown, and unexported so only store code can set it. See todoMetricSource.
+	origin string
+}
+
+// todoMetricSources is the bounded set of origins switchboard_todos_created_total labels by name:
+// the webhook source types (internal/mcp webhookTrustModes), the operator push API, the dev helper,
+// and friend handoffs. Anything else reports as "__other__" (the literal internal/metrics uses; this
+// package must not import it), so a caller-chosen string can never become a label value.
+// Governing: SPEC-0023 REQ-3 "Lifecycle counters", REQ-5 "Cardinality".
+var todoMetricSources = map[string]bool{
+	"gitea": true, "github": true, "stripe": true, "slack": true, "cairn": true, "generic": true,
+	"operator": true, "dev": true, "friend": true,
+}
+
+// todoMetricSource maps a creation's params to its bounded source label.
+func todoMetricSource(p CreateTodoParams) string {
+	src := p.Source
+	if p.origin != "" {
+		src = p.origin
+	}
+	if todoMetricSources[src] {
+		return src
+	}
+	return "__other__"
 }
 
 // CreateTodo inserts a todo, deduping on (endpoint_id, idempotency_key) among LIVE rows — pending,
@@ -153,6 +181,9 @@ func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool,
 		// NOTIFY costs only latency, never work — hence the error here is deliberately ignored.
 		s.notifyTodoReady(ctx, t.EndpointID, t.Queue)
 		s.fireTodoHook("created", t)
+		// Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028. Counted after commit and only
+		// for a new row, the hooks' gate: an idempotency dedup is not a creation.
+		s.metricsOrNop().TodoCreated(t.Queue, todoMetricSource(p))
 	}
 	return t, created, err
 }
@@ -190,6 +221,7 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 	if created {
 		s.notifyTodoReady(ctx, t.EndpointID, t.Queue)
 		s.fireTodoHook("created", t)
+		s.metricsOrNop().TodoCreated(t.Queue, todoMetricSource(p)) // Governing: SPEC-0023 REQ-3, ADR-0028
 		// Sender gate (SPEC-0011): only a todo whose delivery event passed per-source
 		// verification is eligible for a channel push. Plain CreateTodo (no event, e.g. the dev
 		// helper) never rings the doorbell — those todos degrade to pull, losing nothing.
@@ -397,6 +429,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 			continue
 		}
 		s.fireTodoHook("created", ct.Todo)
+		s.metricsOrNop().TodoCreated(ct.Todo.Queue, todoMetricSource(p)) // Governing: SPEC-0023 REQ-3, ADR-0028
 		s.notifyTodoReady(ctx, ct.Todo.EndpointID, ct.Todo.Queue)
 		// Sender gate (SPEC-0011): only a todo whose delivery event passed per-source verification
 		// is eligible for a channel push. EXCEPTION (ADR-0023, the basics): a token-trust
@@ -495,23 +528,54 @@ func (s *Store) ClaimTodo(ctx context.Context, endpointID, id, owner string, ttl
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
 	}
+	// The candidate CTE locks the row with a plain FOR UPDATE (waiting, as the bare UPDATE did) so
+	// its prior state can ride into RETURNING — see countClaim.
+	var takeover bool
 	row := s.pool.QueryRow(ctx, `
+		WITH cand AS (
+			SELECT id AS cand_id, state AS prior_state FROM todos
+			WHERE id=$2 AND endpoint_id=$1 AND (assignee IS NULL OR assignee=$3)
+				AND (state='pending'
+					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
+					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
+						AND attempt < max_attempts))
+			FOR UPDATE
+		)
 		UPDATE todos SET state='claimed', owner=$3, lease_expires_at=now()+$4::interval,
 			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
-		WHERE id=$2 AND endpoint_id=$1 AND (assignee IS NULL OR assignee=$3)
-			AND (state='pending'
-				OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
-				OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
-					AND attempt < max_attempts))
-		RETURNING `+todoCols, endpointID, id, owner, ttl.String())
-	t, err := scanTodo(row)
+		FROM cand WHERE todos.id = cand.cand_id
+		RETURNING `+todoCols+`, cand.prior_state = 'claimed'`, endpointID, id, owner, ttl.String())
+	t, err := scanTodo(row, &takeover)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
 	}
 	if err == nil {
 		s.fireTodoHook("claimed", t)
+		s.countClaim(t, takeover)
 	}
 	return t, err
+}
+
+// countClaim increments the claim counters for a committed claim: one lease expiry first when the
+// claim took over a lapsed lease, then the claim and its attempt bucket.
+//
+// Why takeover is a lease expiry: a claim may take over a claimed row whose lease has lapsed (the
+// `state='claimed' AND lease_expires_at < now()` arm of the claim predicate), recovering the work
+// before the reaper ever runs. The first worker may still be doing that work, so it is the same
+// duplicate-work signal the reaper reports, and missing it would miss exactly the fast-reclaim
+// case. RETURNING sees only the new row, so each claim path selects its candidate in a CTE that
+// locks it and carries its prior state into RETURNING. Only that column is new: the predicate,
+// ordering and locking (FOR UPDATE, or FOR UPDATE SKIP LOCKED for ClaimNext) are the bare UPDATE's.
+// It is portable to any supported Postgres, unlike RETURNING OLD (18+). The reaper and a taker
+// cannot both count one lapse: whichever locks the row first changes it, and the other's predicate
+// no longer matches.
+// Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028.
+func (s *Store) countClaim(t Todo, takeover bool) {
+	m := s.metricsOrNop()
+	if takeover {
+		m.LeaseExpired(t.Queue)
+	}
+	m.TodoClaimed(t.Queue, t.Attempt)
 }
 
 // ClaimNext claims the oldest claimable todo across the allowed queues using FOR UPDATE SKIP LOCKED
@@ -525,11 +589,12 @@ func (s *Store) ClaimNext(ctx context.Context, endpointID string, queues []strin
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
 	}
+	// The pick moved from a WHERE sub-select into a CTE so its prior state reaches RETURNING (lease
+	// takeover, see countClaim); predicate, order and SKIP LOCKED are unchanged.
+	var takeover bool
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state='claimed', owner=$1, lease_expires_at=now()+$2::interval,
-			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
-		WHERE id = (
-			SELECT id FROM todos
+		WITH cand AS (
+			SELECT id AS cand_id, state AS prior_state FROM todos
 			WHERE endpoint_id=$4 AND queue = ANY($3) AND (assignee IS NULL OR assignee=$1)
 				AND (state='pending'
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
@@ -539,13 +604,17 @@ func (s *Store) ClaimNext(ctx context.Context, endpointID string, queues []strin
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)
-		RETURNING `+todoCols, owner, ttl.String(), queues, endpointID)
-	t, err := scanTodo(row)
+		UPDATE todos SET state='claimed', owner=$1, lease_expires_at=now()+$2::interval,
+			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
+		FROM cand WHERE todos.id = cand.cand_id
+		RETURNING `+todoCols+`, cand.prior_state = 'claimed'`, owner, ttl.String(), queues, endpointID)
+	t, err := scanTodo(row, &takeover)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ErrNotFound
 	}
 	if err == nil {
 		s.fireTodoHook("claimed", t)
+		s.countClaim(t, takeover)
 	}
 	return t, err
 }
@@ -586,6 +655,7 @@ func (s *Store) CompleteTodo(ctx context.Context, endpointID, id, owner string, 
 	}
 	if err == nil {
 		s.fireTodoHook("done", t)
+		s.metricsOrNop().TodoFinished(t.Queue, "complete") // Governing: SPEC-0023 REQ-3, ADR-0028
 	}
 	return t, err
 }
@@ -619,6 +689,7 @@ func (s *Store) FailTodo(ctx context.Context, endpointID, id, owner string, resu
 		// Both outcomes commit as 'failed'; the hook payload's NextRetryAt distinguishes a
 		// scheduled retry (countdown UI) from a dead-letter (retry is manual-only).
 		s.fireTodoHook(t.State, t)
+		s.metricsOrNop().TodoFinished(t.Queue, "fail") // Governing: SPEC-0023 REQ-3, ADR-0028
 	}
 	return t, err
 }
@@ -916,21 +987,30 @@ func (s *Store) GetTodoOperatorOwned(ctx context.Context, ownerHumanID, id strin
 // human session, not by an endpoint credential). The agent path MUST use ClaimTodo. Governing:
 // ADR-0022, SPEC-0003 claim-under-lease semantics.
 func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, ttl time.Duration) (Todo, error) {
+	// Same candidate-CTE shape as ClaimTodo, so a Board takeover of a lapsed lease counts too
+	// (countClaim).
+	var takeover bool
 	row := s.pool.QueryRow(ctx, `
+		WITH cand AS (
+			SELECT id AS cand_id, state AS prior_state FROM todos
+			WHERE id=$1 AND (assignee IS NULL OR assignee=$2)
+				AND (state='pending'
+					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
+					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
+						AND attempt < max_attempts))`+operatorOwns+`$4)
+			FOR UPDATE
+		)
 		UPDATE todos SET state='claimed', owner=$2, lease_expires_at=now()+$3::interval,
 			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
-		WHERE id=$1 AND (assignee IS NULL OR assignee=$2)
-			AND (state='pending'
-				OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
-				OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
-					AND attempt < max_attempts))`+operatorOwns+`$4)
-		RETURNING `+todoCols, id, owner, ttl.String(), ownerHumanID)
-	t, err := scanTodo(row)
+		FROM cand WHERE todos.id = cand.cand_id
+		RETURNING `+todoCols+`, cand.prior_state = 'claimed'`, id, owner, ttl.String(), ownerHumanID)
+	t, err := scanTodo(row, &takeover)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
 	if err == nil {
 		s.fireTodoHook("claimed", t)
+		s.countClaim(t, takeover)
 	}
 	return t, err
 }
@@ -948,6 +1028,7 @@ func (s *Store) CompleteTodoOperatorOwned(ctx context.Context, ownerHumanID, id,
 	}
 	if err == nil {
 		s.fireTodoHook("done", t)
+		s.metricsOrNop().TodoFinished(t.Queue, "complete") // Governing: SPEC-0023 REQ-3, ADR-0028
 	}
 	return t, err
 }
@@ -971,6 +1052,7 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 	}
 	if err == nil {
 		s.fireTodoHook(t.State, t)
+		s.metricsOrNop().TodoFinished(t.Queue, "fail") // Governing: SPEC-0023 REQ-3, ADR-0028
 	}
 	return t, err
 }
@@ -1022,8 +1104,14 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	// One lease expiry per reaped row, requeued or dead-lettered alike (SPEC-0023 REQ-3). A
+	// dead-letter here deliberately does NOT also count TodoFinished(outcome="fail"): that counter
+	// is claimant-reported outcomes, and nobody reported this one. Lease expiry is its own signal, and
+	// counting it twice would inflate the failure rate with the very stall it already measures.
+	// Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028.
 	for _, t := range reaped {
 		s.fireTodoHook(t.State, t)
+		s.metricsOrNop().LeaseExpired(t.Queue)
 	}
 	return int64(len(reaped)), nil
 }
