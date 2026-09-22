@@ -140,10 +140,15 @@ to the webhook's source type MUST be refused.
 
 Management:
 
-* `create_webhook` MUST accept an optional `trusted_actors`.
+* `create_webhook` MUST accept an optional `trusted_actors`. On a `github`, `gitea` or `cairn`
+  webhook, omitting it MUST store an empty list, and the result MUST say that every delivery will be
+  quarantined until trusted actors, or `allow_all`, are set.
 * `set_trusted_actors {webhook_id, trusted_actors}` MUST replace the field. `trusted_actors` MUST
   be a required argument.
-* `clear_trusted_actors {webhook_id}` MUST remove the field.
+* `clear_trusted_actors {webhook_id}` MUST reset the field to an empty list.
+* `{"allow_all": true}` MUST trust every verified sender. It MUST be exclusive with `logins`,
+  `actor_ids` and `match`, MUST be off unless set explicitly, and MUST be flagged by
+  `list_webhooks` (`allow_all: true`) and by a warning on the webhook card.
 * `list_webhooks` MUST echo the field, and a `quarantined` count of the webhook's open quarantine
   items.
 
@@ -163,8 +168,8 @@ on a source with no actor projection (`stripe`, `slack`). The error MUST say why
 
 Logins MUST compare case-insensitively. Actor ids MUST compare exactly.
 
-**Evaluation.** The gate MUST run after signature verification and before any rule, when
-`trusted_actors` is set:
+**Evaluation.** On every `github`, `gitea` and `cairn` webhook, the gate MUST run after signature
+verification and before any rule:
 
 * `sender_trusted` MUST be whether `sender` is in the list, and `author_trusted` MUST be whether
   `author` is in the list. When `author` is null, `author_trusted` MUST equal `sender_trusted`.
@@ -173,7 +178,10 @@ Logins MUST compare case-insensitively. Actor ids MUST compare exactly.
 * An untrusted delivery MUST be quarantined with `quarantine_reason = "untrusted_actor"`, and rules
   MUST NOT be evaluated for it.
 * An empty list MUST trust no one.
-* When `trusted_actors` is absent, the gate MUST NOT run, and behaviour MUST be unchanged.
+* Under `allow_all`, `trusted` MUST be true and `sender_trusted` and `author_trusted` MUST be null.
+* A missing `trusted_actors` MUST NOT be treated as "gate off" by any code path. The migration MUST write
+  `{"allow_all": true}` onto every existing `github`, `gitea` and `cairn` webhook, so existing
+  webhooks keep routing as before, visibly.
 
 #### Scenario: Maintainer label promotes an outsider's issue
 
@@ -182,6 +190,27 @@ Logins MUST compare case-insensitively. Actor ids MUST compare exactly.
 - **THEN** the `opened` delivery is quarantined, and the `labeled` delivery reaches the rules with
   `.actor = {sender: "joestump", author: "mallory", sender_trusted: true, author_trusted: false,
   trusted: true}`
+
+#### Scenario: A new webhook fails closed
+
+- **WHEN** an agent creates a `github` webhook without `trusted_actors`, and an outsider opens an
+  issue
+- **THEN** the delivery is quarantined with `quarantine_reason = "untrusted_actor"`, and the create
+  result said that the list is empty
+
+#### Scenario: Allow-all is explicit and flagged
+
+- **GIVEN** a `gitea` webhook with `trusted_actors = {"allow_all": true}`
+- **WHEN** an outsider opens an issue
+- **THEN** it reaches the rules with `.actor.trusted = true` and `author_trusted = null`, and
+  `list_webhooks` shows `allow_all: true`
+
+#### Scenario: Existing webhook after the upgrade
+
+- **GIVEN** a `github` webhook created before this change
+- **WHEN** the migration has run
+- **THEN** its `trusted_actors` is `{"allow_all": true}`, it routes exactly as before, and its card
+  shows the allow-all warning
 
 #### Scenario: Case-insensitive login
 
@@ -364,7 +393,7 @@ forge:
 
 * `.actor`: `{sender, author, sender_trusted, author_trusted, trusted}`. The two names MUST be
   populated for github, gitea and cairn whenever they can be parsed. The trust flags MUST be null
-  when the webhook has no `trusted_actors`.
+  on sources with no actor projection, and the per-actor flags MUST be null under `allow_all`.
 * `.release`: `{by, at}` on a released delivery, and null otherwise.
 
 A work order (ADR-0025) built from a delivery with `.actor` MUST carry `author_trusted`, and, when

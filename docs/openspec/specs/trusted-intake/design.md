@@ -79,7 +79,8 @@ only on writes.
 
 ### `trusted_actors` is a column, evaluated before rules
 
-**Choice**: add `endpoint_webhooks.trusted_actors jsonb NULL`. Evaluate it in
+**Choice**: add `endpoint_webhooks.trusted_actors jsonb`, required on `github`, `gitea` and `cairn`
+webhooks and NULL only on sources with no actor projection. Evaluate it in
 `internal/ingest/selfmanaged.go` after verification and target resolution, before `routeDelivery`.
 The actor projection lives in `internal/routing/subject.go`, next to the issue projection, so the
 envelope and the gate share one parser.
@@ -174,7 +175,11 @@ sequenceDiagram
 A new migration, taking the next free number when it is written:
 
 ```sql
-ALTER TABLE endpoint_webhooks ADD COLUMN trusted_actors jsonb;   -- NULL = gate off
+ALTER TABLE endpoint_webhooks ADD COLUMN trusted_actors jsonb;   -- NULL only where no actor projection
+UPDATE endpoint_webhooks SET trusted_actors = '{"allow_all": true}'
+    WHERE source_type IN ('github', 'gitea', 'cairn');           -- keep existing routing, visibly
+ALTER TABLE endpoint_webhooks ADD CONSTRAINT trusted_actors_required
+    CHECK (source_type NOT IN ('github', 'gitea', 'cairn') OR trusted_actors IS NOT NULL);
 
 ALTER TABLE todos
     ADD COLUMN quarantine_reason text
@@ -191,8 +196,9 @@ ALTER TABLE endpoints ADD COLUMN role text NOT NULL DEFAULT 'agent'
     CHECK (role IN ('agent', 'classifier'));
 ```
 
-The migration is additive, and existing rows keep their behaviour: no trust gate, and no
-quarantine. Existing todos on a queue literally named `quarantine` are found by a pre-migration
+The migration is additive. Existing `github`, `gitea` and `cairn` webhooks are backfilled with
+`{"allow_all": true}`, so they keep routing as before and show the allow-all warning; new webhooks of
+those sources fail closed. No code path treats a missing field as "gate off". Existing todos on a queue literally named `quarantine` are found by a pre-migration
 check, which aborts with a message naming them rather than silently hiding them.
 
 ### MCP shapes
@@ -202,7 +208,10 @@ check, which aborts with a message naming them rather than silently hiding them.
 {"webhook_id": "…", "trusted_actors": {"logins": ["joestump", "joestump-agent"], "match": "sender"}}
 // → {"webhook_id": "…", "trusted_actors": {…}}
 
-// clear_trusted_actors {"webhook_id": "…"} → {"webhook_id": "…", "trusted_actors": null}
+// clear_trusted_actors {"webhook_id": "…"} → {"webhook_id": "…", "trusted_actors": {"logins": []}}
+
+// trust every verified sender, explicitly (flagged on the card and in list_webhooks)
+{"webhook_id": "…", "trusted_actors": {"allow_all": true}}
 
 // rule action
 {"id": "outsiders", "expr": ".actor.author_trusted == false and .kind == \"issue_comment\"",
@@ -242,9 +251,10 @@ check, which aborts with a message naming them rather than silently hiding them.
 - **A classifier is fed attacker text by design.** → Exclusive verbs, doorbells that contain no
   sender text, and released items that keep `author_trusted = false`. The owner's rules can send
   classifier releases to a cautious lane.
-- **Rollout breaks an existing rule set that faulted quietly.** → Before enabling fail-closed on an
-  instance, a one-off report lists every webhook whose last 7 days of traces contain faults. The
-  #212 story ships that report as a CLI subcommand, and the release notes tell operators to run it.
+- **Rollout breaks an existing rule set that faulted quietly.** → Before upgrading, operators run a
+  one-off report that lists every webhook whose last 7 days of traces contain faults. The #212 story
+  ships it as a CLI subcommand, and the upgrade note makes running it a step. Nothing defers
+  fail-closed: there is no switch to turn it on later.
 
 ## Migration Plan
 
@@ -257,7 +267,7 @@ check, which aborts with a message naming them rather than silently hiding them.
    the `quarantine` rule action, release and discard.
 5. Quarantine view, classifier role, metrics, and the mirror recipe with its test.
 
-Rollback: steps 3 to 5 are gated by data. A webhook with no `trusted_actors` and no `quarantine`
+Rollback: steps 3 to 5 are gated by data. A backfilled webhook (`allow_all`) with no `quarantine`
 action behaves exactly as step 2 left it. Step 2 is a behaviour change that is reverted by reverting
 the evaluator change.
 
@@ -265,9 +275,10 @@ the evaluator change.
 
 - **Numeric forge ids.** Accept `{"ids": [12345]}` alongside logins, to survive renames? Proposed:
   yes, as a follow-up, once the actor projection carries `sender.id`.
-- **Default trust for new webhooks.** Should `create_webhook` for `github` and `gitea` default
-  `trusted_actors` to the vending human's linked forge login (from GitHub login, SPEC-0021) when one
-  exists? Proposed: offer it in the wizard, and do not apply it silently.
+- **Default trust for new webhooks.** Resolved: a new webhook fails closed with an empty list;
+  the wizard offers the vending human's linked forge login (from GitHub login, SPEC-0021) as a
+  pre-filled entry the human keeps or removes, and `allow_all` is the explicit opt-in to trust
+  everyone.
 - **Quarantine notifications.** Owners learn about new items via the board count today. Wiring
   quarantine arrivals to the notification sinks (ADR-0034 / SPEC-0029) is proposed for that spec,
   not this one.

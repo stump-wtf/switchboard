@@ -148,8 +148,17 @@ Each self-managed webhook may carry `trusted_actors`, owned by the webhook's own
   `.actor = {sender, author, sender_trusted, author_trusted, trusted}`. So a rule can still branch
   on "trusted labeler, outside author". Work orders (ADR-0025) carry `author_trusted`, so the agent
   knows when the body in front of it came from outside.
-* **Empty means nobody.** An empty list trusts no one, and everything is quarantined. An absent
-  field means the gate is off and behaviour is unchanged, so existing webhooks keep working.
+* **Fail closed by default; trusting everyone is an explicit opt-in.** On `github`, `gitea` and
+  `cairn` webhooks the gate always runs. An empty list trusts no one, and everything is quarantined.
+  `create_webhook` without `trusted_actors` stores an empty list; the vend wizard offers the vending
+  human's linked login as a pre-filled entry, applied only when the human keeps it.
+  `{"allow_all": true}` routes every verified sender. It is off unless set explicitly, rules see
+  `.actor.trusted = true` with null per-actor flags, and `list_webhooks` and the webhook card flag it.
+  (Joe, 2026-09-22: risky options are fine when they are configurable and off by default.)
+* **Existing webhooks are migrated, not special-cased.** The migration writes
+  `{"allow_all": true}` onto every existing `github`, `gitea` and `cairn` webhook, so each keeps
+  routing as before and the choice is visible on its card. No code path treats a missing field as
+  "gate off".
 
 ### 4. Quarantine
 
@@ -272,9 +281,9 @@ agent unreviewed.
 flowchart TD
   d[signed delivery] --> v{signature verified?}
   v -- no --> rej[401, not persisted]
-  v -- yes --> ta{trusted_actors set?}
-  ta -- no --> rules
-  ta -- yes --> who{actor trusted<br/>per match policy?}
+  v -- yes --> ta{allow_all?}
+  ta -- yes --> rules
+  ta -- no --> who{actor trusted<br/>per match policy?}
   who -- no --> q[(quarantine<br/>owner endpoint)]
   who -- yes --> rules{rules, first match}
   rules -- fault --> q
