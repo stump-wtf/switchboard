@@ -348,7 +348,8 @@ MUST be unaffected by a failure on another queue's policy.
 
 ### Requirement: REQ-10 Policy Management
 
-Policies MUST be managed only by a human authorized for the queue identity's owner scope:
+Policies MUST be managed by a human authorized for the queue identity's owner scope, or by an
+endpoint that human has granted `set_admission_policy`:
 
 * for an endpoint queue, the endpoint's owning human, or its team's configuring role when the endpoint
   is team-owned (ADR-0038);
@@ -361,22 +362,34 @@ Management MUST be available on:
   `/api/v1/admission/{scope}/{queue}`;
 * the operator CLI, as `switchboard queue budget show|set|clear`.
 
-A vended endpoint credential MUST NOT create, change or delete a policy, and there MUST be no MCP
-write verb for policies. A request naming a queue identity the caller may not manage MUST return
+A vended endpoint credential MUST NOT create, change or delete a policy unless its grant includes
+`set_admission_policy {queue, policy}` (create or change) or `clear_admission_policy {queue}`
+(delete). Those verbs MUST NOT be in any default grant, preset or basics vend; the vend wizard and
+consent screen MUST list them unchecked and MUST say that they let the agent change its own budget. A
+granted endpoint MAY manage only its own endpoint queues, or a team queue where ADR-0038 lets its
+grant configure the team. A request naming a queue identity the caller may not manage MUST return
 `not_found`, indistinguishable from one that does not exist.
 
-Every create, change and delete MUST append an audit record: who, when, the before value and the after
-value. The owner scope MUST be able to read that record. Changes take effect on the next claim:
+Every create, change and delete MUST append an audit record: who (the human, plus the endpoint when an
+agent made the change), when, the before value and the after value. The owner scope MUST be able to read that record. Changes take effect on the next claim:
 
 * lowering a limit below current usage refuses new claims, without revoking claims in flight;
 * raising a limit admits immediately;
 * changing a window's `period`, `tz` or `start` begins counting in the window the new definition
   places the current instant in, and the change is audited.
 
-#### Scenario: An agent cannot raise its own ceiling
+#### Scenario: By default an agent cannot raise its own ceiling
 
-- **WHEN** a vended endpoint attempts to change its queue's policy by any means available to it
-- **THEN** no such operation exists or succeeds, and the policy is unchanged
+- **GIVEN** an endpoint whose grant lacks `set_admission_policy`
+- **WHEN** it attempts to change its queue's policy by any means available to it
+- **THEN** no such verb is offered or succeeds, and the policy is unchanged
+
+#### Scenario: An owner opts an agent in
+
+- **GIVEN** the owner granted endpoint E `set_admission_policy`
+- **WHEN** E sets `max_claims_per_window = 50` on its own queue `lane-m`
+- **THEN** the policy saves, the audit record names E and its human, and the same call naming another
+  endpoint's queue returns `not_found`
 
 #### Scenario: Another human's queue is opaque
 
@@ -460,6 +473,7 @@ packages.
   | `GET`, `PUT` and `DELETE` on `/api/v1/admission/{scope}/{queue}` | Required | Same grant; foreign and unknown identities both `404` |
   | web UI policy editor and board header | Required | Session-authenticated human; owner scope only |
   | MCP `admission_status`, and `admission` on claim responses | Required | Vended endpoint bearer; caller's scope only; read-only |
+  | MCP `set_admission_policy`, `clear_admission_policy` | Required | Vended endpoint bearer with the verb in scope (never a default grant); caller's own queues only; audited with the endpoint |
   | `/metrics` series | Required | Scrape credential (SPEC-0023 REQ-1); aggregate, no tenant labels |
 
 * **Rate limiting.** The admission API routes MUST sit behind a per-human limiter (at most 1 write per
@@ -474,8 +488,8 @@ packages.
 * **Tenancy.** Every policy read and write, every admission status, and every audit record is filtered
   by the caller's owner scope. The deferral detail on a claim response describes only the caller's own
   queue identities. The reopen sweep is exempt from scoping, and it reads no todo out to anyone.
-* **No self-escalation.** Agents can read their budget and cannot change it. Nothing a delivery
-  carries can change a policy.
+* **No self-escalation by default.** Agents can read their budget, and change it only when their owner
+  has granted `set_admission_policy` (never a default). Nothing a delivery carries can change a policy.
 
 ## Accessibility Requirements
 

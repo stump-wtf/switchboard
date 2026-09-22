@@ -180,7 +180,8 @@ CREATE TABLE admission_policy_audit (
     policy_id      uuid NOT NULL,               -- not an FK: the audit outlives a deleted policy
     endpoint_id    uuid NOT NULL,               -- the scope, for owner-filtered reads
     queue          text NOT NULL,
-    actor_human_id uuid NOT NULL,
+    actor_human_id uuid NOT NULL,               -- the accountable human, always
+    actor_endpoint_id uuid,                     -- set when a granted agent made the change
     action         text NOT NULL CHECK (action IN ('create','update','delete')),
     before         jsonb,
     after          jsonb,
@@ -249,6 +250,11 @@ DST transitions in several zones, which guards the boundary against the host's z
 * New error code `deferred` in `internal/mcp/tools.go`, beside `conflict`.
 * New verb `admission_status {queue?}`, registered whenever the endpoint holds `claim` or
   `claim_next`, and added to the drain verb set in `internal/mcp/verbs.go`.
+* New verbs `set_admission_policy {queue, policy}` and `clear_admission_policy {queue}`, in their own
+  family: in `AllVerbs()` so the wizard and consent screen list them (unchecked, with a "lets the agent
+  change its own budget" note), and excluded from the basics vend's `BasicVerbs()` (the helper
+  SPEC-0028 introduces). They call the same service functions as the operator API, and write
+  `actor_endpoint_id` into the audit.
 
 ### Operator API and CLI
 

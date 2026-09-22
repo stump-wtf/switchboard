@@ -34,7 +34,7 @@ The obvious implementations each fail one of the customer's clauses:
 * **Never drop.** Over-budget work stays `pending`, keeps its dedup slot, spends no attempt and never dead-letters.
 * **Legible.** A deferred todo says why and when it becomes eligible, and so do the claim response, the board and the metrics.
 * **Fail closed.** If admission cannot be evaluated, the claim is refused, never waved through.
-* **An agent cannot raise its own ceiling.** The budget is a control on agents, so agents may read it and never write it.
+* **An agent cannot raise its own ceiling by default.** The budget is a control on agents, so agents read it, and write it only when their owner deliberately grants `set_admission_policy` (never a default; Joe, 2026-09-22: risky options are fine when configurable and off by default).
 * **Multi-tenant by construction.** A budget belongs to exactly one owner scope and governs only that owner's queue ([ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md); Teams, ADR-0038). There is no instance-wide budget a user could reach.
 * **Zero change without a policy.** A queue with no policy behaves exactly as it does today, and pays at most one indexed lookup for the feature.
 
@@ -62,7 +62,7 @@ A policy attaches to one queue, as a queue is identified under Teams (ADR-0038):
 
 At least one limit is required. A limit of `0` is an explicit pause: the queue admits nothing, and says so. That is the kill switch the customer's plan asks for.
 
-The endpoint's owner scope configures an endpoint-queue policy. For a team queue, the team role that ADR-0038 lets configure limits (its admins) does. Policies are set on the web UI, the operator API and the operator CLI, never by a vended endpoint credential. Agents see the policy that governs them on every claim response and through a read-only verb. Every change is audited: who, when, before and after.
+The endpoint's owner scope configures an endpoint-queue policy. For a team queue, the team role that ADR-0038 lets configure limits (its admins) does. Policies are set on the web UI, the operator API and the operator CLI. A vended endpoint credential cannot write one unless its owner granted `set_admission_policy` and `clear_admission_policy`, which are in no default, preset or basics grant and are flagged on the vend wizard and consent screen as letting the agent change its own budget. Agents see the policy that governs them on every claim response and through a read-only verb. Every change is audited: who (the human, and the endpoint when an agent made it), when, before and after.
 
 Several sessions on one endpoint are competing consumers of one endpoint queue, as each fleet lane is, so they share one budget. A human who wants one budget across *several* endpoints drains a shared team queue (ADR-0038). Separate endpoint queues hold separate todos by design: a fan-out copy on another endpoint is another piece of work, governed by that endpoint's owner.
 
@@ -154,7 +154,7 @@ Per-queue usage and limits are tenant data, so they live on the board and the AP
 * At the boundary, the queue reopens, exactly one doorbell rings per endpoint and queue with pending work, and no doorbell or notify hook fired while it was deferred.
 * With the policy table unreadable, claims on that queue are refused with `admission_unavailable`, and claims on queues without a policy are unaffected.
 * Two endpoints of different owners that both drain a queue named `investigations` have independent counters, and neither owner can read the other's.
-* A vended endpoint credential can't create, change or delete a policy.
+* A vended endpoint credential without `set_admission_policy` can't create, change or delete a policy; one whose owner granted it can, for its own queues only, and the audit names the endpoint and its human.
 
 ## Pros and Cons of the Options
 
