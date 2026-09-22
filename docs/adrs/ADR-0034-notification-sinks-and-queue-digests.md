@@ -13,7 +13,7 @@ related: [ADR-0013, ADR-0022, ADR-0027, ADR-0028, ADR-0029]
 Some things that happen in Switchboard need a person:
 
 * a todo **dead-letters**: it failed at its attempt cap, its lease lapsed at the cap, or its endpoint
-  was revoked (`internal/store/todos.go`, `Fail`, `ReapExpired`, `deadLetterEndpointTodos`);
+  was revoked (`internal/store/todos.go`, `FailTodo`, `ReapExpired`, `deadLetterEndpointTodos`);
 * a delivery lands in **quarantine** because its sender is not trusted (ADR-0031, being written in
   parallel);
 * a Harness **relay** runs out of attempts (Harness ADR-0025 and Switchboard ADR-0039, both in

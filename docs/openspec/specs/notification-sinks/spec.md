@@ -231,8 +231,9 @@ caused it: the dead-letter update, the quarantine insert, or the routed event in
 state change MUST leave no outbox row.
 
 A worker MUST claim outbox rows with `FOR UPDATE SKIP LOCKED`, so multiple instances never deliver one
-row twice. A failed attempt MUST be retried with exponential backoff (starting at 30 seconds) for at
-most 5 attempts; then the row MUST be marked `undeliverable` with the last error class. Each attempt
+row twice. A failed attempt MUST be retried with exponential backoff, doubling from 30 seconds, for at
+most 7 attempts, so the last attempt comes about 30 minutes after the first; then the row MUST be
+marked `undeliverable` with the last error class. Each attempt
 MUST time out within 10 seconds, MUST pass `internal/push.Validator` at dial time with the operator's
 private-host allowlist, MUST require HTTPS (the `PushAllowHTTP` opt-in excepted), and MUST NOT follow
 redirects. Delivery records MUST be retained for 30 days.
@@ -240,8 +241,8 @@ redirects. Delivery records MUST be retained for 30 days.
 #### Scenario: Sink down
 
 - **WHEN** a Gotify server is unreachable for an hour
-- **THEN** the notification is attempted 5 times, marked `undeliverable`, and appears in the next
-  digest's "could not deliver" section
+- **THEN** the notification is attempted 7 times over about 30 minutes, marked `undeliverable`, and
+  appears in the next digest's "could not deliver" section
 
 #### Scenario: Two instances
 

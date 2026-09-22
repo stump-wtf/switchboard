@@ -11,8 +11,8 @@ implements: [ADR-0034]
 [SPEC-0029](spec.md) lets an owner be told about dead letters, quarantine, relay exhaustion, rule
 matches and queue health through Gotify and Apprise. What it builds on:
 
-* **Dead-letter paths** already exist in `internal/store/todos.go`: `Fail` at the attempt cap,
-  `ReapExpired` at the cap, and `deadLetterEndpointTodos` in the revocation cascade. Each runs in a
+* **Dead-letter paths** already exist in `internal/store/todos.go`: `FailTodo` (and
+  `FailTodoOperatorOwned`) at the attempt cap, `ReapExpired` at the cap, and `deadLetterEndpointTodos` in the revocation cascade. Each runs in a
   transaction, which is where the outbox row is written.
 * **Routing actions** are `routing.Action` (`internal/routing/routing.go`): `queue`, `drop`,
   `endpoints`, `exclusive`, `once`, `work_order`. `notify` is one more field, validated like the others.
@@ -232,7 +232,7 @@ SPEC-0033 adds one. Digest preview is how an owner checks honest absence before 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant ST as store (Fail / ReapExpired / revoke / ingest)
+  participant ST as store (FailTodo / ReapExpired / revoke / ingest)
   participant OB as notification_outbox
   participant W as outbox worker (any instance)
   participant V as push.Validator
