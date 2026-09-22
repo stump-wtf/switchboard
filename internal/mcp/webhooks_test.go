@@ -378,6 +378,19 @@ func TestCreateWebhookGiteaSourceType(t *testing.T) {
 	}
 }
 
+// TestWebhookSourceTypesAreMetricSources: every source type create_webhook accepts is one the todo
+// created counter labels by name. The store keeps its own allowlist (it cannot import this
+// package), so a source type added to webhookTrustModes alone would count every todo it mints as
+// source="__other__"; this fails first.
+// Governing: SPEC-0023 REQ-5 "Cardinality", ADR-0028.
+func TestWebhookSourceTypesAreMetricSources(t *testing.T) {
+	for sourceType := range webhookTrustModes {
+		if !store.IsMetricSource(sourceType) {
+			t.Errorf("webhook source type %q is missing from store's todoMetricSources: its todos would count as source=\"__other__\"", sourceType)
+		}
+	}
+}
+
 // TestCreateWebhookGiteaForbiddenWhenNotInCeiling: gitea outside the ceiling is refused with
 // forbidden_source_type, same as any other unsupported type.
 func TestCreateWebhookGiteaForbiddenWhenNotInCeiling(t *testing.T) {

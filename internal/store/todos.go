@@ -149,12 +149,20 @@ type CreateTodoParams struct {
 // todoMetricSources is the bounded set of origins switchboard_todos_created_total labels by name:
 // the webhook source types (internal/mcp webhookTrustModes), the operator push API, the dev helper,
 // and friend handoffs. Anything else reports as "__other__" (the literal internal/metrics uses; this
-// package must not import it), so a caller-chosen string can never become a label value.
+// package must not import it), so a caller-chosen string can never become a label value. A webhook
+// source type added to webhookTrustModes but not here fails internal/mcp's
+// TestWebhookSourceTypesAreMetricSources rather than silently counting as "__other__".
 // Governing: SPEC-0023 REQ-3 "Lifecycle counters", REQ-5 "Cardinality".
 var todoMetricSources = map[string]bool{
 	"gitea": true, "github": true, "stripe": true, "slack": true, "cairn": true, "generic": true,
 	"operator": true, "dev": true, "friend": true,
 }
+
+// IsMetricSource reports whether source is a todo origin the created counter labels by name rather
+// than as "__other__". Exported for internal/mcp's drift test: store cannot import mcp, so the check
+// that every accepted webhook source type is on the list lives on the importing side.
+// Governing: SPEC-0023 REQ-5 "Cardinality", ADR-0028.
+func IsMetricSource(source string) bool { return todoMetricSources[source] }
 
 // todoMetricSource maps a creation's params to its bounded source label.
 func todoMetricSource(p CreateTodoParams) string {
@@ -162,7 +170,7 @@ func todoMetricSource(p CreateTodoParams) string {
 	if p.origin != "" {
 		src = p.origin
 	}
-	if todoMetricSources[src] {
+	if IsMetricSource(src) {
 		return src
 	}
 	return "__other__"
