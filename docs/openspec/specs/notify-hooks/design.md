@@ -106,9 +106,25 @@ previous secret for 24 hours and signs with both.
 honours `Webhook-Id` inbound, and off-the-shelf verifier libraries exist in most languages. Dual
 signing is part of the Standard Webhooks spec and makes rotation zero-downtime.
 
+**The secret encoding is an interop trap.** The inbound minter, `mintWebhookSecret` in
+`internal/mcp/webhooks.go`, returns `whsec_` followed by hex. Hex is a valid base64 alphabet, so a
+Standard Webhooks verifier decodes a hex secret without complaint, derives a different key, and
+rejects every delivery. Neither side reports anything useful. Notify hooks therefore get their own
+minter that uses padded standard base64. A test verifies a real notification with a reference
+Standard Webhooks implementation, not with Switchboard's own signer.
+
 **Cross-repo consequence**: Harness ADR-0021 deferred timestamped schemes, so Harness `[webhook.*]`
-cannot yet verify this header set. That is filed as a Harness SPEC-0014 story that adds
-`verify = "standard-webhooks"`. The F-X2 webhook path is blocked on it. Switchboard does not add a
+cannot yet verify this header set. The receiving end is
+stump.wtf/harness#466 ("standard-webhooks verification — receive Switchboard notify hooks"),
+under the SPEC-0014 amendment stump.wtf/harness#427 and epic stump.wtf/harness#451. Its tests
+encode four properties that this spec must honour:
+
+- the base64 secret;
+- dual signatures during rotation;
+- a `webhook-id` that is stable across retries;
+- a fresh `webhook-timestamp` on each attempt, within a 5-minute tolerance.
+
+It also filters on the body's top-level `type`. The F-X2 webhook path is blocked on #466. Switchboard does not add a
 second, body-only signature to paper over the gap: that would drop timestamp replay protection for
 every receiver, to save one receiver a story.
 

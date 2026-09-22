@@ -186,8 +186,16 @@ the status code, and its `Location` MUST NOT be dialled.
 ### REQ-4: Signing (Standard Webhooks)
 
 Switchboard MUST mint each hook's secret itself from a CSPRNG: 32 random bytes, presented as
-`whsec_` followed by their base64. It MUST store the secret only through the `internal/cred`
-envelope, like every other held secret. A caller MUST NOT be able to supply its own secret.
+`whsec_` followed by their **padded standard base64** encoding. The HMAC key MUST be the
+**decoded** bytes, never the literal string.
+
+The hook minter MUST NOT reuse the inbound webhook minter (`mintWebhookSecret`, which returns
+`whsec_` followed by **hex**). Hex is valid base64, so a conforming Standard Webhooks verifier
+would decode a hex secret without error, derive the wrong key, and reject every delivery, silently
+on both sides.
+
+Switchboard MUST store the secret only through the `internal/cred` envelope, like every other held
+secret. A caller MUST NOT be able to supply its own secret.
 
 Every attempt MUST carry the [Standard Webhooks](https://www.standardwebhooks.com/) headers:
 
@@ -210,11 +218,18 @@ secret for a grace period (default 24 hours), as two space-separated `v1,` entri
   with the secret `create_notify_hook` returned
 - **THEN** the result equals the base64 value after `v1,` in `webhook-signature`
 
+#### Scenario: A stock Standard Webhooks library verifies it
+
+- **WHEN** a receiver passes the returned `signing_secret` to an off-the-shelf Standard Webhooks
+  verifier library, with no Switchboard-specific handling
+- **THEN** every notification from that hook verifies. A test in Switchboard's suite asserts this
+  against a reference implementation, so a hex-encoded secret cannot pass it.
+
 #### Scenario: Retries keep the id
 
 - **WHEN** a notification's first attempt times out and a second attempt is sent
 - **THEN** both attempts carry the same `webhook-id`, and each carries its own `webhook-timestamp`
-  and signature
+  and signature, so a receiver enforcing a 5-minute timestamp tolerance accepts every attempt
 
 #### Scenario: Rotation grace
 
