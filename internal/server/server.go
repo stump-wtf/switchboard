@@ -152,6 +152,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	mtr := metrics.New(metrics.Options{Log: log})
 	st.SetMetrics(mtr)
 	ing.SetMetrics(mtr)
+	mtr.RegisterQueueStats(st) // REQ-2 queue-liveness gauges, computed at scrape time
 
 	r := newRouter(routerDeps{
 		st:    st,
