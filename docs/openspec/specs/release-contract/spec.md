@@ -11,9 +11,9 @@ related: [SPEC-0023]
 ## Overview
 
 Switchboard reports one build-stamped version on every surface that a human or an agent touches.
-Each release ships a human-written CHANGELOG section. Each breaking change ships an upgrade note
-and a startup warning for any configuration it retired. The docs say which release they describe,
-and mark what is not released yet. See
+Each release ships a human-written CHANGELOG section. Each breaking change ships an upgrade note.
+Until 1.0, superseded surfaces are removed outright, with no deprecation window or transition
+warning. The docs say which release they describe, and mark what is not released yet. See
 [ADR-0032](../../../adrs/ADR-0032-release-version-reporting-and-upgrade-contract.md).
 
 This spec also defines the `v0.3.0` release as the first release under the contract. It is the
@@ -240,24 +240,35 @@ the PR also changes `docs/guides/15-upgrading.md` and adds a `### Breaking` CHAN
 - **THEN** the `upgrade-note` check requires an `upgrading.md` section, which names the migration
   and gives the backup command
 
-### REQ-11: Retired Configuration Warnings
+### REQ-11: Superseded Surfaces Are Removed Outright
 
-The server MUST hold a table of retired environment variables, each with the version that retired
-it and the URL of its upgrade note. At startup, for each retired variable that is set (non-empty),
-it MUST log one `WARN` with the variable's name (never its value), the retiring version, and the
-URL. It MUST keep starting.
+Until `v1.0.0`, a change that supersedes one of Switchboard's own surfaces (an environment variable,
+an instance setting, an MCP verb, field or error code, an API route, or a CLI command or flag) MUST
+remove the superseded surface in the same change. It MUST NOT add a deprecation window, a
+transition or retired-variable warning, an alias, a dual code path or any other back-compat shim for
+it. The removal is breaking under REQ-10, so its `### Breaking` entry and upgrade note MUST name the
+removed surface and its replacement.
 
-The table MUST initially contain `SWITCHBOARD_GITHUB_SECRET`, `SWITCHBOARD_GITEA_SECRET`,
+A retired environment variable MUST simply no longer be read. The server MUST NOT keep a table of
+retired variables or log about them. Migrating existing data to the new shape is not a shim and is
+unaffected by this requirement.
+
+The `v0.3.0` upgrade note MUST name `SWITCHBOARD_GITHUB_SECRET`, `SWITCHBOARD_GITEA_SECRET`,
 `SWITCHBOARD_STRIPE_SECRET`, `SWITCHBOARD_SLACK_SECRET` and
-`SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`, all retired in `v0.3.0` (#291). Every breaking PR that
-retires a variable MUST add it to the table.
+`SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`, all retired by #291.
 
 #### Scenario: Old secret still set
 
 - **GIVEN** `SWITCHBOARD_GITEA_SECRET` is set in the environment of a `v0.3.0` server
 - **WHEN** the server starts
-- **THEN** one `WARN` names `SWITCHBOARD_GITEA_SECRET`, `v0.3.0` and the upgrade-guide URL, the
-  secret's value appears nowhere in the logs, and the server starts
+- **THEN** it starts normally, does not read the variable, and the `v0.3.0` upgrade note names the
+  variable and the `create_webhook` replacement
+
+#### Scenario: Renamed verb ships without an alias
+
+- **WHEN** a PR renames an MCP verb
+- **THEN** the old name is gone from `tools/list` in the same PR, and the PR carries a
+  `### Breaking` entry and an upgrade-note section naming both names
 
 ### REQ-12: Release-Honest Docs
 
@@ -326,8 +337,8 @@ A release MUST be cut within 48 hours of merging any `sec` change, and SHOULD be
 
 A failure to read build info MUST fall back as REQ-1 describes, and MUST NOT fail startup. A
 release-check failure MUST be logged at debug level with the error wrapped, and MUST NOT change
-any output (REQ-4). Retired-variable warnings MUST NOT log values. Nothing in this spec may fail a
-request because version information is unavailable.
+any output (REQ-4). Nothing in this spec may fail a request because version information is
+unavailable.
 
 #### Scenario: Release check times out
 

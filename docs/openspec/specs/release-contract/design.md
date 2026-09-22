@@ -26,7 +26,8 @@ contract. Governing spec: SPEC-0027.
 
 - One stamped version, visible on every surface.
 - A breaking change cannot merge without its upgrade note.
-- Retired configuration warns instead of being ignored.
+- Until 1.0, superseded surfaces are removed outright and named in the upgrade note; nothing warns
+  at runtime.
 - Docs readers know what is released.
 - `v0.3.0` ships under the contract.
 
@@ -98,26 +99,19 @@ the version after a space keeps both working. JSON is for `doctor` and humans.
 job reads the PR title in the calling workflow and passes it down as an input, rather than reading
 `github.event` inside a callee.
 
-### Retired variables are a table, not scattered checks
+### No retired-variable table; the upgrade note is the notice
 
-**Choice**: `internal/config/retired.go`:
+**Choice**: a retired environment variable, setting, verb or route is deleted in the PR that
+supersedes it. There is no `internal/config/retired.go`, no startup warning and no alias. The
+`upgrade-note` job's checklist asks the author to name every removed surface and its replacement.
 
-```go
-type Retired struct{ Name, Since, Note string }
-var retired = []Retired{
-    {"SWITCHBOARD_GITHUB_SECRET", "v0.3.0", "https://switchboard.stump.wtf/docs/guides/15-upgrading#v030"},
-    {"SWITCHBOARD_GITEA_SECRET", "v0.3.0", "…#v030"},
-    {"SWITCHBOARD_STRIPE_SECRET", "v0.3.0", "…#v030"},
-    {"SWITCHBOARD_SLACK_SECRET", "v0.3.0", "…#v030"},
-    {"SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID", "v0.3.0", "…#v030"},
-}
-```
+**Rationale**: Joe, 2026-09-22: "pre-1.0 … Just nuke it." A warning table is a back-compat surface
+that grows with every removal and has to be maintained until someone decides it may shrink. The
+upgrade note already has to exist (REQ-10), so it carries the same information at no runtime cost.
 
-`FromEnv` walks it, and `serve` logs the warnings after the logger is configured.
-
-**Rationale**: one table means one place for a breaking PR to add to. The `upgrade-note` job's
-checklist tells the author to do so. Names only, never values, because these variables held
-secrets.
+**Alternatives considered**:
+- A retired-variable table with one startup `WARN` per variable still set: the earlier draft of this
+  design, rejected by the decision above.
 
 ### Docs banner and `:::unreleased`
 
@@ -162,7 +156,6 @@ flowchart TD
   bi --> srv[internal/server: /healthz]
   bi --> met[internal/metrics: switchboard_build_info]
   bi --> cli[cmd/switchboard: version/status/doctor]
-  cfg[internal/config/retired.go] --> warn[startup WARN per retired var]
   rc[release check, opt-in] --> mcp & web & cli
   subgraph ci [Gitea CI]
     cc[changelog job] --> req[(required checks)]
@@ -190,13 +183,15 @@ Todos routed to you arrive as <channel source="switchboard"> doorbell events …
 ### Breaking: environment-seeded receivers removed (#291)
 **Who is affected:** any deployment that set SWITCHBOARD_{GITHUB,GITEA,STRIPE,SLACK}_SECRET or
 SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID, or that delivers to POST /webhooks/<provider>.
-**What happens if you do nothing:** those variables are ignored (v0.3.0 logs a WARN for each), and
-deliveries to /webhooks/<provider> return 404.
+**What happens if you do nothing:** those variables are ignored, with no warning, and deliveries
+to /webhooks/<provider> return 404.
 **Back up first:** migration 0021_drop_adapters drops the adapters table and cannot be reversed.
   pg_dump --format=custom --file=switchboard-pre-v0.3.0.dump "$SWITCHBOARD_DATABASE_URL"
 **Steps:** for each sender, have the owning agent call create_webhook (or use the vend wizard),
 paste the returned ingest_url and signing_secret into the sender, then remove the old variables.
-**Verify:** send a test delivery; list_todos shows it; the startup log has no retired-variable WARN.
+**Verify:** send a test delivery; list_todos shows it;
+  env | cut -d= -f1 | grep -E '^SWITCHBOARD_((GITHUB|GITEA|STRIPE|SLACK)_SECRET|LEGACY_RECEIVER_ENDPOINT_ID)$'
+prints nothing.
 ```
 
 ## Risks / Trade-offs
@@ -217,21 +212,21 @@ paste the returned ingest_url and signing_secret into the sender, then remove th
 
 1. `internal/buildinfo`, the stamps and the assertion script (smallest change, fixes MCP at once).
 2. Surfaces: `/healthz`, the footer, the instructions line, the CLI and the metric.
-3. The retired-variable warnings.
-4. CHANGELOG back-fill, and the `changelog` and `upgrade-note` CI jobs made required.
-5. Docs banner, `:::unreleased`, and the PR-time docs build (closes #245).
-6. Cut `v0.3.0`: move `[Unreleased]`, write the upgrade section, tag, and verify every surface
+3. CHANGELOG back-fill, and the `changelog` and `upgrade-note` CI jobs made required.
+4. Docs banner, `:::unreleased`, and the PR-time docs build (closes #245).
+5. Cut `v0.3.0`: move `[Unreleased]`, write the upgrade section, tag, and verify every surface
    reports `v0.3.0`.
-7. The staleness warning and the opt-in release check.
+6. The staleness warning and the opt-in release check.
 
-Steps 1 to 4 are prerequisites of `v0.3.0` only in the sense that `v0.3.0` should be the first
+Steps 1 to 3 are prerequisites of `v0.3.0` only in the sense that `v0.3.0` should be the first
 release that reports itself correctly. If a security fix needs a release first, cut it with the
 CHANGELOG and upgrade note written by hand, and let the contract catch up.
 
 ## Open Questions
 
-- **Should the release check default to on?** It is proposed off (ADR-0032, option D). Joe's call:
-  on would reach every self-hoster, and off respects strict-egress operators.
+- **Should the release check default to on?** It is proposed off (ADR-0032, option D), which matches
+  Joe's 2026-09-22 guidance that risky options are configurable and off by default: on would reach
+  every self-hoster, and off respects strict-egress operators.
 - **Should `/healthz` include the version by default?** It is proposed yes, with
   `SWITCHBOARD_HIDE_VERSION` as the opt-out. The alternative is opt-in exposure, with the version
   only on authenticated surfaces.

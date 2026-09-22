@@ -49,8 +49,10 @@ path written down before anyone needs it?**
 * **A human and an agent can both tell what they are talking to.** A human needs the web UI,
   `/healthz` and the CLI. An agent needs `serverInfo` and the session instructions.
 * **Breaking changes are announced where an upgrader will look**, before they upgrade: the
-  CHANGELOG, an upgrade guide, and loud startup warnings for configuration that stopped doing
-  anything.
+  CHANGELOG and an upgrade guide.
+* **Pre-1.0, superseded surfaces are removed, not deprecated** (Joe, 2026-09-22: "pre-1.0 … Just
+  nuke it."). No deprecation window, transition warning, alias, dual path or back-compat shim for
+  Switchboard's own surfaces. The upgrade note is the notice.
 * **Docs are honest about what is released.** Readers are on releases, and docs are built from
   `main`.
 * **No phoning home by default.** Switchboard is multi-tenant and self-hosted. An instance must not
@@ -64,7 +66,7 @@ path written down before anyone needs it?**
 * **(A) Hotfix only.** Replace the hardcoded literal with `main.version`, and do nothing else.
 * **(B) A release contract.** A single `internal/buildinfo` package, stamped by ldflags and read by
   every surface. Add a CHANGELOG discipline enforced in CI, mandatory upgrade notes for breaking
-  changes, startup warnings for ignored configuration, release-honest docs, and an offline
+  changes (with superseded surfaces removed outright), release-honest docs, and an offline
   staleness warning in the session instructions, with an opt-in release check. *(chosen)*
 * **(C) Versioned docs plus a release train.** Docusaurus versioned docs per minor release, and a
   fixed release cadence.
@@ -120,7 +122,7 @@ they are authenticated.
 * Releasing moves `[Unreleased]` to `## [vX.Y.Z] - date`. goreleaser's release notes are taken from
   that section, not generated from commit subjects.
 
-### 4. Breaking changes carry an upgrade note, and a startup warning
+### 4. Breaking changes carry an upgrade note; superseded surfaces are removed outright
 
 * A **breaking change** is any `!` commit, any removal or rename of configuration, of an MCP verb,
   field or error code, or of an API route, any change to a default that alters behaviour, or any
@@ -132,10 +134,17 @@ they are authenticated.
   CI enforces this for `!` titles and for new migrations containing `DROP` or `DELETE`.
 * An **irreversible migration** is named in the upgrade note, with a "back up first" instruction
   and the exact `pg_dump` command.
-* **Ignored configuration is loud.** The server keeps a table of retired environment variables,
-  each with the version that retired it and a link to its upgrade note. At startup it logs one
-  `WARN` per retired variable that is still set. The first entries are the four #291 secrets and
-  `SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`.
+* **Superseded surfaces are removed outright, not deprecated.** Until 1.0, a PR that supersedes one
+  of Switchboard's own surfaces (an environment variable, a setting, an MCP verb, field or error
+  code, an API route, a CLI command or flag) deletes the old one in the same PR. It adds no
+  deprecation window, no transition or retired-variable warning, no alias and no dual path. The
+  `### Breaking` entry and the upgrade note are the notice, and CI enforces them. A retired
+  environment variable is simply no longer read; the upgrade note names it and its replacement.
+  Migrating existing *data* to the new shape (backfilling rows, moving webhooks to a new state) is
+  not deprecation, and stays.
+* **What #291 got wrong was the silence, not the removal.** The four `SWITCHBOARD_*_SECRET`
+  variables and `SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID` stay unread. The `v0.3.0` upgrade note
+  names each of them, and that is the fix.
 
 ### 5. The docs say which release they describe
 
@@ -170,8 +179,9 @@ they are authenticated.
 
 * Good, because "which version am I on?" is answerable from every surface a human or an agent
   touches. The skew the customer hit becomes a line in the session instructions.
-* Good, because the next breaking change cannot ship silently: CI blocks it until the note exists,
-  and a stale environment variable warns at boot.
+* Good, because the next breaking change cannot ship silently: CI blocks it until the note exists.
+* Good, because the codebase carries no shims for its own removals, so pre-1.0 churn does not
+  accumulate as warning tables, aliases and dual paths.
 * Good, because docs readers know what they can use today, without us maintaining versioned docs.
 * Good, because the release notes become the CHANGELOG section, written by people, instead of a
   dump of commit subjects.
@@ -183,6 +193,9 @@ they are authenticated.
   exact answer where the operator allows it.
 * Bad, because the version is public on `/healthz` by default. See §2 for the rationale and the
   opt-out.
+* Bad, because a retired environment variable left set is ignored without a runtime warning. This
+  is accepted pre-1.0: the upgrade note names every retired variable, and `switchboard version` and
+  the session instructions make it obvious which release, and so which upgrade notes, apply.
 * Neutral: stamping `Commit` and `Date` makes builds depend on the VCS state. goreleaser's
   `{{.CommitDate}}` keeps release builds reproducible.
 
@@ -190,8 +203,9 @@ they are authenticated.
 
 * A release build reports its tag in `switchboard version`, `/healthz`, MCP `serverInfo.version`,
   and the footer. The release workflow asserts the first three.
-* A server started with `SWITCHBOARD_GITHUB_SECRET` set logs a `WARN` naming it, the retiring
-  version, and the upgrade-guide URL.
+* The codebase holds no retired-variable table and no deprecation warning. A server started with
+  `SWITCHBOARD_GITHUB_SECRET` set starts normally and does not read it. The `v0.3.0` upgrade note
+  names it.
 * A PR titled `feat: …` that does not touch `CHANGELOG.md` fails the `changelog` check. A PR titled
   `sec!: …` without an `upgrading.md` section fails the `upgrade-note` check.
 * A tagged docs build with a leftover `:::unreleased` fails.
