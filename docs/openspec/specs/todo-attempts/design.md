@@ -463,7 +463,9 @@ erDiagram
 1. Ship the migration and store changes, with attempts written but only exposed by `get_todo`.
 2. Ship the MCP arguments and response fields, which are additive and optional.
 3. Ship the Board drawer and the metric.
-4. Harness SPEC-0019 detects the new schema fields and starts using the fence and summaries.
+4. Harness SPEC-0019 (relay) uses the fence and summaries from its first release. It requires a
+   Switchboard release that includes this spec and refuses to relay against an older one
+   (stump.wtf/harness#435); nothing here detects Harness, and Harness keeps no fallback path.
 
 Rollback: the new columns and table are ignored by older binaries. Dropping them is a follow-up
 migration, and it loses only history.

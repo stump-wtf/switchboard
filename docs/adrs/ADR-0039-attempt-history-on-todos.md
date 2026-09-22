@@ -114,7 +114,7 @@ Tenancy is not a column on the row. An attempt is reachable only through its tod
 
 ### How it composes with Harness and Cairn
 
-* **Harness ADR-0025 / SPEC-0019** (in flight) is the first consumer. It claims with `require_fence` and a `claimant` label, heartbeats and reports with the token, and writes `prior_attempts` into the next attempt's context file. Harness sends the new arguments only when a verb's input schema declares them, so an old server and a new Harness still work together.
+* **Harness ADR-0025 / SPEC-0019** (in flight) is the first consumer. It claims with `require_fence` and a `claimant` label, heartbeats and reports with the token, and writes `prior_attempts` into the next attempt's context file. Harness's relay requires a Switchboard that has attempt history and refuses to run against one that does not (stump.wtf/harness#435). There is no detection or fallback path, per Joe's pre-1.0 "no compat shims" rule; the release that ships this spec is Harness relay's minimum.
 * **Cairn** holds the long form. An attempt's `artifact` is typically a Cairn receipt (Cairn ADR-0027 / SPEC-0021, in flight) or a trace. Switchboard stores the handle, and Cairn's own tenancy (Cairn ADR-0029, in flight) governs who can open it.
 * **Notifications.** When a todo dead-letters, the notification sinks (ADR-0034 / SPEC-0029, in flight) receive the final attempt's outcome, summary and artifact, and the attempt count, so the human is told *what was tried* in the notification itself.
 * **Notify hooks** (ADR-0029 / SPEC-0024, in flight). A retry re-queued after a failed attempt must wake a hook consumer, or a relay on the webhook path stalls until its safety-net schedule. SPEC-0034 names this as an interface requirement on SPEC-0024.
