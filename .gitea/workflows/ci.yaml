@@ -8,12 +8,27 @@
 # finds the service container via the socket act mounts into every job and points the DSN at
 # its bridge IP. It tries the alias first, so the day the runner moves to user-defined
 # networks the discovery becomes a no-op.
+#
+# On push to main (and on a manual dispatch) this workflow also builds, scans and pushes the
+# container image and then deploys it to cloud01 — the `image` and `deploy` jobs at the bottom,
+# moved here from the retired build.yaml. `image` has `needs: [lint, ci]`, so nothing is pushed
+# :latest and nothing is deployed until the lint and test gate above has passed for the SAME
+# commit. On a pull_request both jobs report as skipped; the required PR checks are unchanged.
+#
+# @joestump 09/22/2026 - Folded build.yaml's image + deploy jobs into this workflow behind
+#   `needs: [lint, ci]`. They used to live in a separate workflow that nothing made wait for this
+#   one, so a merge that turned main red still pushed :latest and deployed to cloud01, in parallel
+#   with the failing CI. `needs:` only works between jobs of one workflow on Gitea, so the jobs
+#   moved rather than the tests being duplicated or made reusable (workflow_call callees lose the
+#   event context). workflow_dispatch moved with them, so a manual rebuild still works and now
+#   runs the gate first.
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -133,3 +148,172 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -race ./internal/store/... ./internal/db/... ./internal/ingest/... ./internal/mcp/... ./internal/metrics/...
+
+  # Gitea Actions: build + scan + push the switchboard container image to
+  # gitea.stump.rocks/stump.wtf/switchboard — the image lives under the stump.wtf org, alongside the
+  # repo (origin of truth gitea.stump.rocks/stump.wtf; github.com/stump-wtf mirror). On every push to
+  # main (once REGISTRY_TOKEN is set):
+  #   - docker build (amd64) from deploy/docker/Dockerfile
+  #   - Trivy scan (fail-closed on HIGH/CRITICAL with a fix)
+  #   - push :latest, :main, :sha-<short>
+  # StumpCloud's Ansible pulls :latest with `pull: always`, so a redeploy of the switchboard service
+  # picks up HEAD. A warning lived here saying the consumer still pulled the RETIRED
+  # joestump/switchboard:latest and had to be repointed in lockstep. That is no longer true — the
+  # deployment pulls the stump.wtf ref this workflow pushes — so the warning is removed rather than
+  # left to mislead. A comment asserting a coupling that no longer exists is worse than no comment:
+  # it survives long after anyone can remember whether it was ever checked.
+  #
+  # Registry auth: on Gitea < 1.26 the automatic per-run token (gitea.token) is REJECTED by the
+  # container registry even with `permissions: packages: write` — VERIFIED: it returns
+  # `Get "https://gitea.stump.rocks/v2/": unauthorized` (401) at docker login. Package-scoped Actions
+  # tokens landed in Gitea 1.26; until this instance is on >= 1.26, a real PAT with write:package scope
+  # is required. Set a purpose-scoped `REGISTRY_TOKEN` repo secret — a joestump-agent token (joestump-agent
+  # is an Owner of the stump.wtf org, so it can push to stump.wtf packages). Until it's set, every step
+  # below skips and the workflow stays green; the first push after the secret lands builds + publishes.
+  # Modeled on reduit.
+  #
+  # ONCE THIS GITEA IS >= 1.26: drop REGISTRY_TOKEN entirely and log in with the free automatic token —
+  #   username: ${{ gitea.actor }}
+  #   password: ${{ gitea.token }}
+  # (the `permissions: packages: write` block below then grants it push to the stump.wtf org packages).
+  image:
+    name: build + scan + push
+    # The gate. `needs` makes this job wait for lint + ci in this same run, i.e. for this same
+    # commit. `success()` is what Gitea would add implicitly to an `if:` with no status function;
+    # it is spelled out because it is the whole point of this job's position in the graph — if
+    # lint or ci fails, this job is skipped, and deploy (needs: [image]) is skipped with it.
+    # pull_request runs never build or push: the image and deploy jobs show as skipped there.
+    needs: [lint, ci]
+    if: ${{ success() && (gitea.event_name == 'workflow_dispatch' || (gitea.event_name == 'push' && gitea.ref == 'refs/heads/main')) }}
+    # Carried over from build.yaml's workflow-level block (this workflow grants contents: read
+    # only). Job-level so pull_request runs of lint/ci do not gain packages: write.
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    env:
+      # Step-level `if: env.REG != ''` gates the whole job on the secret (secrets can't be used in
+      # `if` directly). No token → all steps skip → job is green.
+      REG: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - if: ${{ env.REG != '' }}
+        uses: actions/checkout@v4
+
+      - if: ${{ env.REG != '' }}
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - if: ${{ env.REG != '' }}
+        name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: gitea.stump.rocks/stump.wtf/switchboard
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+
+      - if: ${{ env.REG != '' }}
+        name: Log in to Gitea container registry
+        uses: docker/login-action@v3
+        with:
+          registry: gitea.stump.rocks
+          username: joestump-agent
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - if: ${{ env.REG != '' }}
+        name: Build amd64 image for Trivy scan
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: gitea.stump.rocks/stump.wtf/switchboard:scan-${{ gitea.run_id }}
+          build-args: |
+            VERSION=${{ gitea.sha }}
+          cache-from: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache
+
+      - if: ${{ env.REG != '' }}
+        name: Trivy image scan
+        uses: docker://aquasec/trivy:latest
+        with:
+          args: image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 --format table gitea.stump.rocks/stump.wtf/switchboard:scan-${{ gitea.run_id }}
+
+      - if: ${{ env.REG != '' }}
+        name: Build and push (amd64)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ gitea.sha }}
+          cache-from: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache
+          cache-to: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache,mode=max
+
+  # On-merge deploy to cloud01 via Ansible. Governing: ADR-0045 (on-merge CI deploy for owned
+  # services). Runs only after the image is pushed :latest (needs: [image]), gated on
+  # vars.DEPLOY_ON_MERGE. playbooks/services/switchboard.yaml is pre-converge aware: on cloud01
+  # (host_docker_enabled false) it converges the git-templated edge stack, then pulls and
+  # restarts the switchboard + docs containers inside it; after the ADR-0044 flip the same
+  # playbook deploys via the service role with no change here.
+  deploy:
+    name: deploy to cloud01 (ansible)
+    needs: [image]
+    if: ${{ vars.DEPLOY_ON_MERGE == 'true' && gitea.event_name == 'push' && gitea.ref == 'refs/heads/main' }}
+    # Same token scope this job had in build.yaml; narrowing it is a separate change.
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    env:
+      ANSIBLE_FORCE_COLOR: 'true'
+      DOCKER_TIMEOUT: 600
+      # AppRole rather than a static token. A static VAULT_TOKEN in a repo secret
+      # cannot re-authenticate: it dies at max-TTL and takes every subsequent
+      # deploy with it, silently — the 2026-07-01 vault-agent OMG, repeated in CI.
+      # The runner logs in per run and exports a short-lived token scoped to
+      # secret/data/cloud01/* only (policy deploy-cloud01). Requires
+      # ansible-runner >= v2.
+      VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
+      VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+    steps:
+      # No token: stumpcloud/ansible is a public repo, and this repo has no
+      # GIT_AUTH_TOKEN secret — the first on-merge deploy failed right here
+      # because an empty token is worse than none (run 3642).
+      - name: Checkout stumpcloud/ansible (playbooks + inventory)
+        uses: actions/checkout@v4
+        with:
+          repository: stumpcloud/ansible
+          ref: main
+      # NOTE: no job-level ssh-agent step. One used to sit here and it was a
+      # no-op that *looked* load-bearing: the agent's socket lives in the job
+      # container, ansible-playbook runs inside the ansible-runner action
+      # container, and the two never meet. The key that actually reaches
+      # ansible is the ssh_private_key input below, which ansible-runner
+      # v2.1.0+ installs inside its own container (earlier versions silently
+      # dropped the undeclared input — cairn's deploy job spent its whole
+      # life red on "Permission denied (publickey)" because of it).
+      # REGISTRY_TOKEN, not GIT_AUTH_TOKEN: it is the registry-scoped
+      # joestump-agent PAT this repo already holds for the image job above.
+      - name: Log in to Gitea (pull the ansible-runner action image)
+        uses: docker/login-action@v3
+        with:
+          registry: gitea.stump.rocks
+          username: joestump-agent
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Deploy Switchboard to cloud01
+        # v2.1.0 exactly: the first release where ssh_private_key is a real,
+        # delivered input. @v2 was not moved forward to it, so do not "tidy"
+        # this back to the major alias without checking what v2 points at.
+        uses: https://gitea.stump.rocks/stumpcloud/ansible-runner@v2.1.1
+        with:
+          playbook: playbooks/services/switchboard.yaml
+          inventory: gva.yaml
+          ssh_hosts: cloud01.stump.rocks
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
