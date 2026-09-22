@@ -91,7 +91,11 @@ state a human would have to manage inside Switchboard.
 The credential half of a sink is a row in ADR-0033's connection vault (kinds `gotify` and `apprise`),
 so it inherits that vault's rules: owner-scoped, envelope-encrypted, refused when no encryption key is
 configured, write-only, fingerprinted, testable. Sinks are managed by the owning human, or by a team's
-admins, in the web UI and operator API. **There is no MCP verb that creates, edits or reads a sink.**
+admins, in the web UI and operator API. An owner **may also grant an endpoint the `notifications` verb
+family** (`list_sinks`, `set_sink`, `delete_sink`, `test_sink`, `set_sink_subscriptions`), which is
+**off by default**: in no default or basics grant, and flagged on the consent screen because its holder
+can redirect or silence the owner's alerts. The verbs reference existing connections only and never
+read a secret.
 
 **Events.** An owner subscribes a sink to event types, optionally filtered by queue, endpoint or webhook
 and by severity:
@@ -117,7 +121,10 @@ sink.
 **Content.** A notification carries a title, a one-line summary, the queue, the cause, a link to the
 todo or event on the board, and the origin's display string or permalink (ADR-0033's address). A dead
 letter also carries the attempt count and the closing attempt's summary and artifact handle, which
-ADR-0039's attempt history hands to this hook. It never carries a payload. The todo title and the
+ADR-0039's attempt history hands to this hook. By default it never carries payload text. A
+subscription can opt in with `include_excerpt: true` (off by default) to add up to 280 characters of
+the subject's body, truncated, stripped of control characters and labelled as sender-written, for an
+owner who accepts that text leaving for a third-party notification service. The todo title and the
 attempt summary are sender- or agent-written, so they are truncated, stripped of control characters and
 labelled as what they are.
 
@@ -148,9 +155,13 @@ every count that signals trouble is zero.
 **Not in scope, deliberately.**
 
 * No human-assignee state, no human queue kind, no acknowledge or snooze inside Switchboard.
-* No agent verb that pages a human. An agent that is stuck `fail`s the todo, or replies to the origin
-  (ADR-0033). An `escalate` verb was considered and deferred: an injected agent could page a person at
-  will, and the budget alone is a thin defence.
+* **Agent paging is opt-in, not refused.** An agent that is stuck normally `fail`s the todo, or replies
+  to the origin (ADR-0033). An owner may grant `notify_owner {title, severity?, todo_id?}`, which
+  enqueues an `agent.notify` event to the owner's subscribed sinks. It is in no default or basics
+  grant, because an injected agent holding it could page a person at will. It is fire-and-forget,
+  with no acknowledgement or state, so it stays a notification and not a ticket. It is capped at 5 per
+  hour per endpoint inside the sink budget, and its text is agent-written and truncated like any
+  title.
 * **Claude Code permission relay** (`claude/channel/permission`), which would let a headless session's
   approval prompt reach a phone. It needs an authenticated reply path from the human back into a live
   session, and Claude Code's reference is explicit that anyone who can answer through the channel can
@@ -186,7 +197,10 @@ every count that signals trouble is zero.
   instance setting that bounds reach and routes nothing (ADR-0038's rule for operator config).
 * Stateless Apprise URLs are secrets. Stored URLs are limited to an instance allowlist of Apprise
   schemes, which excludes the generic HTTP schemes and local-system schemes by default.
-* Content never includes payloads; sender-controlled strings are truncated and neutralized.
+* Content includes no payload text unless a subscription opts in with `include_excerpt` (off by
+  default, 280 characters at most); sender-controlled strings are always truncated and neutralized.
+* The `notifications` verbs and `notify_owner` are off by default and owner-granted; an endpoint
+  holding them acts only in its own owner scope.
 
 ### Composition with Harness and Cairn
 
@@ -202,7 +216,10 @@ every count that signals trouble is zero.
 ### Confirmation
 
 * A todo that dead-letters on a queue with a subscribed Gotify sink produces exactly one Gotify message
-  carrying the queue, the cause and a board link, and no payload field.
+  carrying the queue, the cause and a board link, and no payload text unless its subscription set
+  `include_excerpt`.
+* An endpoint with a default grant calling `list_sinks` or `notify_owner` is refused, and nothing is
+  enqueued.
 * A dead letter on human B's endpoint, from human A's routed webhook, notifies B's sinks and not A's.
 * A rule whose `notify` names another owner's sink is refused at save time.
 * Fifty dead letters in a minute on one sink produce at most the burst plus one coalesced message.

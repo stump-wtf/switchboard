@@ -37,7 +37,6 @@ matches and queue health through Gotify and Apprise. What it builds on:
 - Rich per-service formatting. Messages are plain text; Apprise renders per service.
 - Operator alerting. Operators use ADR-0028 metrics and Alertmanager.
 - Claude Code permission relay (ADR-0034, future work).
-- An agent verb that pages a human (deferred in ADR-0034).
 
 ## Decisions
 
@@ -103,6 +102,18 @@ allowlist enforced on the second.
 **Rationale**: with a key, service tokens never reach Switchboard, and the Apprise server's own
 `APPRISE_ALLOW_SERVICES` governs what it may call.
 
+### Agent verbs exist, and are off until an owner grants them
+
+**Choice**: `NotificationVerbs() = ["list_sinks", "set_sink", "delete_sink", "test_sink",
+"set_sink_subscriptions", "notify_owner"]`, included in `AllVerbs()` so the vend wizard, quick vend and
+consent screen enumerate them (unchecked), and excluded from the basics vend's `BasicVerbs()`, the same
+helper SPEC-0028 introduces for `reply` and the connection verbs. The MCP handlers call the same
+service functions as the operator API, so the SSRF, scheme, ceiling and budget checks cannot drift.
+
+**Rationale**: Joe, 2026-09-22: risky options are fine when they are configurable and off by default.
+An agent that can redirect or silence alerts, or page a person, holds a real power, so the owner grants
+it deliberately; refusing it outright only pushed agent-driven setups back to a human.
+
 ## Schema
 
 The migration number is the next free one when the story lands.
@@ -133,7 +144,8 @@ CREATE TABLE notification_subscriptions (
     queues        text[] NOT NULL DEFAULT '{}',
     endpoint_ids  uuid[] NOT NULL DEFAULT '{}',
     webhook_ids   uuid[] NOT NULL DEFAULT '{}',
-    min_severity  text NOT NULL DEFAULT 'low'
+    min_severity  text NOT NULL DEFAULT 'low',
+    include_excerpt boolean NOT NULL DEFAULT false   -- opt-in: up to 280 chars of the subject body
 );
 
 CREATE TABLE notification_outbox (
@@ -144,7 +156,7 @@ CREATE TABLE notification_outbox (
     severity       text NOT NULL,
     dedup_key      text NOT NULL,
     count          int  NOT NULL DEFAULT 1,
-    subject        jsonb NOT NULL,   -- todo id, queue, cause, title (truncated), links; never payload
+    subject        jsonb NOT NULL,   -- todo id, queue, cause, title (truncated), links; payload text only as the opt-in excerpt
     state          text NOT NULL DEFAULT 'pending',  -- pending|sent|undeliverable|partial
     held           boolean NOT NULL DEFAULT false,
     attempts       int  NOT NULL DEFAULT 0,
@@ -223,6 +235,10 @@ PATCH|DELETE      /api/v1/digests/{id}
 POST              /api/v1/digests/{id}/preview      -> the digest text, not sent
 GET               /api/v1/notifications?state=undeliverable
 ```
+
+MCP (off by default, REQ-5 and REQ-6): `list_sinks`, `set_sink {name, kind, connection, options,
+enabled}`, `delete_sink {name}`, `test_sink {name}`, `set_sink_subscriptions {sink, subscriptions}`
+(a full replace, argument required) and `notify_owner {title, severity?, todo_id?}`.
 
 The web UI mirrors these under **Settings → Notifications**, and on a team's settings page once
 SPEC-0033 adds one. Digest preview is how an owner checks honest absence before scheduling.

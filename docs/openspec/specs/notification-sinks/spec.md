@@ -50,10 +50,12 @@ operator-configurable ceiling).
 
 Per-kind connection and options:
 
-* `gotify`: connection account key is the server's HTTPS base URL; the secret is the application
+* `gotify`: connection account key is the server's HTTPS base URL (HTTP only under the operator's
+  existing `SWITCHBOARD_PUSH_ALLOW_HTTP` opt-in); the secret is the application
   token. Options: a priority map from severity (`low`, `normal`, `high`) to Gotify priority, default
   `2`, `5`, `8`.
-* `apprise`: connection account key is the Apprise API base URL. Exactly one of: a configuration key
+* `apprise`: connection account key is the Apprise API base URL (HTTPS, with the same HTTP opt-in).
+  Exactly one of: a configuration key
   (option `config_key`, not secret) or a list of Apprise URLs (the connection's secret). Options: an
   optional `tag`, and a type map from severity to Apprise type, default `info`, `warning`, `failure`.
   An optional authorization header value MAY be stored in the secret for an Apprise API behind an
@@ -109,9 +111,18 @@ URL.
 
 ### REQ-5: Sink Management
 
-Sinks MUST be managed only by humans, through the web UI and the operator API: a human manages their
-own; for a team, only roles SPEC-0033 allows to configure the team. There MUST be no MCP verb that
-creates, edits, deletes, lists or reads a sink.
+Sinks MUST be manageable by humans, through the web UI and the operator API: a human manages their
+own; for a team, only roles SPEC-0033 allows to configure the team.
+
+Sinks MAY also be managed over MCP through a `notifications` verb family: `list_sinks`, `set_sink`,
+`delete_sink`, `test_sink` and `set_sink_subscriptions`. The family MUST be off by default: it MUST NOT
+be in any default grant or the operator API's basics vend, the vend wizard, quick vend and consent
+screen MUST list it unchecked, and the consent screen MUST warn that the holder can redirect or
+silence the owner's alerts. A granted endpoint MUST act only within its owner scope, with the
+permissions this requirement gives that owner. The verbs MUST reference only existing connections in
+that scope, MUST NOT create a connection or read a secret, and MUST pass the same SSRF, scheme,
+ceiling and budget checks as the human surfaces. Every write MUST record the acting endpoint and its
+accountable human.
 
 The surface MUST offer create, list, edit, enable or disable, delete, and **send test**. Send test MUST
 deliver one message titled as a test through the sink, bypassing subscriptions and budgets but not the
@@ -128,6 +139,20 @@ MUST NOT delete delivery records.
 - **WHEN** the owner presses send test on a Gotify sink
 - **THEN** one message arrives on the Gotify server and the page reports success
 
+#### Scenario: Sink verbs are off until granted
+
+- **GIVEN** an endpoint with a default grant
+- **WHEN** it calls `list_sinks`
+- **THEN** the call fails with `forbidden` and the verb is absent from its `tools/list`
+
+#### Scenario: Granted endpoint adds a subscription
+
+- **GIVEN** an endpoint whose owner granted the `notifications` family
+- **WHEN** it calls `set_sink_subscriptions` to subscribe the owner's Gotify sink to `todo.dead_lettered`
+  on its own queue
+- **THEN** the subscription saves, records the endpoint and its human, and naming another owner's sink
+  fails with `not_found`
+
 ### REQ-6: Events and Subscriptions
 
 A subscription MUST link one sink to one or more event types, with optional filters (queues, endpoints,
@@ -139,10 +164,18 @@ webhooks, all within the sink's owner scope) and a minimum severity. Event types
 | `relay.exhausted` | as `todo.dead_lettered`, for a todo whose attempt history (SPEC-0034) records relay attempts; replaces, not adds to, `todo.dead_lettered` for that todo | high |
 | `delivery.quarantined` | a delivery is quarantined (SPEC-0026) | normal |
 | `rule.notify` | a routing rule with `notify` matches (REQ-8) | the rule's, default normal |
+| `agent.notify` | an endpoint granted `notify_owner` calls it (REQ-6) | the call's, default normal |
 | `digest` | a digest is due (REQ-12) | low |
 
 A manual re-queue of a dead letter followed by another dead letter MUST fire again. An event that no
 subscription matches MUST produce no outbox row.
+
+**`notify_owner`.** An endpoint MAY call `notify_owner {title, severity?, todo_id?}` only when
+its owner granted it. The verb MUST be off by default: in no default grant or basics vend, unchecked in
+the vend wizard, quick vend and consent screen. A call MUST enqueue one `agent.notify` event in the
+endpoint's owner scope (with `todo_id` checked against the caller's own todos), MUST NOT create any
+acknowledgement, assignment or state (REQ-1), MUST be limited to 5 per hour per endpoint inside the sink
+budget (REQ-11), and its title MUST be treated as agent-written text under REQ-9.
 
 #### Scenario: Filtered subscription
 
@@ -155,6 +188,18 @@ subscription matches MUST produce no outbox row.
 - **WHEN** a relay todo exhausts its attempts
 - **THEN** a sink subscribed to both `todo.dead_lettered` and `relay.exhausted` receives one
   `relay.exhausted` message
+
+#### Scenario: Agent paging is off by default
+
+- **GIVEN** an endpoint whose grant lacks `notify_owner`
+- **WHEN** it calls `notify_owner`
+- **THEN** the call fails with `forbidden` and no outbox row is written
+
+#### Scenario: Granted agent pages its owner
+
+- **GIVEN** an endpoint granted `notify_owner`, and a sink subscribed to `agent.notify`
+- **WHEN** the agent calls `notify_owner {title: "device QA needed on build 812"}`
+- **THEN** one message arrives, titled as agent-written, and no todo changes state
 
 ### REQ-7: Event Ownership and Tenancy
 
@@ -213,16 +258,26 @@ display string or permalink when the todo has a reply address (SPEC-0028); and, 
 artifact handle when attempt history records them (SPEC-0034 REQ-15 "Dead-Letter Context for
 Notifications"). The attempt summary is agent-written text and MUST be treated like a todo title below.
 
-A notification MUST NOT carry any payload field, header, secret, credential fingerprint, or routing rule
-expression. Sender-controlled and agent-written text (todo titles, subject titles, attempt summaries) MUST be
+A notification MUST NOT carry any header, secret, credential fingerprint, or routing rule expression. It
+MUST NOT carry payload text unless its subscription sets `include_excerpt: true`, which MUST default to
+false. With it set, a notification MAY carry up to 280 characters of the subject's body, truncated,
+stripped of control characters and labelled as sender-written. Sender-controlled and agent-written text (todo titles, subject titles, attempt summaries) MUST be
 truncated to 120 characters,
 stripped of control characters, and presented as the item's title, not as prose.
 
 #### Scenario: No payload
 
+- **GIVEN** a subscription without `include_excerpt`
 - **WHEN** a dead letter's todo payload contains an issue body
 - **THEN** the notification contains the todo title (truncated) and a board link, and no text from the
   issue body
+
+#### Scenario: Excerpt by opt-in
+
+- **GIVEN** a subscription with `include_excerpt: true`
+- **WHEN** a todo whose issue body is 2,000 characters dead-letters
+- **THEN** the message carries the body's first 280 characters, control-stripped and labelled as
+  sender-written
 
 ### REQ-10: Durable Delivery
 
@@ -384,6 +439,7 @@ owner scope, class), never with a token, Apprise URL, or message body.
 | `DELETE /api/v1/sinks/{id}` | Required | As above. |
 | `POST /api/v1/sinks/{id}/test` | Required | As above. |
 | `GET/POST/DELETE /api/v1/sinks/{id}/subscriptions` | Required | As above. |
+| MCP `notifications` verbs and `notify_owner` | Required | Vended endpoint credential with the verb in scope; off by default (REQ-5, REQ-6). |
 | `GET/POST/PATCH/DELETE /api/v1/digests` | Required | As above. |
 
 There are no public endpoints in this capability.
