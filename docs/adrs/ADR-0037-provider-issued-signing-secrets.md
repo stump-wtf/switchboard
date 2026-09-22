@@ -68,8 +68,11 @@ anything instance-wide, and which such providers should Switchboard verify nativ
   owner (#291, [ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md)).
 * **No trust downgrade.** A delivery verified with a provider-issued secret is `verified = true`
   exactly as a minted one is ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)).
-* **A vendor secret is a credential.** Stored encrypted, never returned, never logged, and entered by a
-  human where possible so it does not pass through a model's transcript.
+* **A vendor secret is a credential.** Stored encrypted, write-only (never echoed or returned),
+  redacted from every log and trace, and every write audited.
+* **Agents set it as readily as humans do** (Joe, 2026-09-22: "Agents can set them. Switchboard is
+  largely for them."). An agent that can create a provider-origin webhook must be able to finish
+  connecting it without a human step.
 * **Verify each scheme as the vendor documents it today**, including its replay window, and never trust
   an unsigned header for freshness.
 * **Dedupe on signed ids**, so a retry is one todo and an unsigned header cannot mint a second.
@@ -115,24 +118,35 @@ no secret. Deliveries to it are refused `503` with nothing persisted, which Stri
 retry, so an event sent between registering the URL and entering the secret is delivered later rather
 than lost.
 
-**Setting the secret**, write-only, three ways:
+**Setting the secret** is write-only, and every path is equal; none is preferred and none is required:
 
-1. **The web UI**, on the webhook's row on the endpoint card, by the owning human or a team admin
-   (ADR-0038, in parallel). This is the recommended path: the vendor secret never enters an agent's
-   context.
-2. **`set_webhook_secret {webhook_id, signing_secret, keep_previous_for?}`**, a new verb in the webhook
-   family, separately grantable, offered unchecked in the vend wizard, and left out of the operator
-   API's basics grant (which today grants every verb).
-3. **`create_webhook {…, signing_secret}`**, for a provider-origin type when the secret is already known.
+1. **`set_webhook_secret {webhook_id, signing_secret, keep_previous_for?}`**, a first-class verb in the
+   webhook family, **granted wherever `create_webhook` is**. The operator API's basics vend grants
+   every verb, this one included. The vend wizard, quick vend and consent screen bind it to
+   `create_webhook` instead of offering it as a separate, optional toggle. The scope guard authorizes
+   it for any grant that carries `create_webhook`, so endpoints vended before this verb existed get it
+   too, without rewriting their immutable scope (ADR-0008).
+2. **`create_webhook {…, signing_secret}`**, for a provider-origin type when the secret is already known.
    Slack's is: it exists before any Request URL, and it must be set before the URL is entered because
    the handshake is signed.
+3. **The web UI** field on the webhook's row, and `PUT /api/v1/webhooks/{id}/secret`, for a human (the
+   owning human, or a team admin under ADR-0038) who has the secret in hand.
 
 The secret is stored through the `internal/cred` envelope and **refused when no encryption key is
 configured**: unlike a minted secret, a vendor secret is the tenant's credential and not ours to keep in
-plaintext. It is never returned; results report `secret_set: true` and a fingerprint. A supplied secret
-for a minted-origin type is refused (`invalid_argument`), so no one can swap a strong minted secret for a
-weak chosen one. Per-kind format checks apply where the vendor documents one (Stripe's `whsec_`
-prefix).
+plaintext. It is never echoed or returned; results report `secret_set: true` and a fingerprint. The
+`signing_secret` argument is replaced with `«redacted»` in every log line, trace and error that would
+otherwise carry it. **Every write is audited**: one row per set, replace or overlap expiry, naming the
+webhook, the actor (endpoint or human), the path and the new and previous fingerprints, never the
+secret. Per-kind format checks apply where the vendor documents one (Stripe's `whsec_` prefix).
+
+**Supplied secrets for minted-origin types are off by default.** A caller-supplied secret for
+`github`, `gitea` or `cairn` is refused (`invalid_argument`) unless the operator sets
+`SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET=true`. The refusal keeps a strong minted secret from being
+swapped for a weak chosen one. The opt-in serves an owner adopting an existing forge webhook without
+re-pasting its secret. When it is on, a supplied secret gets the same minimum length, write-only
+encrypted storage and audit as a provider-issued one, and `list_webhooks` marks it
+`secret_supplied: true` so the choice stays visible.
 
 **Rotation with overlap.** `keep_previous_for` (at most 24 hours, Stripe's own roll window) keeps the
 old secret valid alongside the new one, so an owner can roll the vendor secret without a gap.
@@ -168,6 +182,9 @@ Plain thread subjects, and their reply addresses (ADR-0033), follow with the kin
   endpoint card and `list_webhooks` must make it obvious.
 * Bad, because Switchboard now stores tenants' vendor secrets. Mandatory encryption and write-only
   surfaces bound it; the operator, who holds the key, could still decrypt them.
+* Bad, because a secret an agent sets passes through that agent's transcript. This is accepted: the
+  secret is the tenant's to hand to its own agent, and Switchboard adds no exposure of its own, since
+  the secret is never returned, is redacted from logs, and every write is audited.
 * Bad, because Slack retries only for minutes. A Slack event sent while a webhook awaits its secret is
   likely lost; hence the rule to set Slack's secret at creation.
 * Neutral: `generic` is unchanged, and remains the path for providers with no signing scheme.
@@ -176,6 +193,8 @@ Plain thread subjects, and their reply addresses (ADR-0033), follow with the kin
 
 * A provider-issued secret belongs to the webhook, which belongs to its endpoint's owner scope. It
   cannot be read back by anyone, including its owner; replacing it is the only operation.
+* The secret-write audit trail belongs to the same owner scope. The owner (for a team, its admins)
+  reads it on the endpoint card. It holds fingerprints only, so reading it reveals nothing usable.
 * No trust downgrade: the trust mode is still derived from the source type; a provider-origin webhook
   without a secret refuses deliveries rather than accepting them unverified.
 * Freshness is checked only on signed timestamps. Linear's `Linear-Timestamp` header and Plain's
@@ -206,6 +225,13 @@ Plain thread subjects, and their reply addresses (ADR-0033), follow with the kin
 * A Plain delivery retried with a new attempt id and timestamp but the same `id` creates one todo.
 * Setting a secret with no encryption key configured is refused; no response ever contains a set
   secret.
+* An endpoint minted by the basics vend lists `set_webhook_secret` in `tools/list`. One vended in the
+  wizard with `create_webhook` checked and `stripe` allowed can connect a Stripe webhook end to end
+  with no human step.
+* Each secret write leaves exactly one audit row carrying fingerprints and no secret, and no log line
+  or trace carries the `signing_secret` value.
+* With `SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET` unset, a supplied secret for a `github` webhook is
+  `invalid_argument`; with it set to `true`, the webhook verifies deliveries signed with that secret.
 * A byte-identical Linear delivery replayed within 60 seconds under a different `Linear-Delivery`
   creates nothing.
 

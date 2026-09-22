@@ -26,8 +26,8 @@ It amends, without editing:
 * [SPEC-0020](../event-routing/spec.md) REQ "Routing Envelope": event kinds for the new sources
   (REQ-10).
 
-Priority: provider-issued secret input and the Stripe and Slack fixes (REQ-1 to REQ-9) are P1; the
-Linear and Plain kinds (REQ-10, REQ-11) are P2.
+Priority: provider-issued secret input, its audit trail and the Stripe and Slack fixes (REQ-1 to
+REQ-9, REQ-13) are P1; the Linear and Plain kinds (REQ-10, REQ-11) are P2.
 
 Terms:
 
@@ -48,12 +48,26 @@ Each signed source type MUST declare a secret origin, fixed in code:
 | `generic` | token | none |
 
 For a minted-origin type, `create_webhook` and `rotate_webhook` MUST behave exactly as SPEC-0006
-specifies today, and a caller-supplied secret MUST be refused with `invalid_argument`.
+specifies today. A caller-supplied secret for a minted-origin type MUST be refused with
+`invalid_argument` unless the operator sets `SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET=true`, which
+MUST default to `false`. When it is `true`, `create_webhook` and `set_webhook_secret` MUST accept a
+supplied secret for a minted-origin type. The secret MUST then be validated, stored, redacted and
+audited exactly as a provider-issued secret under REQ-3 and REQ-13, and `list_webhooks` MUST report
+`secret_supplied: true` for that webhook. `rotate_webhook` on such a webhook MUST mint a fresh secret as
+SPEC-0006 specifies, which clears `secret_supplied`.
 
 #### Scenario: Supplied secret for a forge
 
+- **GIVEN** `SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET` is unset
 - **WHEN** an agent calls `create_webhook {source_type: github, target_queue: forge, signing_secret: "x"}`
 - **THEN** the call fails with `invalid_argument` and no webhook is created
+
+#### Scenario: Operator allows supplied secrets for forges
+
+- **GIVEN** the operator set `SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET=true`
+- **WHEN** an agent calls `create_webhook` for `github` with a 32-byte `signing_secret`
+- **THEN** the webhook is created without echoing the secret, `list_webhooks` shows
+  `secret_supplied: true`, and a delivery signed with that secret verifies
 
 ### REQ-2: Provider-Origin Webhooks Await a Secret
 
@@ -81,16 +95,28 @@ be counted as a rejection with reason `awaiting_secret`.
 
 ### REQ-3: Supplying a Provider-Issued Secret
 
-A provider-issued secret MUST be settable, for a webhook in the caller's own scope, by:
+A provider-issued secret MUST be settable, for a webhook in the caller's own scope, by any of the
+following. No path is preferred, and none is required: an agent MUST be able to connect a
+provider-origin webhook end to end without a human step.
 
-1. the web UI, on the webhook's row, by the owning human or, for a team-owned endpoint, a role
-   SPEC-0033 (Teams and tenancy, in flight) allows to configure the team;
-2. the MCP verb `set_webhook_secret {webhook_id, signing_secret, keep_previous_for?}`, a member of the
-   webhook verb family and enforced by the scope guard. The vend wizard, quick vend and consent screen
-   MUST list it unchecked by default. The operator API's basics vend grants `AllVerbs()` verbatim today
-   (`internal/server/api.go`); that path MUST exclude this verb, so taking a vendor secret over MCP is
-   always a deliberate grant;
-3. `create_webhook` with `signing_secret`, for a provider-origin type only.
+1. the MCP verb `set_webhook_secret {webhook_id, signing_secret, keep_previous_for?}`, a first-class
+   member of the webhook verb family, enforced by the scope guard;
+2. `create_webhook` with `signing_secret`, for a provider-origin type;
+3. the web UI, on the webhook's row, and `PUT /api/v1/webhooks/{id}/secret`, by the owning human or,
+   for a team-owned endpoint, a role SPEC-0033 (Teams and tenancy, in flight) allows to configure the
+   team.
+
+`set_webhook_secret` MUST be granted wherever `create_webhook` is granted, and MUST NOT be an optional
+or separately excluded grant:
+
+* it MUST be a member of `WebhookVerbs()`, and so of `AllVerbs()`, which the operator API's basics vend
+  grants verbatim (`internal/server/api.go`);
+* the vend wizard, quick vend and consent screen MUST NOT offer it as its own toggle. It MUST be
+  granted exactly when `create_webhook` is checked, and dropped when `create_webhook` is unchecked or
+  narrowed away;
+* the scope guard MUST authorize it for any endpoint whose grant carries `create_webhook` or
+  `set_webhook_secret`, so endpoints vended before the verb existed can use it without their immutable
+  scope being rewritten.
 
 The secret MUST be at least 16 bytes and at most 512 bytes of printable ASCII, and MUST pass the
 per-kind format check where one applies (a `stripe` secret MUST start with `whsec_`). A valid secret
@@ -98,11 +124,39 @@ MUST move the webhook out of `awaiting_secret`.
 
 The secret MUST be stored through the `internal/cred` envelope. When no secret encryption key is
 configured, every write of a provider-issued secret MUST be refused with `encryption_required`. The
-secret MUST NOT appear in any response, page, log line, metric label, routing trace, event row or error
-message; responses MUST report only `secret_set: true`, the fingerprint and `secret_set_at`.
+secret is write-only: it MUST NOT be echoed or returned, and MUST NOT appear in any response, page, log
+line, metric label, routing trace, telemetry span, event row or error message. Any log, trace or span
+that records MCP tool arguments or API request bodies MUST replace the `signing_secret` value with
+`«redacted»`. Responses MUST report only `secret_set: true`, the fingerprint and `secret_set_at`.
 
-`set_webhook_secret` on a minted-origin webhook, or on another endpoint's webhook, MUST fail with
-`invalid_argument` or `not_found` respectively.
+`set_webhook_secret` on a minted-origin webhook (unless REQ-1's operator opt-in is set), or on another
+endpoint's webhook, MUST fail with `invalid_argument` or `not_found` respectively.
+
+#### Scenario: Agent connects Stripe end to end
+
+- **GIVEN** an endpoint vended in the wizard with `create_webhook` checked and `stripe` among its
+  allowed source types
+- **WHEN** its agent creates a `stripe` webhook, registers the URL with Stripe, and calls
+  `set_webhook_secret` with the `whsec_` value Stripe displayed
+- **THEN** `set_webhook_secret` is in the endpoint's `tools/list`, the call returns `secret_set: true`
+  and a fingerprint without the secret, and the next signed Stripe delivery is accepted
+
+#### Scenario: Basics vend carries the verb
+
+- **WHEN** an endpoint is minted by the operator API's basics vend
+- **THEN** its grant carries `set_webhook_secret` alongside `create_webhook`
+
+#### Scenario: Unchecking create_webhook drops the verb
+
+- **WHEN** a human unchecks `create_webhook` in the vend wizard and vends
+- **THEN** the endpoint's grant carries neither `create_webhook` nor `set_webhook_secret`, and no
+  separate `set_webhook_secret` toggle was offered
+
+#### Scenario: Endpoint vended before the verb existed
+
+- **GIVEN** an endpoint whose stored grant carries `create_webhook` but predates `set_webhook_secret`
+- **WHEN** its agent calls `set_webhook_secret` on its own Slack webhook
+- **THEN** the call succeeds, and the endpoint's stored grant is unchanged
 
 #### Scenario: Owner pastes Stripe's secret in the UI
 
@@ -318,6 +372,45 @@ webhook id, source and reason, never a signature, secret or body.
 - **THEN** `switchboard_webhook_verify_failures_total{provider="stripe",reason="stale_timestamp"}`
   increments and the log line carries no signature
 
+### REQ-13: Secret Write Audit
+
+Every successful write of a signing secret a caller supplies, whether by `create_webhook`,
+`set_webhook_secret`, the web UI or the operator API, and every erasure of a previous secret when its
+overlap ends, MUST append one row to the webhook's secret audit trail in the same transaction as the
+write. The row MUST record:
+
+* the webhook id;
+* the action (`set`, `replace` or `previous_erased`);
+* the actor: the endpoint id for MCP, the human id for the web UI and operator API, and `system` for
+  the retention sweep;
+* the path (`mcp`, `web`, `api` or `sweep`);
+* the new and previous fingerprints;
+* the time.
+
+The row MUST NOT hold the secret, any part of it, or the request body. The owning human, and for a
+team-owned endpoint the roles SPEC-0033 allows to configure the team, MUST be able to read a
+webhook's audit rows on the endpoint card. `list_webhooks` MUST report the latest write's
+`secret_set_by` (actor kind and id) with `secret_set_at`. Audit rows MUST follow the owner's retention
+and MUST be deleted with the webhook. A refused write (format, `encryption_required`, `not_found`,
+rate limit) MUST NOT write an audit row. It MUST be logged with the webhook id, actor and reason only.
+
+#### Scenario: Agent write is audited
+
+- **WHEN** endpoint E calls `set_webhook_secret` on its Slack webhook
+- **THEN** one audit row names E, path `mcp`, action `set` and the new fingerprint, and neither the
+  row nor any log line carries the secret
+
+#### Scenario: Overlap expiry is audited
+
+- **GIVEN** a Stripe secret replaced with `keep_previous_for: 1h`
+- **WHEN** the hour passes and the sweep erases the previous secret
+- **THEN** one audit row records `previous_erased` by `system`, with the erased secret's fingerprint
+
+#### Scenario: Another owner cannot read the trail
+
+- **WHEN** a human outside the webhook's owner scope requests its secret audit rows through any surface
+- **THEN** the response is `not_found`
+
 ## Security Requirements
 
 ### Authentication
@@ -325,7 +418,7 @@ webhook id, source and reason, never a signature, secret or body.
 | Surface | Auth | Justification |
 |---|---|---|
 | `POST /webhooks/w/{token}` | Public, then verified | Providers cannot hold a Switchboard credential; the unguessable token routes and the per-kind HMAC authenticates. Unverified deliveries are refused. |
-| MCP `create_webhook`, `set_webhook_secret`, `rotate_webhook`, `list_webhooks` | Required | Vended endpoint credential with the verb in scope. |
+| MCP `create_webhook`, `set_webhook_secret`, `rotate_webhook`, `list_webhooks` | Required | Vended endpoint credential with the verb in scope; `set_webhook_secret` is in scope wherever `create_webhook` is (REQ-3). |
 | Web UI secret field | Required | Human session with CSRF; owner or team role. |
 | `PUT /api/v1/webhooks/{id}/secret` | Required | Operator OAuth bearer; owner or team role; `404` outside the caller's scopes. |
 

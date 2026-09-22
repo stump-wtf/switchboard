@@ -28,7 +28,9 @@ their own. The code this touches:
 
 - Stripe and Slack work again, per tenant, fully verified.
 - Linear and Plain become native signed kinds.
-- Vendor secrets are write-only, encrypted, and can be entered by a human without an agent in the loop.
+- Vendor secrets are write-only, encrypted, redacted from logs and audited on every write.
+- An agent that can create a provider-origin webhook can finish connecting it with no human step; a
+  human with the secret in hand can set it too.
 - Retries dedupe on stable ids; an unsigned header cannot mint a duplicate.
 
 ### Non-Goals
@@ -110,17 +112,38 @@ and before any insert.
 **Rationale**: a handshake must not become work, must not consume a dedup slot, and must not depend on
 routing rules the owner has not written yet.
 
-### Human entry first
+### `set_webhook_secret` goes wherever `create_webhook` goes
 
-**Choice**: the endpoint card's webhook row gets a password-type secret field (never pre-filled) with a
-"keep the old secret for" select (none, 1 hour, 24 hours), and the operator API gets
-`PUT /api/v1/webhooks/{id}/secret`. The MCP verb exists for automation. Joining `WebhookVerbs()` puts it
-in `AllVerbs()`, which the operator API's basics vend grants verbatim today, so that path switches to a
-`BasicVerbs()` helper that leaves it out (the same helper SPEC-0028 introduces for `reply`; whichever
-lands first adds it).
+**Choice**: `set_webhook_secret` joins `WebhookVerbs()`, so it is in `AllVerbs()` and the operator
+API's basics vend grants it verbatim; no `BasicVerbs()` carve-out. `vendVerbOptions`
+(`internal/web/endpoints.go`), the quick vend and the consent screen render it bound to the
+`create_webhook` chip rather than as a chip of its own, and the vend handlers normalize the submitted
+verbs so that `create_webhook` implies `set_webhook_secret`. The scope guard (`webhookVerbs` in
+`internal/mcp/webhooks.go`) authorizes `set_webhook_secret` when the grant carries either verb, so
+endpoints vended before this change need no scope rewrite. Humans get the same operation through a
+password-type field on the endpoint card's webhook row (never pre-filled), with a "keep the old secret
+for" select (none, 1 hour, 24 hours), and through `PUT /api/v1/webhooks/{id}/secret`.
 
-**Rationale**: a vendor secret pasted through an agent passes through a model transcript; the UI path
-avoids that entirely.
+**Rationale**: Joe, 2026-09-22: "Agents can set them. Switchboard is largely for them." An agent that
+can create a Stripe webhook but cannot set its secret has created a webhook that refuses every
+delivery; splitting the two verbs only produces broken setups. The transcript exposure is the
+tenant's own choice of where to hand its secret. Switchboard's job is to add no exposure of its own:
+write-only storage, `«redacted»` in logs and traces, and an audit row per write.
+
+**Alternatives considered**:
+- A separately grantable, unchecked-by-default verb kept out of the basics vend: rejected by Joe's
+  decision above.
+- Human entry only (web UI and API, no verb): rejected for the same reason.
+
+### Secret writes are audited in their own table
+
+**Choice**: `webhook_secret_audit`, one row per successful write or overlap expiry (SPEC-0032
+REQ-13), inserted in the write's transaction. The redaction is one helper applied where MCP tool
+arguments and API bodies are logged or traced, keyed on the field name `signing_secret`, so a new path
+cannot forget it.
+
+**Rationale**: the webhook row only holds the latest state; an owner debugging "who rolled our Stripe
+secret" needs the history, and it must never contain the value it describes.
 
 ## Schema
 
@@ -135,6 +158,19 @@ ALTER TABLE endpoint_webhooks
     ADD COLUMN handshake_at timestamptz;
 UPDATE endpoint_webhooks SET secret_origin = 'provider' WHERE source_type IN ('stripe', 'slack');
 UPDATE endpoint_webhooks SET secret_origin = 'none' WHERE trust_mode <> 'signed';
+
+CREATE TABLE webhook_secret_audit (
+    id              bigserial PRIMARY KEY,
+    webhook_id      uuid NOT NULL REFERENCES endpoint_webhooks(id) ON DELETE CASCADE,
+    action          text NOT NULL CHECK (action IN ('set', 'replace', 'previous_erased')),
+    actor_kind      text NOT NULL CHECK (actor_kind IN ('endpoint', 'human', 'system')),
+    actor_id        uuid,                     -- endpoint or human id; NULL for system
+    path            text NOT NULL CHECK (path IN ('mcp', 'web', 'api', 'sweep')),
+    fingerprint     text,                     -- first 12 hex of SHA-256; never the secret
+    prev_fingerprint text,
+    at              timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_webhook_secret_audit_webhook ON webhook_secret_audit (webhook_id, at DESC);
 
 CREATE TABLE webhook_signatures_seen (
     webhook_id  uuid NOT NULL REFERENCES endpoint_webhooks(id) ON DELETE CASCADE,
@@ -168,7 +204,7 @@ New verb:
 
 ```json
 {"name": "set_webhook_secret",
- "description": "Set the signing secret a provider issued (Stripe, Slack, Linear, Plain) on one of this endpoint's webhooks. Write-only: the secret is never returned. Prefer having the owner paste it in the web UI.",
+ "description": "Set the signing secret a provider issued (Stripe, Slack, Linear, Plain) on one of this endpoint's webhooks. Write-only: the secret is never returned, and it is redacted from logs.",
  "inputSchema": {"type": "object", "required": ["webhook_id", "signing_secret"], "properties": {
    "webhook_id": {"type": "string"},
    "signing_secret": {"type": "string", "minLength": 16, "maxLength": 512},
@@ -176,7 +212,14 @@ New verb:
 ```
 
 `list_webhooks` rows gain `secret_origin`, `secret_set`, `secret_fingerprint`, `secret_set_at`,
-`handshake_at`.
+`secret_set_by`, `secret_supplied` and `handshake_at`.
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | unset | existing; required to store any provider-issued or supplied secret |
+| `SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET` | `false` | when `true`, `github`, `gitea` and `cairn` webhooks accept a caller-supplied secret (REQ-1) |
 
 ## Verification Flow
 
@@ -241,8 +284,8 @@ the raw bytes, which is what Plain signs. A contract test with a recorded Plain 
 
 1. Ship the docs interim now: mark `stripe` and `slack` as "awaiting provider-issued secret support" in
    `docs/getting-started/04-first-webhook.md` so no one wires them against `main` today.
-2. Land secret origin, `set_webhook_secret`, the UI field, the Stripe and Slack delivery ids, the replay
-   guard and the handshake (P1).
+2. Land secret origin, `set_webhook_secret` (granted with `create_webhook`), the secret audit trail,
+   the UI field, the Stripe and Slack delivery ids, the replay guard and the handshake (P1).
 3. Land `linear` and `plain` (P2).
 
 Rollback: the new columns are nullable or defaulted; removing the verb and the UI field returns to
