@@ -34,7 +34,7 @@ When no ldflags were applied, `buildinfo` MUST fall back to `runtime/debug.ReadB
 * `Commit` and `Date` MUST come from the `vcs.revision` and `vcs.time` settings when present,
   otherwise be empty.
 
-No other package MUST hold a version literal for Switchboard itself. A test MUST fail if a string
+Packages other than `internal/buildinfo` MUST NOT hold a version literal for Switchboard itself. A test MUST fail if a string
 literal matching `^v?\d+\.\d+\.\d+` is assigned to an identifier containing `version` in
 `internal/mcp` or `internal/web`. Protocol versions, such as the A2A protocol version, are exempt
 by name.
@@ -97,8 +97,10 @@ no network access is required.
 
 When the operator sets `SWITCHBOARD_RELEASE_CHECK=1`, and not otherwise, the server:
 
-* MUST fetch `https://api.github.com/repos/stump-wtf/switchboard/tags` at most once every 24 hours,
-  plus once at startup;
+* MUST fetch `https://api.github.com/repos/stump-wtf/switchboard/tags?per_page=100` at most once
+  every 24 hours, plus once at startup. It MUST follow the `Link: rel="next"` pagination, up to 10
+  pages, because the endpoint is paged and unsorted, and a single page cannot guarantee the highest
+  tag;
 * MUST send the request with no credentials, a `user-agent: switchboard/<Version>` header, and no
   instance data;
 * MUST cache the highest semver tag.
@@ -311,7 +313,8 @@ A release MUST be cut within 48 hours of merging any `sec` change, and SHOULD be
   * the four ignored `SWITCHBOARD_*_SECRET` variables and `SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`;
   * migration `0021_drop_adapters` being irreversible, with the backup step;
   * moving every sender to `create_webhook`, with a before and after;
-  * the `:latest` image tag now carrying these fixes.
+  * the public `ghcr.io/stump-wtf/switchboard:latest` tag now carrying these fixes. It moves only
+    on `v*` tags, so until `v0.3.0` it is `v0.2.0`.
 
 #### Scenario: v0.3.0 is complete
 

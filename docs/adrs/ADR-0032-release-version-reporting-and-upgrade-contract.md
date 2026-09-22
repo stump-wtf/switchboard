@@ -22,7 +22,9 @@ the two they have:
 * **Customers hit the skew.** A self-hosting customer was told in chat, "you're on an older version
   that doesn't send doorbells on connection". Ring-on-connect (#276) landed after `v0.2.0`, and
   nothing they could query would have told them. Three of their five reported bugs are fixed on
-  `main` and not shipped. The `:latest` image is built from `v*` tags.
+  `main` and not shipped. The public image they pull, `ghcr.io/stump-wtf/switchboard:latest`,
+  moves only on `v*` tags. On 2026-09-22 its digest equals `:0.2.0`'s. (The internal Gitea-registry
+  `:latest` tracks `main`, but self-hosters do not pull it.)
 * **A breaking change shipped with no note.** #291 (`sec!:`) removed the environment-seeded
   receivers. After it:
   * `SWITCHBOARD_{GITHUB,GITEA,STRIPE,SLACK}_SECRET` are **silently ignored**. Nothing on `main`

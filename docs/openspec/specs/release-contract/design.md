@@ -136,7 +136,8 @@ banner also closes #245.
 
 ### Release check against public tags
 
-**Choice**: `GET https://api.github.com/repos/stump-wtf/switchboard/tags?per_page=100`, parsed with
+**Choice**: `GET https://api.github.com/repos/stump-wtf/switchboard/tags?per_page=100`, following
+`Link: rel="next"` for up to 10 pages (the endpoint is paged and not sorted by version), parsed with
 `golang.org/x/mod/semver`, keeping the highest tag with no prerelease suffix. Opt-in only. It
 retries daily and holds the result in memory.
 
