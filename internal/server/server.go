@@ -257,6 +257,14 @@ func newRouter(d routerDeps) chi.Router {
 	// Static assets + health.
 	r.Handle("/static/*", staticHandler())
 	r.Get("/healthz", func(w http.ResponseWriter, req *http.Request) {
+		// The build version rides the response header so an operator can confirm which build is
+		// running over HTTP — the Upgrading guide's verify step — without a shell in the container.
+		// The body stays bare "ok": existing probes match on it, and a plain-text "ok" is honest
+		// about a probe that only answers liveness. An unstamped (go build without -ldflags) build
+		// carries "dev"; an empty Version (test harnesses) omits the header rather than sending "".
+		if d.cfg.Version != "" {
+			w.Header().Set("X-Switchboard-Version", d.cfg.Version)
+		}
 		if err := d.ping(req.Context()); err != nil {
 			http.Error(w, "db down", http.StatusServiceUnavailable)
 			return
