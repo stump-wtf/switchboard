@@ -1,0 +1,4 @@
+# Gitea's issue chooser. Gitea also reads .github/ISSUE_TEMPLATE, but takes its chooser config from
+# this directory first, so blank issues stay enabled here while the GitHub mirror (public intake)
+# requires a form.
+blank_issues_enabled: true

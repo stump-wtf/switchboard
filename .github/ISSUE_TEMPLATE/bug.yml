@@ -1,0 +1,74 @@
+# Bug report form for public intake on the GitHub mirror (github.com/stump-wtf/switchboard).
+# The fields are the facts a maintainer, or a triage agent, needs before it can reproduce anything:
+# which build, how it's deployed, and which MCP client talked to it.
+name: Bug report
+description: Something in Switchboard doesn't work the way the docs say it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Don't paste credentials:** no `sbk_…` endpoint credentials, OAuth tokens, `whsec_…` signing secrets, ingest URLs (a `generic` webhook's URL *is* its credential), or payloads carrying anyone's private data.
+
+        Found a security problem? Don't file it here. Follow [SECURITY.md](https://github.com/stump-wtf/switchboard/blob/main/SECURITY.md) instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: Switchboard version
+      description: |
+        One of: the release tag (`v0.3.0`), the image tag **and** digest, or a commit SHA.
+        - Binary: `switchboard version`
+        - Container: `docker compose exec switchboard switchboard version`, plus the digest from `docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/stump-wtf/switchboard:<tag>`
+        - Built from source: `git rev-parse --short HEAD`
+      placeholder: "v0.3.0, or ghcr.io/stump-wtf/switchboard:latest@sha256:…"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      description: How is the instance you hit this on run?
+      options:
+        - Self-hosted with the published compose file / container image
+        - Self-hosted binary
+        - Built from source
+        - An instance someone else operates (I only use it)
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: MCP client and version
+      description: |
+        For example `claude --version`, your Crush build (fork commit), or another MCP client. Include the channels flag you launched with, if any (`--channels server:switchboard`, `--dangerously-load-development-channels server:switchboard`).
+      placeholder: "Claude Code 2.1.270 with --dangerously-load-development-channels server:switchboard"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including any error text or log lines (redact tokens and secrets).
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead. Link the docs page that says so, if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Smallest reproduction
+      description: The fewest steps, tool calls, or `curl` commands that show the problem on a fresh endpoint. Use placeholders such as `<slug>` and `<token>` rather than real values.
+      render: shell
+    validations:
+      required: true

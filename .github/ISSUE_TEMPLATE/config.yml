@@ -1,0 +1,14 @@
+# Issue chooser for the GitHub mirror: forms only, with the docs and the security policy one click
+# away. Gitea reads its chooser config from .gitea/ISSUE_TEMPLATE/config.yaml first, so this file
+# only takes effect on GitHub.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/stump-wtf/switchboard/blob/main/SECURITY.md
+    about: Please don't open a public issue for a vulnerability. Follow the security policy instead.
+  - name: Documentation
+    url: https://switchboard.stump.wtf/docs/
+    about: Getting started, the guides, and the design record.
+  - name: Troubleshooting
+    url: https://switchboard.stump.wtf/docs/guides/troubleshooting
+    about: The common failures and how to tell them apart. Worth a look before filing a bug.
