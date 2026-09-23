@@ -26,6 +26,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,6 +70,14 @@ var webhookTrustModes = map[string]string{
 	"cairn":   "signed",
 	"generic": "token",
 }
+
+// WebhookSourceTypes returns every source type create_webhook accepts — the keys of
+// webhookTrustModes — sorted, as a fresh slice the caller may keep. The vend wizard (internal/web)
+// offers exactly these as its source-type chips, so a type added to webhookTrustModes is pickable
+// in the ceiling step without a second, drift-prone list.
+// Governing: SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling", SPEC-0015 REQ
+// "Endpoints View And Vend Wizard", ADR-0012.
+func WebhookSourceTypes() []string { return slices.Sorted(maps.Keys(webhookTrustModes)) }
 
 // SetBaseURL installs the externally-reachable origin used to build the ingest_url returned by
 // create_webhook/rotate_webhook. Called at wiring time (internal/server) with cfg.BaseURL; safe to

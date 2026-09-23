@@ -13,6 +13,7 @@ package web
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,19 @@ func vendVerbOptions() []vendVerbOption {
 	var opts []vendVerbOption
 	for _, v := range mcp.AllVerbs() {
 		opts = append(opts, vendVerbOption{Name: v, Checked: core[v]})
+	}
+	return opts
+}
+
+// vendSourceTypeOptions builds the webhooks step's source-type chips from mcp.WebhookSourceTypes —
+// the types create_webhook actually accepts — checking the ones already in the draft. Deriving
+// them from the server's own list means the wizard can neither offer a type the server refuses
+// nor hide one it accepts. Governing: SPEC-0015 REQ "Endpoints View And Vend Wizard" (webhooks
+// step), SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling".
+func vendSourceTypeOptions(chosen []string) []vendChipOption {
+	var opts []vendChipOption
+	for _, s := range mcp.WebhookSourceTypes() {
+		opts = append(opts, vendChipOption{Name: s, Checked: slices.Contains(chosen, s)})
 	}
 	return opts
 }
