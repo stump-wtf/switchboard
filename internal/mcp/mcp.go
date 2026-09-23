@@ -30,6 +30,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/stump-wtf/switchboard/internal/buildinfo"
 	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
 	"github.com/stump-wtf/switchboard/internal/routing"
@@ -37,8 +38,9 @@ import (
 )
 
 const (
-	serverName    = "switchboard"
-	serverVersion = "0.1.0"
+	// serverName is the MCP serverInfo.name. The version is not a constant here: it is
+	// buildinfo.Get().Version, stamped at build time (SPEC-0027 REQ-2).
+	serverName = "switchboard"
 
 	// maxBodyBytes caps MCP request bodies before JSON-RPC parsing (SPEC-0014 REQ body size limits).
 	maxBodyBytes = 1 << 20 // 1 MiB
@@ -63,13 +65,16 @@ const (
 		`uniformly to any /a2ui URI.`
 )
 
-// sessionInstructions is the instructions block a new session receives: the doorbell contract,
-// plus the A2UI paragraph only while that surface is on.
+// sessionInstructions is the instructions block a new session receives: the build banner line
+// ("switchboard v0.3.0 (built 2026-09-24)"), then the doorbell contract, plus the A2UI paragraph
+// only while that surface is on.
+// Governing: SPEC-0027 REQ-2 "MCP Server Version and Session Instructions".
 func (h *Handler) sessionInstructions() string {
+	body := instructions
 	if h.a2uiOn() {
-		return instructions + a2uiInstructions
+		body += a2uiInstructions
 	}
-	return instructions
+	return buildinfo.Get().Banner() + "\n" + body
 }
 
 // EndpointStore is the slice of the store the auth middleware needs: resolution of BOTH credential
@@ -404,7 +409,7 @@ func (h *Handler) auth(next http.Handler) http.Handler {
 // Governing: SPEC-0014 REQ "Agent Tool Surface over MCP", SPEC-0011 REQ "Channel Capability on
 // the Vended Session".
 func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
-	srv := sdk.NewServer(&sdk.Implementation{Name: serverName, Version: serverVersion}, &sdk.ServerOptions{
+	srv := sdk.NewServer(&sdk.Implementation{Name: serverName, Version: buildinfo.Get().Version}, &sdk.ServerOptions{
 		Logger:       h.log,
 		Instructions: h.sessionInstructions(),
 		Capabilities: &sdk.ServerCapabilities{

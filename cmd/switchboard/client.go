@@ -26,6 +26,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/stump-wtf/switchboard/internal/buildinfo"
 )
 
 // credentials is the persisted login state.
@@ -178,7 +180,7 @@ func (a *apiClient) call(method, path string, body any) (*http.Response, error) 
 	}
 	req.Header.Set("Authorization", "Bearer "+a.creds.AccessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "switchboard-cli/"+version)
+	req.Header.Set("User-Agent", "switchboard-cli/"+buildinfo.Get().Version)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
