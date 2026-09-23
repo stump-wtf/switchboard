@@ -14,6 +14,7 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
   <p className="sb-hero__lead">Switchboard receives inbound webhooks, verifies each one per source, and turns it into a durable todo that agents claim and complete over scoped, human‑vended MCP endpoints — served exclusively over HTTP/S. one box: receive · verify · patch through.</p>
   <div className="sb-hero__cta">
     <Link className="button button--primary button--lg" to="/getting-started/concepts">get started →</Link>
+    <Link className="button button--secondary button--lg" to="/guides/self-hosting">run your own</Link>
     <a className="button button--secondary button--lg" href="https://switchboard.stump.wtf">open the operator board</a>
     <Link className="button button--outline button--lg" to="/api">browse the API</Link>
   </div>
@@ -115,11 +116,12 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 <div className="sb-start">
   <div className="sb-start__title">Start here</div>
   <ul className="sb-start__list">
-    <li><Link to="/getting-started/concepts"><strong>Getting started</strong></Link> — from zero to a working agent on the hosted service: the concepts, your first endpoint, connecting an agent over MCP, and your first webhook.</li>
+    <li><Link to="/getting-started/concepts"><strong>Getting started</strong></Link> — from zero to a working agent on a Switchboard instance, yours or one your operator runs: the concepts, your first endpoint, connecting an agent over MCP, and your first webhook.</li>
+    <li><Link to="/guides/self-hosting"><strong>Run your own</strong></Link> — self-hosting: the published image and compose file, configuration, the reverse proxy, and sign-in.</li>
     <li><Link to="/guides/overview"><strong>Guides</strong></Link> — endpoints, the queue, the routing cookbook, working the queue well, the security model, and troubleshooting.</li>
     <li><Link to="/api"><strong>API</strong></Link> — the HTTP surface rendered per endpoint from the OpenAPI 3.1 contract, with schemas and a try‑it console.</li>
-    <li><Link to="/decisions"><strong>Decisions (ADRs)</strong></Link> — 19 architecture decision records: the stack, the PostgreSQL persistence, the trust model, the MCP contract, and the todo/agent‑vending/A2A layer.</li>
-    <li><Link to="/specs"><strong>Specifications</strong></Link> — 17 OpenSpec capabilities (RFC 2119 requirements + Mermaid design).</li>
+    <li><Link to="/decisions"><strong>Decisions (ADRs)</strong></Link> — the architecture decision records: the stack, the PostgreSQL persistence, the trust model, the MCP contract, and the todo/agent‑vending/A2A layer.</li>
+    <li><Link to="/specs"><strong>Specifications</strong></Link> — the OpenSpec capabilities (RFC 2119 requirements + Mermaid design).</li>
     <li><Link to="/design"><strong>Design</strong></Link> — the charm‑web design language (ADR‑0018): day/night tokens, components, screens, and voice.</li>
     <li><Link to="/reference"><strong>Reference</strong></Link> — the raw OpenAPI (HTTP surface) and AsyncAPI (SSE stream) contracts.</li>
   </ul>
