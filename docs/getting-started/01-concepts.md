@@ -12,6 +12,9 @@ script sends a webhook; switchboard checks who sent it, decides where it goes, a
 This page is the vocabulary. [Sign in and vend your first endpoint](/getting-started/first-endpoint)
 is where you start doing things.
 
+Running your own instance? Start with [Run your own switchboard](/guides/self-hosting), then come
+back here.
+
 ## The whole path
 
 ```mermaid

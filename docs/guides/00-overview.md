@@ -53,6 +53,8 @@ becomes a todo the agent surface can drain.
 
 - New here? Start with [Getting started](/getting-started/concepts): the concepts in five minutes,
   then your first endpoint, a connected agent, and a real webhook turning into a todo.
+- Running your own instance? [Run your own switchboard](/guides/self-hosting) covers the published
+  image, the compose file, configuration, the reverse proxy, and sign-in.
 - Routing, triage, security, and fixes: the [routing cookbook](/guides/routing-cookbook),
   [working the queue well](/guides/working-the-queue), the [security model](/guides/security-model),
   and [troubleshooting](/guides/troubleshooting).

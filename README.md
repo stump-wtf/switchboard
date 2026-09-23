@@ -101,6 +101,7 @@ the caller knows a secret, but unlike HMAC it can't attest the payload.
 | [SPEC-0005 mcp-tools](docs/openspec/specs/mcp-tools/spec.md) | MCP tool + resource contract & JSON Schemas |
 | [SPEC-0014 mcp-transport](docs/openspec/specs/mcp-transport/spec.md) | Vended MCP endpoints served over Streamable HTTP (`/mcp/{endpoint}`) |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each release, and every breaking change |
+| [Run your own switchboard](docs/guides/14-self-hosting.md) | **Self-hosting:** the published image and compose file, configuration, reverse proxy, sign-in |
 | [Upgrading](docs/guides/15-upgrading.md) | **Read before upgrading.** The breaking changes, who they affect, and what a release cannot undo |
 
 Released builds are published to `ghcr.io/stump-wtf/switchboard`, tagged `latest` and by
@@ -150,44 +151,32 @@ remains gated by `SWITCHBOARD_FRIENDING=1`. See ADR-0023.
 
 ## Running it
 
-Switchboard needs PostgreSQL. Point it at a database and run the service:
+Run your own instance from the published image, `ghcr.io/stump-wtf/switchboard` (multi-arch, built
+on every `v*` tag), with the compose file in [`deploy/docker/compose.yaml`](deploy/docker/compose.yaml),
+which brings its own PostgreSQL:
 
 ```bash
-make build                                   # compile ./bin/switchboard (assets embedded)
-export SWITCHBOARD_DATABASE_URL='postgres://user@127.0.0.1:5432/switchboard?sslmode=disable'
-export SWITCHBOARD_OIDC_ISSUER=https://pocket-id.example \
-       SWITCHBOARD_OIDC_CLIENT_ID=… SWITCHBOARD_OIDC_CLIENT_SECRET=…
-./bin/switchboard serve                      # web UI + /webhooks/w/{token} + /mcp/{endpoint} on 127.0.0.1:8080
+curl -fsSL -o compose.yaml https://raw.githubusercontent.com/stump-wtf/switchboard/main/deploy/docker/compose.yaml
+docker compose up -d
 ```
 
-Migrations apply on startup. For a local spin without a real Pocket ID, set `SWITCHBOARD_DEV_LOGIN=1`
-(loud, dev-only) to log in and vend.
+Before real use, set three things (the compose file reads each from your shell): `SWITCHBOARD_BASE_URL`
+(the externally reachable `https://` URL), the `SWITCHBOARD_OIDC_*` issuer, client ID and client
+secret, and `SWITCHBOARD_SECRET_ENCRYPTION_KEY`. **[Run your own switchboard](docs/guides/14-self-hosting.md)**
+is the full guide: configuration, the binary path, TLS, sign-in, and verifying the loop.
 
-**The vend → work loop (the MVP):**
-
-1. Log in, register an agent, and **vend a scoped endpoint** (queues + verbs). The vend page shows the
-   credential once, plus a ready-to-paste `.mcp.json` — a Streamable-HTTP MCP server block, no local
-   command:
-   ```json
-   {"mcpServers":{"switchboard":{"type":"http","url":"https://<host>/mcp/<slug>","headers":{"Authorization":"Bearer <credential>"}}}}
-   ```
-2. Drop that `.mcp.json` into your project and start your MCP client (e.g. Claude Code). The client
-   connects **directly over HTTP/S** to `/mcp/<slug>` — there is no binary to install or put on PATH.
-   The endpoint serves the work tools (`list_todos` / `claim` / `complete` / `fail` / `heartbeat`) and
-   pushes new todos into the session as `notifications/claude/channel` doorbells on the notification
-   stream (ADR-0017; SPEC-0014).
-3. Have the agent call `create_webhook`, then POST a delivery to the returned `ingest_url` — or, in
-   dev mode, `POST /dev/todos` — and the todo arrives in your session.
-
-The service is **loopback-bound by default and ships no in-app auth**. If you ever expose it on the
-homelab LAN it **must** sit behind Caddy `forward_auth`, like everything else in the stack — auth is
-the reverse proxy's job, not this app's (ADR-0001, brief §8).
+Switchboard has its own login: it is a complete OIDC relying party (plus an optional GitHub
+provider), so **don't put forward-auth in front of it**. Behind a reverse proxy, **don't buffer
+`/mcp/*`**, whose `GET` is a long-lived notification stream, and pass a trusted `X-Forwarded-For`.
+See [Behind a reverse proxy](docs/guides/14-self-hosting.md#behind-a-reverse-proxy).
 
 Deployment secrets (the Postgres DSN, the OIDC/GitHub client secrets, the secret-encryption key) are
 injected via **environment/deployment config** — never committed. Switchboard-*minted* secrets live in
 PostgreSQL: agent credentials are stored **hashed**; webhook signing secrets must stay recoverable to
 recompute the HMAC, so they are **encrypted at rest** under `SWITCHBOARD_SECRET_ENCRYPTION_KEY` —
 and sit in plaintext if that key is unset.
+
+To build and run from a clone instead, see [Development](#development).
 
 ### Pointing a provider at this service (for testing)
 
@@ -218,6 +207,20 @@ The trust mode is always fixed per source type and shown in the UI — never sil
 [ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-and-trust-model.md).
 
 ## Development
+
+Switchboard needs PostgreSQL. Point it at a database and run the service:
+
+```bash
+make build                                   # compile ./bin/switchboard (assets embedded)
+export SWITCHBOARD_DATABASE_URL='postgres://user@127.0.0.1:5432/switchboard?sslmode=disable'
+export SWITCHBOARD_OIDC_ISSUER=https://pocket-id.example \
+       SWITCHBOARD_OIDC_CLIENT_ID=… SWITCHBOARD_OIDC_CLIENT_SECRET=…
+./bin/switchboard serve                      # web UI + /webhooks/w/{token} + /mcp/{endpoint} on 127.0.0.1:8080
+```
+
+Migrations apply on startup. For a local spin without a real OIDC provider, set
+`SWITCHBOARD_DEV_LOGIN=1` (loud, dev-only) to log in and vend. [Getting started](docs/getting-started/01-concepts.md)
+walks the vend → connect → webhook loop from there.
 
 ```bash
 make ci     # the gate: go vet + go test ./... + go build — the local mirror of CI
