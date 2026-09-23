@@ -428,6 +428,15 @@ func TestHeartbeatStampsOpenAttempt(t *testing.T) {
 // pruned and sixty total, and each claim after a retry takes attempt 1 with the next seq.
 func TestAttemptCapAndManualRetryHistory(t *testing.T) {
 	s, ctx := testStore(t)
+	// settings is not truncated between tests, so the cap row this test writes is cleared on both
+	// sides of it: a lowered cap left behind would prune every later test's history.
+	clearCap := func() {
+		if _, err := s.pool.Exec(ctx, `DELETE FROM settings WHERE key = 'attempt_history_max_per_todo'`); err != nil {
+			t.Fatalf("clear cap setting: %v", err)
+		}
+	}
+	clearCap()
+	t.Cleanup(clearCap)
 	ep := seedEndpoint(t, s, ctx, "attempt-cap")
 	id := seedPending(t, s, ctx, ep, "q", "hot")
 	if _, err := s.pool.Exec(ctx, `UPDATE todos SET max_attempts = 1 WHERE id = $1`, id); err != nil {
