@@ -8,8 +8,11 @@
 // Expressions run in gojq with the host shut out: no environment (gojq's env is empty unless a
 // loader is supplied, and `env`/`$ENV` are refused outright anyway), no `input`/`inputs`, no module
 // imports, and no functions whose result depends on the clock or that write to stderr or halt the
-// host. A per-rule timeout and a per-event budget bound CPU; a rule that errors or times out is
-// treated as no-match and recorded on the trace rather than failing the delivery.
+// host. A per-rule timeout and a per-event budget bound CPU. Evaluation fails CLOSED: a rule that
+// errors, times out, no longer compiles, or finds the budget spent stops evaluation at that rule. No
+// later rule runs and the default does not apply. The decision's disposition is faulted, so the
+// receiver records the delivery without routing it anywhere. A fault is never a no-match, because a
+// no-match would turn a broken drop rule or trust rule into "let it through" (#212).
 //
 // Tenant safety is enforced twice. Validate refuses, at save time, any action whose queue is
 // outside the owning endpoint's webhook-queue ceiling or whose endpoints are not already live,
@@ -19,9 +22,14 @@
 //
 // Governing: ADR-0024 (deterministic jq rules; LLM triage phased as a follow-up), SPEC-0020 REQ
 // "Deterministic Rule Evaluation", REQ "Rule Validation at Save Time", REQ "Drop Action Semantics",
-// REQ "Routing Trace", REQ "Isolation and Tenant Safety"; ADR-0022 (endpoint-scoped todos).
+// REQ "Routing Trace", REQ "Isolation and Tenant Safety"; ADR-0022 (endpoint-scoped todos);
+// ADR-0031, SPEC-0026 REQ-1 "Faults Stop Evaluation", REQ-3 "Save-Time Fault Refusal and Param
+// Typing".
 //
 // @joestump-agent 09/11/2026 - Initial deterministic stage: rules, validation, sandbox, trace.
+//
+// @joestump-agent 09/23/2026 - Fail closed: a fault stops evaluation and faults the delivery instead
+// of degrading to no-match; params are type-checked at save time (#212).
 package routing
 
 import (
@@ -75,6 +83,9 @@ var paramsVariable = []string{"$params"}
 const (
 	StageRule    = "rule"
 	StageDefault = "default"
+	// StageFault is the trace stage of a delivery whose evaluation stopped at a fault (SPEC-0026
+	// REQ-1). The trace names the rule, its index, the cause and the detail, and carries no action.
+	StageFault = "fault"
 
 	CauseNoMatch            = "no_match_default"
 	CauseRuleNotGranted     = "rule_not_granted"
@@ -274,6 +285,9 @@ func Validate(cfg Config, g Grant) error {
 			return &ValidationError{Index: paramsIndexForMessages, Code: CodeInvalidParams,
 				Msg: fmt.Sprintf("params encode to %d bytes; the limit is %d", len(raw), MaxParamsBytes)}
 		}
+		if err := checkParamTypes(cfg.Params); err != nil {
+			return err
+		}
 	}
 	if len(cfg.Rules) > MaxRules {
 		return &ValidationError{Index: len(cfg.Rules) - 1, Code: CodeTooManyRules,
@@ -311,6 +325,62 @@ func Validate(cfg Config, g Grant) error {
 		}
 	}
 	return nil
+}
+
+// checkParamTypes holds every params value to a shape a rule can safely iterate or compare: a
+// string, a number, a boolean, or a list whose elements are all strings or all numbers. Anything
+// else is refused at save time, naming the key: an object, a null, a nested list, or a mixed list.
+// Those are the values that make a rule written against the documented shape fault on every
+// delivery, and it is better to learn that now than when live traffic stops routing. Keys are
+// checked in sorted order so the error is deterministic.
+// Governing: SPEC-0026 REQ-3 "Save-Time Fault Refusal and Param Typing".
+func checkParamTypes(params map[string]any) error {
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		if !paramValueOK(params[k]) {
+			return &ValidationError{Index: paramsIndexForMessages, Code: CodeInvalidParams,
+				Msg: fmt.Sprintf("%q must be a string, a number, a boolean, or a list of all strings or all numbers", k)}
+		}
+	}
+	return nil
+}
+
+// paramValueOK reports whether v is an accepted params value. Numbers arrive as float64 from a JSON
+// decode, and as json.Number or an integer type from Go callers. All of them count as numbers.
+func paramValueOK(v any) bool {
+	switch x := v.(type) {
+	case string, bool, []string:
+		return true
+	case []any:
+		kind := ""
+		for _, e := range x {
+			k := paramScalarKind(e)
+			if k != "string" && k != "number" {
+				return false
+			}
+			if kind != "" && k != kind {
+				return false
+			}
+			kind = k
+		}
+		return true
+	default:
+		return paramScalarKind(v) == "number"
+	}
+}
+
+func paramScalarKind(v any) string {
+	switch v.(type) {
+	case string:
+		return "string"
+	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, json.Number:
+		return "number"
+	}
+	return ""
 }
 
 // checkAction validates one action's shape and reachability, returning ("", "") when it is fine.
@@ -385,14 +455,47 @@ func queueGranted(q string, g Grant) bool {
 	return q != "" && (q == g.TargetQueue || slices.Contains(g.Queues, q))
 }
 
+// Dispositions are the outcome of intake for one delivery, recorded on its event row (SPEC-0026
+// "Disposition"). Quarantined is reserved for the quarantine queue (SPEC-0026 REQ-6). Until that
+// lands, a faulted delivery is recorded with no todo.
+const (
+	DispositionRouted      = "routed"
+	DispositionDropped     = "dropped"
+	DispositionFaulted     = "faulted"
+	DispositionQuarantined = "quarantined"
+)
+
 // Decision is the evaluated route for one delivery.
+//
+// A faulted decision (Faulted) names no queue and no endpoints: evaluation stopped at Fault, and
+// nothing may be routed. Unavailable is the stronger case, where the evaluator itself could not run:
+// the sandbox did not start, had no free slot, or died. Such a decision says nothing about the
+// delivery at all. The receiver refuses it with a 503 and persists nothing, and the producer
+// retries (SPEC-0026 REQ-2).
 type Decision struct {
-	Drop      bool
-	Queue     string
-	Endpoints []string // the endpoints to mint todos on, a subset of Grant.Endpoints in its order
-	Once      bool     // the action asked for at-most-once per (subject, queue)
-	WorkOrder bool     // the action asked for a work order on each todo
-	Trace     Trace
+	Drop        bool
+	Queue       string
+	Endpoints   []string   // the endpoints to mint todos on, a subset of Grant.Endpoints in its order
+	Once        bool       // the action asked for at-most-once per (subject, queue)
+	WorkOrder   bool       // the action asked for a work order on each todo
+	Faulted     bool       // evaluation stopped at a rule fault; nothing is routed (SPEC-0026 REQ-1)
+	Unavailable bool       // the evaluator could not run at all for this delivery (SPEC-0026 REQ-2)
+	Fault       *RuleFault // the fault that stopped evaluation, when Faulted or Unavailable
+	Trace       Trace
+}
+
+// Disposition names the decision's outcome for the event row. An Unavailable decision is never
+// persisted, so it has no disposition of its own; it reports faulted for callers that only display
+// it (the dry-run).
+func (d Decision) Disposition() string {
+	switch {
+	case d.Faulted || d.Unavailable:
+		return DispositionFaulted
+	case d.Drop:
+		return DispositionDropped
+	default:
+		return DispositionRouted
+	}
 }
 
 // Trace records how a delivery was routed. It is persisted on the event and on every todo the
@@ -410,7 +513,8 @@ type Trace struct {
 	OnceKey string `json:"once_key,omitempty"`
 }
 
-// RuleFault records a rule that could not be evaluated and was therefore treated as no-match.
+// RuleFault records a rule that could not be evaluated. Evaluation stops at the first one, so a
+// trace carries at most one. RuleIndex -1 is the sandbox reporting that evaluation could not run.
 type RuleFault struct {
 	RuleIndex int    `json:"rule_index"`
 	RuleID    string `json:"rule_id,omitempty"`
@@ -419,7 +523,7 @@ type RuleFault struct {
 }
 
 // MatchResult is what the jq half of routing reports: the index of the first matching rule, if
-// any, and every rule that faulted on the way. It deliberately carries no action — the action is
+// any, or the fault that stopped evaluation. It deliberately carries no action — the action is
 // looked up by Decide from the caller's own configuration, so whatever evaluates the expressions
 // (in particular the sandbox child process) can say WHICH rule matched but never WHERE it goes.
 type MatchResult struct {
@@ -435,8 +539,9 @@ func Evaluate(ctx context.Context, cfg Config, g Grant, event map[string]any) De
 }
 
 // Match runs the rules, in order, against one normalized event (see Envelope) with params bound as
-// $params, and stops at the first match. It never fails: every fault degrades to no-match and is
-// recorded.
+// $params, and stops at the first match or the first fault, whichever comes first. A fault is
+// recorded and ends evaluation. It is never a no-match that lets the next rule, or the default,
+// route the delivery (SPEC-0026 REQ-1).
 func Match(ctx context.Context, rules []Rule, params map[string]any, event map[string]any) MatchResult {
 	budget, cancel := context.WithTimeout(ctx, EventBudget)
 	defer cancel()
@@ -445,20 +550,20 @@ func Match(ctx context.Context, rules []Rule, params map[string]any, event map[s
 	var res MatchResult
 	for i, r := range rules {
 		if budget.Err() != nil {
-			res.Faults = append(res.Faults, RuleFault{RuleIndex: i, RuleID: r.ID, Cause: FaultBudgetExhausted})
-			break
+			res.Faults = []RuleFault{{RuleIndex: i, RuleID: r.ID, Cause: FaultBudgetExhausted}}
+			return res
 		}
 		code, err := Compile(r.Expr)
 		if err != nil {
 			// A stored rule that no longer compiles (e.g. the sandbox tightened after it was saved)
 			// must not route anything, and must say so.
-			res.Faults = append(res.Faults, RuleFault{RuleIndex: i, RuleID: r.ID, Cause: FaultCompile, Detail: clip(err.Error())})
-			continue
+			res.Faults = []RuleFault{{RuleIndex: i, RuleID: r.ID, Cause: FaultCompile, Detail: clip(err.Error())}}
+			return res
 		}
 		matched, cause, detail := run(budget, code, event, vars)
 		if cause != "" {
-			res.Faults = append(res.Faults, RuleFault{RuleIndex: i, RuleID: r.ID, Cause: cause, Detail: detail})
-			continue
+			res.Faults = []RuleFault{{RuleIndex: i, RuleID: r.ID, Cause: cause, Detail: detail}}
+			return res
 		}
 		if matched {
 			idx := i
@@ -472,20 +577,32 @@ func Match(ctx context.Context, rules []Rule, params map[string]any, event map[s
 // Decide turns a MatchResult into a route under the grant. It is pure Go over the caller's own
 // configuration: a RuleIndex out of range (which only a broken evaluator could produce) is ignored
 // rather than trusted.
+//
+// Any fault wins over any match. A result that reports a fault is faulted even if it also names a
+// rule, so an evaluator that misbehaves can never turn a fault into a route. A fault at RuleIndex -1
+// is the sandbox saying evaluation could not run at all, which makes the decision Unavailable.
 func Decide(cfg Config, g Grant, m MatchResult) Decision {
-	if m.RuleIndex == nil || *m.RuleIndex < 0 || *m.RuleIndex >= len(cfg.Rules) {
-		return defaultDecision(cfg, g, CauseNoMatch, m.Faults)
+	if len(m.Faults) > 0 {
+		return faultDecision(cfg, m.Faults[0])
+	}
+	if m.RuleIndex == nil {
+		return defaultDecision(cfg, g, CauseNoMatch)
+	}
+	if *m.RuleIndex < 0 || *m.RuleIndex >= len(cfg.Rules) {
+		// Only a broken evaluator names a rule that does not exist. Nothing it reported can be trusted,
+		// so the decision is Unavailable rather than a default route.
+		return faultDecision(cfg, RuleFault{RuleIndex: -1, Cause: FaultSandbox, Detail: "evaluator named a rule that does not exist"})
 	}
 	idx := *m.RuleIndex
 	r := cfg.Rules[idx]
 	if d, ok := apply(r.Action, g); ok {
-		d.Trace = Trace{Stage: StageRule, RuleIndex: &idx, RuleID: r.ID, RuleName: r.Name, Action: r.Action, Faults: m.Faults}
+		d.Trace = Trace{Stage: StageRule, RuleIndex: &idx, RuleID: r.ID, RuleName: r.Name, Action: r.Action}
 		return d
 	}
 	// Matched, but the rule now names something the webhook can no longer reach. Taking the default
 	// (rather than trying later rules) keeps the outcome predictable: a revoked target never silently
 	// promotes a broader rule further down the list.
-	d := defaultDecision(cfg, g, CauseRuleNotGranted, m.Faults)
+	d := defaultDecision(cfg, g, CauseRuleNotGranted)
 	d.Trace.RuleIndex, d.Trace.RuleID, d.Trace.RuleName = &idx, r.ID, r.Name
 	return d
 }
@@ -548,12 +665,31 @@ func paramsValue(params map[string]any) any {
 	return map[string]any{}
 }
 
+// faultDecision is the fail-closed outcome: no queue, no endpoints, and the fault on the trace with
+// the rule's id, name, index, cause and detail. The fault's rule id is re-read from the caller's own
+// configuration, like Decide's match, so an evaluator can name a rule but never invent one.
+// Governing: SPEC-0026 REQ-1 "Faults Stop Evaluation", REQ-2 "Unavailable Sandbox Refuses the
+// Delivery".
+func faultDecision(cfg Config, f RuleFault) Decision {
+	if f.RuleIndex < 0 || f.RuleIndex >= len(cfg.Rules) {
+		f.RuleIndex, f.RuleID = -1, ""
+		t := Trace{Stage: StageFault, Cause: f.Cause, Faults: []RuleFault{f}}
+		return Decision{Unavailable: true, Fault: &f, Trace: t}
+	}
+	idx := f.RuleIndex
+	r := cfg.Rules[idx]
+	f.RuleID = r.ID
+	t := Trace{Stage: StageFault, Cause: f.Cause, RuleIndex: &idx, RuleID: r.ID, RuleName: r.Name,
+		Faults: []RuleFault{f}}
+	return Decision{Faulted: true, Fault: &f, Trace: t}
+}
+
 // defaultDecision applies the configured default, falling back to the webhook's target queue across
 // every target — the pre-routing behavior — when no default is set or the default is unreachable.
-func defaultDecision(cfg Config, g Grant, cause string, faults []RuleFault) Decision {
+func defaultDecision(cfg Config, g Grant, cause string) Decision {
 	if cfg.Default != nil {
 		if d, ok := apply(*cfg.Default, g); ok {
-			d.Trace = Trace{Stage: StageDefault, Cause: cause, Action: *cfg.Default, Faults: faults}
+			d.Trace = Trace{Stage: StageDefault, Cause: cause, Action: *cfg.Default}
 			return d
 		}
 		cause = CauseDefaultNotGranted
@@ -561,7 +697,7 @@ func defaultDecision(cfg Config, g Grant, cause string, faults []RuleFault) Deci
 	a := Action{Queue: g.TargetQueue}
 	return Decision{
 		Queue: g.TargetQueue, Endpoints: slices.Clone(g.Endpoints),
-		Trace: Trace{Stage: StageDefault, Cause: cause, Action: a, Faults: faults},
+		Trace: Trace{Stage: StageDefault, Cause: cause, Action: a},
 	}
 }
 

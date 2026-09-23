@@ -49,7 +49,7 @@ func onlySandboxFault(t *testing.T, d Decision) RuleFault {
 // The child is the production path: its decision must be identical to in-process evaluation.
 func TestSandboxAgreesWithInProcess(t *testing.T) {
 	cfg := Config{Rules: []Rule{
-		rule("err", `.artifact.title | error`, Action{Drop: true}),
+		rule("miss", `.artifact.title == "nope"`, Action{Drop: true}),
 		rule("handoff", `.artifact.title | startswith("[handoff:")`, Action{Queue: "handoff", Endpoints: []string{epC}}),
 	}, Default: &Action{Drop: true}}
 	in := cairnInput(cairnBody)
@@ -60,6 +60,35 @@ func TestSandboxAgreesWithInProcess(t *testing.T) {
 	}
 	if got.Queue != "handoff" || !slices.Equal(got.Endpoints, []string{epC}) {
 		t.Fatalf("decision = %+v, want handoff on %s", got, epC)
+	}
+}
+
+// A rule fault inside the child faults the delivery exactly as in-process evaluation does: the
+// child reports the fault, and the parent never routes past it (SPEC-0026 REQ-1).
+func TestSandboxFaultAgreesWithInProcess(t *testing.T) {
+	cfg := Config{Rules: []Rule{
+		rule("err", `.artifact.title | error`, Action{Drop: true}),
+		rule("handoff", `.artifact.title | startswith("[handoff:")`, Action{Queue: "handoff", Endpoints: []string{epC}}),
+	}, Default: &Action{Queue: "inbox"}}
+	in := cairnInput(cairnBody)
+	got := testSandbox(t).Route(context.Background(), cfg, grant(), in)
+	want := InProcess{}.Route(context.Background(), cfg, grant(), in)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sandbox decision differs from in-process:\n got %+v\nwant %+v", got, want)
+	}
+	assertFaulted(t, got, "err", 0, FaultError)
+}
+
+// Without a sandbox, a webhook with rules is Unavailable (the receiver answers 503) and one without
+// rules routes as it always did (SPEC-0026 REQ-2).
+func TestUnavailableRouter(t *testing.T) {
+	d := Unavailable{}.Route(context.Background(), Config{Rules: []Rule{rule("ok", `true`, Action{Queue: "forge"})}}, grant(), cairnInput(`{}`))
+	if !d.Unavailable || d.Queue != "" || len(d.Endpoints) != 0 {
+		t.Fatalf("decision = %+v, want Unavailable with no route", d)
+	}
+	none := Unavailable{}.Route(context.Background(), Config{}, grant(), cairnInput(`{}`))
+	if none.Unavailable || none.Queue != "inbox" {
+		t.Fatalf("no-rules decision = %+v, want the target queue", none)
 	}
 }
 
@@ -92,34 +121,27 @@ func TestSandboxContainsMemoryBombs(t *testing.T) {
 				t.Fatalf("bomb took %v to contain", elapsed)
 			}
 			// Two containment outcomes are both correct, and which one wins is a scheduling race inside
-			// the child: the watchdog kills the child (a sandbox-level fault, default routing), or the
-			// bomb rule's own timeout fires first and it is recorded as a faulted no-match before the
-			// next rule matches. What must never happen is the bomb rule matching (its drop) or the
-			// evaluation escaping the child's bounds.
-			if d.Drop {
-				t.Fatalf("decision = %+v, the bomb rule must never match", d)
+			// the child. Either the watchdog kills the child (a sandbox-level fault: Unavailable, the
+			// receiver answers 503), or the bomb rule's own timeout fires first and the delivery is
+			// faulted at the bomb rule. Either way nothing routes: not the bomb's drop, not the next
+			// rule, not the default (SPEC-0026 REQ-1, REQ-2).
+			if d.Drop || d.Queue != "" || len(d.Endpoints) != 0 {
+				t.Fatalf("decision = %+v, a contained bomb must route nowhere", d)
 			}
-			if len(d.Trace.Faults) == 0 {
-				t.Fatalf("decision = %+v, want the bomb recorded as a fault", d)
+			if d.Fault == nil || len(d.Trace.Faults) != 1 {
+				t.Fatalf("decision = %+v, want the bomb recorded as exactly one fault", d)
 			}
-			switch f := d.Trace.Faults[0]; {
+			switch f := *d.Fault; {
 			case f.RuleIndex == -1 && f.Cause == FaultSandbox:
-				if d.Queue != "inbox" || d.Trace.Cause != CauseNoMatch {
-					t.Fatalf("killed child decision = %+v, want default routing", d)
+				if !d.Unavailable {
+					t.Fatalf("killed child decision = %+v, want Unavailable", d)
 				}
-			case f.RuleID == "bomb" && (f.Cause == FaultTimeout || f.Cause == FaultError):
-				// A single uninterruptible builtin can outlive its own RuleTimeout and eat what is left
-				// of the event budget, which starves the rules behind it. Whether "ok" still gets to run
-				// is load-dependent; both landings are contained. What matters is that the bomb never
-				// routed: the next rule (forge) or the default (inbox), nothing else.
-				if d.Queue == "forge" && d.Trace.RuleID != "ok" {
-					t.Fatalf("faulted bomb decision = %+v, want the next rule to match", d)
-				}
-				if d.Queue != "forge" && d.Queue != "inbox" {
-					t.Fatalf("faulted bomb decision = %+v, want forge or the default", d)
+			case f.RuleID == "bomb" && (f.Cause == FaultTimeout || f.Cause == FaultError || f.Cause == FaultBudgetExhausted):
+				if !d.Faulted {
+					t.Fatalf("faulted bomb decision = %+v, want Faulted", d)
 				}
 			default:
-				t.Fatalf("faults = %+v, want a sandbox failure or a faulted bomb rule", d.Trace.Faults)
+				t.Fatalf("fault = %+v, want a sandbox failure or a faulted bomb rule", f)
 			}
 		})
 	}
@@ -159,14 +181,14 @@ func TestSandboxDeadlineKillsTheChild(t *testing.T) {
 	if f := onlySandboxFault(t, d); f.Cause != FaultSandbox || !strings.Contains(f.Detail, "deadline") {
 		t.Fatalf("fault = %+v, want a deadline sandbox failure", f)
 	}
-	if d.Queue != "inbox" {
-		t.Fatalf("decision = %+v, want default routing", d)
+	if !d.Unavailable || d.Queue != "" {
+		t.Fatalf("decision = %+v, want Unavailable with no route", d)
 	}
 }
 
-// With every slot taken, a delivery waits briefly and then routes by default instead of queueing
-// unboundedly behind other tenants' evaluations.
-func TestSandboxBusyRoutesByDefault(t *testing.T) {
+// With every slot taken, a delivery waits briefly and is then refused as Unavailable (the producer
+// retries), instead of queueing unboundedly behind other tenants' evaluations or routing by default.
+func TestSandboxBusyIsUnavailable(t *testing.T) {
 	s := testSandbox(t, WithMaxChildren(1))
 	s.queueWait = 20 * time.Millisecond
 	s.slots <- struct{}{}
@@ -174,6 +196,9 @@ func TestSandboxBusyRoutesByDefault(t *testing.T) {
 	d := s.Route(context.Background(), Config{Rules: []Rule{rule("ok", `true`, Action{Queue: "forge"})}}, grant(), cairnInput(`{}`))
 	if f := onlySandboxFault(t, d); f.Cause != FaultSandboxBusy {
 		t.Fatalf("fault = %+v, want %s", f, FaultSandboxBusy)
+	}
+	if !d.Unavailable || d.Queue != "" {
+		t.Fatalf("decision = %+v, want Unavailable with no route", d)
 	}
 }
 
@@ -204,11 +229,12 @@ func TestChildEnvironIsMinimal(t *testing.T) {
 	}
 }
 
-// Decide trusts only the caller's config: an out-of-range index from a broken evaluator is ignored.
-func TestDecideIgnoresOutOfRangeIndex(t *testing.T) {
+// Decide trusts only the caller's config: an out-of-range index from a broken evaluator is never
+// followed, and never falls back to the default either. It is Unavailable.
+func TestDecideRefusesOutOfRangeIndex(t *testing.T) {
 	bad := 7
 	d := Decide(Config{Rules: []Rule{rule("only", `true`, Action{Drop: true})}}, grant(), MatchResult{RuleIndex: &bad})
-	if d.Drop || d.Queue != "inbox" {
-		t.Fatalf("decision = %+v, want the default for an out-of-range index", d)
+	if d.Drop || d.Queue != "" || !d.Unavailable {
+		t.Fatalf("decision = %+v, want Unavailable for an out-of-range index", d)
 	}
 }

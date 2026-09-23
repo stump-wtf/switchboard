@@ -9,19 +9,24 @@ package routing
 //
 // So the jq half of routing runs in a child process: the same binary, re-executed with an empty
 // environment (no inherited secrets, no DSN), fed {rules, envelope input} on stdin. The child builds
-// the envelope, runs Match, and writes back only the index of the first matching rule plus faults. A
-// watchdog inside the child exits it the moment runtime-mapped memory passes its limit; the parent
-// kills it on a hard wall-clock deadline and caps how many children run at once. Any child failure
-// is a recorded fault and the delivery takes its default — never an error to the producer.
+// the envelope, runs Match, and writes back only the index of the first matching rule, or the fault
+// that stopped evaluation. A watchdog inside the child exits it the moment runtime-mapped memory
+// passes its limit; the parent kills it on a hard wall-clock deadline and caps how many children run
+// at once. Any child failure, and a busy or missing sandbox, is a sandbox fault (RuleIndex -1). Decide
+// turns it into an Unavailable decision, and the receiver refuses the delivery with a 503 and
+// persists nothing, so the producer retries. It never routes by default.
 //
 // The parent then applies the action with Decide over its OWN copy of the configuration and grant,
 // so even a child that misbehaved can only ever name a rule, not a destination.
 //
 // Governing: SPEC-0020 Security Requirements "Expression sandboxing" (bounded by node-count and
-// wall-clock limits), REQ "Deterministic Rule Evaluation" (timeout treated as no-match), REQ
-// "Isolation and Tenant Safety"; ADR-0024.
+// wall-clock limits), REQ "Isolation and Tenant Safety"; ADR-0024; SPEC-0026 REQ-1 "Faults Stop
+// Evaluation", REQ-2 "Unavailable Sandbox Refuses the Delivery"; ADR-0031.
 //
 // @joestump-agent 09/11/2026 - Added after gojq's in-process limits proved unable to bound memory.
+//
+// @joestump-agent 09/23/2026 - A sandbox failure refuses the delivery instead of routing it by
+// default (#212).
 
 import (
 	"bytes"
@@ -55,7 +60,8 @@ const (
 	// start on a loaded host must not turn into a spurious fault, and the whole bound (2s, plus at most
 	// queueWait) stays well inside producers' 5s delivery timeouts.
 	childStartAllowance = 1750 * time.Millisecond
-	// queueWait is how long a delivery waits for a free child slot before routing by default.
+	// queueWait is how long a delivery waits for a free child slot before it is refused as
+	// unavailable (the producer retries).
 	queueWait = time.Second
 
 	maxChildRequestBytes  = 16 << 20
@@ -82,8 +88,9 @@ func (InProcess) Route(ctx context.Context, cfg Config, g Grant, in EnvelopeInpu
 	return Evaluate(ctx, cfg, g, Envelope(in))
 }
 
-// Unavailable routes by default with a recorded fault. It stands in when no Sandbox could be built,
-// so a webhook with rules degrades to its default rather than evaluating tenant expressions
+// Unavailable reports every delivery to a webhook with rules as Unavailable. It stands in when no
+// Sandbox could be built, so such a webhook refuses its deliveries (503, producer retries) rather
+// than routing them by default or evaluating tenant expressions
 // in-process without a memory bound.
 type Unavailable struct{}
 

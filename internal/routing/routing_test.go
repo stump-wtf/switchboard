@@ -145,62 +145,131 @@ func TestEvaluateDropAndDefaults(t *testing.T) {
 	}
 }
 
-// A rule that errors is no-match, recorded, and evaluation continues to the next rule.
-func TestEvaluateErrorsAreRecordedNoMatch(t *testing.T) {
+// A rule that errors stops evaluation there: no later rule runs, the default does not apply, and the
+// decision is faulted with the fault on the trace (SPEC-0026 REQ-1).
+func TestEvaluateErrorStopsEvaluation(t *testing.T) {
 	cfg := Config{Rules: []Rule{
 		rule("boom", `error("boom")`, Action{Drop: true}),
+		rule("ok", `true`, Action{Queue: "forge"}),
+	}, Default: &Action{Queue: "inbox"}}
+	d := Evaluate(context.Background(), cfg, grant(), event(`{}`))
+	assertFaulted(t, d, "boom", 0, FaultError)
+	if d.Fault.Detail == "" {
+		t.Fatalf("fault = %+v, want the error detail recorded", d.Fault)
+	}
+}
+
+// A type error in a later rule faults even though an earlier rule was evaluated and did not match.
+func TestEvaluateTypeErrorAfterNoMatchFaults(t *testing.T) {
+	cfg := Config{Rules: []Rule{
+		rule("miss", `.kind == "nope"`, Action{Drop: true}),
 		rule("type", `.payload.name.first`, Action{Drop: true}),
 		rule("ok", `true`, Action{Queue: "forge"}),
 	}}
 	d := Evaluate(context.Background(), cfg, grant(), event(`{"name":"not-an-object"}`))
-	if d.Queue != "forge" || len(d.Trace.Faults) != 2 {
-		t.Fatalf("decision = %+v, want forge with two recorded faults", d)
+	assertFaulted(t, d, "type", 1, FaultError)
+}
+
+// A runaway rule times out within its budget, and the timeout faults the delivery rather than
+// letting the healthy rule after it route. (Memory bombs are the sandbox's job and are exercised
+// through a real child process in sandbox_test.go — running one in-process would allocate gigabytes
+// inside the test binary.)
+func TestEvaluateTimeoutIsBoundedAndFaults(t *testing.T) {
+	for name, expr := range map[string]string{"spin": `last(range(1e12)) > 0`, "recurse": `def f: f; f`} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Config{Rules: []Rule{
+				rule(name, expr, Action{Drop: true}),
+				rule("ok", `true`, Action{Queue: "forge"}),
+			}}
+			start := time.Now()
+			d := Evaluate(context.Background(), cfg, grant(), event(`{}`))
+			if elapsed := time.Since(start); elapsed > EventBudget+200*time.Millisecond {
+				t.Fatalf("evaluation took %v, want it bounded by the %v event budget", elapsed, EventBudget)
+			}
+			assertFaulted(t, d, name, 0, FaultTimeout)
+		})
 	}
-	for _, f := range d.Trace.Faults {
-		if f.Cause != FaultError {
-			t.Fatalf("fault = %+v, want cause %s", f, FaultError)
+}
+
+// A spent per-event budget is a fault at the rule it stopped in front of, never the default.
+func TestEvaluateBudgetExhaustionFaults(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the budget derives from ctx, so it is spent before the first rule
+	cfg := Config{Rules: []Rule{rule("first", `true`, Action{Queue: "forge"})}, Default: &Action{Queue: "inbox"}}
+	d := Evaluate(ctx, cfg, grant(), event(`{}`))
+	assertFaulted(t, d, "first", 0, FaultBudgetExhausted)
+}
+
+// A stored rule that no longer compiles faults the delivery.
+func TestEvaluateCompileFaultStops(t *testing.T) {
+	cfg := Config{Rules: []Rule{
+		rule("stale", `env.HOME`, Action{Drop: true}),
+		rule("ok", `true`, Action{Queue: "forge"}),
+	}}
+	d := Evaluate(context.Background(), cfg, grant(), event(`{}`))
+	assertFaulted(t, d, "stale", 0, FaultCompile)
+}
+
+// SPEC-0026 REQ-1 scenario "A mistyped trust rule no longer admits everyone", with NO `| arrays`
+// guard in the rule: the engine itself fails closed.
+func TestMistypedTrustRuleFailsClosedWithoutGuards(t *testing.T) {
+	cfg := Config{
+		Rules: []Rule{
+			rule("r1", `.payload.issue.user.login as $a | any($params.trusted[]; . == $a) | not`, Action{Drop: true}),
+			rule("r2", `true`, Action{Queue: "forge"}),
+		},
+		Params: map[string]any{"trusted": "alice"}, // a string, not a list
+	}
+	d := Evaluate(context.Background(), cfg, grant(), event(`{"issue":{"user":{"login":"mallory"}}}`))
+	assertFaulted(t, d, "r1", 0, FaultError)
+	if d.Disposition() != DispositionFaulted {
+		t.Fatalf("disposition = %q, want %q", d.Disposition(), DispositionFaulted)
+	}
+}
+
+// SPEC-0026 REQ-1 scenario "A faulting drop rule does not route its delivery": the default of queue
+// inbox is not taken.
+func TestFaultingDropRuleDoesNotTakeDefault(t *testing.T) {
+	cfg := Config{Rules: []Rule{rule("big", `last(range(1e12)) > 0`, Action{Drop: true})}, Default: &Action{Queue: "inbox"}}
+	d := Evaluate(context.Background(), cfg, grant(), event(`{}`))
+	assertFaulted(t, d, "big", 0, FaultTimeout)
+}
+
+// Decide never lets a fault become a route, even when a misbehaving evaluator also names a rule.
+func TestDecideFaultWinsOverMatch(t *testing.T) {
+	cfg := Config{Rules: []Rule{rule("a", `true`, Action{Queue: "forge"}), rule("b", `true`, Action{Queue: "forge"})}}
+	idx := 1
+	d := Decide(cfg, grant(), MatchResult{RuleIndex: &idx, Faults: []RuleFault{{RuleIndex: 0, RuleID: "forged", Cause: FaultError}}})
+	assertFaulted(t, d, "a", 0, FaultError) // the rule id comes from the caller's config, not the result
+}
+
+// A sandbox-level fault (RuleIndex -1), or a fault naming a rule that does not exist, is
+// Unavailable: the receiver refuses the delivery rather than recording anything about it.
+func TestDecideSandboxFaultIsUnavailable(t *testing.T) {
+	cfg := Config{Rules: []Rule{rule("a", `true`, Action{Queue: "forge"})}}
+	for _, f := range []RuleFault{{RuleIndex: -1, Cause: FaultSandbox}, {RuleIndex: 5, Cause: FaultError}} {
+		d := Decide(cfg, grant(), MatchResult{Faults: []RuleFault{f}})
+		if !d.Unavailable || d.Faulted || d.Queue != "" || len(d.Endpoints) != 0 || d.Drop {
+			t.Fatalf("fault %+v: decision = %+v, want Unavailable with no route", f, d)
+		}
+		if d.Fault == nil || d.Fault.RuleIndex != -1 || d.Trace.Stage != StageFault {
+			t.Fatalf("fault %+v: decision = %+v, want the sandbox fault on a fault-stage trace", f, d)
 		}
 	}
 }
 
-// A runaway rule times out as no-match within its budget and evaluation moves on. (Memory bombs are
-// the sandbox's job and are exercised through a real child process in sandbox_test.go — running one
-// in-process would allocate gigabytes inside the test binary.)
-func TestEvaluateTimeoutIsBounded(t *testing.T) {
-	cfg := Config{Rules: []Rule{
-		rule("spin", `last(range(1e12)) > 0`, Action{Drop: true}),
-		rule("recurse", `def f: f; f`, Action{Drop: true}),
-		rule("ok", `true`, Action{Queue: "forge"}),
-	}}
-	start := time.Now()
-	d := Evaluate(context.Background(), cfg, grant(), event(`{}`))
-	if elapsed := time.Since(start); elapsed > EventBudget+200*time.Millisecond {
-		t.Fatalf("evaluation took %v, want it bounded by the %v event budget", elapsed, EventBudget)
+func assertFaulted(t *testing.T, d Decision, ruleID string, index int, cause string) {
+	t.Helper()
+	if !d.Faulted || d.Unavailable || d.Drop || d.Queue != "" || len(d.Endpoints) != 0 {
+		t.Fatalf("decision = %+v, want faulted with no route", d)
 	}
-	if d.Queue != "forge" {
-		t.Fatalf("decision = %+v, want the healthy rule after the runaway ones", d)
+	if d.Fault == nil || d.Fault.RuleID != ruleID || d.Fault.RuleIndex != index || d.Fault.Cause != cause {
+		t.Fatalf("fault = %+v, want rule %s at %d with cause %s", d.Fault, ruleID, index, cause)
 	}
-	causes := map[string]string{}
-	for _, f := range d.Trace.Faults {
-		causes[f.RuleID] = f.Cause
-	}
-	if causes["spin"] != FaultTimeout || causes["recurse"] != FaultTimeout {
-		t.Fatalf("faults = %+v, want spin and recurse to time out", d.Trace.Faults)
-	}
-}
-
-func TestEvaluateBudgetExhaustion(t *testing.T) {
-	var rules []Rule
-	for i := 0; i < 8; i++ {
-		rules = append(rules, rule("spin"+string(rune('a'+i)), `last(range(1e12))`, Action{Drop: true}))
-	}
-	d := Evaluate(context.Background(), Config{Rules: rules}, grant(), event(`{}`))
-	if d.Drop || d.Trace.Cause != CauseNoMatch {
-		t.Fatalf("decision = %+v, want the default once the budget is spent", d)
-	}
-	last := d.Trace.Faults[len(d.Trace.Faults)-1]
-	if last.Cause != FaultBudgetExhausted {
-		t.Fatalf("last fault = %+v, want %s", last, FaultBudgetExhausted)
+	tr := d.Trace
+	if tr.Stage != StageFault || tr.Cause != cause || tr.RuleID != ruleID || tr.RuleIndex == nil ||
+		*tr.RuleIndex != index || len(tr.Faults) != 1 || tr.Faults[0].Cause != cause {
+		t.Fatalf("trace = %+v, want a fault-stage trace naming rule %s at %d (%s)", tr, ruleID, index, cause)
 	}
 }
 
@@ -303,6 +372,39 @@ func TestValidate(t *testing.T) {
 	}
 	if err := Validate(Config{Rules: []Rule{good, rule("pick", `true`, Action{Queue: "handoff", Endpoints: []string{epC}})}, Default: &Action{Drop: true}}, grant()); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+}
+
+// SPEC-0026 REQ-3: params are scalars or homogeneous lists of strings or numbers. Anything else is
+// refused naming the key, including the scenario "Nested params refused".
+func TestValidateParamTypes(t *testing.T) {
+	ok := []map[string]any{
+		{"trusted": []any{"alice", "bob"}},
+		{"ids": []any{float64(1), float64(2)}},
+		{"name": "x", "n": float64(3), "on": true, "empty": []any{}},
+		{"go": []string{"a"}, "i": 7},
+	}
+	for _, p := range ok {
+		if err := Validate(Config{Params: p}, grant()); err != nil {
+			t.Fatalf("params %v rejected: %v", p, err)
+		}
+	}
+	bad := map[string]map[string]any{
+		"trusted": {"trusted": map[string]any{"alice": true}},
+		"mixed":   {"mixed": []any{"a", float64(1)}},
+		"nested":  {"nested": []any{[]any{"a"}}},
+		"bools":   {"bools": []any{true}},
+		"nil":     {"nil": nil},
+	}
+	for key, p := range bad {
+		err := Validate(Config{Params: p}, grant())
+		if err == nil {
+			t.Fatalf("params %v accepted", p)
+		}
+		ve := validationCode(t, err)
+		if ve.Code != CodeInvalidParams || !strings.Contains(err.Error(), `"`+key+`"`) {
+			t.Fatalf("params %v: error %q (code %s), want %s naming %q", p, err, ve.Code, CodeInvalidParams, key)
+		}
 	}
 }
 
