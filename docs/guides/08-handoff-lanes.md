@@ -4,7 +4,7 @@ title: Run handoff work orders and difficulty lanes
 
 # Run handoff work orders and difficulty lanes
 
-This guide wires the [rule packs](../routing/rule-packs/README.md). Once it is in place:
+This guide wires the [rule packs](https://github.com/stump-wtf/switchboard/blob/main/docs/routing/rule-packs/README.md). Once it is in place:
 
 - **Cairn handoffs:** an agent writes a tagged handoff prompt to Cairn, and one worker in the right lane picks it up.
 - **Forge issues:** Gitea and GitHub issues route by difficulty. `size/S` goes to the local Qwen, `size/M` and `size/L` to GLM 5.3 flash and GLM 5.3 on two providers each. `size/XL` and `HUMAN` are held for Joe. Unsized issues go to a triage worker that labels them, and the label event re-routes the issue.

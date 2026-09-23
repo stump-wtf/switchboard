@@ -31,7 +31,7 @@ Three mechanical problems sit underneath:
 * **Provenance, not text, makes work eligible.** Only switchboard-verified facts may gate a work order: the signature, the forge's own author and sender logins, and cairn's authenticated actor. Tags and labels only choose among work that is already eligible.
 * **Semi-trust is not permission.** A work order never widens the executing worker's clamps. Its embedded text stays potentially hostile even when its provenance is ours.
 * **Exactly one worker executes each work order.** This must hold across relabels, redeliveries, and two identities.
-* **Doorbells must wake the right worker.** Doorbells are unicast round-robin across an endpoint's sessions ([ADR-0013](ADR-0013-push-is-a-doorbell.md)). A session's queues are its endpoint's scope, so every session of an endpoint is eligible for every queue's doorbell.
+* **Doorbells must wake the right worker.** Doorbells are unicast round-robin across an endpoint's sessions ([ADR-0013](ADR-0013-channels-push-delivery.md)). A session's queues are its endpoint's scope, so every session of an endpoint is eligible for every queue's doorbell.
 * **Competing consumers are the load balancer.** Several workers on several provider accounts claim from one lane with `FOR UPDATE SKIP LOCKED`.
 * **Packs stay deployment-agnostic.** A checked-in rule pack must not embed endpoint ids or allowlists that differ between deployments.
 
@@ -140,6 +140,6 @@ Each case asserts exactly one exclusive endpoint. The pool-review pack test cove
 
 ## More Information
 
-* Pack, lane table, and rule order: [docs/routing/rule-packs/README.md](../routing/rule-packs/README.md). Runbook: [guide 08](../guides/08-handoff-lanes.md).
+* Pack, lane table, and rule order: [docs/routing/rule-packs/README.md](https://github.com/stump-wtf/switchboard/blob/main/docs/routing/rule-packs/README.md). Runbook: [guide 08](../guides/08-handoff-lanes.md).
 * Migration `0019_handoff_lanes.sql` adds `endpoint_webhooks.routing_params`, `todos.work_order`, and `routing_once`.
 * Lane worker wiring (crush workers per provider, credentials) lives in the dotfiles repo.

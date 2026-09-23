@@ -129,7 +129,7 @@ every lane pool, and rules that pick the pool. A handoff is an artifact tagged `
    revealed `signing_secret` for cairn's `CAIRN_OUTBOUND_WEBHOOK_SECRET`, and the `ingest_url` for
    `CAIRN_OUTBOUND_WEBHOOK_URLS`.
 2. `add_webhook_route` from that webhook to each lane pool endpoint.
-3. `set_webhook_rules` — in full, that is the [fleet pack](../routing/rule-packs/README.md); its cairn
+3. `set_webhook_rules` — in full, that is the [fleet pack](https://github.com/stump-wtf/switchboard/blob/main/docs/routing/rule-packs/README.md); its cairn
    half looks like this:
 
 ```json
