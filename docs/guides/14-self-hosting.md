@@ -167,8 +167,41 @@ Two rules matter more than the rest:
 - **Do not buffer `/mcp/*`.** A vended MCP endpoint's `GET` is a long-lived notification stream. A
   buffering proxy holds doorbells until the connection closes. Caddy:
   `reverse_proxy … { flush_interval -1 }`. nginx: `proxy_buffering off;`.
-- **Pass a trusted `X-Forwarded-For`.** The pre-auth rate limiter keys on the client IP, and with
-  TLS terminated upstream every agent otherwise arrives from one address and shares a bucket.
+- **Traefik (v3): the defaults are already right — two settings are not.** Traefik streams
+  responses as they arrive (there is no `flush_interval`-style option that needs setting), and
+  `respondingTimeouts.writeTimeout` defaults to `0s` (no timeout), which is what lets the
+  long-lived stream stay open. Two settings will silently hold or cut it:
+  - attaching a `buffering` middleware to the switchboard router — Traefik buffers the entire
+    response and delivers nothing until it ends. Measured on Traefik 3.7.13 with a synthetic
+    SSE endpoint behind a file-provider router: events streamed incrementally without the
+    middleware; with it attached, **zero bytes — not even response headers — arrived for 90s**
+    while the upstream had written the whole response within 5s.
+  - setting a global `respondingTimeouts.writeTimeout` on the entrypoint, which cuts every
+    `/mcp/*` stream. Leave it unset (or scope it to another entry point).
+
+  Traefik appends the client `RemoteAddr` to `X-Forwarded-For` by default
+  (`forwardedHeaders.notAppendXForwardedFor=false`), which is what the pre-auth rate limiter
+  wants. The entrypoint `forwardedHeaders.trustedIPs` option is only about *trusting inbound*
+  `X-Forwarded-*` when Traefik itself sits behind another proxy or load balancer — you do not
+  need to "enable" XFF.
+
+  ```yaml
+  http:
+    routers:
+      switchboard:
+        rule: Host(`switchboard.example.com`)
+        service: switchboard
+        entryPoints: [websecure]
+        tls:
+          certResolver: mydnschallenge
+        # No buffering middleware on this router — it holds MCP doorbells
+        # until the connection closes. Traefik's defaults stream fine.
+    services:
+      switchboard:
+        loadBalancer:
+          servers:
+            - url: http://127.0.0.1:8080
+  ```
 
 Switchboard is a complete OIDC relying party with its own login, so don't put forward-auth in front
 of it.
