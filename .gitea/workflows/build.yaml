@@ -52,6 +52,13 @@ jobs:
       - if: ${{ env.REG != '' }}
         uses: actions/checkout@v4
 
+      # The commit date for the internal/buildinfo Date stamp (SPEC-0027 REQ-1). The image build
+      # cannot compute it: .git is outside the Docker build context.
+      - if: ${{ env.REG != '' }}
+        name: Read the commit date
+        id: commit
+        run: echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+
       - if: ${{ env.REG != '' }}
         name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -86,6 +93,8 @@ jobs:
           tags: gitea.stump.rocks/stump.wtf/switchboard:scan-${{ gitea.run_id }}
           build-args: |
             VERSION=${{ gitea.sha }}
+            COMMIT=${{ gitea.sha }}
+            DATE=${{ steps.commit.outputs.date }}
           cache-from: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache
 
       - if: ${{ env.REG != '' }}
@@ -106,6 +115,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ gitea.sha }}
+            COMMIT=${{ gitea.sha }}
+            DATE=${{ steps.commit.outputs.date }}
           cache-from: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache
           cache-to: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache,mode=max
 

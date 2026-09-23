@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stump-wtf/switchboard/internal/buildinfo"
 )
 
 // testCLI is a cli with every edge captured: buffered output, a private environment, a stubbed
@@ -127,7 +129,7 @@ func TestDispatchHelpAndVersion(t *testing.T) {
 		mustContain(t, "vend help", tc.stdout.String(), "usage: switchboard endpoint vend [flags] NAME", "-queue", "-json")
 	}
 	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
-		if code := tc.run(t, args...); code != exitOK || strings.TrimSpace(tc.stdout.String()) != "switchboard "+version {
+		if code := tc.run(t, args...); code != exitOK || strings.TrimSpace(tc.stdout.String()) != "switchboard "+buildinfo.Get().Version {
 			t.Fatalf("%v: code %d, stdout %q", args, code, tc.stdout.String())
 		}
 	}

@@ -53,14 +53,16 @@ builds:
       - -mod=vendor
       - -trimpath
     ldflags:
-      # `main.version` and nothing else: cmd/switchboard/main.go declares a
-      # single `var version = "dev"` (main.go:36), so there is no Commit or Date
-      # symbol to stamp. Cairn stamps three into internal/clicmd — copying that
-      # path here would inject NOTHING and still exit 0, leaving every release
-      # binary reporting "dev". Verified by control before writing this: built
-      # with and without the flag and compared `switchboard version` output.
+      # The three internal/buildinfo stamps (SPEC-0027 REQ-1). {{.Tag}}, not
+      # {{.Version}}: the latter strips the leading "v", and REQ-1 says a v0.3.0
+      # release reports "v0.3.0" — the same string a `go install …@v0.3.0`
+      # build reports from its module version. A wrong -X path injects NOTHING
+      # and still exits 0, leaving every release binary reporting "dev", so
+      # release.yaml asserts the built binary reports the full tag.
       - -s -w
-      - -X main.version={{.Version}}
+      - -X github.com/stump-wtf/switchboard/internal/buildinfo.Version={{.Tag}}
+      - -X github.com/stump-wtf/switchboard/internal/buildinfo.Commit={{.FullCommit}}
+      - -X github.com/stump-wtf/switchboard/internal/buildinfo.Date={{.CommitDate}}
 
 archives:
   - id: default

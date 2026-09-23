@@ -33,6 +33,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/stump-wtf/switchboard/internal/buildinfo"
 )
 
 const (
@@ -247,7 +249,7 @@ func cmdHelp(c *cli, args []string) int {
 }
 
 func cmdVersion(c *cli, _ []string) int {
-	fmt.Fprintf(c.stdout, "switchboard %s\n", version)
+	fmt.Fprintf(c.stdout, "switchboard %s\n", buildinfo.Get().Version)
 	return exitOK
 }
 
