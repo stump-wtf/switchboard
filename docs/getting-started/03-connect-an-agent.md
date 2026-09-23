@@ -65,6 +65,9 @@ can opt in per launch:
 crush --channels server:switchboard
 ```
 
+This page writes the flag as `server:switchboard`, which matches Claude Code's syntax. The fork
+also accepts the bare server name (`--channels switchboard`), case-insensitively.
+
 If you use Crush's newer `crushrc` format instead of `crush.json`, declare the server there and opt
 in with the flag:
 
@@ -133,7 +136,8 @@ What to know before you rely on it:
   prompt until someone answers it, so a supervised restart is not hands-off. Run it somewhere you
   can attach to.
 - **It wants a claude.ai or Console login** — not Bedrock, Vertex, or Foundry — and on Team and
-  Enterprise plans an admin has to enable channels.
+  Enterprise plans an admin has to enable channels. See
+  [Team and Enterprise organizations](#team-and-enterprise-organizations).
 - **A startup line reading `server:switchboard · no MCP server configured with that name` can be
   wrong.** It appears when the server comes from `--mcp-config` rather than a settings file, and
   the channel works regardless. Judge by whether a doorbell starts a turn.
@@ -143,11 +147,58 @@ What to know before you rely on it:
   permission prompt for `claim` has been rung and can't act. Allow the switchboard tools up front,
   for example `--allowedTools mcp__switchboard`.
 
+### Team and Enterprise organizations
+
+Pro and Max accounts without an organization use the development flag above and nothing else.
+In an organization, two managed settings decide what loads
+([Anthropic: enterprise controls](https://code.claude.com/docs/en/channels#enterprise-controls)):
+
+- **`channelsEnabled`** is the master switch. On claude.ai Team and Enterprise plans channels are
+  blocked until an Owner turns it on (**Admin settings → Claude Code → Channels**) or it's set to
+  `true` in managed settings. While it's off, **every** channel is blocked, including
+  `--dangerously-load-development-channels`: the MCP server still connects and its tools work, but
+  doorbells never start a turn. Console organizations using API keys are allowed by default unless
+  they deploy managed settings.
+- **`allowedChannelPlugins`** replaces Anthropic's allowlist with the organization's own list of
+  `{ "marketplace": …, "plugin": … }` entries. A plugin on that list loads with
+  `--channels plugin:<plugin>@<marketplace>`, without the development flag and its startup
+  confirmation.
+
+Switchboard's channel isn't packaged as a plugin yet: the
+[Switchboard Claude Code plugin](https://github.com/stump-wtf/claude-plugin-switchboard) ships
+skills and commands, but no MCP server. So today a managed organization needs `channelsEnabled`
+and the development flag. Shipping the channel server inside the plugin is planned; once it's
+released, an organization can list the plugin in `allowedChannelPlugins` and drop the development
+flag.
+
 For how channels behave inside Claude Code — event queueing while a turn is running, the
 `<channel>` wrapper the model sees, permission relay, org policy — read Anthropic's
 [Channels guide](https://code.claude.com/docs/en/channels) and
 [Channels reference](https://code.claude.com/docs/en/channels-reference). An agent setting this up
 for you should read both before changing anything.
+
+## Reconnecting
+
+A session that opens its notification stream is rung **at once** for work that was already
+waiting, so a worker that restarts doesn't wait for the next re-ring. The catch-up is bounded:
+
+- **At most 3 todos per attach**, the **oldest** pending ones in the endpoint's scope. The rest are
+  reached by the regular re-ring (5 minutes, 20 minutes, 1 hour, 6 hours) or by your agent's own
+  `list_todos`/`claim_next`.
+- **Once a minute per todo, at most.** A worker that dies on a doorbell and reconnects isn't rung
+  for the same todo again within a minute.
+- **Charged to the same ring budget** as the re-rings: after the ring when it's created, a todo
+  gets at most 5 more, whichever mechanism sends them. A todo whose budget is spent is still on the
+  queue; it just isn't pushed.
+
+So "I reconnected and only three todos rang" is expected. Push is only the doorbell: have the agent
+drain with `claim_next` after it wakes. Endpoint presence
+([ADR-0027](/decisions/ADR-0027-endpoint-presence-clock-in-clock-out)) will replace these
+individual rings with one clock-in digest once it's implemented.
+
+To prove a worker actually heard a doorbell, and not just that switchboard delivered it, send a
+real delivery (see [Receive your first webhook](/getting-started/first-webhook)) and check that
+the agent **claims and completes** the todo. "Delivered" in switchboard's log doesn't count.
 
 ## Sign in with OAuth instead of a token
 
@@ -214,7 +265,7 @@ add a worker to `~/.config/harness/harness.toml`:
 ```toml
 [harness.switchboard-worker]
 harness = "crush"
-args = ["--yolo", "--channels", "switchboard"]
+args = ["--yolo", "--channels", "server:switchboard"]
 workdir = "~/work/switchboard-worker"
 env_file = "~/.config/harness/switchboard-worker.env"   # SWITCHBOARD_TOKEN=sbk_…, mode 0600
 description = "Crush · switchboard doorbells"

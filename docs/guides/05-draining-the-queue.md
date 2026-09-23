@@ -87,7 +87,9 @@ Pulling with `list_todos` is always correct on its own. Where a client supports 
 vended MCP endpoint, as a `notifications/claude/channel` event. Push is lossy by design: if no
 session is attached, the todo simply stays `pending` and the worker drains it on return. Unclaimed
 todos are rung again after 5 minutes, 20 minutes, 1 hour, and 6 hours, and a session that opens its
-notification stream is rung at once for the oldest few still waiting in its scope. **The durable
+notification stream is rung at once for the oldest few still waiting in its scope: at most 3 per
+attach, no todo more than once a minute, charged to the same 5-ring re-ring budget (see
+[Reconnecting](/getting-started/connect-an-agent#reconnecting)). **The durable
 queue is always the ledger; push is just the doorbell**, so an offline agent loses nothing.
 
 The doorbell rings one worker per todo rather than the whole pool, rotating between them, and
