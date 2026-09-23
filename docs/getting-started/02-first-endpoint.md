@@ -9,9 +9,10 @@ and tools you choose. This page gets you one, in the browser or from the command
 
 ## Sign in
 
-1. Open [switchboard.stump.wtf](https://switchboard.stump.wtf) and choose **open the operator
-   board →**.
-2. Choose **Log in with Pocket ID** and sign in with your passkey.
+1. Open your instance, `$SWITCHBOARD_URL` (see [Your instance URL](/getting-started/concepts#your-instance-url)),
+   and choose **open the operator board →**.
+2. Choose **Log in with Pocket ID** (or **Log in with GitHub**, if your instance offers it) and
+   sign in.
 
 Your switchboard account is created the first time you sign in. Sign-in itself goes through the
 instance's identity provider, so if it doesn't recognize you, ask whoever invited you to switchboard
@@ -51,7 +52,7 @@ everything it might ever need.
 
 After **Vend endpoint →** you see, **exactly once**:
 
-- **MCP endpoint URL**: `https://switchboard.stump.wtf/mcp/<slug>`
+- **MCP endpoint URL**: `$SWITCHBOARD_URL/mcp/<slug>`
 - **Credential · shown once**: `sbk_…`
 - **Wire it into your MCP client**: a ready-to-paste `.mcp.json` block with the credential
   embedded.
@@ -91,7 +92,7 @@ The `switchboard` binary is also a small operator CLI. It isn't published for do
 section applies only if the person running your instance gave you a build.
 
 ```
-switchboard login https://switchboard.stump.wtf    # opens your browser; --no-browser prints the URL
+switchboard login "$SWITCHBOARD_URL"               # opens your browser; --no-browser prints the URL
 switchboard status                                  # where you're logged in, and whether it's live
 switchboard endpoint vend my-agent --queue inbox    # vend, printing the credential once
 switchboard endpoint list                           # slug, agent, state, queues, expiry (never tokens)

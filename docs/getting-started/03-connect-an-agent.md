@@ -6,6 +6,8 @@ title: Connect an agent over MCP
 
 Your endpoint is a remote MCP server over Streamable HTTP. There's nothing to install on the
 switchboard side: the agent needs the URL and either the bearer credential or an OAuth sign-in.
+Examples write your instance as `$SWITCHBOARD_URL` in shell commands and `https://<your-switchboard>`
+in JSON config (see [Your instance URL](/getting-started/concepts#your-instance-url)).
 
 Getting todos into the agent works two ways:
 
@@ -49,7 +51,7 @@ Add switchboard to your `crush.json` (the project's, or the global one in `~/.co
   "mcp": {
     "switchboard": {
       "type": "http",
-      "url": "https://switchboard.stump.wtf/mcp/<slug>",
+      "url": "https://<your-switchboard>/mcp/<slug>",
       "headers": { "Authorization": "Bearer $SWITCHBOARD_TOKEN" },
       "channel_enabled": true
     }
@@ -70,7 +72,7 @@ in with the flag:
 
 ```bash
 # crushrc
-mcp add switchboard --type http --url "https://switchboard.stump.wtf/mcp/<slug>" \
+mcp add switchboard --type http --url "https://<your-switchboard>/mcp/<slug>" \
   --header Authorization "Bearer $SWITCHBOARD_TOKEN"
 ```
 
@@ -88,7 +90,7 @@ environment variable so the file is safe to commit:
   "mcpServers": {
     "switchboard": {
       "type": "http",
-      "url": "https://switchboard.stump.wtf/mcp/<slug>",
+      "url": "https://<your-switchboard>/mcp/<slug>",
       "headers": { "Authorization": "Bearer ${SWITCHBOARD_TOKEN}" }
     }
   }
@@ -98,7 +100,7 @@ environment variable so the file is safe to commit:
 Or from the command line, for your user only:
 
 ```bash
-claude mcp add --transport http --scope user switchboard https://switchboard.stump.wtf/mcp/<slug> \
+claude mcp add --transport http --scope user switchboard "$SWITCHBOARD_URL/mcp/<slug>" \
   --header "Authorization: Bearer $SWITCHBOARD_TOKEN"
 ```
 
