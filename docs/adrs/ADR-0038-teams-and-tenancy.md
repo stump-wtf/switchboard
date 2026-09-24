@@ -3,7 +3,7 @@ status: accepted
 date: 2026-09-22
 decision-makers: Joe Stump
 extends: [ADR-0008, ADR-0022]
-related: [ADR-0010, ADR-0011, ADR-0012, ADR-0024, ADR-0025, ADR-0026, ADR-0027, ADR-0028, ADR-0029, ADR-0031, ADR-0033, ADR-0034, ADR-0035, ADR-0036, ADR-0037, ADR-0039]
+related: [ADR-0010, ADR-0011, ADR-0012, ADR-0024, ADR-0025, ADR-0026, ADR-0027, ADR-0028, ADR-0029, ADR-0031, ADR-0033, ADR-0034, ADR-0035, ADR-0036, ADR-0037, ADR-0039, ADR-0040]
 ---
 
 # ADR-0038: Teams and Tenancy — Every Resource Has a User or Team Owner, and the Operator Owns None
@@ -29,7 +29,7 @@ by the team rather than by whoever set it up.
 
 **2. "Operator" means two different things, and one of them is wrong.** In this codebase the word
 names the *logged-in human managing their own agents*: the "operator board", "operator OAuth"
-(`0014_operator_oauth.sql`), "operator-authored todos" (the second ADR-0026). It has also been used
+(`0014_operator_oauth.sql`), "operator-authored todos" (ADR-0040, first filed as a second ADR-0026). It has also been used
 for *the person who runs the instance*: `SWITCHBOARD_OPERATOR_SUBJECTS` gated the provider registry
 until #181 removed both, and [ADR-0026 (GitHub login)](ADR-0026-github-second-human-login-provider.md)
 lists "Single-operator deployment reality. Switchboard is single-tenant" as a decision driver. That

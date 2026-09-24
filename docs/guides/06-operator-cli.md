@@ -154,7 +154,7 @@ is needed unless the endpoint drains exactly one queue, and must be one of its v
 of minting another, and rings nothing. `--json` prints the API response.
 
 The agent treats what you push exactly as it treats any other todo: content to act on within its
-own clamps, never instructions that widen them (ADR-0026).
+own clamps, never instructions that widen them (ADR-0040).
 
 ## The API, for other clients
 

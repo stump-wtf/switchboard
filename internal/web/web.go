@@ -561,7 +561,7 @@ var trustDefs = map[string]string{
 
 // deliveryDefs are trust modes a DELIVERY can carry that no provider ever presents, so they are
 // not lines on the providers view and not in trustDefs (which the legend and providers tests
-// enumerate as the provider modes). An operator hand-off (ADR-0026) is verified provenance from
+// enumerate as the provider modes). An operator hand-off (ADR-0040) is verified provenance from
 // the endpoint's own owner: its badge needs the same one-line definition every trust pill gets.
 var deliveryDefs = map[string]string{
 	"operator": "handed over by the operator who vended the endpoint",

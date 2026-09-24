@@ -346,7 +346,7 @@ paths:
       operationId: pushTodo
       summary: Hand an endpoint you own a todo and ring its doorbell
       description: |
-        The operator's hand (ADR-0026): mints one todo on the named endpoint and rings its
+        The operator's hand (ADR-0040): mints one todo on the named endpoint and rings its
         doorbell exactly as a verified delivery does. The hand-off is recorded as a delivery event
         of source, family and trust mode `operator`, verified, whose `verify_detail` names the
         authenticated human — so history and the board show who asked. Only the endpoint's owner

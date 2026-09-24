@@ -7,7 +7,7 @@ title: Run handoff work orders and difficulty lanes
 This guide wires the [rule packs](../routing/rule-packs/README.md). Once it is in place:
 
 - **Cairn handoffs:** an agent writes a tagged handoff prompt to Cairn, and one worker in the right lane picks it up.
-- **Forge issues:** Gitea and GitHub issues route by difficulty. `size/S` goes to the local Qwen, `size/M` and `size/L` to GLM 5.3 flash and GLM 5.3 on two providers each. `size/XL` and `HUMAN` are held for Joe. Unsized issues go to a triage worker that labels them, and the label event re-routes the issue.
+- **Forge issues:** Gitea and GitHub issues route by difficulty. `size/S` goes to the local Qwen, `size/M` and `size/L` to GLM 5.3 flash and GLM 5.3 on two providers each. `size/XL` and `HUMAN` are held for the operator (Joe, in this fleet). Unsized issues go to a triage worker that labels them, and the label event re-routes the issue.
 - **Review requests:** each identity's pool receives only the review requests addressed to that identity, and never a trigger to review its own pull request.
 
 Decision record: [ADR-0025](/decisions/ADR-0025-handoff-work-orders-and-difficulty-lanes). Requirements: the [event-routing spec](/specs/event-routing/spec).
@@ -181,7 +181,7 @@ Dedup is per webhook. If a per-identity pool hook still receives the same Issues
 
 ## 9. Start the workers
 
-Point each lane's workers at its lane endpoint and model. Each worker drains its endpoint with `claim_next`. Nobody works the `hold` endpoint; its todos are surfaced for Joe.
+Point each lane's workers at its lane endpoint and model. Each worker drains its endpoint with `claim_next`. Nobody works the `hold` endpoint; its todos are surfaced for the operator.
 
 A worker fails, and never executes, a lane todo that has no `work_order`. It also fails one whose `work_order.verified` is not `true`, whose `authorized_by.rule_id` is empty, or whose `lane` is not the queue it drained.
 
@@ -199,7 +199,7 @@ Endpoint scope is immutable ([SPEC-0007](/specs/identity/spec): a changed scope 
 
 ## Writing a handoff
 
-A handoff is a Cairn artifact (or bundle) created by an allowlisted actor, with tags. It depends on the cairn tags contract (`data.tags`, cairn branch `feat/artifact-tags`) from the cairn-handoff work. Until cairn carries tags, every artifact drops as `cairn-not-handoff`.
+A handoff is a Cairn artifact (or bundle) created by an allowlisted actor, with tags. It relies on Cairn's client-asserted artifact tags, which arrive as `data.tags` on `artifact.created` (see Cairn's [Tags & handoffs](https://cairn.stump.wtf/docs/tags/)). An artifact without the handoff tags drops as `cairn-not-handoff`.
 
 | Tag | Meaning |
 |---|---|

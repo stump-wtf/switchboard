@@ -255,7 +255,7 @@ func TestSSETaxonomyHasSwapTargetsOnBoard(t *testing.T) {
 	}
 }
 
-// TestOperatorTrustBadgeCarriesDefinition: an operator hand-off (ADR-0026) is a delivery trust
+// TestOperatorTrustBadgeCarriesDefinition: an operator hand-off (ADR-0040) is a delivery trust
 // mode with no provider behind it, so it lives in deliveryDefs rather than trustDefs — but its
 // badge, on a lane card and in the board legend, carries a real definition like every other pill
 // (#84), never the neutral fallback gloss.

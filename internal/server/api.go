@@ -344,7 +344,7 @@ func (a *apiHandler) ownedEndpoint(w http.ResponseWriter, r *http.Request, what 
 	return store.EndpointCard{}, false
 }
 
-// --- operator hand-off (ADR-0026) ---
+// --- operator hand-off (ADR-0040) ---
 
 const (
 	// pushSource is the source, family and trust mode of an operator hand-off's delivery event.
@@ -390,7 +390,7 @@ type pushTodoOut struct {
 // special-cased: the store's doorbell hook fires because the event is verified (SPEC-0011 sender
 // gate), the heartbeat sweep and the pull path apply their existing predicates, the board shows an
 // operator badge, and history shows who handed the work over. The title and payload are the
-// agent's untrusted input like any todo's. Governing: ADR-0026; SPEC-0011 scenario
+// agent's untrusted input like any todo's. Governing: ADR-0040; SPEC-0011 scenario
 // "Operator-authored todo is pushed"; ADR-0022 (owner-only, queue inside the vended scope).
 //
 // @justinabrahms 09/13/2026 - Added: the only way for a human to hand their own agent a todo was

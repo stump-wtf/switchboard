@@ -10,12 +10,19 @@ related: [ADR-0017, ADR-0019]
 
 # ADR-0021: A2A as a First-Class Task-Delegation Transport (Supersedes Discovery-Only A2A)
 
+> **Implementation status (partial): `create_for` is not exposed.** A store backend for it exists
+> (`internal/store/friends.go`), and an approved friendship does grant the verb (approval is the
+> vend, and it defaults to the requested scope), but no MCP tool registers it. So no vended endpoint
+> can call `create_for`, and one agent cannot hand a todo to another today. Every mention of
+> `create_for` below describes the design, not current behaviour. ADR-0007 carries the same note;
+> the [Friending guide](../guides/04-friending.md) says what works instead.
+
 ## Context and Problem Statement
 
 [ADR-0010](ADR-0010-a2a-discovery-human-vended-friending.md) deliberately scoped A2A to discovery and
 human-vended friending: an agent's [Agent Card](ADR-0009-personas-as-scoped-agent-cards.md) is
 published outward, but cross-agent work only ever lands as a **todo**, created via MCP's `create_for`
-verb — never via A2A's own task RPCs. That ADR explicitly rejected "A2A end-to-end," on the grounds
+verb (designed, not yet exposed) — never via A2A's own task RPCs. That ADR explicitly rejected "A2A end-to-end," on the grounds
 that A2A's native peer task transport bypasses human vending and produces ephemeral, non-durable work.
 
 Switchboard's ambitions have grown since then: the goal now is for switchboard to be a genuine,
