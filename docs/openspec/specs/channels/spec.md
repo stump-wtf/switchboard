@@ -150,15 +150,18 @@ restarted does not wait for the next sweep.
 - **THEN** the push is dropped silently AND the todo MUST remain `pending` and MUST be delivered later
   when the harness reconnects and drains the queue by pull
 
-#### Scenario: Reconnecting session is digested for waiting work
+#### Scenario: Reconnecting session is rung for waiting work
 
 - **WHEN** a session opens its notification stream while push-eligible todos in its scope are
   `pending`
-- **THEN** switchboard MUST NOT ring those todos individually on the reconnect; the session receives
-  the one reconnect digest (SPEC-0022, REQ "Clock-In Digest"), which sets `last_ringed_at` on the
-  counted todos without spending ring budget, and delivery resumes through the sweep and push paths
-  afterward — a reconnect that also charged rings would spend, before the agent knows what is
-  waiting, exactly the turns the digest exists to save
+- **THEN** switchboard MUST ring that stream — and only that stream — for the oldest of them, up to
+  a bounded count, charging each ring to the todo's ring budget; a todo rung this way MUST NOT be
+  rung again by a re-attach inside its cooldown, and a todo whose ring budget is spent MUST NOT be
+  rung
+
+This is the behaviour until [SPEC-0022](../endpoint-presence/spec.md) is implemented. SPEC-0022
+amends it: once presence ships, a reconnect is answered with one reconnect digest instead of
+individual rings (SPEC-0022 scenario "Reconnect digest replaces individual rings").
 
 #### Scenario: Duplicate notifications do not double-process
 
