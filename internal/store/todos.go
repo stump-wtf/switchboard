@@ -806,6 +806,14 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 	// (TodoReadyPayload), so collapsing on queue alone would emit a single notification naming
 	// whichever endpoint happened to come first and silently strand every other tenant re-queued in
 	// the same sweep. Governing: ADR-0022, SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY".
+	// The re-queue hook runs for every row before any wakeup is sent, so the server's doorbell gate
+	// has forgotten these ids by the time the todo_ready notification reaches the LISTEN loop.
+	// Governing: SPEC-0034 REQ-16.
+	if fn := s.requeuedHook.Load(); fn != nil {
+		for _, t := range requeued {
+			(*fn)(t)
+		}
+	}
 	nudged := map[string]bool{}
 	for _, t := range requeued {
 		s.fireTodoHook(t.State, t)
@@ -816,6 +824,24 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 		}
 	}
 	return int64(len(requeued)), nil
+}
+
+// TodoRequeuedHook observes each todo the retry scheduler re-queued, after the commit and before
+// the todo_ready wakeup for it is sent. The server uses it to clear the todo from its doorbell gate:
+// the gate suppresses a second ring of one id for a minute, so an attempt that failed within about
+// thirty seconds of its first ring would otherwise re-queue unrung and wait for the doorbell
+// heartbeat, stalling a relay consumer's next attempt. Same contract as the other hooks: never
+// block, never authoritative. Governing: SPEC-0034 REQ-16 "Re-Queue Wake-Up Interface".
+type TodoRequeuedHook func(t Todo)
+
+// SetTodoRequeuedHook registers fn to observe re-queued retries. Safe to call concurrently with
+// store use; passing nil clears the hook.
+func (s *Store) SetTodoRequeuedHook(fn TodoRequeuedHook) {
+	if fn == nil {
+		s.requeuedHook.Store(nil)
+		return
+	}
+	s.requeuedHook.Store(&fn)
 }
 
 // RetryTodo re-enqueues a failed todo immediately: the explicit agent "Retry now" that re-queues a

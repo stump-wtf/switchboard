@@ -12,7 +12,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -231,5 +233,101 @@ func TestListenTodoReadyDeliversNotification(t *testing.T) {
 		case <-time.After(100 * time.Millisecond):
 			// not yet listening — notify again
 		}
+	}
+}
+
+// SPEC-0034 REQ-16, scenario "A quick failure is not swallowed by the gate": a todo rung at
+// creation, claimed, failed seconds later and re-queued inside the gate's one-minute window rings
+// again on the re-queue's wakeup, without waiting for the doorbell heartbeat. Drives the real wiring
+// (wireDoorbells) against a real store; the todo_ready delivery is handed to nudgeDoorbells directly,
+// which is what the LISTEN loop does with it. Before the re-queue hook existed this rang once.
+func TestRequeuedRetryRingsInsideTheGateWindow(t *testing.T) {
+	_, st, ctx := newDBRouter(t)
+	h, err := st.UpsertHuman(ctx, "pocket|requeue-ring", "Requeue", "")
+	if err != nil {
+		t.Fatalf("human: %v", err)
+	}
+	ep := seedEndpoint(t, st, ctx, h.ID, "requeue-ring-bot", "requeue-ring-hash", "rq", "alerts")
+
+	var mu sync.Mutex
+	var rung []string
+	publish := func(td store.Todo) {
+		mu.Lock()
+		defer mu.Unlock()
+		rung = append(rung, td.ID)
+	}
+	rings := func(id string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, r := range rung {
+			if r == id {
+				n++
+			}
+		}
+		return n
+	}
+	gate := newDoorbellGate(time.Minute)
+	wireDoorbells(st, gate, publish)
+	t.Cleanup(func() {
+		st.SetTodoDoorbellHook(nil)
+		st.SetTodoRequeuedHook(nil)
+	})
+
+	// Rung at creation: a verified delivery.
+	_, td, created, err := st.CreateEventTodo(ctx, store.EventInput{
+		Source: "generic", Family: "generic", ExternalID: "requeue-ring-1", TrustMode: "signed",
+		Verified: true, Headers: []byte(`{}`), Payload: []byte(`{}`),
+	}, store.CreateTodoParams{EndpointID: ep.ID, Queue: "alerts", Title: "flaky", IdempotencyKey: "requeue-ring-1"})
+	if err != nil || !created {
+		t.Fatalf("create: %v (created=%v)", err, created)
+	}
+	if n := rings(td.ID); n != 1 {
+		t.Fatalf("creation rang %d times, want 1", n)
+	}
+
+	// Claimed and failed at once: attempt 1 of 5, so a retry is scheduled 30s out.
+	if _, err := st.ClaimTodo(ctx, ep.ID, td.ID, "agent:w", time.Minute); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	failed, err := st.FailTodo(ctx, ep.ID, td.ID, "agent:w", nil)
+	if err != nil || failed.NextRetryAt == nil {
+		t.Fatalf("fail: %v (next_retry_at %v)", err, failed.NextRetryAt)
+	}
+	// The backoff elapses (wound back rather than slept through), still well inside the gate's minute.
+	dueNow(t, ctx, td.ID)
+	if n, err := st.RequeueDueRetries(ctx); err != nil || n != 1 {
+		t.Fatalf("requeue = %d, %v", n, err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	payload := store.TodoReadyPayload(ep.ID, "alerts")
+	nudgeDoorbells(ctx, st, gate, publish, payload, log)
+	if n := rings(td.ID); n != 2 {
+		t.Fatalf("after the re-queue the todo rang %d times, want 2: the gate swallowed the retry", n)
+	}
+	// The gate still dedups an echo of that same wakeup.
+	nudgeDoorbells(ctx, st, gate, publish, payload, log)
+	if n := rings(td.ID); n != 2 {
+		t.Fatalf("a repeated wakeup rang again (%d rings): the gate stopped deduping echoes", n)
+	}
+}
+
+// dueNow winds a failed todo's scheduled retry into the past, in the server test database.
+func dueNow(t *testing.T, ctx context.Context, id string) {
+	t.Helper()
+	u, err := url.Parse(os.Getenv("SWITCHBOARD_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	u.Path = "/switchboard_test_server"
+	conn, err := pgx.Connect(ctx, u.String())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	if _, err := conn.Exec(ctx,
+		`UPDATE todos SET next_retry_at = now() - interval '1 second' WHERE id = $1`, id); err != nil {
+		t.Fatalf("wind retry back: %v", err)
 	}
 }
