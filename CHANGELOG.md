@@ -13,6 +13,17 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+### Security
+
+- **Event history is scoped to its owner.** `list_webhook_events`, `get_webhook_event`,
+  `replay_webhook_event` and the `switchboard://events/recent` resource could read and
+  replay every tenant's deliveries. Each event now records the endpoint that owns it, and
+  every history read and replay returns only the caller's own events; another tenant's
+  event id answers `not_found`, like an id that does not exist. Event deduplication is
+  keyed per owner as well. Existing events are backfilled from their webhook. Events whose
+  owner can no longer be established (their webhook was deleted before this release) stay
+  invisible and age out through retention. (#194)
+
 ## [0.3.0] - 2026-09-22
 
 The first release since `v0.2.0`, and the first release under
