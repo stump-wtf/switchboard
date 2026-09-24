@@ -73,3 +73,29 @@ func TestMetricsTokenFromEnvTrimsWhitespace(t *testing.T) {
 		t.Fatal("unset SWITCHBOARD_METRICS_TOKEN should leave MetricsToken empty")
 	}
 }
+
+// TestNotifyHookMax pins SPEC-0024 REQ-1's operator bound: unset is 5, 0 is a valid kill switch,
+// and a malformed or negative value fails startup rather than silently becoming the default.
+func TestNotifyHookMax(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env  string
+		want int
+		ok   bool
+	}{
+		"unset":    {"", DefaultNotifyHookMax, true},
+		"zero":     {"0", 0, true},
+		"raised":   {"12", 12, true},
+		"spaces":   {" 3 ", 3, true},
+		"negative": {"-1", -1, false},
+		"garbage":  {"five", -1, false},
+	} {
+		t.Setenv("SWITCHBOARD_NOTIFY_HOOK_MAX", tc.env)
+		cfg := FromEnv()
+		if cfg.NotifyHookMax != tc.want {
+			t.Errorf("%s: NotifyHookMax = %d, want %d", name, cfg.NotifyHookMax, tc.want)
+		}
+		if err := cfg.Validate(); (err == nil) != tc.ok {
+			t.Errorf("%s: Validate() = %v, want ok=%v", name, err, tc.ok)
+		}
+	}
+}
