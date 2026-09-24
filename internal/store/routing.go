@@ -216,3 +216,29 @@ func (s *Store) EventForWebhook(ctx context.Context, eventID int64, webhookID st
 	}
 	return scanEventDetail(s.pool.QueryRow(ctx, eventDetailSelect+` WHERE id = $1 AND webhook_id = $2`, eventID, webhookID))
 }
+
+// RecentWebhookEvents returns up to limit of webhookID's most recent stored deliveries, newest first,
+// with the full record a dry-run needs (headers, payload). The caller has already established
+// ownership of webhookID. It serves the save-time dry-run (SPEC-0026 REQ-3), which must run BEFORE
+// UpdateWebhookRouting takes its row lock: a pooled read inside that lock deadlocks the pool under
+// concurrent rule edits (see mcp/webhook_rules.go). idx_events_webhook covers the scan.
+func (s *Store) RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]EventHistoryDetail, error) {
+	if !isUUID(webhookID) || limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, eventDetailSelect+`
+		WHERE webhook_id = $1 ORDER BY received_at DESC, id DESC LIMIT $2`, webhookID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: recent webhook events: %w", err)
+	}
+	defer rows.Close()
+	var out []EventHistoryDetail
+	for rows.Next() {
+		e, err := scanEventDetail(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: recent webhook events scan: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

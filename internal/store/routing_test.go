@@ -219,3 +219,75 @@ func TestEventForWebhookIsScopedToItsWebhook(t *testing.T) {
 		t.Fatalf("event after webhook delete = %+v (%v), want it kept with no webhook", ev.EventHistoryItem, err)
 	}
 }
+
+// A faulted delivery is recorded with its trace and the faulted disposition, mints no todo, and spends
+// its dedup slot exactly as a drop does: a redelivery after the rules were fixed stays faulted.
+// Faulted events are filterable by disposition, and RecentWebhookEvents returns a webhook's own
+// deliveries newest first. Governing: SPEC-0026 REQ-1 "Faults Stop Evaluation", REQ-3.
+func TestCreateIntakeEventTodosFaultedSpendsTheSlot(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "routing-fault", "q")
+	wh, err := s.CreateWebhook(ctx, ep, "cairn", "q", "signed", "tok-routing-fault", "whsec_f", 5)
+	if err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	faultTrace := []byte(`{"stage":"fault","cause":"error","rule_index":0,"rule_id":"r1","action":{},"faults":[{"rule_index":0,"rule_id":"r1","cause":"error"}]}`)
+	queueTrace := []byte(`{"stage":"default","cause":"no_match_default","action":{"queue":"q"}}`)
+	in := EventInput{Source: "cairn", Family: "webhook", EventType: "artifact.created", ExternalID: wh.ID + ":f-1",
+		TrustMode: "signed", Verified: true, Payload: []byte(`{"n":1}`), WebhookID: wh.ID, RoutingTrace: faultTrace,
+		Disposition: DispositionFaulted}
+	params := func(key string) CreateTodoParams {
+		return CreateTodoParams{Queue: "q", Source: "cairn", Kind: "webhook", Title: "t", IdempotencyKey: key, RoutingTrace: queueTrace}
+	}
+
+	evID, todos, disp, err := s.CreateIntakeEventTodos(ctx, in, nil, CreateTodoParams{})
+	if err != nil || disp != DispositionFaulted || len(todos) != 0 {
+		t.Fatalf("faulted = (%d todos, %q, %v), want faulted with no todos", len(todos), disp, err)
+	}
+	ev, err := s.EventHistoryByID(ctx, evID)
+	if err != nil || ev.Disposition != DispositionFaulted || !sameJSON(t, ev.RoutingTrace, faultTrace) {
+		t.Fatalf("faulted event = %+v (%v), want disposition faulted and the fault trace", ev.EventHistoryItem, err)
+	}
+
+	redelivery := in
+	redelivery.RoutingTrace, redelivery.Disposition = queueTrace, ""
+	evID2, todos2, disp2, err := s.CreateIntakeEventTodos(ctx, redelivery, []string{ep}, params(in.ExternalID))
+	if err != nil || evID2 != evID || disp2 != DispositionFaulted || len(todos2) != 0 {
+		t.Fatalf("redelivery = (event %d, %d todos, %q, %v), want event %d still faulted", evID2, len(todos2), disp2, err, evID)
+	}
+	// The drop-flag wrapper reports a sticky fault as withheld too.
+	if _, todos3, withheld3, err := s.CreateRoutedEventTodos(ctx, redelivery, false, []string{ep}, params(in.ExternalID)); err != nil || !withheld3 || len(todos3) != 0 {
+		t.Fatalf("wrapper redelivery = (%d todos, withheld %v, %v), want withheld", len(todos3), withheld3, err)
+	}
+
+	routed := redelivery
+	routed.ExternalID = wh.ID + ":f-2"
+	routed.Payload = []byte(`{"n":2}`)
+	evRouted, todosR, dispR, err := s.CreateIntakeEventTodos(ctx, routed, []string{ep}, params(routed.ExternalID))
+	if err != nil || dispR != DispositionRouted || len(todosR) != 1 {
+		t.Fatalf("routed = (%d todos, %q, %v), want one routed todo", len(todosR), dispR, err)
+	}
+	if _, _, _, err := s.CreateIntakeEventTodos(ctx, EventInput{Source: "cairn", Family: "webhook", ExternalID: wh.ID + ":bad",
+		TrustMode: "signed", Disposition: "sideways"}, []string{ep}, params(wh.ID+":bad")); err == nil {
+		t.Fatal("an unknown disposition was accepted")
+	}
+
+	items, err := s.ListEventHistory(ctx, EventHistoryFilter{Disposition: DispositionFaulted, Limit: 50})
+	if err != nil {
+		t.Fatalf("list faulted: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != evID || items[0].Disposition != DispositionFaulted {
+		t.Fatalf("faulted filter = %+v, want exactly event %d", items, evID)
+	}
+
+	recent, err := s.RecentWebhookEvents(ctx, wh.ID, 50)
+	if err != nil || len(recent) != 2 || recent[0].ID != evRouted || recent[1].ID != evID || string(recent[0].Payload) != `{"n":2}` {
+		t.Fatalf("recent = %d events (%v), want [%d, %d] newest first with payloads", len(recent), err, evRouted, evID)
+	}
+	if one, err := s.RecentWebhookEvents(ctx, wh.ID, 1); err != nil || len(one) != 1 || one[0].ID != evRouted {
+		t.Fatalf("recent limit 1 = %+v (%v), want only the newest", one, err)
+	}
+	if none, err := s.RecentWebhookEvents(ctx, "not-a-uuid", 5); err != nil || len(none) != 0 {
+		t.Fatalf("recent for a bad id = %d (%v), want none", len(none), err)
+	}
+}

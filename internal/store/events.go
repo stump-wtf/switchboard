@@ -33,6 +33,9 @@ type EventHistoryItem struct {
 	// how it was routed (nil when it was not). Governing: SPEC-0020 REQ "Routing Trace".
 	WebhookID    string
 	RoutingTrace []byte
+	// Disposition is the intake outcome: routed, dropped, quarantined or faulted.
+	// Governing: SPEC-0026 REQ-1.
+	Disposition string
 }
 
 // EventHistoryDetail is the SPEC-0005 EventDetail projection: every summary field plus the full
@@ -57,7 +60,10 @@ type EventHistoryDetail struct {
 type EventHistoryFilter struct {
 	Provider  string
 	EventType string
-	Limit     int
+	// Disposition restricts the scan to one intake outcome (e.g. "faulted"). Governing: SPEC-0026
+	// REQ-1 (the owner can see faulted deliveries through list_webhook_events).
+	Disposition string
+	Limit       int
 	// SinceTime / SinceID bound the lower edge inclusively. `since` is supplied over MCP as either an
 	// ISO-8601 timestamp (→ SinceTime, received_at >= t) or an event id (→ SinceID, id >= i); the tool
 	// layer decides which. Both may be zero (no lower bound).
@@ -97,6 +103,9 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 	if f.EventType != "" {
 		conds = append(conds, "event_type = "+ph(f.EventType))
 	}
+	if f.Disposition != "" {
+		conds = append(conds, "disposition = "+ph(f.Disposition))
+	}
 	if !f.SinceTime.IsZero() {
 		conds = append(conds, "received_at >= "+ph(f.SinceTime))
 	}
@@ -115,7 +124,7 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 	}
 	query := fmt.Sprintf(`
 		SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at,
-			COALESCE(webhook_id::text, ''), routing_trace
+			COALESCE(webhook_id::text, ''), routing_trace, disposition
 		FROM events
 		%s
 		ORDER BY received_at DESC, id DESC
@@ -130,7 +139,7 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 	for rows.Next() {
 		var e EventHistoryItem
 		if err := rows.Scan(&e.ID, &e.Provider, &e.EventType, &e.TrustMode, &e.Verified,
-			&e.PayloadSize, &e.ReceivedAt, &e.WebhookID, &e.RoutingTrace); err != nil {
+			&e.PayloadSize, &e.ReceivedAt, &e.WebhookID, &e.RoutingTrace, &e.Disposition); err != nil {
 			return nil, fmt.Errorf("list event history scan: %w", err)
 		}
 		out = append(out, e)
@@ -145,7 +154,7 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 // full-record shape cannot drift between them.
 const eventDetailSelect = `
 	SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at,
-		COALESCE(webhook_id::text, ''), routing_trace,
+		COALESCE(webhook_id::text, ''), routing_trace, disposition,
 		COALESCE(verify_detail, ''), COALESCE(external_id, ''), COALESCE(content_type, ''),
 		COALESCE(host(source_ip), ''), COALESCE(headers, '{}'::jsonb), COALESCE(payload, ''::bytea)
 	FROM events`
@@ -153,7 +162,7 @@ const eventDetailSelect = `
 func scanEventDetail(row pgx.Row) (EventHistoryDetail, error) {
 	var e EventHistoryDetail
 	err := row.Scan(&e.ID, &e.Provider, &e.EventType, &e.TrustMode, &e.Verified, &e.PayloadSize, &e.ReceivedAt,
-		&e.WebhookID, &e.RoutingTrace,
+		&e.WebhookID, &e.RoutingTrace, &e.Disposition,
 		&e.VerifyDetail, &e.ExternalID, &e.ContentType, &e.SourceIP, &e.Headers, &e.Payload)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return EventHistoryDetail{}, ErrNotFound
