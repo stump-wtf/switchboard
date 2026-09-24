@@ -309,6 +309,19 @@ for that todo until the backoff elapses again.
 - **WHEN** a crashing agent reconnects every 30 seconds with pending todos waiting
 - **THEN** it receives at most one reconnect digest per 10 minutes
 
+#### Scenario: Reconnect digest replaces individual rings
+
+This scenario amends [SPEC-0011](../channels/spec.md) scenario "Reconnecting session is rung for
+waiting work", which describes the behaviour until this spec is implemented.
+
+- **WHEN** a session opens its notification stream while push-eligible todos in its scope are
+  `pending`
+- **THEN** switchboard MUST NOT ring those todos individually on the reconnect; the session receives
+  the one reconnect digest, which sets `last_ringed_at` on the counted todos without spending ring
+  budget, and delivery resumes through the sweep and push paths afterward — a reconnect that also
+  charged rings would spend, before the agent knows what is waiting, exactly the turns the digest
+  exists to save
+
 #### Scenario: Nothing waiting
 
 - **WHEN** an endpoint clocks in with no pending push-eligible todos
