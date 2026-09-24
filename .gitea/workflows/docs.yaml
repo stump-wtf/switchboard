@@ -17,9 +17,8 @@
 # the path filter, or every non-docs PR waits forever for a status that never arrives. The two path
 # lists are kept identical by hand (no YAML anchors: not every Gitea trigger parser resolves them).
 #
-# GitHub Pages was retired for this repo: stump.wtf/switchboard is a PRIVATE repo in an org on the
-# Team plan, and GitHub Pages will not serve a private org repo (deploy-pages returns 404). Serving
-# the compiled docs from the app's own domain via Caddy sidesteps that entirely.
+# The docs are served from the app's own domain via Caddy rather than GitHub Pages, which was
+# retired for this repo while it was still private.
 name: docs-build-and-push
 
 on:
