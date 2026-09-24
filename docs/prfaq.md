@@ -68,7 +68,7 @@ Single static binary, trivial self-hosting, strong concurrency for the receive/c
 
 **What's explicitly out of scope for the MVP?**
 
-No commercial SaaS: an operator runs an instance for its users, and every resource on it belongs to a user or a team (ADR-0038). No broad catalog of pre-built connectors beyond the verified webhook source types (GitHub, Gitea, Stripe, Slack, Cairn) and the generic token path, and no queue/broker ingestion — webhooks are the only way in. No complex workflow engine, branching, or DAG orchestration on top of todos — a todo is a unit of work, not a pipeline. No agent runtime of our own; we vend endpoints and push doorbells, but harnesses like Claude Code do the actual work.
+No commercial SaaS: an operator runs an instance for its users, and every resource on it belongs to a user or a team (ADR-0038). No broad catalog of pre-built connectors beyond the verified webhook source types (GitHub, Gitea, Cairn; Stripe and Slack are planned, see ADR-0037) and the generic token path, and no queue/broker ingestion — webhooks are the only way in. No complex workflow engine, branching, or DAG orchestration on top of todos — a todo is a unit of work, not a pipeline. No agent runtime of our own; we vend endpoints and push doorbells, but harnesses like Claude Code do the actual work.
 
 **What's the biggest technical risk?**
 
