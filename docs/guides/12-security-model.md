@@ -78,6 +78,10 @@ Whoever owns a webhook decides where its deliveries land, within limits switchbo
   compromised. Revoke first, then vend a replacement.
 - **Prefer signed sources over `generic`.** A signature proves the body wasn't altered and binds it
   to a secret the URL doesn't reveal. A `generic` webhook only proves the caller knew the URL.
+- **Provider-issued secrets aren't accepted yet.** Switchboard verifies only against a signing
+  secret it minted, and there is no way to give it one a provider generated. Providers that issue
+  their own secrets, Stripe and Slack among them, therefore can't be used as signed sources today:
+  their deliveries fail with `401`. See [ADR-0037](/decisions/ADR-0037-provider-issued-signing-secrets).
 
 ## Secrets at rest
 

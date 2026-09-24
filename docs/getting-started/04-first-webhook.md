@@ -36,7 +36,7 @@ The source type decides how deliveries are checked:
 | `github` | signed | `X-Hub-Signature-256: sha256=<hex>`, an HMAC-SHA256 of the raw body |
 | `gitea` | signed | `X-Gitea-Signature: <hex>` (no prefix), or the GitHub-style header |
 | `cairn` | signed | `X-Cairn-Signature: sha256=<hex>`, plus a signed `event_id` and a `created_at` within 5 minutes |
-| `stripe`, `slack` | signed | their providers' own signature schemes |
+| `stripe`, `slack` | signed | **Not usable yet: the provider issues the secret.** Stripe and Slack sign with a secret they generate, and switchboard only verifies against the one it minted, so every delivery fails with `401`. Slack's Events API can't save the URL either, because switchboard doesn't answer its `url_verification` challenge. See [ADR-0037](/decisions/ADR-0037-provider-issued-signing-secrets) |
 | `generic` | token | nothing: the unguessable URL is the credential |
 
 A **signed** webhook's result also includes a `signing_secret` (`whsec_…`). **It is shown once**,

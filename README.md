@@ -3,7 +3,7 @@
 *Many lines come in. The operator verifies each caller, and patches it through.*
 
 Switchboard is the operator's board for your inbound webhooks. It receives events from external
-providers (GitHub, Stripe, Slack, Docker Hub, and self-hosted/homelab senders), verifies and
+providers (GitHub, Gitea, Cairn, Docker Hub, and self-hosted/homelab senders), verifies and
 normalizes each one, stores them in PostgreSQL, and patches them through to **two consumers of the same
 backend**:
 
@@ -47,7 +47,7 @@ were the same thing. See [ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-an
 ## Architecture
 
 ```
-Producer (GitHub/Gitea/Stripe/Slack/Cairn/your script)
+Producer (GitHub/Gitea/Cairn/your script)
       │  HTTPS POST + signature header (or the unguessable URL alone, for `generic`)
       ▼
 [Go app: POST /webhooks/w/{token}]   one ingest URL per webhook; each webhook belongs to an endpoint
@@ -78,7 +78,7 @@ cannot downgrade it — and every event's trust level is explicit and shown.
 
 | `trust_mode` | Source types | How it's trusted | On failure |
 |--------------|--------------|------------------|-----------|
-| **signed** | `github`, `gitea`, `stripe`, `slack`, `cairn` | Mandatory HMAC-SHA256 verification of the raw body against the secret switchboard minted (constant-time; Stripe, Slack and Cairn also enforce a timestamp window). Integrity + authenticity. | **401, payload NOT persisted**, redacted rejection logged |
+| **signed** | `github`, `gitea`, `cairn` (`stripe` and `slack` are accepted source types but [not usable yet](docs/adrs/ADR-0037-provider-issued-signing-secrets.md): those providers issue their own secret) | Mandatory HMAC-SHA256 verification of the raw body against the secret switchboard minted (constant-time; Stripe, Slack and Cairn also enforce a timestamp window). Integrity + authenticity. | **401, payload NOT persisted**, redacted rejection logged |
 | **token** | `generic` (Docker Hub, homelab/self-hosted senders) | **No signing scheme exists.** The unguessable token in the ingest URL authenticates the *caller*, **not** the body; no replay protection. Persisted honestly as `verified=false`. | 404 on an unknown token |
 
 Docker Hub has no native webhook signing, so it is a **token** webhook rather than a faked
@@ -196,8 +196,8 @@ Because the service is localhost-bound, expose it to a provider during testing w
 `SWITCHBOARD_BASE_URL` to the tunnel's public URL, so the `ingest_url` that `create_webhook` returns
 is reachable. Then, from an agent connected to your endpoint:
 
-1. `create_webhook` with `{"source_type": "github", "target_queue": "inbox"}` (or `gitea`, `stripe`,
-   `slack`, `cairn`, `generic`).
+1. `create_webhook` with `{"source_type": "github", "target_queue": "inbox"}` (or `gitea`, `cairn`,
+   `generic`).
 2. Paste the returned `ingest_url` (`https://<tunnel>/webhooks/w/<token>`) into the provider's webhook
    config, along with the `signing_secret` — shown **once** — for a signed source type.
 
