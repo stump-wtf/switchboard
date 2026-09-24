@@ -51,6 +51,22 @@ type recordingMetrics struct {
 	deliveries []recordedDelivery
 	failures   []recordedFailure
 	decisions  []recordedDecision
+	faults     []string
+}
+
+func (r *recordingMetrics) RoutingFault(cause string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.faults = append(r.faults, cause)
+}
+
+// takeFaults copies the fault causes recorded so far and clears them.
+func (r *recordingMetrics) takeFaults() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f := r.faults
+	r.faults = nil
+	return f
 }
 
 func (r *recordingMetrics) WebhookDelivery(provider, trustMode, verdict string) {

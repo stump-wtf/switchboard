@@ -115,7 +115,10 @@ func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 	if sb, err := routing.NewSandbox(""); err == nil {
 		ing.router = sb
 	} else if log != nil {
-		log.Error("routing sandbox unavailable; webhooks with rules will route by default", "err", err)
+		// Fail closed (SPEC-0026 REQ-2): routeDelivery falls back to routing.Unavailable, so a
+		// webhook with rules answers 503 until the sandbox works, and one without rules is
+		// unaffected.
+		log.Error("routing sandbox unavailable; webhooks with rules will refuse deliveries with 503", "err", err)
 	}
 	return ing
 }

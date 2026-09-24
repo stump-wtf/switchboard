@@ -31,6 +31,10 @@
 // Governing: SPEC-0023 REQ-4 "Ingest and routing", ADR-0028.
 //
 // @joestump-agent 09/21/2026 - Added the SPEC-0023 delivery, verify-failure and routing counters (#273).
+//
+// @joestump-agent 09/23/2026 - Fail closed: a faulted delivery is recorded and routed nowhere, and an
+// unavailable sandbox answers 503 with nothing persisted. Governing: ADR-0031, SPEC-0026 REQ-1,
+// REQ-2, REQ-13 (#212).
 package ingest
 
 import (
@@ -46,6 +50,13 @@ import (
 
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
+)
+
+// Intake stages named on every receiver error log, with the webhook id, so one grep follows a
+// delivery through the gate. Governing: SPEC-0026 REQ-13 "Error Handling".
+const (
+	stageVerify = "verify"
+	stageRoute  = "route"
 )
 
 // SelfManaged is the receiver for agent self-managed webhooks: POST /webhooks/w/{token}.
@@ -120,7 +131,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		if secret == "" {
 			// A signed webhook with no stored secret cannot be verified — refuse rather than fake trust.
 			// Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency".
-			i.log.Error("self-managed signed webhook missing secret", "webhook", wh.ID, "remote", clientIP(r))
+			i.log.Error("self-managed signed webhook missing secret", "webhook", wh.ID, "stage", stageVerify, "remote", clientIP(r))
 			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "webhook not configured")
 			count.verifyFailed(m, reasonNotConfigured)
 			writeErr(w, http.StatusServiceUnavailable, "webhook not configured")
@@ -129,7 +140,8 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		valid, err := i.verifySelfManagedSigned(r, wh.SourceType, secret, body)
 		if err != nil {
 			// An unsupported signed source type is a server-side misconfiguration, not a client fault.
-			i.log.Error("self-managed signed webhook verify", "webhook", wh.ID, "source", wh.SourceType, "err", err)
+			i.log.Error("self-managed signed webhook verify", "webhook", wh.ID, "stage", stageVerify, "source", wh.SourceType,
+				"err", fmt.Errorf("webhook %s: %s: %w", wh.ID, stageVerify, err))
 			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "verification unavailable")
 			count.verifyFailed(m, reasonUnsupportedSource)
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -138,7 +150,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		if !valid {
 			// Reject without persisting; log a redacted line (never the signature value or secret) —
 			// exactly like the operator-configured signed receivers.
-			i.log.Warn("self-managed webhook signature rejected", "webhook", wh.ID, "source", wh.SourceType,
+			i.log.Warn("self-managed webhook signature rejected", "webhook", wh.ID, "stage", stageVerify, "source", wh.SourceType,
 				"delivery", deliveryID, "remote", clientIP(r))
 			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "signature verification failed")
 			// The counter gets the bounded failure mode, never the client-safe message above.
@@ -158,7 +170,8 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// Governing: ADR-0022, SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
 	targets, err := i.store.ResolveWebhookTargets(r.Context(), wh.ID, wh.EndpointID)
 	if err != nil {
-		i.log.Error("self-managed webhook resolve targets", "webhook", wh.ID, "err", err)
+		i.log.Error("self-managed webhook resolve targets", "webhook", wh.ID, "stage", stageRoute,
+			"err", fmt.Errorf("webhook %s: %s: resolve targets: %w", wh.ID, stageRoute, err))
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -182,28 +195,32 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	headers := sanitizeHeaders(r.Header)
 	decision, envIn, err := i.routeDelivery(r.Context(), wh, targets, kind, verified, headers, r.Header.Get("Content-Type"), body)
 	if err != nil {
-		i.log.Error("self-managed webhook routing", "webhook", wh.ID, "err", err)
+		i.log.Error("self-managed webhook routing", "webhook", wh.ID, "stage", stageRoute,
+			"err", fmt.Errorf("webhook %s: %s: %w", wh.ID, stageRoute, err))
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	// A rule that cannot be evaluated is treated as no-match (routing.Match), so a faulting rule
-	// does not fail the delivery — it stops doing its job. That inverts the two restrictive shapes:
-	// a drop rule stops dropping, and a trust rule stops restricting, which means the delivery falls
-	// through to whatever follows. The trace has always recorded the fault, but nothing surfaced it,
-	// so an owner learned their allowlist had gone quiet only by opening the right event.
+	// Routing fails closed (ADR-0031, SPEC-0026). Two outcomes route nowhere:
 	//
-	// Warn, not Error: the delivery is routed and its outcome is unchanged. This is the signal that
-	// a rule needs fixing, not a failure. Governing: #212.
-	for _, f := range decision.Trace.Faults {
-		// RuleIndex -1 is the sandbox reporting that evaluation failed wholesale rather than one
-		// rule misbehaving (routing/sandbox.go) — every rule was skipped, which is a different
-		// operator situation from "rule 3 is broken" and reads better as its own line.
-		if f.RuleIndex < 0 {
-			i.log.Warn("routing failed wholesale; every rule treated as no-match",
-				"webhook", wh.ID, "cause", f.Cause, "detail", f.Detail)
-			continue
-		}
-		i.log.Warn("routing rule faulted; treated as no-match",
+	//   - Unavailable: the evaluator could not run at all (no sandbox, no free slot, a dead child).
+	//     That is a server fault, not a property of the delivery, so nothing is persisted and the
+	//     producer gets a 503 and retries once the instance is healthy. It is never routed by default
+	//     (REQ-2).
+	//   - Faulted: a rule errored, timed out, no longer compiles, or found the budget spent.
+	//     Evaluation stopped there, so no later rule and no default ran. The delivery is recorded
+	//     with its trace and no todo, spending its dedup slot as a drop does, and is counted and
+	//     logged once so the owner can find it (REQ-1).
+	if decision.Unavailable {
+		f := decision.Fault
+		i.log.Error("routing unavailable; delivery refused for the producer to retry",
+			"webhook", wh.ID, "stage", stageRoute, "cause", f.Cause, "detail", f.Detail)
+		i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "routing unavailable")
+		writeErr(w, http.StatusServiceUnavailable, "routing unavailable")
+		return
+	}
+	if decision.Faulted {
+		f := decision.Fault
+		i.log.Warn("routing rule faulted; delivery recorded and not routed",
 			"webhook", wh.ID, "rule_id", f.RuleID, "rule_index", f.RuleIndex,
 			"cause", f.Cause, "detail", f.Detail)
 	}
@@ -212,12 +229,12 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// populates the work order, and neither may depend on tenant-written jq.
 	subject := routing.SubjectOf(wh.SourceType, envIn.Headers, body)
 	var onceKey string
-	if decision.Once && !decision.Drop {
+	if decision.Once && !decision.Drop && !decision.Faulted {
 		onceKey = routing.OnceKey(subject, decision.Queue)
 		decision.Trace.OnceKey = onceKey
 	}
 	var workOrder []byte
-	if decision.WorkOrder && !decision.Drop {
+	if decision.WorkOrder && !decision.Drop && !decision.Faulted {
 		if workOrder, err = json.Marshal(routing.BuildWorkOrder(decision, envIn, subject)); err != nil {
 			i.log.Error("self-managed webhook work order", "webhook", wh.ID, "err", err)
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -239,14 +256,14 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// comes from the (endpoint_id, idempotency_key) dedup index, not from rewriting the key: a
 	// redelivery collapses independently within each target, while two targets of the SAME delivery
 	// never collapse onto each other. Governing: SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
-	_, todos, dropped, err := i.store.CreateRoutedEventTodos(r.Context(),
+	_, todos, disposition, err := i.store.CreateIntakeEventTodos(r.Context(),
 		store.EventInput{
 			Source: wh.SourceType, Family: "webhook", EventType: kind, ExternalID: key,
 			TrustMode: wh.TrustMode, Verified: verified, VerifyDetail: verifyDetail,
 			ContentType: r.Header.Get("Content-Type"), Headers: headers,
 			Payload: body, SourceIP: clientIP(r),
-			WebhookID: wh.ID, RoutingTrace: trace,
-		}, decision.Drop, decision.Endpoints,
+			WebhookID: wh.ID, RoutingTrace: trace, Disposition: decision.Disposition(),
+		}, decision.Endpoints,
 		store.CreateTodoParams{
 			Queue: decision.Queue, Source: wh.SourceType, Kind: "webhook",
 			Title:   summarizeSelfManagedTitle(wh.SourceType, selfManagedEvent(r), body),
@@ -254,7 +271,8 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			OnceKey: onceKey, WorkOrder: workOrder,
 		})
 	if err != nil {
-		i.log.Error("ingest self-managed delivery", "webhook", wh.ID, "err", err)
+		i.log.Error("ingest self-managed delivery", "webhook", wh.ID, "stage", stageRoute,
+			"err", fmt.Errorf("webhook %s: %s: persist: %w", wh.ID, stageRoute, err))
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -264,9 +282,29 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// retries) counts none, and the retry that lands counts it once. The verdict follows the
 	// persisted outcome, so a redelivery of an already-dropped delivery reports dropped even when
 	// today's rules would queue it (the store's sticky drop). Governing: SPEC-0023 REQ-4.
-	countRoutingDecision(m, wh.ID, decision)
+	//
+	// A faulted delivery made no routing decision, so it is counted as a routing fault instead. Its
+	// verdict is accepted: it verified and persisted, and SPEC-0023's "dropped" means a drop action.
+	// Governing: SPEC-0026 REQ-1.
+	if decision.Faulted {
+		m.RoutingFault(decision.Fault.Cause)
+	} else {
+		countRoutingDecision(m, wh.ID, decision)
+	}
 	count.verdict = verdictAccepted
-	if dropped {
+	if disposition == store.DispositionFaulted {
+		// Recorded, not work, exactly like a drop below. It is either faulted now or a redelivery of
+		// a delivery that faulted, and the dedup slot is spent either way. The fault is not described
+		// to the producer: the owner's rules are the owner's business, and the owner finds the event
+		// through list_webhook_events (disposition "faulted"). Governing: SPEC-0026 REQ-1.
+		i.observeDeduped(wh.SourceType, "webhook", wh.TrustMode, key)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"todos": []map[string]any{}, "created": 0, "faulted": true,
+			"verified": verified, "trust_mode": wh.TrustMode,
+		})
+		return
+	}
+	if disposition == store.DispositionDropped {
 		count.verdict = verdictDropped
 		// Recorded, not work: the event row and its trace persist and the dedup slot is spent, but
 		// there is no todo, no hub publish, and no doorbell. The in-flight card resolves without a

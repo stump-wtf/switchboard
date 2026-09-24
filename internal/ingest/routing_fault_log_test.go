@@ -1,18 +1,24 @@
 package ingest
 
-// A faulting routing rule is treated as no-match, so it stops restricting rather than failing the
-// delivery. That is fail-open by design (routing.Match), and it is silent: the fault is recorded on
-// the trace and nothing ever said so out loud, so an owner whose trust rule stopped matching had no
-// way to learn it except by opening the right event and reading its routing trace.
+// Routing fails closed at the receiver (ADR-0031, SPEC-0026). A delivery whose rules fault is
+// recorded with its trace and disposition=faulted, mints no todo, rings nothing, spends its dedup
+// slot, is counted once in switchboard_routing_faults_total, and is logged with exactly one warning
+// naming the webhook, rule, index and cause. A webhook with rules whose evaluator cannot run at all
+// answers 503 with nothing persisted, so the producer retries. A webhook without rules never needs
+// the evaluator and is unaffected.
 //
-// These tests pin the warning that closes that gap, and — just as importantly — pin that the
-// warning changes nothing about where the delivery lands. Governing: #212, ADR-0024,
-// SPEC-0020 REQ "Deterministic Rule Evaluation", REQ "Routing Trace".
+// Before #212 a fault was treated as no-match: the delivery fell through to the next rule or the
+// default, so a broken drop rule stopped dropping and a mistyped trust rule admitted everyone.
+//
+// Governing: ADR-0031, SPEC-0026 REQ-1 "Faults Stop Evaluation", REQ-2 "Unavailable Sandbox Refuses
+// the Delivery", REQ-13; SPEC-0020 REQ "Routing Trace".
 
 import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -55,36 +61,151 @@ func ingestWithLogCapture(t *testing.T, cfg Config) (*Ingest, *pgxpool.Pool, con
 	return New(st, NewHub(), log, cfg), pool, ctx, logs
 }
 
-// A rule that errors is skipped and the delivery routes on. Before #212 that was entirely silent.
-func TestSelfManagedRoutingFaultIsWarned(t *testing.T) {
+func countWhere(t *testing.T, ctx context.Context, pool *pgxpool.Pool, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(ctx, query, args...).Scan(&n); err != nil {
+		t.Fatalf("count (%s): %v", query, err)
+	}
+	return n
+}
+
+// SPEC-0026 REQ-1 scenario "A mistyped trust rule no longer admits everyone", end to end through the
+// receiver: r1 faults on a string-typed allowlist, r2 is never evaluated, nothing lands on inbox, and
+// the delivery is recorded as faulted, counted and warned once. A redelivery after the owner fixes
+// the rules stays faulted, because the fault spent the dedup slot exactly as a drop does.
+func TestSelfManagedFaultedDeliveryIsRecordedNotRouted(t *testing.T) {
 	ing, pool, ctx, logs := ingestWithLogCapture(t, Config{})
 	ing.SetRouter(routing.InProcess{})
+	rec := &recordingMetrics{}
+	ing.SetMetrics(rec)
 	st := store.New(pool)
-	h, _, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-fault", cairnSecret)
+	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-fault", cairnSecret)
 
-	// "trust" stands in for an allowlist that has stopped working — the shape that matters, because
-	// a trust rule that faults admits nobody at that rule and the delivery continues past it.
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
-		{ID: "trust", Expr: `error("boom")`, Action: routing.Action{Drop: true}},
-		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
-	}})
+	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{
+		Rules: []routing.Rule{
+			{ID: "trust", Expr: `.artifact.actor_id as $a | any($params.trusted[]; . == $a) | not`, Action: routing.Action{Drop: true}},
+			{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
+		},
+		Params: map[string]any{"trusted": "alice"}, // a string, not a list
+	})
 
-	body := cairnBody("evt-fault", time.Now(), "routed despite the faulting rule")
-	rec := postSelfManaged(ing, "cairn-fault", body, cairnHeaders(body, "evt-fault"))
-
-	// The outcome must be unchanged: warning about a fault must never alter routing.
-	if _, q := accepted202(t, rec); q != "inbox" {
-		t.Fatalf("queue = %q, want inbox — a faulting rule must not change where the delivery lands", q)
+	body := cairnBody("evt-fault", time.Now(), "from mallory")
+	resp := postSelfManaged(ing, "cairn-fault", body, cairnHeaders(body, "evt-fault"))
+	if resp.Code != http.StatusAccepted || !strings.Contains(resp.Body.String(), `"faulted":true`) ||
+		!strings.Contains(resp.Body.String(), `"created":0`) {
+		t.Fatalf("faulted delivery = %d %s, want 202 faulted with nothing created", resp.Code, resp.Body.String())
+	}
+	if b := resp.Body.String(); strings.Contains(b, `"trust"`) || strings.Contains(b, "rule") {
+		t.Fatalf("response %s names the owner's rule; the fault is not the producer's business", resp.Body.String())
+	}
+	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 0 {
+		t.Fatalf("todos = %d, want none: a faulted delivery routes nowhere", n)
+	}
+	var disp string
+	if err := pool.QueryRow(ctx, `SELECT disposition FROM events WHERE webhook_id = $1`, wh.ID).Scan(&disp); err != nil || disp != store.DispositionFaulted {
+		t.Fatalf("event disposition = %q (%v), want faulted", disp, err)
+	}
+	tr := traceOf(t, ctx, pool, `SELECT routing_trace FROM events WHERE webhook_id = $1`, wh.ID)
+	if tr.Stage != routing.StageFault || tr.RuleID != "trust" || tr.RuleIndex == nil || *tr.RuleIndex != 0 || tr.Cause != routing.FaultError {
+		t.Fatalf("trace = %+v, want the fault at rule trust (0), cause error", tr)
 	}
 
 	out := logs.String()
-	if !strings.Contains(out, "routing rule faulted") {
-		t.Fatalf("log = %q, want a warning that the rule faulted", out)
+	if got := strings.Count(out, "routing rule faulted"); got != 1 {
+		t.Fatalf("log = %q, want exactly one fault warning, got %d", out, got)
 	}
-	for _, want := range []string{"rule_id=trust", "cause=" + routing.FaultError, "level=WARN"} {
+	for _, want := range []string{"level=WARN", "webhook=" + wh.ID, "rule_id=trust", "rule_index=0", "cause=" + routing.FaultError} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("log = %q, want it to contain %q", out, want)
 		}
+	}
+	if f := rec.takeFaults(); !slices.Equal(f, []string{routing.FaultError}) {
+		t.Fatalf("routing faults = %v, want one %s", f, routing.FaultError)
+	}
+	expectCalls(t, rec, []recordedDelivery{{"cairn", "signed", "accepted"}}, nil, nil)
+
+	// The owner fixes the rules; the producer redelivers. The slot is spent, so it stays faulted.
+	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
+	}})
+	again := postSelfManaged(ing, "cairn-fault", body, cairnHeaders(body, "evt-fault"))
+	if again.Code != http.StatusAccepted || !strings.Contains(again.Body.String(), `"faulted":true`) {
+		t.Fatalf("redelivery = %d %s, want it still faulted", again.Code, again.Body.String())
+	}
+	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 0 {
+		t.Fatalf("todos after redelivery = %d, want none", n)
+	}
+}
+
+// SPEC-0026 REQ-1 scenario "A faulting drop rule does not route its delivery": the default queue is
+// not taken.
+func TestSelfManagedFaultingDropRuleSkipsDefault(t *testing.T) {
+	ing, pool, ctx, _ := ingestWithLogCapture(t, Config{})
+	ing.SetRouter(routing.InProcess{})
+	st := store.New(pool)
+	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-fault-drop", cairnSecret)
+	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{
+		Rules:   []routing.Rule{{ID: "noise", Expr: `last(range(1e12)) > 0`, Action: routing.Action{Drop: true}}},
+		Default: &routing.Action{Queue: "inbox"},
+	})
+	body := cairnBody("evt-fault-drop", time.Now(), "big")
+	resp := postSelfManaged(ing, "cairn-fault-drop", body, cairnHeaders(body, "evt-fault-drop"))
+	if resp.Code != http.StatusAccepted || !strings.Contains(resp.Body.String(), `"faulted":true`) {
+		t.Fatalf("delivery = %d %s, want 202 faulted", resp.Code, resp.Body.String())
+	}
+	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 0 {
+		t.Fatalf("todos = %d, want none: the default must not apply after a fault", n)
+	}
+}
+
+// SPEC-0026 REQ-2 scenario "Sandbox down": a webhook with rules on an instance with no evaluator
+// answers 503 routing unavailable and persists nothing; the producer's retry lands once the sandbox is
+// back. A webhook without rules is unaffected.
+func TestSelfManagedUnavailableSandboxRefusesDelivery(t *testing.T) {
+	ing, pool, ctx, logs := ingestWithLogCapture(t, Config{})
+	ing.SetRouter(routing.Unavailable{})
+	rec := &recordingMetrics{}
+	ing.SetMetrics(rec)
+	st := store.New(pool)
+	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-down", cairnSecret)
+	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
+	}})
+
+	body := cairnBody("evt-down", time.Now(), "while the sandbox is down")
+	resp := postSelfManaged(ing, "cairn-down", body, cairnHeaders(body, "evt-down"))
+	if resp.Code != http.StatusServiceUnavailable || !strings.Contains(resp.Body.String(), "routing unavailable") {
+		t.Fatalf("delivery = %d %s, want 503 routing unavailable", resp.Code, resp.Body.String())
+	}
+	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM events WHERE webhook_id = $1`, wh.ID); n != 0 {
+		t.Fatalf("events = %d, want nothing persisted", n)
+	}
+	if out := logs.String(); !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "routing unavailable") ||
+		!strings.Contains(out, "webhook="+wh.ID) {
+		t.Fatalf("log = %q, want one error naming the webhook", out)
+	}
+	if f := rec.takeFaults(); len(f) != 0 {
+		t.Fatalf("routing faults = %v, want none: an outage is not a faulted delivery", f)
+	}
+	expectCalls(t, rec, []recordedDelivery{{"cairn", "signed", "rejected"}}, nil, nil)
+
+	// The sandbox recovers and the producer retries the same delivery: it routes normally.
+	ing.SetRouter(routing.InProcess{})
+	retry := postSelfManaged(ing, "cairn-down", body, cairnHeaders(body, "evt-down"))
+	if _, q := accepted202(t, retry); q != "inbox" {
+		t.Fatalf("retry queue = %q, want inbox", q)
+	}
+	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 1 {
+		t.Fatalf("todos after retry = %d, want 1", n)
+	}
+
+	// A webhook without rules never needs the evaluator.
+	ing.SetRouter(routing.Unavailable{})
+	_, _, _ = seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-norules", cairnSecret)
+	plain := cairnBody("evt-norules", time.Now(), "no rules")
+	if _, q := accepted202(t, postSelfManaged(ing, "cairn-norules", plain, cairnHeaders(plain, "evt-norules"))); q != "inbox" {
+		t.Fatalf("no-rules queue = %q, want inbox", q)
 	}
 }
 
@@ -103,7 +224,7 @@ func TestSelfManagedRoutingWithoutFaultsIsQuiet(t *testing.T) {
 	if _, q := accepted202(t, postSelfManaged(ing, "cairn-quiet", body, cairnHeaders(body, "evt-quiet"))); q != "inbox" {
 		t.Fatalf("queue = %q, want inbox", q)
 	}
-	if out := logs.String(); strings.Contains(out, "faulted") || strings.Contains(out, "wholesale") {
+	if out := logs.String(); strings.Contains(out, "faulted") || strings.Contains(out, "unavailable") {
 		t.Fatalf("log = %q, want no fault warning when every rule evaluates", out)
 	}
 }

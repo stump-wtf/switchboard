@@ -19,6 +19,7 @@ type countingMetrics struct{ deliveries, failures, decisions atomic.Int64 }
 func (c *countingMetrics) WebhookDelivery(string, string, string) { c.deliveries.Add(1) }
 func (c *countingMetrics) WebhookVerifyFailure(string, string)    { c.failures.Add(1) }
 func (c *countingMetrics) RoutingDecision(string, string, string) { c.decisions.Add(1) }
+func (c *countingMetrics) RoutingFault(string)                    {}
 
 func TestIngestMetricsSeamUnsetIsNoOp(t *testing.T) {
 	var i Ingest // the zero value must be safe too: some tests build Ingest by hand
