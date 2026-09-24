@@ -47,7 +47,7 @@ Vend one `joestump-agent` endpoint that owns ingress. It is not a worker endpoin
 
 Use the **web vend wizard** for this one: its webhooks step is the only vend surface that sets several source types and several allowed webhook queues. `switchboard endpoint vend` (the CLI) always vends a single `generic` source type and a one-queue ceiling.
 
-Either surface works for the lane **rules**, though: a rule may target any queue the same human's active, unexpired endpoints drain (the owning endpoint's ceiling united with the owner's other endpoints' scope and webhook queues), so vended pool endpoints do not need to appear in the router's own ceiling for rules to reach them (issue #270). Revoking a pool endpoint removes its queue from that grant again.
+Either surface works for the lane **rules**, though: a rule may target any queue the same human's active, unexpired endpoints drain (the owning endpoint's ceiling united with the owner's other endpoints' scope and webhook queues), so vended pool endpoints do not need to appear in the router's own ceiling for rules to reach them. Revoking a pool endpoint removes its queue from that grant again.
 
 ## 2. Vend one pool endpoint per lane
 

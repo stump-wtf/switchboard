@@ -7,8 +7,9 @@
 // docusaurus-plugin-openapi-docs, all with mermaid diagrams and the switchboard-era theme.
 //
 // Served as compiled static files by the front Caddy at https://switchboard.stump.wtf/docs/
-// (baseUrl /docs/). The site is public and the source repository is not, so nothing here links to
-// the repository.
+// (baseUrl /docs/). Both the site and the source (the public GitHub mirror,
+// https://github.com/stump-wtf/switchboard) are public, so the navbar links the mirror. There is no
+// editUrl: an "edit this page" link would open a pull request on the mirror, which can't merge it.
 //
 // The marketing landing page is src/pages/index.mdx (a standalone page — NO docs sidebar). The
 // design-record docs (guides/decisions/specs/design/reference) mount at routeBasePath '/', and the
@@ -121,6 +122,7 @@ const config = {
           { to: '/design', label: 'Design', position: 'left' },
           { to: '/prfaq', label: 'PRFAQ', position: 'left' },
           { href: 'https://switchboard.stump.wtf', label: 'Open the board', position: 'right' },
+          { href: 'https://github.com/stump-wtf/switchboard', label: 'GitHub', position: 'right' },
         ],
       },
       footer: {

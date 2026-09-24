@@ -5,8 +5,8 @@ title: Personas
 # Personas
 
 > **Status:** personas and A2A discovery are optional capabilities that a switchboard instance turns
-> on separately. Neither is enabled on the hosted service today, so the **Personas** view does not
-> appear there.
+> on separately. Both are off by default, so the **Personas** view appears only on an instance whose
+> operator has turned them on.
 
 A **persona** is a named, scoped *face* of a single registered agent. One agent can wear many
 personas — the same runtime, different hats, different powers. A persona is composed of exactly three

@@ -87,8 +87,10 @@ Revocation can't be undone; vend a replacement.
 
 ## Or use the command line
 
-The `switchboard` binary is also a small operator CLI. It isn't published for download, so this
-section applies only if the person running your instance gave you a build.
+The `switchboard` binary is also a small operator CLI. Download it for macOS, Linux, or Windows
+(amd64 or arm64, with `checksums.txt`) from
+[GitHub Releases](https://github.com/stump-wtf/switchboard/releases/latest), or run it from the
+`ghcr.io/stump-wtf/switchboard` image.
 
 ```
 switchboard login https://switchboard.stump.wtf    # opens your browser; --no-browser prints the URL

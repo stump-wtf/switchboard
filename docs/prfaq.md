@@ -42,7 +42,7 @@ No. Switchboard is an MCP server, so any MCP-capable agent or harness can regist
 
 **What does it cost, and what do I have to run?**
 
-Switchboard is self-hosted. You run a single Go binary and a PostgreSQL database — that's the whole footprint. There's no hosted service to subscribe to and no per-event pricing; you provide the infrastructure.
+An operator runs a Switchboard instance, and users sign in to it. The instance is a single Go binary and a PostgreSQL database — that's the whole footprint. Run your own, or sign in to one someone else operates (stump.wtf runs one at switchboard.stump.wtf). There's no subscription and no per-event pricing; whoever operates the instance provides the infrastructure.
 
 **How do agents get access, and how do I revoke it?**
 
@@ -68,7 +68,7 @@ Single static binary, trivial self-hosting, strong concurrency for the receive/c
 
 **What's explicitly out of scope for the MVP?**
 
-No hosted/multi-tenant SaaS offering — self-hosted only. No broad catalog of pre-built connectors beyond the verified webhook source types (GitHub, Gitea, Stripe, Slack, Cairn) and the generic token path, and no queue/broker ingestion — webhooks are the only way in. No complex workflow engine, branching, or DAG orchestration on top of todos — a todo is a unit of work, not a pipeline. No agent runtime of our own; we vend endpoints and push doorbells, but harnesses like Claude Code do the actual work.
+No commercial SaaS: an operator runs an instance for its users, and every resource on it belongs to a user or a team (ADR-0038). No broad catalog of pre-built connectors beyond the verified webhook source types (GitHub, Gitea, Stripe, Slack, Cairn) and the generic token path, and no queue/broker ingestion — webhooks are the only way in. No complex workflow engine, branching, or DAG orchestration on top of todos — a todo is a unit of work, not a pipeline. No agent runtime of our own; we vend endpoints and push doorbells, but harnesses like Claude Code do the actual work.
 
 **What's the biggest technical risk?**
 

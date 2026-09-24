@@ -12,8 +12,8 @@ related: [ADR-0010, ADR-0011, ADR-0012, ADR-0024, ADR-0025, ADR-0026, ADR-0027, 
 
 [ADR-0008](ADR-0008-human-principal-vended-endpoints.md) made the human the tenant, and
 [ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md) closed the hole where two endpoints sharing a
-queue string shared each other's work. #181
-then removed the last instance-wide ingestion. Switchboard is a multi-tenant service: the hosted
+queue string shared each other's work. The shared-receiver removal
+then took out the last instance-wide ingestion. Switchboard is a multi-tenant service: the hosted
 instance on StumpCloud is run by one person and used by several others (family and friends), and
 self-hosters run their own. Three problems remain.
 
@@ -31,20 +31,20 @@ by the team rather than by whoever set it up.
 names the *logged-in human managing their own agents*: the "operator board", "operator OAuth"
 (`0014_operator_oauth.sql`), "operator-authored todos" (the second ADR-0026). It has also been used
 for *the person who runs the instance*: `SWITCHBOARD_OPERATOR_SUBJECTS` gated the provider registry
-until #181 removed both, and [ADR-0026 (GitHub login)](ADR-0026-github-second-human-login-provider.md)
+until the shared-receiver removal took both out, and [ADR-0026 (GitHub login)](ADR-0026-github-second-human-login-provider.md)
 lists "Single-operator deployment reality. Switchboard is single-tenant" as a decision driver. That
 driver is false for the hosted service and for any self-hoster with a second user. The same
 self-hosting customer's bug report shows what the conflation costs: an env-seeded receiver refused
 every delivery because it had no owning endpoint, and the providers view showed "0 connected"
 because an operator allowlist was empty.
 
-**3. Unscoped surfaces remain, and new ones are being designed right now.** #194
-is the known P0: the event-history tools read and replay every tenant's deliveries. The audit below
+**3. Unscoped surfaces remain, and new ones are being designed right now.** Event
+history is the known P0: the event-history tools read and replay every tenant's deliveries. The audit below
 finds the rest. Meanwhile, eight companion records add owned resources: notify hooks (ADR-0029,
 SPEC-0024), trusted actors and quarantine (ADR-0031), reply-to-source credentials (ADR-0033),
 notification sinks (ADR-0034), admission budgets (ADR-0035), rule packs (ADR-0036), provider secrets
 (ADR-0037) and attempt history (ADR-0039). Without one owner model each will invent its own, and the
-first one to get it wrong is the next #194.
+first one to get it wrong is the next event-history leak.
 
 **What is the owner of every resource in Switchboard, how do people share ownership, and what can
 the person who runs the instance do that a user cannot?**
@@ -58,7 +58,7 @@ the person who runs the instance do that a user cannot?**
   accountable human — must still hold when the thing acting is a team's endpoint.
 * **Least privilege, revoked live.** Losing a team membership or a role must cut access on the next
   call, with no re-vend and no residue. ADR-0008's immutable vend grant stays; membership narrows it.
-* **One predicate, not one check per handler.** #194 happened because tenancy was a `WHERE` clause
+* **One predicate, not one check per handler.** The event-history leak happened because tenancy was a `WHERE` clause
   each author had to remember. The owner model must be something a query cannot be written without.
 * **Legible grants.** ADR-0008 chose a grant a human can read and know exactly what it permits. A
   sharing model has to keep that property; per-resource ACL lists do not.
@@ -276,26 +276,26 @@ The audit of `main` @ `8474757` that this ADR's spec turns into requirements:
 
 | # | Surface | What is wrong today | Fix | Tracked |
 |---|---|---|---|---|
-| F1 | Event history: `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, `switchboard://events/recent` (`internal/store/events.go:94-115,169`; `internal/mcp/events.go`) | No owner predicate; any endpoint reads and replays every tenant's payloads, headers, source IPs and routing traces. `events` has no owner column, and `webhook_id` is set to null when a webhook is deleted | Add `events.endpoint_id` (or `team_id`) written at ingest and backfilled through the webhook; every read filters by reach; replay checks reach before reading the payload | #194 (P0) |
+| F1 | Event history: `list_webhook_events`, `get_webhook_event`, `replay_webhook_event`, `switchboard://events/recent` (`internal/store/events.go:94-115,169`; `internal/mcp/events.go`) | No owner predicate; any endpoint reads and replays every tenant's payloads, headers, source IPs and routing traces. `events` has no owner column, and `webhook_id` is set to null when a webhook is deleted | Add `events.endpoint_id` (or `team_id`) written at ingest and backfilled through the webhook; every read filters by reach; replay checks reach before reading the payload | existing issue (P0) |
 | F2 | Enrollment (`internal/auth/github.go:37-58`, `auth.go:310`) | Any GitHub account becomes a tenant on first login, which makes every other finding internet-reachable | Operator config `SWITCHBOARD_ENROLLMENT_MODE`: `allowlist`, `invite` or `open`, defaulting to `invite` when GitHub login is configured (section 1) | new |
 | F3 | Friend-vended endpoints (`internal/server/friend_intake.go:226-246`, `internal/store/friends.go:183-193`) | Intake accepts any requested verbs; the minted endpoint authorizes webhook, rule and event verbs against the **approver**, so a friend can rewrite the approver's rules and read payloads through `test_webhook_rules` | Friend grants limited to `create_for` and drain verbs; webhook, rule and event verbs authorize against the webhook's own endpoint | new |
 | F4 | `KnownQueues` vend suggestions (`internal/store/agents.go:574-600`) | Unions every tenant's queue names into every human's vend screen; its comment still calls queues "a global namespace" | Filter by reach | new |
-| F5 | Rule sandbox (`internal/routing/sandbox.go:50-57,151-158`) | Two evaluation slots for the whole process; a busy sandbox is a fault, and a fault means no match, so one tenant's flood silently disables other tenants' drop and trust rules | Per-owner fair share of slots; trust rules fail closed | new, with #212 |
+| F5 | Rule sandbox (`internal/routing/sandbox.go:50-57,151-158`) | Two evaluation slots for the whole process; a busy sandbox is a fault, and a fault means no match, so one tenant's flood silently disables other tenants' drop and trust rules | Per-owner fair share of slots; trust rules fail closed | new, with the fail-closed fix |
 | F6 | Retention (`internal/store/retention.go:51-98`, `settings`) | Row caps counted across all tenants, so a noisy tenant evicts everyone else's history | Per-owner caps, operator-set defaults, eviction within the owner | new |
-| F7 | Ingest rate limit (`internal/server/ratelimit.go:121-128`) | Keyed on `RemoteAddr` before the token is known: one bucket for everyone behind a proxy | Trusted-proxy keying (#299), then a per-webhook limiter after token lookup | #299 + new |
-| F8 | Consent actions (`internal/auth/auth.go:77-81`) | The ADR-0026 passkey-issuer gate is not implemented, so GitHub sessions mint capabilities | Implement the gate; this ADR's consent-grade team actions reuse it | #259 (dependency) |
+| F7 | Ingest rate limit (`internal/server/ratelimit.go:121-128`) | Keyed on `RemoteAddr` before the token is known: one bucket for everyone behind a proxy | Trusted-proxy keying, then a per-webhook limiter after token lookup | existing issue + new |
+| F8 | Consent actions (`internal/auth/auth.go:77-81`) | The ADR-0026 passkey-issuer gate is not implemented, so GitHub sessions mint capabilities | Implement the gate; this ADR's consent-grade team actions reuse it | existing issue (dependency) |
 | F9 | Replay targets (`internal/mcp/replay.go:98-110,205-211`) | `replay_default_target` and `replay_allowed_targets` are instance settings, and "trusted" targets skip the SSRF guard for every tenant | Replay targets become endpoint-owned; no tenant call bypasses the guard; the instance settings are deleted outright, with an upgrade note and no boot warning | new |
-| F10 | Live lane frames (`internal/web/live.go:41-46`) | `lane_received` / `lane_rejected` / `lane_deduped` go to every connected human | Ingest passes the resolved webhook; frames filter by reach | #184 |
+| F10 | Live lane frames (`internal/web/live.go:41-46`) | `lane_received` / `lane_rejected` / `lane_deduped` go to every connected human | Ingest passes the resolved webhook; frames filter by reach | existing issue |
 | F11 | Metrics labels (`internal/metrics/metrics.go:103-134`, `limiter.go:31-33`) | Tenant queue names reach the operator's scrape; same-named queues of different owners merge; one tenant can exhaust the shared label cap | Named series only for queues owned by an operator's own scopes; all others aggregate under `__tenant__` by owner kind | new (amends SPEC-0023) |
 | F12 | OAuth client registry (`0010_oauth.sql:12-18`, `internal/oauthsrv/oauthsrv.go:250-285`) | Anonymous global registration; consent shows only the client's self-chosen name | Consent shows the redirect origin; unverified clients are marked | new |
 | F13 | Friend-request uniqueness (`0005_friend_edges.sql:41-43`) | Unique on persona names across tenants, so requests collide and can be squatted | Humans in the unique key | new |
 | F14 | Event dedup (`0001_init.sql:74`) | `(source, external_id)` unique instance-wide; safe only because every current path prefixes the key | Owner in the dedup key | new |
 | F15 | Human identity (`internal/auth/provider.go:126`) | Raw OIDC `sub` is the global key, not `(issuer, sub)` | Key humans on issuer and subject | new |
 | F16 | Dev routes (`internal/server/server.go:288`) | `/dev/todos` sits outside auth and accepts any `endpoint_id` | Require a session and an endpoint in reach, even in dev | new |
-| F17 | Uncalled store functions (`todos_a2a.go`, `push_configs.go`, `webhook_routes.go`, `routing.go`) | Id-only reads that leak the moment a handler calls them | Reach parameter or `Unscoped` suffix, enforced by the structure test | #184 + foundation |
+| F17 | Uncalled store functions (`todos_a2a.go`, `push_configs.go`, `webhook_routes.go`, `routing.go`) | Id-only reads that leak the moment a handler calls them | Reach parameter or `Unscoped` suffix, enforced by the structure test | existing issue + foundation |
 | F18 | Old-format wakeup fallback (`internal/server/listen.go:169-172`) | Reads every endpoint's pending todos by queue name | Remove it | new |
 | F19 | Route and rule verbs (`internal/mcp/webhook_routes.go:239-242`, `internal/store/routing.go:49-68`) | Authorize against the human, so a narrowly vended endpoint rewrites all its human's webhooks | Authorize against the webhook's own endpoint, or the grant's explicit webhook list | with F3 |
-| F20 | Routing trace on route-target todos | A friend's todo carries the owner's rule names, fault text and other targets | Redacted trace across owner scopes | #191 |
+| F20 | Routing trace on route-target todos | A friend's todo carries the owner's rule names, fault text and other targets | Redacted trace across owner scopes | existing issue |
 | F21 | Feature flags and the encryption key (`internal/config/config.go:38-85`) | Instance-wide | Accepted: instance policy that bounds tenants and routes nothing. Documented | — |
 
 ### 10. Migration
@@ -307,7 +307,7 @@ Existing resources become owned by their creator, which on `main` is always one 
 * no teams exist until a user creates one, so every existing query returns exactly what it did;
 * `todos.team_id` is null on every existing row, satisfying `todos_one_owner` without a backfill;
 * events with no `webhook_id` (pre-0018 rows) become invisible to agents and remain visible to their
-  endpoint's owner only when a join through `endpoint_webhooks` proves it, as #194 proposes.
+  endpoint's owner only when a join through `endpoint_webhooks` proves it, as the F1 fix proposes.
 
 A human with no teams sees no difference anywhere except the removal of the leaks in section 9.
 
@@ -320,7 +320,7 @@ A human with no teams sees no difference anywhere except the removal of the leak
 * Good, because the operator gets a real, bounded role — and "operator" stops meaning "whoever is
   logged in".
 * Good, because a single `Reach` predicate replaces a per-handler `WHERE` clause, which is the class
-  of bug #194 is.
+  of bug the event-history leak is.
 * Good, because nothing changes for a user with no teams, and the migration needs no backfill.
 * Bad, because `todos.endpoint_id` becomes nullable, and every consumer that assumed a todo has an
   endpoint (doorbell, presence, notify hooks, metrics labels) must handle a team todo. The spec lists
@@ -337,7 +337,7 @@ A human with no teams sees no difference anywhere except the removal of the leak
 ### Confirmation
 
 * The tenancy suite (`internal/store/tenancy_isolation_test.go`, the MCP suite and the handler-level
-  walk from #177) gains a second team: a member of team A, an admin of team A, an ex-member, a
+  walk from the handler-level tenancy suite) gains a second team: a member of team A, an admin of team A, an ex-member, a
   non-member and the operator each attempt every read and write on every row of the table in
   section 6, and every attempt outside reach returns `not_found`.
 * A store method without a `Reach` parameter and not on the `Unscoped` allowlist fails a test.
@@ -374,7 +374,7 @@ A human with no teams sees no difference anywhere except the removal of the leak
 * Good, because it is the smallest change and fits a single self-hosted team exactly.
 * Bad, because it is ruled out by the rule it would have to break: every user's resources become
   visible to every other user by default, and the operator becomes an admin over tenant data.
-* Bad, because it is the shape #181 removed from ingestion, applied to everything.
+* Bad, because it is the shape the shared-receiver removal took out of ingestion, applied to everything.
 
 ### (D) Per-resource ACLs
 
@@ -428,4 +428,4 @@ flowchart TB
   end by the two teams and by no instance-wide setting.
 * Harness composes by vending: its stack installer (Harness ADR-0024, SPEC-0018) should offer to vend
   into a team, and its supervisor leases (Harness ADR-0025) claim team-queue todos like any endpoint.
-* Known P0 folded in here: #194.
+* Known P0 folded in here: F1, event history.

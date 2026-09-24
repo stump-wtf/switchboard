@@ -36,7 +36,7 @@ first, because that is all the schema has today. The team column arrives with SP
 
 * Operator-imposed ceilings on tenants. That is a separate record under ADR-0038's operator-bounding
   rule.
-* Priority or fair share across queues (#160 keeps this deferred).
+* Priority or fair share across queues (still deferred).
 * Cost accounting in dollars or tokens. Switchboard can't see model usage, and Harness ADR-0027 does
   that for its runs.
 * A rolling-window mode. It is rejected for v1 (see Decisions).
@@ -289,7 +289,7 @@ and a policy write, so a freed slot rings immediately rather than on the next ti
 ### Metrics
 
 A scrape-time collector reads `admission_policies`, the current windows and deferred-todo counts
-grouped by queue label, as the liveness gauges of #302 do. The two counters are incremented at commit
+grouped by queue label, as the queue liveness gauges do. The two counters are incremented at commit
 and at refusal. The collector registers `collection_errors_total{collector="admission"}`.
 
 ### Board

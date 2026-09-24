@@ -262,7 +262,7 @@ notification MUST carry exactly these fields:
 
 ```json
 {"type": "todo.ready", "reason": "created", "todo_id": "td_…", "queue": "inbox",
- "kind": "pull_request", "source": "gitea", "summary": "PR #482 opened in …",
+ "kind": "pull_request", "source": "gitea", "summary": "PR 482 opened in …",
  "endpoint": "<slug>", "attempt": 1, "created_at": "2026-09-22T14:03:11Z"}
 ```
 

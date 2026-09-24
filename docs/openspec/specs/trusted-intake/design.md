@@ -10,7 +10,7 @@ implements: [ADR-0031]
 
 Routing ([SPEC-0020](../event-routing/spec.md)) is first-match-wins, and a faulting rule is
 treated as no-match (`internal/routing/routing.go`). `internal/ingest/selfmanaged.go` logs the
-fault (#226) and routes anyway. A failed sandbox makes rules route by default
+fault as a warning and routes anyway. A failed sandbox makes rules route by default
 (`internal/ingest/ingest.go`). `set_webhook_rules` rebuilds `Params` from the request, so omitting
 it clears allowlists (`internal/mcp/webhook_rules.go`). Trust exists only as jq over `.issue.author`
 and `.artifact.actor_id`.
@@ -46,7 +46,7 @@ sender gate.
 
 **Choice**: `Evaluate` returns `Decision{Disposition: Faulted, Fault: …}` as soon as a rule faults,
 instead of appending to `Trace.Faults` and continuing. The receiver maps `Faulted` to
-"persist the event and no todo" (#212 story), and later to "quarantine" (quarantine story).
+"persist the event and no todo" (the fail-closed story), and later to "quarantine" (quarantine story).
 `test_webhook_rules` reports `faulted` as a blocking outcome.
 
 **Rationale**: putting fail-closed in the pure evaluator means the live receiver, the dry-run and
@@ -54,7 +54,7 @@ the save-time check all inherit it, and cannot disagree. The fleet pack's hand-w
 guards stay harmless and become belt-and-braces.
 
 **Alternatives considered**:
-- Fail closed only for `drop` rules and rules followed by a `queue` (#212 option 1): whether a
+- Fail closed only for `drop` rules and rules followed by a `queue` (option 1 for fail-open rules): whether a
   fault is dangerous depends on everything after it, so the classification is itself error-prone.
   Every rule is simpler and safe.
 
@@ -92,7 +92,7 @@ the webhook's identity, and must survive rule edits, including an agent's
 
 **Alternatives considered**:
 - A `$params.trusted_*` convention checked by a built-in rule: it keeps trust inside the rule list,
-  where #213-style edits can remove it.
+  where an omitted-params edit can remove it.
 
 ### Quarantine is a reserved queue on the owner endpoint
 
@@ -257,14 +257,14 @@ default and waits in quarantine.
   sender text, and released items that keep `author_trusted = false`. The owner's rules can send
   classifier releases to a cautious lane.
 - **Rollout breaks an existing rule set that faulted quietly.** → Before upgrading, operators run a
-  one-off report that lists every webhook whose last 7 days of traces contain faults. The #212 story
+  one-off report that lists every webhook whose last 7 days of traces contain faults. The fail-closed story
   ships it as a CLI subcommand, and the upgrade note makes running it a step. Nothing defers
   fail-closed: there is no switch to turn it on later.
 
 ## Migration Plan
 
-1. **#213**: omitted params are unchanged. Independent, safe, first.
-2. **#212**: fault stops evaluation, faulted disposition, 503 on a dead sandbox, save-time dry-run,
+1. **Params survive omission**: omitted params are unchanged. Independent, safe, first.
+2. **Rules fail closed**: fault stops evaluation, faulted disposition, 503 on a dead sandbox, save-time dry-run,
    param typing, and the fault report. Release-noted as behaviour-changing.
 3. `trusted_actors`: the column, verbs, actor projection, `.actor` envelope, and `author_trusted`
    in work orders.

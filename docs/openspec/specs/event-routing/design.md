@@ -135,7 +135,7 @@ Every jq subset that closes those also stops being useful for routing, and the s
 
 **Choice.** The grant is:
 - the webhook's target queue;
-- the owner's allowed webhook queues: the owning endpoint's webhook-queue ceiling united with the scope and webhook queues of every active, unexpired endpoint the same human owns (issue #270 — the grant follows the endpoints the owner already has, and revocation or expiry shrinks it on the next read);
+- the owner's allowed webhook queues: the owning endpoint's webhook-queue ceiling united with the scope and webhook queues of every active, unexpired endpoint the same human owns (the grant follows the endpoints the owner already has, and revocation or expiry shrinks it on the next read);
 - the webhook's live, authorized delivery targets.
 
 `endpoints` must be a subset of those targets at save. At delivery the grant is recomputed and the subset intersected again. A matched rule that no longer fits takes the default with cause `rule_not_granted`. It does not fall through to later rules, so a revocation never silently promotes a broader rule.
@@ -144,7 +144,7 @@ Every jq subset that closes those also stops being useful for routing, and the s
 
 ### LLM triage: registry-backed, schema-validated, always-fallback *(Phase 2)*
 
-**Choice.** `llm_triage` config on the endpoint: `{provider, model, queues: [{name, description}], min_confidence, prompt_budget_per_minute, prompt_budget_per_day, include_payload: false}`. Where the LLM provider's configuration lives is open: the runtime provider registry ([ADR-0020](../../../adrs/ADR-0020-runtime-provider-registry.md)) it was to use was removed (#181). The model must answer `{"queue": "...", "confidence": 0..1, "reason": "..."}`, validated strictly. Fallback on:
+**Choice.** `llm_triage` config on the endpoint: `{provider, model, queues: [{name, description}], min_confidence, prompt_budget_per_minute, prompt_budget_per_day, include_payload: false}`. Where the LLM provider's configuration lives is open: the runtime provider registry ([ADR-0020](../../../adrs/ADR-0020-runtime-provider-registry.md)) it was to use was removed with the shared receivers. The model must answer `{"queue": "...", "confidence": 0..1, "reason": "..."}`, validated strictly. Fallback on:
 - unknown queue;
 - low confidence;
 - transport failure;

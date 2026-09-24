@@ -260,8 +260,8 @@ queue reads as a nearly empty one). It doesn't replace this documentation:
 [Working the queue well](/guides/working-the-queue) stays the reference, and the skill points back
 at it.
 
-The skill lives in a **public** repository, `stump-wtf/claude-plugin-switchboard`, even though the
-service itself is closed source.
+The skill lives in its own public repository,
+[stump-wtf/claude-plugin-switchboard](https://github.com/stump-wtf/claude-plugin-switchboard).
 
 **Claude Code** installs it as a plugin:
 

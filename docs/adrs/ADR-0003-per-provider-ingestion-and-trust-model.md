@@ -7,7 +7,7 @@ related: [ADR-0000, ADR-0002, ADR-0005, ADR-0014]
 
 # ADR-0003: Ingestion Provider Types & Trust Model (webhooks vs. queues)
 
-> **Amended 2026-09-21 (#181).** The per-provider verification model below is unchanged, but it is now
+> **Amended 2026-09-21, with the shared-receiver removal.** The per-provider verification model below is unchanged, but it is now
 > reached only through self-managed webhooks ([ADR-0012](ADR-0012-agents-self-manage-webhooks.md),
 > `POST /webhooks/w/{token}`), where the source type fixes the trust mode (`signed` or `token`) and
 > switchboard mints the secret. The operator-configured receiver routes (`/webhooks/{provider}`,
@@ -168,7 +168,7 @@ flowchart TD
   db --> sse[SSE broadcast]
   db --> mcp[MCP tools]
 
-  classDef signed fill:#dfe,stroke:#090
+  classDef signed fill:#dfe,stroke:#009900
   classDef tok fill:#ffe8c2,stroke:#c80
   classDef open fill:#fdd,stroke:#b00
   classDef queue fill:#dde4ff,stroke:#33f

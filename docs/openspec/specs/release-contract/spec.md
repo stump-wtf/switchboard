@@ -18,7 +18,7 @@ warning. The docs say which release they describe, and mark what is not released
 
 This spec also defines the `v0.3.0` release as the first release under the contract. It is the
 first to report its own version over MCP, and the first with a CHANGELOG and an upgrade guide for
-#291.
+the shared-receiver removal.
 
 ## Requirements
 
@@ -255,7 +255,7 @@ unaffected by this requirement.
 
 The `v0.3.0` upgrade note MUST name `SWITCHBOARD_GITHUB_SECRET`, `SWITCHBOARD_GITEA_SECRET`,
 `SWITCHBOARD_STRIPE_SECRET`, `SWITCHBOARD_SLACK_SECRET` and
-`SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`, all retired by #291.
+`SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`, all retired in `v0.3.0`.
 
 #### Scenario: Old secret still set
 
@@ -318,7 +318,7 @@ A release MUST be cut within 48 hours of merging any `sec` change, and SHOULD be
 `v0.3.0` MUST be the first release under this contract. It MUST include:
 
 * `CHANGELOG.md`, with `v0.1.0`, `v0.2.0` and `v0.3.0` sections;
-* #291 under Breaking;
+* the shared-receiver removal under Breaking;
 * the ring-on-connect, delivery-id and board fixes under Added and Fixed;
 * a `docs/guides/15-upgrading.md` section for `v0.3.0` covering:
   * the four ignored `SWITCHBOARD_*_SECRET` variables and `SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`;

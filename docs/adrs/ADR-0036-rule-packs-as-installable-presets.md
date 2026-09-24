@@ -19,7 +19,7 @@ Installing either one means pasting the JSON into `set_webhook_rules`. That is t
 
 **Rules install green and match nothing.** On 2026-09-12, four rules installed in one day passed validation and never matched real traffic:
 
-* a parameter of the wrong type made a rule fault, and a faulting rule is a no-match (#212);
+* a parameter of the wrong type made a rule fault, and a faulting rule is a no-match;
 * a `sender` read inside `any()` was rebound to the generator's element;
 * two rules carried event-kind lists that real deliveries never send. One of those was a bot's own suggested "fix".
 
@@ -27,9 +27,9 @@ Save-time validation checks that an expression compiles and an action is granted
 
 **Packs are copy-paste with no identity.** A webhook doesn't record which pack, at which version, produced its rules. An improved pack in the repo never reaches the webhooks that installed the old one, and a hand edit to an installed rule drifts silently. There is no upgrade and no diff.
 
-**Packs don't compose.** `set_webhook_rules` replaces the rules, the default *and the params* (#213). Installing a second pack by hand overwrites the first. There are 32 rules per webhook, and `fleet.json` alone uses 27.
+**Packs don't compose.** `set_webhook_rules` replaces the rules, the default *and the params*. Installing a second pack by hand overwrites the first. There are 32 rules per webhook, and `fleet.json` alone uses 27.
 
-**The patterns are wanted beyond our fleet.** A self-hosting customer built cross-model author/reviewer pairing by hand: an identity map, agent-authored PRs reviewed only by the paired agent of the other model family, no self-merge, and human PRs kept for human review. That is `pool-review.json` generalized, rebuilt from scratch because it only existed as our fleet's JSON. The same customer, and our own queue (#223, the `issue_comment.deleted` flood), both needed CI and bot noise dropped at the source.
+**The patterns are wanted beyond our fleet.** A self-hosting customer built cross-model author/reviewer pairing by hand: an identity map, agent-authored PRs reviewed only by the paired agent of the other model family, no self-merge, and human PRs kept for human review. That is `pool-review.json` generalized, rebuilt from scratch because it only existed as our fleet's JSON. The same customer, and our own queue (the `issue_comment.deleted` flood), both needed CI and bot noise dropped at the source.
 
 **How should switchboard ship reusable routing patterns so that installing one is a single call, is proven against the webhook's own stored deliveries before anything saves, composes with other packs, and can be upgraded later without silently overwriting local edits?**
 
@@ -42,7 +42,7 @@ Save-time validation checks that an expression compiles and an action is granted
 * **Compose, don't clobber.** An install merges into the webhook's configuration. It leaves other rules and params alone and records its provenance, and it refuses conflicts instead of guessing.
 * **Upgrades are diffs.** A newer version shows its rule, param and decision diffs, and refuses to overwrite hand-edited pack rules unless told to.
 * **Tenant safety is unchanged.** A pack installs only on a webhook the caller's owner scope owns ([ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md); Teams, ADR-0038). Its rules are validated against the webhook's grant like any other rule, so a pack can narrow where a delivery lands and never widen it.
-* **Typed parameters.** Pack params declare types, and install rejects a mistyped allowlist instead of relying on every jq author to guard it. This is #212's third remedy, applied to packs.
+* **Typed parameters.** Pack params declare types, and install rejects a mistyped allowlist instead of relying on every jq author to guard it. This is the third remedy proposed for fail-open rules, applied to packs.
 
 ## Considered Options
 
@@ -102,7 +102,7 @@ Replay rules:
 * **Zero stored deliveries is not proof.** If the webhook has no stored deliveries of the pack's source types, the plan says so (`proven: false`), and the apply requires `allow_unproven: true`. The installed provenance records it, so the webhook stays marked unproven until a later replay proves it.
 * **Matching nothing is a warning.** A pack rule that matched none of the replayed deliveries is flagged but doesn't block. A rule like "hold `size/XL`" may legitimately see nothing in 200 events.
 
-`test_webhook_rules` gains the same replay mode (`replay: {limit, since}`) for hand-written candidates. Any rule change can carry the same evidence, and one code path produces it for both. That work also fixes #196: replay mints ids for id-less candidates, as a save does.
+`test_webhook_rules` gains the same replay mode (`replay: {limit, since}`) for hand-written candidates. Any rule change can carry the same evidence, and one code path produces it for both. That work also fixes dry-runs of id-less candidates: replay mints ids for id-less candidates, as a save does.
 
 ### Provenance, upgrade and removal
 
@@ -112,7 +112,7 @@ Installing a different version of an installed pack is an upgrade or a downgrade
 
 ### Merge semantics
 
-* An install never removes a rule it didn't install, and never clears a param it doesn't own. This is the opposite of `set_webhook_rules`, and deliberately so (#213). The one exception is explicit: `replaces` names hand-written rules the pack takes over. The plan lists them, and the replay proves the takeover changes nothing, or shows what it does change. That is how a webhook with pasted-in JSON, such as today's fleet, adopts packs.
+* An install never removes a rule it didn't install, and never clears a param it doesn't own. This is the opposite of `set_webhook_rules`, and deliberately so. The one exception is explicit: `replaces` names hand-written rules the pack takes over. The plan lists them, and the replay proves the takeover changes nothing, or shows what it does change. That is how a webhook with pasted-in JSON, such as today's fleet, adopts packs.
 * An omitted param keeps the webhook's current value when it has one, so adopting a pack never resets an allowlist to its default.
 * A param supplied at install that another installed pack also owns updates it for both. The plan names both packs, and the replay shows the combined effect.
 * At most one installed pack may set `default_action`. A second one is refused.
@@ -124,7 +124,7 @@ Installing a different version of an installed pack is an upgrade or a downgrade
 * **`no-self-review`**: generalizes `pool-review.json`'s identity rules. In single-identity mode (`identity`), it drops review requests addressed to someone else and review triggers on the identity's own PRs, and it keeps review outcomes on the identity's own PRs. In pair mode (`pairs`: author and reviewer logins, with optional `families`), a pool accepts review work only for PRs whose author is paired with its identity. It drops its own PRs and PRs by unpaired authors, so human PRs stay with human review. With `require_cross_family: true`, a `param_check` refuses any pair whose two logins declare the same model family. That is the customer's cross-model rule enforced at install, not at review time.
 * **`trusted-actors`**: admits only deliveries whose signature verified and whose actor is in `trusted_humans`, `trusted_agents` or `cairn_actors`. It is split out of `fleet.json` rules 1, 3, 17 and 18. Version 1 is today's fail-closed jq (`| arrays` / `| strings` guards). Version 2 ships with the fail-closed trusted-actor gate of ADR-0031 / SPEC-0026. Its install sets the webhook's first-class `trusted_actors` from the pack's params, through that spec's `set_trusted_actors` semantics, and installs one rule that sends `.actor.trusted | not` to `{"quarantine": true}` instead of dropping it. Upgrading from version 1 to version 2 is the migration from hand-written allowlists to the engine's own gate. Version 1 leaves the catalog in the release that ships version 2, with an upgrade note: webhooks that installed it keep routing unchanged (their rules are data) and list `upgrade_available`, but it can no longer be planned.
 * **`drop-ci-noise`**: drops deliveries nobody can work:
-  * `*.deleted` actions, such as `issue_comment` `deleted` (#223);
+  * `*.deleted` actions, such as `issue_comment` `deleted`;
   * comments and review outcomes whose `sender.login` is in `bot_actors` (`pool-review.json` rules 3–4);
   * CI status events that aren't failures, unless `keep_ci_success` is set.
 

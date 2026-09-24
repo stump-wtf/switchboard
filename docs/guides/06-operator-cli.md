@@ -4,8 +4,10 @@ title: Operator CLI and API
 
 # Operator CLI and API
 
-> The `switchboard` binary is not published for download. If you use the hosted service without a
-> build, everything below is also available in the web board's **Endpoints** view — see
+> Download the `switchboard` binary from
+> [GitHub Releases](https://github.com/stump-wtf/switchboard/releases/latest) (macOS, Linux, and
+> Windows; amd64 and arm64), or run it from the `ghcr.io/stump-wtf/switchboard` image. Without it,
+> everything below is also available in the web board's **Endpoints** view — see
 > [Sign in and vend your first endpoint](/getting-started/first-endpoint).
 
 One binary does everything. `switchboard serve` runs the service; the same binary is also the

@@ -32,7 +32,7 @@ Harness SPEC-0019 (the first consumer).
 
 ### Non-Goals
 
-- Changing `owner` to a per-session identity. Issue #160 stays open for that. The fence covers the
+- Changing `owner` to a per-session identity. That stays deferred. The fence covers the
   stale-worker case for clients that opt in.
 - A general audit log of every transition.
 - Scanning summaries for secrets. Producers redact, and the docs say summaries are replayed to later
@@ -195,7 +195,7 @@ risky options are fine when configurable and off by default).
 the scope guard allows it on the same condition. `DrainVerbs()` lists `get_todo` and `release`, so
 the vend wizard and the consent screen offer them for new endpoints.
 
-**Rationale**: existing endpoints cannot gain verbs without re-vending (issue #163). `get_todo`
+**Rationale**: existing endpoints cannot gain verbs without re-vending. `get_todo`
 reads only rows the endpoint can already enumerate, plus attempt text written through its own
 credential, so it confers no new power. `release` changes state, so it is never implied.
 
@@ -472,12 +472,12 @@ migration, and it loses only history.
 
 ## Open Questions
 
-- **Does the lease fence plus `get_todo` close #160?** Resolved (design review 2026-09-22): the fence and `get_todo` land first. #160
-  stays open for per-session owner identity.
+- **Does the lease fence plus `get_todo` close the stale-worker problem?** Resolved (design review 2026-09-22): the fence and `get_todo` land first.
+  Per-session owner identity stays deferred.
 - **Should `get_todo` be granted wherever `list_todos` is?** Resolved (design review 2026-09-22): yes, automatically (REQ-8).
 - **Budgets per todo, or per queue too?** Resolved (design review 2026-09-22): `max_attempts` stays per todo. Per-queue budgets
   belong to admission control (ADR-0035 / SPEC-0030).
-- **Should `list_todos` rows carry `next_retry_at` and `dead_letter`?** Resolved (design review 2026-09-22): yes, tracked in #214,
+- **Should `list_todos` rows carry `next_retry_at` and `dead_letter`?** Resolved (design review 2026-09-22): yes, tracked separately,
   not here.
 - **Should the per-todo cap keep the first attempt as well as the newest?** Resolved (design review 2026-09-22): no. The cap keeps the
   newest attempts only, which keeps one pruning rule.

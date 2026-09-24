@@ -99,7 +99,7 @@ trustworthy as a human-configured one.
 - Reveal the secret on every read: needless additional exposure of key material; one-time reveal at
   create/rotate is sufficient for the agent to configure the producer.
 
-**At-rest encryption (optional hardening, issue #153)**: because the secret must be *recoverable*
+**At-rest encryption (optional hardening)**: because the secret must be *recoverable*
 (not hashed), the plaintext-in-`signing_secret` design leaves it readable to anyone with DB access.
 As optional hardening, setting `SWITCHBOARD_SECRET_ENCRYPTION_KEY` (a 32-byte AES-256 key, base64 or
 hex, held **outside** PostgreSQL via env/deploy config) makes `create_webhook`/`rotate_webhook`

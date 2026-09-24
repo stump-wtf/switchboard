@@ -18,8 +18,8 @@ Facts from `main` @ `8474757` this design rests on:
 * `todos.endpoint_id` is `NOT NULL`, and queues are an implicit `(endpoint_id, name)` namespace
   (`0012_endpoint_scoped_todos.sql`). There is no queues table.
 * `events` has no owner column; `webhook_id` is nullable and `ON DELETE SET NULL`
-  (`0018_event_routing.sql:19-21`), which is why #194 has no clean filter today.
-* Every board handler already passes `human.ID` into the store (#176, #177). The MCP path does not
+  (`0018_event_routing.sql:19-21`), which is why the event-history tools have no clean owner filter today.
+* Every board handler already passes `human.ID` into the store, with a handler-level regression suite behind it. The MCP path does not
   have an equivalent for events, rules or routes: those authorize against the endpoint's human.
 * `settings` is an instance key/value table read by retention, replay and SSE; nothing writes it.
 
@@ -32,7 +32,7 @@ Facts from `main` @ `8474757` this design rests on:
 - Teams that people create, join and leave without the operator.
 - Team queues drained competitively by several humans' agents, with immediate revocation.
 - An operator role that is real, bounded and audited.
-- Close #194 and the twenty other findings, each with a failing-first tenancy case.
+- Close F1 (event history) and the twenty other findings, each with a failing-first tenancy case.
 
 ### Non-Goals
 
@@ -93,7 +93,7 @@ WHERE (t.endpoint_id = ANY($reach_endpoints)
 
 `$reach_endpoints` and `$reach_teams` are computed from `Reach` in Go; SQL never string-builds them.
 
-**Rationale**: #194 and F4 are both "a query without a predicate". Making `Reach` a required
+**Rationale**: F1 and F4 are both "a query without a predicate". Making `Reach` a required
 parameter turns that into a compile error for new code. A structure test (extending
 `internal/server/tenancy_events_stream_test.go`) lists every exported store method and fails on any
 that touches a tenant table without taking `Reach`, unless it carries the `Unscoped` suffix and is on
@@ -413,26 +413,26 @@ line citations are in ADR-0038 section 9.
 
 | # | Surface | Fix | Requirement |
 |---|---|---|---|
-| F1 | Event history tools and resource (#194) | owner column on events; reach filter; replay checks first | Owner-Scoped History Reads |
+| F1 | Event history tools and resource | owner column on events; reach filter; replay checks first | Owner-Scoped History Reads |
 | F2 | Open GitHub enrollment | enrollment policy | Enrollment Policy |
 | F3 | Friend endpoints carry the approver's authority | friend grants limited; verbs authorize on the webhook's endpoint | Closing the Audited Surfaces |
 | F4 | `KnownQueues` | reach filter | Closing the Audited Surfaces |
 | F5 | Shared rule sandbox fails open | per-owner fair share; trust rules fail closed | Closing the Audited Surfaces |
 | F6 | Instance-wide retention caps | per-owner caps | Per-Owner Retention |
-| F7 | Ingest limiter keyed on proxy address | trusted proxy (#299) and per-webhook limiter | Per-Webhook Ingest Limits |
-| F8 | Passkey gate unimplemented | #259 | Consent-Grade Team Actions |
+| F7 | Ingest limiter keyed on proxy address | trusted-proxy keying and a per-webhook limiter | Per-Webhook Ingest Limits |
+| F8 | Passkey gate unimplemented | implement the passkey-issuer gate | Consent-Grade Team Actions |
 | F9 | Instance replay targets bypass SSRF | owned targets, no bypass | Owned Replay Targets |
-| F10 | Live lane frames to everyone (#184) | frames carry the webhook's owner | Closing the Audited Surfaces |
+| F10 | Live lane frames to everyone | frames carry the webhook's owner | Closing the Audited Surfaces |
 | F11 | Tenant queue names in metrics | `__tenant__` aggregation | Closing the Audited Surfaces |
 | F12 | Anonymous OAuth client registry | redirect origin on consent | Closing the Audited Surfaces |
 | F13 | Global friend-request uniqueness | humans in the key | Closing the Audited Surfaces |
 | F14 | Global event dedup | owner in the key | Closing the Audited Surfaces |
 | F15 | Humans keyed on raw `sub` | `(issuer, subject)` | Closing the Audited Surfaces |
 | F16 | `/dev/todos` outside auth | session and reach | Closing the Audited Surfaces |
-| F17 | Uncalled id-only store functions (#184) | `Reach` or `Unscoped` | Reach and Effective Reach |
+| F17 | Uncalled id-only store functions | `Reach` or `Unscoped` | Reach and Effective Reach |
 | F18 | Old wakeup fallback reads by queue name | removed | Closing the Audited Surfaces |
 | F19 | Route and rule verbs authorize on the human | the webhook's endpoint | Closing the Audited Surfaces |
-| F20 | Route-target routing trace (#191) | redacted across scopes | Closing the Audited Surfaces |
+| F20 | Route-target routing trace | redacted across scopes | Closing the Audited Surfaces |
 | F21 | Instance feature flags and encryption key | accepted as instance policy | — |
 
 ## The Contract for Companion Records
@@ -491,7 +491,7 @@ configure, govern) over each product's resources, and nothing in one product cha
    `agents.owner_team_id` with `agents_one_owner`, and `endpoints.vended_by_human_id`; backfill
    `vended_by_human_id` from the endpoint's agent's `owner_human_id`. Introduce `store.Reach` with every method taking it,
    and the structure test.
-2. **Events owner (P0, #194).** Add `events.endpoint_id` / `team_id`, backfill, write at ingest,
+2. **Events owner (P0, F1).** Add `events.endpoint_id` / `team_id`, backfill, write at ingest,
    filter every history read. Ship before any team exists; it is independent of teams.
 3. **Teams without queues.** Team CRUD, roles, invites, board scope switcher, team-owned endpoints.
 4. **Team queues.** `todos.endpoint_id` nullable, `todos.team_id`, `endpoint_team_grants`, claim,

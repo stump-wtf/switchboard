@@ -260,11 +260,12 @@ The docs site builds with Docusaurus and ships as the `switchboard-docs` image v
 
 ## Repository hosting
 
-- **Source:** <https://gitea.stump.rocks/stump.wtf/switchboard> — the origin of truth.
-  `github.com/stump-wtf/switchboard` is the push mirror; the old `github.com/joestump/switchboard`
-  is retired. The Go module path is `github.com/stump-wtf/switchboard`, because a module path must
+- **Source:** <https://github.com/stump-wtf/switchboard>, MIT licensed. It is a read-only mirror of
+  the maintainers' own forge, where development and review happen, so pull requests opened on
+  GitHub can't be merged there; report bugs and requests as GitHub Issues instead. The old
+  `github.com/joestump/switchboard` is retired. The Go module path is `github.com/stump-wtf/switchboard`, because a module path must
   be publicly fetchable — it names where the module can be resolved, not where development happens.
-- **Docs:** built with Docusaurus and served as a compiled static site at <https://switchboard.stump.wtf/docs/> — the front Caddy routes `/docs/*` to the `switchboard-docs` container (built + pushed by `.gitea/workflows/docs.yaml`). GitHub Pages was retired: a private org repo on the Team plan cannot serve Pages.
+- **Docs:** built with Docusaurus and served as a compiled static site at <https://switchboard.stump.wtf/docs/> — the front Caddy routes `/docs/*` to the `switchboard-docs` container (built + pushed by `.gitea/workflows/docs.yaml`), rather than from GitHub Pages.
 
 ## License
 

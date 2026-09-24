@@ -27,8 +27,8 @@ Two layers:
 | [ADR-0000](adrs/ADR-0000-project-naming-and-scope.md) | Project naming & scope | The project is `switchboard`; MVP scope ratified. |
 | [ADR-0001](adrs/ADR-0001-web-stack-go-htmx-pico.md) | Web stack | Go `net/http` + chi, `html/template`, HTMX; assets embedded via `embed.FS` (CSS layer amended by ADR-0016). |
 | [ADR-0002](adrs/ADR-0002-postgres-persistence-and-retention.md) | PostgreSQL persistence & retention | Postgres queue store: SKIP LOCKED claims, ON CONFLICT dedup, partial pending index, age + row-cap pruning. |
-| [ADR-0003](adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types & trust | Per-provider verification and the trust model. *Amended (#181):* reached only through self-managed webhooks (`signed`/`token`); the `queue` family and operator-configured receivers are gone. |
-| [ADR-0005](adrs/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay` + recent-events resource. *Amended (#181):* `list_providers` removed. |
+| [ADR-0003](adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types & trust | Per-provider verification and the trust model. *Amended (shared receivers removed):* reached only through self-managed webhooks (`signed`/`token`); the `queue` family and operator-configured receivers are gone. |
+| [ADR-0005](adrs/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay` + recent-events resource. *Amended (shared receivers removed):* `list_providers` removed. |
 | [ADR-0007](adrs/ADR-0007-todos-as-core-primitive.md) | **Todos as the core primitive** | Durable work-items (lease/ack/idempotency), not a message inbox. |
 | [ADR-0008](adrs/ADR-0008-human-principal-vended-endpoints.md) | **Human principal + vended endpoints** | Humans authenticate; agents get vended scoped MCP endpoints; IdP holds humans only. |
 | [ADR-0009](adrs/ADR-0009-personas-as-scoped-agent-cards.md) | **Personas as scoped Agent Cards** | One agent → many personas; a persona is a verb-subset, advertised as an A2A card. |
@@ -36,7 +36,7 @@ Two layers:
 | [ADR-0011](adrs/ADR-0011-identity-assurance-oidc-passkey-deferred.md) | **Identity & assurance** | Simple OIDC (Pocket ID) now; passkey `amr`/`acr` step-up deferred. |
 | [ADR-0012](adrs/ADR-0012-agents-self-manage-webhooks.md) | **Agents self-manage webhooks** | Webhook CRUD within a human-vended ceiling; switchboard owns verification. |
 | [ADR-0013](adrs/ADR-0013-channels-push-delivery.md) | **Channels push-delivery** | Claude Code Channels pushes into a live session as a notify layer; the durable todo queue stays the ledger. |
-| [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) | ~~Ingestion adapters (push/pull)~~ | **Superseded (#181).** Push + pull adapter families; the pull family and the operator-configured receivers were removed — self-managed webhooks (ADR-0012) are the only ingestion surface. |
+| [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) | ~~Ingestion adapters (push/pull)~~ | **Superseded (shared receivers removed).** Push + pull adapter families; the pull family and the operator-configured receivers were removed — self-managed webhooks (ADR-0012) are the only ingestion surface. |
 | [ADR-0015](adrs/ADR-0015-implementation-language-go.md) | **Implementation language = Go** | Go for the concurrent queue service: goroutine workers, single static binary, official Go MCP/A2A SDKs, `pgx` + `SKIP LOCKED`. |
 | [ADR-0016](adrs/ADR-0016-operator-design-language.md) | **Operator design language** | Direction 1a "Operator" (brass & bakelite) is canonical; owned `tokens.css` + `.sb-*` layer replaces the never-shipped Pico.css; fonts vendored. |
 | [ADR-0017](adrs/ADR-0017-mcp-streamable-http-only.md) | **MCP over Streamable HTTP only** | Vended endpoints served HTTP/S-direct from the central service; URL + bearer credential is the whole client; stdio adapter retired. |
@@ -68,7 +68,7 @@ rationale). Grouped by layer, in dependency order.
 | [SPEC-0004](openspec/specs/persistence/spec.md) | Persistence | ADR-0002 | PostgreSQL as sole ledger, pgx pool lifecycle, migrations, schema/indexes, LISTEN/NOTIFY, retention. |
 | [SPEC-0003](openspec/specs/todo-queue/spec.md) | Todo work-queue | ADR-0007 | Four-state lifecycle, SKIP LOCKED claim, visibility window + heartbeat, lease reaper, idempotent enqueue. |
 | [SPEC-0001](openspec/specs/webhook-ingestion/spec.md) | Webhook ingestion | ADR-0003, 0012 | Signed/token verification on self-managed webhooks, replay window, idempotency-key extraction, enqueue-as-todo. |
-| [SPEC-0002](openspec/specs/queue-adapters/spec.md) | ~~Queue adapters (pull)~~ | ADR-0014, 0003 | **Retired (#181).** Pull adapters were removed with ADR-0014; kept as history. |
+| [SPEC-0002](openspec/specs/queue-adapters/spec.md) | ~~Queue adapters (pull)~~ | ADR-0014, 0003 | **Retired (shared receivers removed).** Pull adapters were removed with ADR-0014; kept as history. |
 | [SPEC-0005](openspec/specs/mcp-tools/spec.md) | MCP tool contract | ADR-0005 | Tool/resource shape, JSON schemas, transport, event-history surface. |
 | [SPEC-0006](openspec/specs/agent-tools/spec.md) | Agent-facing MCP tools | ADR-0012, 0005 | Todo drain (claim/complete/fail/heartbeat) + webhook self-management within a vended ceiling. |
 | [SPEC-0007](openspec/specs/vended-endpoints/spec.md) | Vended MCP endpoints | ADR-0008 | (URL + credential) = scoped capability, hashed at rest, immutable scope, revoke = kill. |
@@ -142,7 +142,7 @@ open to confirmation and is also tracked in the relevant spec's `design.md` **Op
    Streamable HTTP ([SPEC-0014](openspec/specs/mcp-transport/spec.md)); the stdio adapter is retired.
 
 7. **Pull-adapter ack timing: ack-on-store vs. ack-on-complete** — **Moot: pull adapters were
-   removed (#181).** [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) is superseded and
+   removed with the shared receivers.** [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) is superseded and
    [SPEC-0002](openspec/specs/queue-adapters/spec.md) retired.
 
 ## Conventions

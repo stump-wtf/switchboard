@@ -2,7 +2,7 @@
 
 ## Context
 
-> **Amended 2026-09-21 (#181).** The operator-configured receivers (`/webhooks/{provider}`,
+> **Amended 2026-09-21, with the shared-receiver removal.** The operator-configured receivers (`/webhooks/{provider}`,
 > `/webhooks/generic/{name}`), their env-configured secrets and tokens, the `open` trust mode they
 > alone could produce, and pull ingestion (SPEC-0002, retired) were removed. Every delivery arrives
 > at a self-managed webhook, `POST /webhooks/w/{ingest_token}`

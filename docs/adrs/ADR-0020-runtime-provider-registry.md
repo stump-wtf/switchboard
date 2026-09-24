@@ -8,7 +8,7 @@ governs: [SPEC-0017]
 
 # ADR-0020: Providers Become Runtime-Configurable First-Class Objects with a Connect Wizard and Catalog
 
-> **Superseded 2026-09-21 (#181).** The provider registry was removed whole: the Providers view, the
+> **Superseded 2026-09-21, with the shared-receiver removal.** The provider registry was removed whole: the Providers view, the
 > connect wizard and catalog, provider lifecycle, env seeding, `SWITCHBOARD_OPERATOR_SUBJECTS`, the
 > `list_providers` MCP tool, and the `adapters` table (dropped by migration 0021). Self-managed
 > webhooks ([ADR-0012](ADR-0012-agents-self-manage-webhooks.md), `POST /webhooks/w/{token}`) are the

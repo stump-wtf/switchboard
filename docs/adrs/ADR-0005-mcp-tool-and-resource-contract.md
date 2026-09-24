@@ -7,7 +7,7 @@ related: [ADR-0000, ADR-0002, ADR-0003]
 
 # ADR-0005: MCP Tool and Resource Contract Shape
 
-> **Amended 2026-09-21 (#181).** `list_providers` was removed with the provider registry
+> **Amended 2026-09-21, with the shared-receiver removal.** `list_providers` was removed with the provider registry
 > ([ADR-0020](ADR-0020-runtime-provider-registry.md), superseded). The event-history tools are
 > `list_webhook_events`, `get_webhook_event`, and `replay_webhook_event`.
 
