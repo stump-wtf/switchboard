@@ -41,6 +41,10 @@ const (
 	RuleDefault = "default"
 )
 
+// attemptOutcomes is the SPEC-0034 REQ-3 outcome set, the only values the attempts-closed counter's
+// outcome label takes.
+var attemptOutcomes = []string{"completed", "failed", "released", "lease_expired", "reaped", "canceled", "revoked"}
+
 var (
 	// tokenLabel is the last-resort bound on free-ish label values (source, provider, trust_mode,
 	// reason, collector). Callers are expected to map to their own small enums first; this only
@@ -77,6 +81,7 @@ type Metrics struct {
 	todosCompleted *prometheus.CounterVec
 	leasesExpired  *prometheus.CounterVec
 	todoAttempts   *prometheus.CounterVec
+	attemptsClosed *prometheus.CounterVec
 
 	// REQ-4 ingest and routing counters.
 	deliveries       *prometheus.CounterVec
@@ -119,6 +124,10 @@ func New(opts Options) *Metrics {
 			Name: "switchboard_todo_attempts_total",
 			Help: "Claims by the attempt number they started (1|2|3+).",
 		}, []string{"queue", "attempt_bucket"}),
+		attemptsClosed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_todo_attempts_closed_total",
+			Help: "Todo attempts closed, by queue and outcome; lease_expired and reaped are deaths (SPEC-0034).",
+		}, []string{"queue", "outcome"}),
 
 		deliveries: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_webhook_deliveries_total",
@@ -141,7 +150,7 @@ func New(opts Options) *Metrics {
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		m.todosCreated, m.todosClaimed, m.todosCompleted, m.leasesExpired, m.todoAttempts,
+		m.todosCreated, m.todosClaimed, m.todosCompleted, m.leasesExpired, m.todoAttempts, m.attemptsClosed,
 		m.deliveries, m.routingDecisions, m.verifyFailures,
 		m.collectionErrors,
 	)
@@ -228,6 +237,16 @@ func (m *Metrics) LeaseExpired(queue string) {
 		return
 	}
 	m.leasesExpired.WithLabelValues(m.QueueLabel(queue)).Inc()
+}
+
+// AttemptClosed counts one committed attempt close (SPEC-0034 REQ-14). outcome is one of the REQ-3
+// outcomes; anything else is reported as Other. Each lease_expired or reaped close has exactly one
+// matching LeaseExpired increment, so the two families reconcile.
+func (m *Metrics) AttemptClosed(queue, outcome string) {
+	if m == nil {
+		return
+	}
+	m.attemptsClosed.WithLabelValues(m.QueueLabel(queue), oneOf(outcome, attemptOutcomes...)).Inc()
 }
 
 // WebhookDelivery counts one inbound delivery by its verdict: VerdictAccepted (verified and

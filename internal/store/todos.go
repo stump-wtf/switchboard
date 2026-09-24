@@ -548,6 +548,7 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 	// its prior state can ride into RETURNING — see countClaim.
 	var takeover bool
 	var ca ClaimedAttempt
+	var closedOld bool
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
 			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
@@ -558,7 +559,7 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 						AND attempt < max_attempts))
 			FOR UPDATE
 		)`+claimTail, append([]any{endpointID, id}, claimArgs(owner, o, "endpoint", endpointID)...)...)
-	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal)
+	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal, &closedOld)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ClaimedAttempt{}, s.classifyMiss(ctx, endpointID, id)
 	}
@@ -566,7 +567,7 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 		return Todo{}, ClaimedAttempt{}, fmt.Errorf("store: claim %s: %w", id, err)
 	}
 	s.fireTodoHook("claimed", t)
-	s.countClaim(t, takeover)
+	s.countClaim(t, takeover, closedOld)
 	return t, ca, nil
 }
 
@@ -584,10 +585,16 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 // cannot both count one lapse: whichever locks the row first changes it, and the other's predicate
 // no longer matches.
 // Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028.
-func (s *Store) countClaim(t Todo, takeover bool) {
+//
+// closedOld reports that the takeover closed the lapsed lease's attempt as lease_expired, which is
+// the same event the lease-expiry counter just counted (SPEC-0034 REQ-14: one each).
+func (s *Store) countClaim(t Todo, takeover, closedOld bool) {
 	m := s.metricsOrNop()
 	if takeover {
 		m.LeaseExpired(t.Queue)
+	}
+	if closedOld {
+		s.countAttemptClosed(t.Queue, "lease_expired")
 	}
 	m.TodoClaimed(t.Queue, t.Attempt)
 }
@@ -613,6 +620,7 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 	// takeover, see countClaim); predicate, order and SKIP LOCKED are unchanged.
 	var takeover bool
 	var ca ClaimedAttempt
+	var closedOld bool
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
 			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
@@ -625,7 +633,7 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)`+claimTail, append([]any{endpointID, queues}, claimArgs(owner, o, "endpoint", endpointID)...)...)
-	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal)
+	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal, &closedOld)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ClaimedAttempt{}, ErrNotFound
 	}
@@ -633,7 +641,7 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 		return Todo{}, ClaimedAttempt{}, fmt.Errorf("store: claim next: %w", err)
 	}
 	s.fireTodoHook("claimed", t)
-	s.countClaim(t, takeover)
+	s.countClaim(t, takeover, closedOld)
 	return t, ca, nil
 }
 
@@ -689,10 +697,14 @@ func (s *Store) CompleteTodoWith(ctx context.Context, endpointID, id, owner stri
 			RETURNING todos.*
 		),
 		`+closedArm("completed", "'done'", "NULLIF($5::text, '')", "$6::boolean", "NULLIF($7::text, '')")+`
-		SELECT `+todoCols+` FROM upd`, endpointID, id, owner, r.Result, summary, truncated, artifact)
-	t, err := scanTodo(row)
+		`+closedSelect, endpointID, id, owner, r.Result, summary, truncated, artifact)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "completed")
 	}
 	if err == nil {
 		s.fireTodoHook("done", t)
@@ -731,11 +743,15 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 			RETURNING todos.*
 		),
 		`+closedArm("failed", failDisposition, "NULLIF($7::text, '')", "$8::boolean", "NULLIF($9::text, '')")+`
-		SELECT `+todoCols+` FROM upd`, endpointID, id, owner, r.Result,
+		`+closedSelect, endpointID, id, owner, r.Result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact)
-	t, err := scanTodo(row)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
 		// Both outcomes commit as 'failed'; the hook payload's NextRetryAt distinguishes a
@@ -893,10 +909,14 @@ func (s *Store) ReleaseTodoWith(ctx context.Context, endpointID, id, owner strin
 			RETURNING todos.*
 		),
 		`+closedArm("released", "'requeued'", "NULLIF($4::text, '')", "$5::boolean", "NULLIF($6::text, '')")+`
-		SELECT `+todoCols+` FROM upd`, endpointID, id, owner, summary, truncated, artifact)
-	t, err := scanTodo(row)
+		`+closedSelect, endpointID, id, owner, summary, truncated, artifact)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "released")
 	}
 	if err == nil {
 		s.fireTodoHook("pending", t)
@@ -915,10 +935,14 @@ func (s *Store) ReleaseTodoOperatorOwned(ctx context.Context, ownerHumanID, id, 
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("released", "'requeued'")+`
-		SELECT `+todoCols+` FROM upd`, id, owner, ownerHumanID)
-	t, err := scanTodo(row)
+		`+closedSelect, id, owner, ownerHumanID)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "released")
 	}
 	if err == nil {
 		s.fireTodoHook("pending", t)
@@ -1061,6 +1085,7 @@ func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, ow
 	// human, not an endpoint credential, holds it (SPEC-0034 REQ-1, REQ-2).
 	var takeover bool
 	var ca ClaimedAttempt
+	var closedOld bool
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
 			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
@@ -1071,7 +1096,7 @@ func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, ow
 						AND attempt < max_attempts))`+operatorOwns+`$1)
 			FOR UPDATE
 		)`+claimTail, append([]any{ownerHumanID, id}, claimArgs(owner, ClaimOpts{TTL: ttl}, "owner", "")...)...)
-	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal)
+	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal, &closedOld)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
@@ -1079,7 +1104,7 @@ func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, ow
 		return Todo{}, fmt.Errorf("store: board claim %s: %w", id, err)
 	}
 	s.fireTodoHook("claimed", t)
-	s.countClaim(t, takeover)
+	s.countClaim(t, takeover, closedOld)
 	return t, nil
 }
 
@@ -1093,10 +1118,14 @@ func (s *Store) CompleteTodoOperatorOwned(ctx context.Context, ownerHumanID, id,
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("completed", "'done'")+`
-		SELECT `+todoCols+` FROM upd`, id, owner, result, ownerHumanID)
-	t, err := scanTodo(row)
+		`+closedSelect, id, owner, result, ownerHumanID)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "completed")
 	}
 	if err == nil {
 		s.fireTodoHook("done", t)
@@ -1120,11 +1149,15 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("failed", failDisposition)+`
-		SELECT `+todoCols+` FROM upd`, id, owner, result,
+		`+closedSelect, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), ownerHumanID)
-	t, err := scanTodo(row)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
 		s.fireTodoHook(t.State, t)
@@ -1172,18 +1205,21 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
-		SELECT `+todoCols+` FROM upd`)
+		`+closedSelect)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 	var reaped []Todo
+	var closed []bool
 	for rows.Next() {
-		t, err := scanTodo(rows)
+		var c bool
+		t, err := scanTodo(rows, &c)
 		if err != nil {
 			return 0, err
 		}
 		reaped = append(reaped, t)
+		closed = append(closed, c)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
@@ -1192,10 +1228,14 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 	// dead-letter here deliberately does NOT also count TodoFinished(outcome="fail"): that counter
 	// is claimant-reported outcomes, and nobody reported this one. Lease expiry is its own signal, and
 	// counting it twice would inflate the failure rate with the very stall it already measures.
+	// Each reaped attempt close is counted beside its lease expiry, one each (SPEC-0034 REQ-14).
 	// Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028.
-	for _, t := range reaped {
+	for i, t := range reaped {
 		s.fireTodoHook(t.State, t)
 		s.metricsOrNop().LeaseExpired(t.Queue)
+		if closed[i] {
+			s.countAttemptClosed(t.Queue, "reaped")
+		}
 	}
 	return int64(len(reaped)), nil
 }
@@ -1569,13 +1609,13 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 // They dead-letter rather than retry: next_retry_at stays NULL because there is no future in which
 // this endpoint drains them. The result records why, so the row explains itself to whoever finds it.
 // Governing: SPEC-0007 REQ "Instant, Total Revocation"; SPEC-0016 REQ "Revocation Cascade".
-func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []string) error {
+func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []string) (closedQueues []string, err error) {
 	if len(endpointIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	// A claimed or interrupted todo's open attempt closes revoked/dead_lettered in the same
 	// statement (SPEC-0034 REQ-3); a pending todo has none.
-	if _, err := q.Exec(ctx, `
+	rows, err := q.Query(ctx, `
 		WITH upd AS (
 			UPDATE todos SET
 				state = 'failed',
@@ -1592,9 +1632,28 @@ func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []strin
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("revoked", "'dead_lettered'")+`
-		SELECT count(*) FROM upd`,
-		endpointIDs); err != nil {
-		return fmt.Errorf("store: dead-letter endpoint todos: %w", err)
+		SELECT upd.queue FROM upd JOIN closed c ON c.todo_id = upd.id`,
+		endpointIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: dead-letter endpoint todos: %w", err)
 	}
-	return nil
+	defer rows.Close()
+	for rows.Next() {
+		var queue string
+		if err := rows.Scan(&queue); err != nil {
+			return nil, fmt.Errorf("store: dead-letter endpoint todos: %w", err)
+		}
+		closedQueues = append(closedQueues, queue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: dead-letter endpoint todos: %w", err)
+	}
+	return closedQueues, nil
+}
+
+// countRevokedAttempts counts the attempts a committed revocation cascade closed.
+func (s *Store) countRevokedAttempts(queues []string) {
+	for _, q := range queues {
+		s.countAttemptClosed(q, "revoked")
+	}
 }

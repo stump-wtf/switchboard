@@ -380,12 +380,14 @@ func (s *Store) RevokeEndpoint(ctx context.Context, endpointID, ownerHumanID str
 	if err := revokeEndpointOAuth(ctx, tx, []string{endpointID}); err != nil {
 		return err
 	}
-	if err := deadLetterEndpointTodos(ctx, tx, []string{endpointID}); err != nil {
+	closed, err := deadLetterEndpointTodos(ctx, tx, []string{endpointID})
+	if err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("store: revoke endpoint commit: %w", err)
 	}
+	s.countRevokedAttempts(closed)
 	return nil
 }
 
@@ -523,7 +525,8 @@ func (s *Store) ExpireEndpoints(ctx context.Context) ([]string, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: expire endpoints rows: %w", err)
 	}
-	if err := deadLetterEndpointTodos(ctx, tx, ids); err != nil {
+	closed, err := deadLetterEndpointTodos(ctx, tx, ids)
+	if err != nil {
 		return nil, err
 	}
 	if err := revokeEndpointOAuth(ctx, tx, ids); err != nil {
@@ -532,6 +535,7 @@ func (s *Store) ExpireEndpoints(ctx context.Context) ([]string, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("store: expire endpoints commit: %w", err)
 	}
+	s.countRevokedAttempts(closed)
 	return ids, nil
 }
 

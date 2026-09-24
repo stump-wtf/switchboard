@@ -165,7 +165,8 @@ var claimTail = `,
 			FROM upd
 			RETURNING seq
 		)
-		SELECT ` + todoCols + `, prior_state = 'claimed', (SELECT seq FROM opened), attempts_total FROM upd`
+		SELECT ` + todoCols + `, prior_state = 'claimed', (SELECT seq FROM opened), attempts_total,
+			EXISTS (SELECT 1 FROM closed) FROM upd`
 
 // claimArgs returns the claimTail parameters $3..$9 for a claim by owner.
 func claimArgs(owner string, o ClaimOpts, kind, claimerEndpointID string) []any {
@@ -186,6 +187,11 @@ func closedArm(outcome, disposition, summary, truncated, artifact string) string
 			RETURNING a.todo_id
 		)`
 }
+
+// closedSelect ends a statement that spliced a closedArm: the todo row, then whether this row's
+// attempt actually closed. The flag, not the transition, is what the attempts-closed counter counts
+// (SPEC-0034 REQ-14), so a todo that somehow had no open attempt is never counted as a close.
+const closedSelect = `SELECT ` + todoCols + `, EXISTS (SELECT 1 FROM closed c WHERE c.todo_id = upd.id) FROM upd`
 
 // closedArmUnreported closes with no summary or artifact: deaths, cancels, revocations, and the
 // Board's actions, where no holder reported anything.
@@ -272,4 +278,19 @@ func (s *Store) todoAttempts(ctx context.Context, scope, id string, limit int, s
 		return nil, 0, 0, ErrNotFound
 	}
 	return out, total, pruned, nil
+}
+
+// AttemptMetrics is the optional sink for switchboard_todo_attempts_closed_total (SPEC-0034 REQ-14).
+// It is separate from Metrics so the lifecycle seam keeps its shape: a sink that also implements
+// this receives one call per closed attempt, after commit; one that does not is simply not asked.
+// *metrics.Metrics implements both. outcome is one of the REQ-3 outcomes.
+type AttemptMetrics interface {
+	AttemptClosed(queue, outcome string)
+}
+
+// countAttemptClosed reports one committed attempt close to the sink, when it takes them.
+func (s *Store) countAttemptClosed(queue, outcome string) {
+	if m, ok := s.metricsOrNop().(AttemptMetrics); ok {
+		m.AttemptClosed(queue, outcome)
+	}
 }

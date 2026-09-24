@@ -114,6 +114,7 @@ func TestDeclaredFamiliesMatchSpec(t *testing.T) {
 	m.TodoClaimed("forge", 1)
 	m.TodoFinished("forge", OutcomeComplete)
 	m.LeaseExpired("forge")
+	m.AttemptClosed("forge", "reaped")
 	m.WebhookDelivery("github", "signed", VerdictAccepted)
 	m.WebhookVerifyFailure("github", "bad_signature")
 	m.RoutingDecision("wh-1", "", ActionQueue)
@@ -125,6 +126,7 @@ func TestDeclaredFamiliesMatchSpec(t *testing.T) {
 		"switchboard_todos_completed_total":           "outcome,queue",
 		"switchboard_todo_leases_expired_total":       "queue",
 		"switchboard_todo_attempts_total":             "attempt_bucket,queue",
+		"switchboard_todo_attempts_closed_total":      "outcome,queue", // SPEC-0034 REQ-14
 		"switchboard_webhook_deliveries_total":        "provider,trust_mode,verdict",
 		"switchboard_routing_decisions_total":         "action,rule_id,webhook",
 		"switchboard_webhook_verify_failures_total":   "provider,reason",
@@ -331,5 +333,31 @@ func TestNilReceiverIsNoOp(t *testing.T) {
 	}
 	if m.Handler("some-token-that-is-long-enough-000") == nil {
 		t.Fatal("nil receiver Handler must still return a (closed) handler")
+	}
+}
+
+// TestAttemptClosedOutcomeIsBounded: the attempts-closed outcome label takes only the SPEC-0034
+// REQ-3 outcomes, and anything else is Other, so a caller bug cannot mint label values.
+func TestAttemptClosedOutcomeIsBounded(t *testing.T) {
+	m := New(Options{})
+	for _, o := range attemptOutcomes {
+		m.AttemptClosed("forge", o)
+	}
+	m.AttemptClosed("forge", "exploded")
+	got := map[string]float64{}
+	for _, o := range append(append([]string{}, attemptOutcomes...), Other) {
+		var d dto.Metric
+		if err := m.attemptsClosed.WithLabelValues("forge", o).Write(&d); err != nil {
+			t.Fatalf("read %s: %v", o, err)
+		}
+		got[o] = d.GetCounter().GetValue()
+	}
+	for _, o := range attemptOutcomes {
+		if got[o] != 1 {
+			t.Errorf("outcome %s counted %v, want 1", o, got[o])
+		}
+	}
+	if got[Other] != 1 {
+		t.Errorf("an unknown outcome counted %v under %s, want 1", got[Other], Other)
 	}
 }

@@ -21,8 +21,9 @@ import (
 
 // The concrete surface satisfies both consumer seams; server.go relies on this.
 var (
-	_ store.Metrics  = (*Metrics)(nil)
-	_ ingest.Metrics = (*Metrics)(nil)
+	_ store.Metrics        = (*Metrics)(nil)
+	_ store.AttemptMetrics = (*Metrics)(nil)
+	_ ingest.Metrics       = (*Metrics)(nil)
 )
 
 // testScrapeToken is a fixed, non-secret test credential (>= 32 bytes).
