@@ -41,12 +41,20 @@ package mcp
 // @joestump-agent 09/11/2026 - ADR-0025: params ($params), exclusive/once/work_order action flags,
 // per-target scopes in the grant (read before the lock, like targets), and a dry-run that previews
 // the once key and work order.
+//
+// @joestump-agent 09/23/2026 - Fail closed (ADR-0031, SPEC-0026 REQ-3): set/add/update/move dry-run
+// the resulting rules against the webhook's 50 latest deliveries before saving, and refuse a save
+// that faults on any of them. The dry-run runs before the lock, and the locked write saves the
+// checked candidate only if the stored config is unchanged (conflict otherwise). test_webhook_rules
+// reports faulted as blocking (#212).
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -55,7 +63,12 @@ import (
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
-const codeRuleNotFound = "rule_not_found"
+const (
+	codeRuleNotFound = "rule_not_found"
+	// codeUnavailable says the rule evaluator could not run, so a save could not be checked. It is
+	// transient and names no rule. Governing: SPEC-0026 REQ-3.
+	codeUnavailable = "unavailable"
+)
 
 // --- tool input/output shapes (SDK-inferred JSON schemas) ---
 
@@ -141,9 +154,13 @@ type testWebhookRulesIn struct {
 }
 
 type decisionOut struct {
-	Drop      bool     `json:"drop" jsonschema:"true when the delivery would be recorded without a todo"`
-	Queue     string   `json:"queue,omitempty" jsonschema:"the queue todos would land in"`
-	Endpoints []string `json:"endpoints,omitempty" jsonschema:"the endpoints todos would be created on"`
+	Drop        bool               `json:"drop" jsonschema:"true when a drop action would record the delivery without a todo"`
+	Queue       string             `json:"queue,omitempty" jsonschema:"the queue todos would land in"`
+	Endpoints   []string           `json:"endpoints,omitempty" jsonschema:"the endpoints todos would be created on"`
+	Disposition string             `json:"disposition,omitempty" jsonschema:"the intake outcome: routed, dropped or faulted"`
+	Faulted     bool               `json:"faulted" jsonschema:"BLOCKING: a rule faulted, so evaluation stopped and the delivery would be recorded and routed nowhere; a save whose rules fault on recent deliveries is refused"`
+	Unavailable bool               `json:"unavailable,omitempty" jsonschema:"the rule evaluator could not run, so this dry-run says nothing about the rules; retry"`
+	Fault       *routing.RuleFault `json:"fault,omitempty" jsonschema:"the fault that stopped evaluation: rule id, index, cause and detail"`
 }
 
 type testWebhookRulesOut struct {
@@ -163,22 +180,22 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "set_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "set_webhook_rules",
-			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. An invalid rule rejects the save and keeps the previous configuration."},
+			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. First match wins, and a rule that errors or times out stops evaluation: the delivery is recorded and routed nowhere. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries."},
 			h.setWebhookRulesTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "add_webhook_rule",
-			Description: "Insert one routing rule into a webhook's rule list at a position (default: last). The expression is compiled and the action checked before saving."},
+			Description: "Insert one routing rule into a webhook's rule list at a position (default: last). The expression is compiled and the action checked before saving, and the resulting rules are dry-run against the webhook's 50 most recent deliveries: a rule that faults on any of them is refused."},
 			h.addWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "update_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "update_webhook_rule",
-			Description: "Change a routing rule's name, expression, or action in place."},
+			Description: "Change a routing rule's name, expression, or action in place. Refused if the resulting rules fault on any of the webhook's 50 most recent deliveries."},
 			h.updateWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "move_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "move_webhook_rule",
-			Description: "Move a routing rule to a new position. Order is precedence: the first matching rule wins."},
+			Description: "Move a routing rule to a new position. Order is precedence: the first matching rule wins. Refused if the reordered rules fault on any of the webhook's 50 most recent deliveries."},
 			h.moveWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "remove_webhook_rule") {
@@ -188,7 +205,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "test_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "test_webhook_rules",
-			Description: "Dry-run routing: evaluate the saved rules (or candidate rules) against a sample payload or one of this webhook's stored events, and return the decision, the trace, and the envelope the rules saw. Saves nothing."},
+			Description: "Dry-run routing: evaluate the saved rules (or candidate rules) against a sample payload or one of this webhook's stored events, and return the decision, the trace, and the envelope the rules saw. A faulted decision (faulted: true) is blocking: that delivery would be recorded and routed nowhere. Saves nothing."},
 			h.testWebhookRulesTool(ep))
 	}
 }
@@ -334,8 +351,7 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 				}
 				return nil, testWebhookRulesOut{}, h.mapRuleErr(ep, "test_webhook_rules", err)
 			}
-			_ = json.Unmarshal(ev.Headers, &env.Headers)
-			env.Body, env.Kind, env.Verified, env.ContentType = ev.Payload, ev.EventType, ev.Verified, ev.ContentType
+			env = storedEnvelope(wr, ev)
 		} else {
 			body, err := json.Marshal(in.Payload)
 			if err != nil {
@@ -357,15 +373,21 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 
 		d := h.rulesRouter().Route(ctx, cfg, g, env)
 		out := testWebhookRulesOut{
-			Decision: decisionOut{Drop: d.Drop, Queue: d.Queue, Endpoints: d.Endpoints},
-			Trace:    d.Trace,
+			Decision: decisionOut{Drop: d.Drop, Queue: d.Queue, Endpoints: d.Endpoints,
+				Disposition: d.Disposition(), Faulted: d.Faulted, Unavailable: d.Unavailable, Fault: d.Fault},
+			Trace: d.Trace,
+		}
+		if d.Unavailable {
+			// A dry-run that could not run says nothing about the rules. It is reported, but no
+			// disposition is claimed for it.
+			out.Decision.Disposition = ""
 		}
 		subject := routing.SubjectOf(wr.SourceType, env.Headers, env.Body)
-		if d.Once && !d.Drop {
+		if d.Once && !d.Drop && !d.Faulted {
 			out.OnceKey = routing.OnceKey(subject, d.Queue)
 			out.Trace.OnceKey = out.OnceKey
 		}
-		if d.WorkOrder && !d.Drop {
+		if d.WorkOrder && !d.Drop && !d.Faulted {
 			wo := routing.BuildWorkOrder(d, env, subject)
 			out.WorkOrder = &wo
 		}
@@ -405,17 +427,42 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 	if err != nil {
 		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 	}
-	var g routing.Grant
+
+	// Build and check the candidate from the configuration read above, then dry-run it against the
+	// webhook's recent traffic, all BEFORE the lock (SPEC-0026 REQ-3). The dry-run reads up to
+	// dryRunEvents stored events and evaluates each one in the sandbox. Doing that under the row lock
+	// would hold it for as long as the evaluations take, and the event read would take a second
+	// pooled connection, which is the deadlock above. Instead, the locked mutation below saves this
+	// exact candidate only if the stored configuration is still the one it was built from. A
+	// concurrent edit in between answers conflict rather than saving something that was never
+	// dry-run.
+	next, err := change(pre.Config)
+	if err != nil {
+		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
+	}
+	for i := range next.Rules {
+		if next.Rules[i].ID == "" {
+			next.Rules[i].ID = routing.NewRuleID()
+		}
+	}
+	g := routing.Grant{TargetQueue: pre.TargetQueue, Queues: pre.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
+	if err := routing.Validate(next, g); err != nil {
+		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
+	}
+	// remove_webhook_rule is not dry-run (SPEC-0026 REQ-3 names the four verbs that add or change
+	// a rule). Removing a rule adds no new expression, and refusing it would block an owner from
+	// deleting the very rule that faults.
+	if tool != "remove_webhook_rule" {
+		if err := h.dryRunSave(ctx, pre, next, g); err != nil {
+			return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
+		}
+	}
+
 	wr, err := h.store.UpdateWebhookRouting(ctx, id, ep.OwnerHumanID, func(cur store.WebhookRouting) (routing.Config, error) {
-		next, err := change(cur.Config)
-		if err != nil {
-			return routing.Config{}, err
+		if !reflect.DeepEqual(cur.Config, pre.Config) {
+			return routing.Config{}, &toolError{codeConflict, "the webhook's rules changed while this edit was being checked; read them again and retry"}
 		}
-		for i := range next.Rules {
-			if next.Rules[i].ID == "" {
-				next.Rules[i].ID = routing.NewRuleID()
-			}
-		}
+		// The queue ceiling still comes from the locked row.
 		g = routing.Grant{TargetQueue: cur.TargetQueue, Queues: cur.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
 		if err := routing.Validate(next, g); err != nil {
 			return routing.Config{}, err
@@ -426,6 +473,69 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 	}
 	return nil, rulesOut(wr, g), nil
+}
+
+// dryRunEvents bounds the save-time dry-run: at most this many of the webhook's latest deliveries,
+// each inside the per-event evaluation budget (SPEC-0026 REQ-3, "Rate Limiting").
+const dryRunEvents = 50
+
+// dryRunSave evaluates a candidate configuration against the webhook's most recent stored
+// deliveries and refuses it with invalid_argument if any rule faults on any of them. The error names
+// every faulting rule id, with the event ids and the cause. Most faults are type errors that real
+// traffic exposes at once, so this turns "installs green, then faults every delivery" into a refused
+// save that says why. A webhook with no stored events skips the dry-run. So does a candidate with
+// no rules, which cannot fault.
+//
+// The sandbox being unavailable is not the candidate's fault. It refuses the save with
+// "unavailable", so the agent can retry, rather than blaming a rule.
+// Governing: SPEC-0026 REQ-3 "Save-Time Fault Refusal and Param Typing"; ADR-0031.
+func (h *Handler) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg routing.Config, g routing.Grant) error {
+	if len(cfg.Rules) == 0 {
+		return nil
+	}
+	events, err := h.store.RecentWebhookEvents(ctx, wr.WebhookID, dryRunEvents)
+	if err != nil {
+		return err
+	}
+	router := h.rulesRouter()
+	faults := map[string][]int64{} // "rule_id (cause)" -> event ids, newest first
+	var order []string
+	for _, ev := range events {
+		d := router.Route(ctx, cfg, g, storedEnvelope(wr, ev))
+		if d.Unavailable {
+			return &toolError{codeUnavailable, "routing is unavailable, so the rules could not be checked against recent deliveries; retry shortly"}
+		}
+		if !d.Faulted {
+			continue
+		}
+		k := d.Fault.RuleID + " (" + d.Fault.Cause + ")"
+		if _, seen := faults[k]; !seen {
+			order = append(order, k)
+		}
+		faults[k] = append(faults[k], ev.ID)
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(order))
+	for _, k := range order {
+		ids := make([]string, 0, len(faults[k]))
+		for _, id := range faults[k] {
+			ids = append(ids, strconv.FormatInt(id, 10))
+		}
+		parts = append(parts, "rule "+k+" on events "+strings.Join(ids, ", "))
+	}
+	return &toolError{codeInvalidArgument, "refused: the rules fault on recent deliveries, which would record them and route them nowhere: " +
+		strings.Join(parts, "; ") + ". Fix the rules (test_webhook_rules with event_id reproduces each one) and save again."}
+}
+
+// storedEnvelope rebuilds the envelope input a stored delivery was routed on, exactly as the
+// receiver saw it: the sanitized headers, the body, the kind and the verification result.
+func storedEnvelope(wr store.WebhookRouting, ev store.EventHistoryDetail) routing.EnvelopeInput {
+	env := routing.EnvelopeInput{Source: wr.SourceType, WebhookID: wr.WebhookID, TrustMode: wr.TrustMode,
+		Body: ev.Payload, Kind: ev.EventType, Verified: ev.Verified, ContentType: ev.ContentType}
+	_ = json.Unmarshal(ev.Headers, &env.Headers)
+	return env
 }
 
 // routingGrant builds a webhook's grant from switchboard state: its target queue, its OWNER's
