@@ -20,11 +20,11 @@ A large class of consumer never meets it:
 
 Today those consumers have two options, both bad. They can poll, paying latency and — for an LLM consumer — a model turn per "nothing for you". Or the operator can configure the *upstream* sender to deliver twice, once to switchboard and once to a bespoke listener, which duplicates trust configuration outside switchboard and bypasses routing rules ([ADR-0024](ADR-0024-event-routing-deterministic-and-llm.md)) entirely.
 
-An outside self-hoster asked for exactly this, modelled on Cairn's `CAIRN_OUTBOUND_WEBHOOK_URLS`: a signed HTTP call the moment a todo is created. **How should switchboard tell a consumer with no session that work is waiting — without reintroducing the instance-wide infrastructure [#181](https://gitea.stump.rocks/stump.wtf/switchboard/issues/181) just removed?**
+An outside self-hoster asked for exactly this, modelled on Cairn's `CAIRN_OUTBOUND_WEBHOOK_URLS`: a signed HTTP call the moment a todo is created. **How should switchboard tell a consumer with no session that work is waiting — without reintroducing the instance-wide infrastructure that the shared-receiver removal just took out?**
 
 ## Decision Drivers
 
-* **No instance-wide anything.** Switchboard is multi-tenant; a todo belongs to exactly one endpoint ([ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md)). An env-configured URL list is a property of the deployment, belongs to no tenant, and would receive every tenant's work. That shape is what #181 tore out on the inbound side; it must not come back on the outbound side.
+* **No instance-wide anything.** Switchboard is multi-tenant; a todo belongs to exactly one endpoint ([ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md)). An env-configured URL list is a property of the deployment, belongs to no tenant, and would receive every tenant's work. That shape is what the shared-receiver removal tore out on the inbound side; it must not come back on the outbound side.
 * **The queue stays the ledger.** Per ADR-0013 a push is a hint. An outbound call that fails, times out, or is never configured must lose nothing: the todo is `pending` and `claim_next` returns it.
 * **Outbound HTTP to a caller-chosen URL is an SSRF primitive.** The guard already exists — `internal/push.Validator`, written for [ADR-0021](ADR-0021-a2a-task-delegation-transport.md), rejects private, loopback and link-local targets and re-resolves at dial time to defeat DNS rebinding. Nothing calls it yet.
 * **The receiver must be able to trust the call.** A dispatcher that starts agents on an unauthenticated POST is a remote trigger for anyone who learns the URL.
@@ -54,7 +54,7 @@ Chosen option: **"(B) Per-endpoint notify hooks, self-managed over MCP."** An en
 
   ```json
   {"type": "todo.ready", "todo_id": "td_…", "queue": "inbox", "kind": "pull_request",
-   "source": "gitea", "summary": "PR #482 opened in …", "endpoint": "<slug>", "created_at": "…"}
+   "source": "gitea", "summary": "PR 482 opened in …", "endpoint": "<slug>", "created_at": "…"}
   ```
 
   `summary` is sender-controlled text. It is JSON-escaped data here rather than prose inside a prompt, but the receiver is told, in the docs, what the doorbell tells the model: it can inform, never instruct. The consumer fetches the work by claiming it.
@@ -88,7 +88,7 @@ Chosen option: **"(B) Per-endpoint notify hooks, self-managed over MCP."** An en
 
 * Good, because it is one env var and matches what the requester already knows from Cairn.
 * Bad, because it belongs to no tenant: every endpoint's todos would reach one operator-chosen URL, which is a cross-tenant disclosure by construction on any instance with more than one human.
-* Bad, because it is the mirror image of the receivers #181 removed for exactly that reason. Cairn can do this because a Cairn instance's artifacts share one owner scope; switchboard's todos do not.
+* Bad, because it is the mirror image of the shared receivers, removed for exactly that reason. Cairn can do this because a Cairn instance's artifacts share one owner scope; switchboard's todos do not.
 
 ### (B) Per-endpoint notify hooks, self-managed over MCP
 

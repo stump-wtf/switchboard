@@ -318,7 +318,7 @@ removes the pack's installed rules, its `default_action` if it set one, and the 
 
 `test_webhook_rules` MUST accept `replay: {limit?, since?}` in place of `event_id` or `payload`, with
 candidate `rules`, `default_action` and `params` as today. It MUST return the REQ-5 report without a
-`plan_token`. Candidate rules without an `id` MUST be given ids, as `set_webhook_rules` gives them (#196),
+`plan_token`. Candidate rules without an `id` MUST be given ids, as `set_webhook_rules` gives them,
 so any candidate that would save also replays. Supplying more than one of `event_id`, `payload` and
 `replay`, or none, MUST return `invalid_argument`.
 

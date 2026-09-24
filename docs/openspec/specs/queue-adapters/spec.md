@@ -7,7 +7,7 @@ requires: [SPEC-0001]
 
 # SPEC-0002: Queue Adapters (Pull Ingestion)
 
-> **Retired 2026-09-21 (#181).** Pull ingestion was removed whole: the adapter interface and runner,
+> **Retired 2026-09-21, with the shared-receiver removal.** Pull ingestion was removed whole: the adapter interface and runner,
 > the Redis reference adapter, `SWITCHBOARD_REDIS_URL`, and the `adapters` table (dropped by migration
 > 0021). No code implements these requirements. Self-managed webhooks
 > ([ADR-0012](../../../adrs/ADR-0012-agents-self-manage-webhooks.md), `POST /webhooks/w/{token}`,
