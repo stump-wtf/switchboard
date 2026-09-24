@@ -490,3 +490,53 @@ func TestClaimNextRespectsTheVerbAllowlist(t *testing.T) {
 	cs := session(t, ctx, newFakeStore(), []string{"reviews"}, []string{"list_todos", "claim"})
 	callErr(t, ctx, cs, "claim_next", map[string]any{}, codeForbidden)
 }
+
+// TestListTodosCarriesRetryTimeAndDeadLetter: a todo failed below its attempt cap reads back through
+// list_todos with its scheduled next_retry_at and dead_letter=false; one failed at the cap reads
+// back with dead_letter=true and a null next_retry_at. The fail response carries the same two
+// fields. Governing: issue #214, SPEC-0034 REQ-8.
+func TestListTodosCarriesRetryTimeAndDeadLetter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_retry", Queue: "reviews",
+		Title: "retry owed", State: "pending", MaxAttempts: 3})
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_dead", Queue: "reviews",
+		Title: "dead letter", State: "pending", MaxAttempts: 1})
+	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos", "claim", "fail"})
+
+	type row struct {
+		ID          string  `json:"id"`
+		State       string  `json:"state"`
+		NextRetryAt *string `json:"next_retry_at"`
+		DeadLetter  bool    `json:"dead_letter"`
+	}
+	var failed row
+	for _, id := range []string{"td_retry", "td_dead"} {
+		callOK(t, ctx, cs, "claim", map[string]any{"id": id}, &row{})
+		callOK(t, ctx, cs, "fail", map[string]any{"id": id}, &failed)
+		if wantDead := id == "td_dead"; failed.DeadLetter != wantDead || (failed.NextRetryAt == nil) != wantDead {
+			t.Fatalf("fail(%s) response = %+v, want dead_letter=%v", id, failed, wantDead)
+		}
+	}
+
+	var out struct {
+		Todos []row `json:"todos"`
+	}
+	callOK(t, ctx, cs, "list_todos", map[string]any{"state": "failed"}, &out)
+	got := map[string]row{}
+	for _, r := range out.Todos {
+		got[r.ID] = r
+	}
+	retry, dead := got["td_retry"], got["td_dead"]
+	if retry.DeadLetter || retry.NextRetryAt == nil {
+		t.Fatalf("below-cap row = %+v, want a scheduled next_retry_at and dead_letter=false", retry)
+	}
+	if _, err := time.Parse(time.RFC3339, *retry.NextRetryAt); err != nil {
+		t.Fatalf("next_retry_at %q is not RFC 3339: %v", *retry.NextRetryAt, err)
+	}
+	if !dead.DeadLetter || dead.NextRetryAt != nil {
+		t.Fatalf("at-cap row = %+v, want dead_letter=true and a null next_retry_at", dead)
+	}
+}

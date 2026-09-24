@@ -72,8 +72,12 @@ type todoOut struct {
 	Attempt        int    `json:"attempt" jsonschema:"attempts consumed so far"`
 	MaxAttempts    int    `json:"max_attempts" jsonschema:"attempt budget before dead-letter"`
 	LeaseExpiresAt string `json:"lease_expires_at,omitempty" jsonschema:"RFC 3339 lease expiry while claimed"`
-	CreatedAt      string `json:"created_at" jsonschema:"RFC 3339 creation time"`
-	Payload        any    `json:"payload,omitempty" jsonschema:"the todo's JSON payload"`
+	// Governing: SPEC-0034 REQ-8, issue #214 — when a scheduled retry lands, and whether none ever
+	// will. Always present so a caller never has to infer from absence.
+	NextRetryAt *string `json:"next_retry_at" jsonschema:"RFC 3339 time a failed todo re-enters pending; null when no retry is scheduled"`
+	DeadLetter  bool    `json:"dead_letter" jsonschema:"true when the todo failed with no retry scheduled: nothing will re-queue it"`
+	CreatedAt   string  `json:"created_at" jsonschema:"RFC 3339 creation time"`
+	Payload     any     `json:"payload,omitempty" jsonschema:"the todo's JSON payload"`
 	// Governing: SPEC-0020 REQ "Routing Trace" — every todo explains why it exists.
 	Routing any `json:"routing,omitempty" jsonschema:"how the delivery that created this todo was routed: the matched rule or the default, with any rule faults"`
 	// Governing: ADR-0025 — a work order names the task and its verified provenance; it never widens
@@ -337,10 +341,14 @@ func toOut(t store.Todo) todoOut {
 	out := todoOut{
 		ID: t.ID, Queue: t.Queue, Source: t.Source, Kind: t.Kind, Title: t.Title, State: t.State,
 		Owner: t.Owner, Assignee: t.Assignee, Attempt: t.Attempt, MaxAttempts: t.MaxAttempts,
-		CreatedAt: t.CreatedAt.UTC().Format(time.RFC3339),
+		CreatedAt: t.CreatedAt.UTC().Format(time.RFC3339), DeadLetter: t.DeadLetter(),
 	}
 	if t.LeaseExpiresAt != nil {
 		out.LeaseExpiresAt = t.LeaseExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if t.NextRetryAt != nil {
+		next := t.NextRetryAt.UTC().Format(time.RFC3339)
+		out.NextRetryAt = &next
 	}
 	if len(t.Payload) > 0 {
 		var v any

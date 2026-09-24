@@ -237,3 +237,42 @@ func TestRedeliveryDuringBackoffWindowDedupes(t *testing.T) {
 		t.Fatalf("redeliver after dead-letter: created=%v id=%s err=%v, want a NEW todo", created3, fresh.ID, err)
 	}
 }
+
+// TestDeadLetterMatchesFailTodo pins Todo.DeadLetter to what FailTodo actually writes: below the
+// cap a failed todo has a retry scheduled and is not a dead letter; at the cap it is. The derived
+// rule and the SQL CASE must never drift. Governing: issue #214, SPEC-0034 REQ-8.
+func TestDeadLetterMatchesFailTodo(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "dead-letter-matches-fail")
+
+	below := seedPending(t, s, ctx, ep, "q", "below")
+	atCap := seedPending(t, s, ctx, ep, "q", "at-cap")
+	if _, err := s.pool.Exec(ctx, `UPDATE todos SET max_attempts = 1 WHERE id = $1`, atCap); err != nil {
+		t.Fatalf("cap: %v", err)
+	}
+	for _, id := range []string{below, atCap} {
+		if _, err := s.ClaimTodo(ctx, ep, id, "w", time.Hour); err != nil {
+			t.Fatalf("claim %s: %v", id, err)
+		}
+		if _, err := s.FailTodo(ctx, ep, id, "w", nil); err != nil {
+			t.Fatalf("fail %s: %v", id, err)
+		}
+	}
+	rows, err := s.ListTodos(ctx, ep, []string{"q"}, "failed", 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, td := range rows {
+		wantDead := td.ID == atCap
+		if td.DeadLetter() != wantDead || (td.NextRetryAt == nil) != wantDead {
+			t.Fatalf("todo %s: DeadLetter()=%v next_retry_at=%v, want dead=%v", td.ID, td.DeadLetter(), td.NextRetryAt, wantDead)
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("listed %d failed todos, want 2", len(rows))
+	}
+	// Only a failed todo can be a dead letter.
+	if (Todo{State: "pending"}).DeadLetter() || (Todo{State: "done"}).DeadLetter() {
+		t.Fatal("a pending or done todo must never read as a dead letter")
+	}
+}

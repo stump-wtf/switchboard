@@ -59,6 +59,12 @@ type Todo struct {
 	WorkOrder []byte
 }
 
+// DeadLetter reports whether the todo is a dead letter: failed with no scheduled retry, so nothing
+// will re-queue it (FailTodo at the attempt cap, the reaper at the cap, revocation). This is the one
+// place the rule lives; every read that reports it calls this rather than re-deriving it from
+// attempt and max_attempts. Governing: SPEC-0034 REQ-8 (`dead_letter`), issue #214.
+func (t Todo) DeadLetter() bool { return t.State == "failed" && t.NextRetryAt == nil }
+
 const todoCols = `id, endpoint_id::text, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
 	COALESCE(idempotency_key,''), COALESCE(assignee,''), state, COALESCE(owner,''),
 	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at,
