@@ -1208,9 +1208,17 @@ type EventInput struct {
 	// Governing: SPEC-0020 REQ "Routing Trace", REQ "Drop Action Semantics".
 	WebhookID    string
 	RoutingTrace []byte
+	// EndpointID is the endpoint that OWNS the delivery: the resolved webhook's endpoint for a
+	// self-managed delivery, the target endpoint for an operator push. It is written once and kept
+	// when the webhook is later deleted; every history read filters on it, and it is part of the
+	// dedup key so one owner's delivery is never answered with another's event. Left empty with a
+	// WebhookID set, it is resolved from the webhook; left empty without one, the event has no
+	// owner and no agent can ever read it. Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History
+	// Reads", REQ "Closing the Audited Surfaces" (F14).
+	EndpointID string
 }
 
-// InsertEvent records an accepted delivery, deduping on (source, external_id). Returns the event id
+// InsertEvent records an accepted delivery, deduping on (endpoint_id, source, external_id). Returns the event id
 // (existing id on a duplicate delivery). Newly inserted events fire the event hook.
 func (s *Store) InsertEvent(ctx context.Context, e EventInput) (int64, error) {
 	ev, inserted, err := insertEvent(ctx, s.pool, e)
@@ -1228,19 +1236,30 @@ func (s *Store) InsertEvent(ctx context.Context, e EventInput) (int64, error) {
 // delivery, existing row returned). The EventSummary carries the fields the Board feed renders.
 func insertEvent(ctx context.Context, q querier, e EventInput) (EventSummary, bool, error) {
 	ev := EventSummary{Source: e.Source, EventType: e.EventType, TrustMode: e.TrustMode}
+	if e.EndpointID == "" && e.WebhookID != "" {
+		// The owner of a webhook delivery is the webhook's endpoint by definition; resolve it here
+		// so no caller can record a webhook delivery without one.
+		if err := q.QueryRow(ctx, `SELECT endpoint_id::text FROM endpoint_webhooks WHERE id = $1::uuid`,
+			e.WebhookID).Scan(&e.EndpointID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return EventSummary{}, false, fmt.Errorf("store: resolve event owner: %w", err)
+		}
+	}
 	err := q.QueryRow(ctx, `
 		INSERT INTO events (source, family, event_type, external_id, trust_mode, verified, verify_detail,
-			content_type, headers, payload, payload_size, source_ip, webhook_id, routing_trace)
+			content_type, headers, payload, payload_size, source_ip, webhook_id, routing_trace, endpoint_id)
 		VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,NULLIF($12,'')::inet,
-			NULLIF($13,'')::uuid, $14)
-		ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL DO NOTHING
+			NULLIF($13,'')::uuid, $14, NULLIF($15,'')::uuid)
+		ON CONFLICT (endpoint_id, source, external_id) WHERE external_id IS NOT NULL DO NOTHING
 		RETURNING id, received_at`,
 		e.Source, e.Family, e.EventType, e.ExternalID, e.TrustMode, e.Verified, e.VerifyDetail,
-		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP, e.WebhookID, e.RoutingTrace).Scan(&ev.ID, &ev.ReceivedAt)
+		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP, e.WebhookID, e.RoutingTrace,
+		e.EndpointID).Scan(&ev.ID, &ev.ReceivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Duplicate delivery — fetch the existing row.
-		if err2 := q.QueryRow(ctx,
-			`SELECT id, received_at FROM events WHERE source=$1 AND external_id=$2`, e.Source, e.ExternalID,
+		// Duplicate delivery — fetch the existing row, and only within the same owner (F14).
+		if err2 := q.QueryRow(ctx, `
+			SELECT id, received_at FROM events
+			WHERE endpoint_id IS NOT DISTINCT FROM NULLIF($3,'')::uuid AND source = $1 AND external_id = $2`,
+			e.Source, e.ExternalID, e.EndpointID,
 		).Scan(&ev.ID, &ev.ReceivedAt); err2 != nil {
 			return EventSummary{}, false, err2
 		}

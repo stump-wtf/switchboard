@@ -38,6 +38,7 @@ type fakeStore struct {
 	mu             sync.Mutex
 	todos          map[string]store.Todo
 	events         map[int64]store.EventHistoryDetail // SPEC-0005 event-history rows (events_test.go)
+	eventOwners    map[int64]string                   // owner human per event; reads filter on it (SPEC-0033)
 	webhooks       map[string]store.Webhook           // SPEC-0006 self-managed webhooks (webhooks_test.go)
 	webhookSecrets map[string]string                  // minted signing secret held server-side, by webhook id (never surfaced)
 	webhookN       int                                // monotonic id source for created webhooks
@@ -66,6 +67,7 @@ func newFakeStore() *fakeStore {
 		byOAuthHash:    map[string]store.AuthEndpoint{},
 		todos:          map[string]store.Todo{},
 		events:         map[int64]store.EventHistoryDetail{},
+		eventOwners:    map[int64]string{},
 		webhooks:       map[string]store.Webhook{},
 		webhookSecrets: map[string]string{},
 		settings:       map[string]string{},

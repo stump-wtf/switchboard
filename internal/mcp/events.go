@@ -12,8 +12,11 @@ package mcp
 // throttling) lands with #40 — this file pins the tool surface, schemas, and the stable error
 // shape they all share.
 //
+// Every read and the replay are scoped to the calling endpoint's owner: the store takes the owner
+// as a required argument, and another owner's event answers exactly like an unknown id (not_found).
+//
 // Governing: ADR-0005 (contract shape), SPEC-0005 REQ "Tool Surface and Naming",
-// SPEC-0005 REQ "Stable Error Shape".
+// SPEC-0005 REQ "Stable Error Shape"; ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads" (#194).
 
 import (
 	"context"
@@ -232,7 +235,7 @@ func (h *Handler) registerEventResources(srv *sdk.Server, ep store.AuthEndpoint)
 // returns summaries, never mutates".
 func (h *Handler) recentEventsResource(ep store.AuthEndpoint) sdk.ResourceHandler {
 	return func(ctx context.Context, _ *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
-		items, err := h.store.ListEventHistory(ctx, store.EventHistoryFilter{Limit: recentEventsLimit})
+		items, err := h.store.ListEventHistory(ctx, ep.OwnerHumanID, store.EventHistoryFilter{Limit: recentEventsLimit})
 		if err != nil {
 			return nil, h.mapEventStoreErr(ep, "resources/read events/recent", err)
 		}
@@ -278,7 +281,7 @@ func (h *Handler) listWebhookEventsTool(ep store.AuthEndpoint) sdk.ToolHandlerFo
 			}
 			filter.CursorTime, filter.CursorID = c.ReceivedAt, c.ID
 		}
-		items, err := h.store.ListEventHistory(ctx, filter)
+		items, err := h.store.ListEventHistory(ctx, ep.OwnerHumanID, filter)
 		if err != nil {
 			return nil, listWebhookEventsOut{}, h.mapEventStoreErr(ep, "list_webhook_events", err)
 		}
@@ -302,7 +305,7 @@ func (h *Handler) getWebhookEventTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[
 		if in.ID <= 0 {
 			return nil, eventDetailOut{}, &toolError{codeInvalidArgument, "id must be a positive event id"}
 		}
-		d, err := h.store.EventHistoryByID(ctx, in.ID)
+		d, err := h.store.EventHistoryByID(ctx, ep.OwnerHumanID, in.ID)
 		if err != nil {
 			return nil, eventDetailOut{}, h.mapEventStoreErr(ep, "get_webhook_event", err)
 		}
@@ -316,8 +319,10 @@ func (h *Handler) replayWebhookEventTool(ep store.AuthEndpoint) sdk.ToolHandlerF
 			return nil, replayWebhookEventOut{}, &toolError{codeInvalidArgument, "id must be a positive event id"}
 		}
 		// Governing: SPEC-0005 scenario "Unknown id raises not_found" — the id is resolved (a pure
-		// read) before any thought of an outbound request.
-		d, err := h.store.EventHistoryByID(ctx, in.ID)
+		// read) before any thought of an outbound request. The read is owner-scoped, so another
+		// owner's event is not_found here, before its payload is loaded and before any request is
+		// made. Governing: SPEC-0033 scenario "Replay of a foreign event".
+		d, err := h.store.EventHistoryByID(ctx, ep.OwnerHumanID, in.ID)
 		if err != nil {
 			return nil, replayWebhookEventOut{}, h.mapEventStoreErr(ep, "replay_webhook_event", err)
 		}

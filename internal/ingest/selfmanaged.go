@@ -245,7 +245,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			TrustMode: wh.TrustMode, Verified: verified, VerifyDetail: verifyDetail,
 			ContentType: r.Header.Get("Content-Type"), Headers: headers,
 			Payload: body, SourceIP: clientIP(r),
-			WebhookID: wh.ID, RoutingTrace: trace,
+			WebhookID: wh.ID, RoutingTrace: trace, EndpointID: wh.EndpointID,
 		}, decision.Drop, decision.Endpoints,
 		store.CreateTodoParams{
 			Queue: decision.Queue, Source: wh.SourceType, Kind: "webhook",

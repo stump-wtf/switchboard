@@ -464,6 +464,7 @@ func (a *apiHandler) PushTodo(w http.ResponseWriter, r *http.Request) {
 		TrustMode: pushSource, Verified: true,
 		VerifyDetail: "operator-authored over /api/v1 by " + operatorName(human) + " (" + human.ID + ")",
 		ContentType:  "application/json", Headers: []byte(`{}`), Payload: payload, SourceIP: remoteIP(r),
+		EndpointID: found.ID,
 	}, []string{found.ID}, store.CreateTodoParams{
 		Queue: in.Queue, Source: pushSource, Kind: in.Kind, Title: in.Title,
 		Payload: payload, IdempotencyKey: key,

@@ -38,8 +38,11 @@ func TestSchemaHotPathIndexes(t *testing.T) {
 	}
 
 	evDedupe := indexDef(t, s, ctx, "idx_events_dedupe")
-	if !strings.Contains(strings.ToUpper(evDedupe), "UNIQUE") || !strings.Contains(evDedupe, "external_id") {
-		t.Fatalf("idx_events_dedupe must be a unique index on (source, external_id): %s", evDedupe)
+	// The owner is part of the key, so one owner's delivery is never answered with another's event.
+	// Governing: SPEC-0033 REQ "Closing the Audited Surfaces" (F14).
+	if !strings.Contains(strings.ToUpper(evDedupe), "UNIQUE") || !strings.Contains(evDedupe, "external_id") ||
+		!strings.Contains(evDedupe, "endpoint_id") {
+		t.Fatalf("idx_events_dedupe must be a unique index on (endpoint_id, source, external_id): %s", evDedupe)
 	}
 
 	// Present-and-usable is enough for the read surface index.

@@ -17,14 +17,15 @@ import (
 
 // seedEvent inserts one event with an explicit received_at (bypassing the now() default) so tests
 // can pin the ordering — including two rows sharing a timestamp to exercise the id tiebreak.
-func seedEvent(t *testing.T, s *Store, ctx context.Context, source, eventType, trustMode string, verified bool, receivedAt time.Time) int64 {
+// The event is owned by endpoint ep: every history read is owner-scoped (SPEC-0033).
+func seedEvent(t *testing.T, s *Store, ctx context.Context, ep, source, eventType, trustMode string, verified bool, receivedAt time.Time) int64 {
 	t.Helper()
 	var id int64
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO events (source, family, event_type, trust_mode, verified, payload, payload_size, received_at)
-		VALUES ($1, 'webhook', NULLIF($2,''), $3, $4, $5, $6, $7)
+		INSERT INTO events (source, family, event_type, trust_mode, verified, payload, payload_size, received_at, endpoint_id)
+		VALUES ($1, 'webhook', NULLIF($2,''), $3, $4, $5, $6, $7, $8)
 		RETURNING id`,
-		source, eventType, trustMode, verified, []byte(`{}`), 2, receivedAt).Scan(&id)
+		source, eventType, trustMode, verified, []byte(`{}`), 2, receivedAt, ep).Scan(&id)
 	if err != nil {
 		t.Fatalf("seed event: %v", err)
 	}
@@ -36,15 +37,17 @@ func seedEvent(t *testing.T, s *Store, ctx context.Context, source, eventType, t
 // free of duplicates or gaps — including across a page edge where two rows share a received_at.
 func TestListEventHistoryCursorStability(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "history", "q")
+	owner := ownerOf(t, s, ctx, ep)
 
 	base := time.Now().Truncate(time.Millisecond).Add(-time.Hour)
 	// ids come back in insert order; rows 4 and 5 share a timestamp so id DESC breaks the tie, and
 	// that tie straddles the boundary between page 1 (ids 5,4) and forces the keyset to be a tuple.
-	id1 := seedEvent(t, s, ctx, "github", "push", "signed", true, base.Add(1*time.Second))
-	id2 := seedEvent(t, s, ctx, "github", "push", "signed", true, base.Add(2*time.Second))
-	id3 := seedEvent(t, s, ctx, "stripe", "charge", "signed", true, base.Add(3*time.Second))
-	id4 := seedEvent(t, s, ctx, "github", "pull", "signed", true, base.Add(4*time.Second))
-	id5 := seedEvent(t, s, ctx, "github", "push", "token", false, base.Add(4*time.Second))
+	id1 := seedEvent(t, s, ctx, ep, "github", "push", "signed", true, base.Add(1*time.Second))
+	id2 := seedEvent(t, s, ctx, ep, "github", "push", "signed", true, base.Add(2*time.Second))
+	id3 := seedEvent(t, s, ctx, ep, "stripe", "charge", "signed", true, base.Add(3*time.Second))
+	id4 := seedEvent(t, s, ctx, ep, "github", "pull", "signed", true, base.Add(4*time.Second))
+	id5 := seedEvent(t, s, ctx, ep, "github", "push", "token", false, base.Add(4*time.Second))
 	want := []int64{id5, id4, id3, id2, id1}
 
 	var seen []int64
@@ -52,7 +55,7 @@ func TestListEventHistoryCursorStability(t *testing.T) {
 	var cursorID int64
 	for page := 0; page < 10; page++ {
 		f := EventHistoryFilter{Limit: 2, CursorTime: cursorT, CursorID: cursorID}
-		items, err := s.ListEventHistory(ctx, f)
+		items, err := s.ListEventHistory(ctx, owner, f)
 		if err != nil {
 			t.Fatalf("page %d: %v", page, err)
 		}
@@ -79,13 +82,13 @@ func TestListEventHistoryCursorStability(t *testing.T) {
 
 	// A page inserted between requests never re-emits or skips: after taking the first page (5,4),
 	// a new newest event does not appear on the continued (older) walk.
-	first, err := s.ListEventHistory(ctx, EventHistoryFilter{Limit: 2})
+	first, err := s.ListEventHistory(ctx, owner, EventHistoryFilter{Limit: 2})
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
 	last := first[len(first)-1]
-	newest := seedEvent(t, s, ctx, "github", "push", "signed", true, base.Add(10*time.Second))
-	rest, err := s.ListEventHistory(ctx, EventHistoryFilter{
+	newest := seedEvent(t, s, ctx, ep, "github", "push", "signed", true, base.Add(10*time.Second))
+	rest, err := s.ListEventHistory(ctx, owner, EventHistoryFilter{
 		Limit: 100, CursorTime: last.ReceivedAt, CursorID: last.ID})
 	if err != nil {
 		t.Fatalf("continued page: %v", err)
@@ -104,15 +107,17 @@ func TestListEventHistoryCursorStability(t *testing.T) {
 // bound and id lower bound).
 func TestListEventHistoryFiltering(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "history", "q")
+	owner := ownerOf(t, s, ctx, ep)
 
 	base := time.Now().Truncate(time.Millisecond).Add(-time.Hour)
-	seedEvent(t, s, ctx, "github", "push", "signed", true, base.Add(1*time.Second))
-	seedEvent(t, s, ctx, "stripe", "charge", "signed", true, base.Add(2*time.Second))
-	id3 := seedEvent(t, s, ctx, "github", "pull", "signed", true, base.Add(3*time.Second))
-	id4 := seedEvent(t, s, ctx, "github", "push", "signed", true, base.Add(4*time.Second))
+	seedEvent(t, s, ctx, ep, "github", "push", "signed", true, base.Add(1*time.Second))
+	seedEvent(t, s, ctx, ep, "stripe", "charge", "signed", true, base.Add(2*time.Second))
+	id3 := seedEvent(t, s, ctx, ep, "github", "pull", "signed", true, base.Add(3*time.Second))
+	id4 := seedEvent(t, s, ctx, ep, "github", "push", "signed", true, base.Add(4*time.Second))
 
 	// provider + event_type
-	got, err := s.ListEventHistory(ctx, EventHistoryFilter{Provider: "github", EventType: "push"})
+	got, err := s.ListEventHistory(ctx, owner, EventHistoryFilter{Provider: "github", EventType: "push"})
 	if err != nil {
 		t.Fatalf("filter: %v", err)
 	}
@@ -121,7 +126,7 @@ func TestListEventHistoryFiltering(t *testing.T) {
 	}
 
 	// since timestamp (inclusive lower bound)
-	got, err = s.ListEventHistory(ctx, EventHistoryFilter{SinceTime: base.Add(3 * time.Second)})
+	got, err = s.ListEventHistory(ctx, owner, EventHistoryFilter{SinceTime: base.Add(3 * time.Second)})
 	if err != nil {
 		t.Fatalf("since-time: %v", err)
 	}
@@ -130,7 +135,7 @@ func TestListEventHistoryFiltering(t *testing.T) {
 	}
 
 	// since id (id >= n)
-	got, err = s.ListEventHistory(ctx, EventHistoryFilter{SinceID: id3})
+	got, err = s.ListEventHistory(ctx, owner, EventHistoryFilter{SinceID: id3})
 	if err != nil {
 		t.Fatalf("since-id: %v", err)
 	}
@@ -143,16 +148,18 @@ func TestListEventHistoryFiltering(t *testing.T) {
 // are ErrNotFound.
 func TestEventHistoryByIDRoundTrip(t *testing.T) {
 	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "history", "q")
+	owner := ownerOf(t, s, ctx, ep)
 
-	id := seedEvent(t, s, ctx, "github", "push", "signed", true, time.Now())
-	d, err := s.EventHistoryByID(ctx, id)
+	id := seedEvent(t, s, ctx, ep, "github", "push", "signed", true, time.Now())
+	d, err := s.EventHistoryByID(ctx, owner, id)
 	if err != nil {
 		t.Fatalf("by id: %v", err)
 	}
 	if d.ID != id || d.Provider != "github" || d.TrustMode != "signed" || !d.Verified {
 		t.Fatalf("detail = %+v", d)
 	}
-	if _, err := s.EventHistoryByID(ctx, 999999); !errors.Is(err, ErrNotFound) {
+	if _, err := s.EventHistoryByID(ctx, owner, 999999); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown id = %v, want ErrNotFound", err)
 	}
 }

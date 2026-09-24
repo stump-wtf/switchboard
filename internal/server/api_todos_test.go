@@ -81,7 +81,7 @@ func TestAPIPushTodoMintsAVerifiedOperatorTodoAndRings(t *testing.T) {
 	if td.EventID == nil {
 		t.Fatal("operator todo must be backed by a delivery event")
 	}
-	ev, err := st.EventHistoryByID(ctx, *td.EventID)
+	ev, err := st.EventHistoryByID(ctx, human.ID, *td.EventID) // owner-scoped: the push wrote its owner
 	if err != nil {
 		t.Fatalf("event: %v", err)
 	}

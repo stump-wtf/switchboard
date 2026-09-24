@@ -125,7 +125,7 @@ func TestCreateRoutedEventTodosDropSpendsTheSlot(t *testing.T) {
 	if err != nil || !dropped || len(todos) != 0 {
 		t.Fatalf("drop = (%d todos, dropped %v, %v), want a dropped delivery with no todos", len(todos), dropped, err)
 	}
-	ev, err := s.EventHistoryByID(ctx, evID)
+	ev, err := s.EventHistoryByID(ctx, ownerOf(t, s, ctx, ep), evID)
 	if err != nil || ev.WebhookID != wh.ID || !sameJSON(t, ev.RoutingTrace, dropTrace) {
 		t.Fatalf("dropped event = %+v (%v), want webhook %s and the drop trace", ev.EventHistoryItem, err, wh.ID)
 	}
@@ -196,7 +196,7 @@ func TestEventForWebhookIsScopedToItsWebhook(t *testing.T) {
 		}
 	}
 
-	items, err := s.ListEventHistory(ctx, EventHistoryFilter{Limit: 10})
+	items, err := s.ListEventHistory(ctx, ownerOf(t, s, ctx, epA), EventHistoryFilter{Limit: 10})
 	if err != nil {
 		t.Fatalf("list history: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestEventForWebhookIsScopedToItsWebhook(t *testing.T) {
 	if err := s.DeleteWebhook(ctx, whA.ID, epA); err != nil {
 		t.Fatalf("delete webhook with recorded events: %v", err)
 	}
-	if ev, err := s.EventHistoryByID(ctx, evID); err != nil || ev.WebhookID != "" {
+	if ev, err := s.EventHistoryByID(ctx, ownerOf(t, s, ctx, epA), evID); err != nil || ev.WebhookID != "" {
 		t.Fatalf("event after webhook delete = %+v (%v), want it kept with no webhook", ev.EventHistoryItem, err)
 	}
 }

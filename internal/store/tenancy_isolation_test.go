@@ -227,3 +227,83 @@ func TestTenancyUnownedTodoIsVisibleToNobody(t *testing.T) {
 		}
 	}
 }
+
+// The event-history reads behind list_webhook_events, get_webhook_event, replay_webhook_event and
+// switchboard://events/recent (#194, audit F1). B must list none of A's events and read A's by id as
+// ErrNotFound, identical to an id that does not exist; an event with no owner is read by nobody.
+// Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads".
+func TestTenancyEventHistoryIsScoped(t *testing.T) {
+	s, ctx := testStore(t)
+	humanA, epA, humanB, _ := tenants(t, s, ctx)
+	a := seedOwnedTodo(t, s, ctx, epA, "iso-history", "A")
+	if a.EventID == nil {
+		t.Fatal("fixture: seeded todo has no event")
+	}
+	// seedOwnedTodo records no webhook, so give the event its owner the way the operator push does.
+	if _, err := s.pool.Exec(ctx, `UPDATE events SET endpoint_id = $1 WHERE id = $2`, epA, *a.EventID); err != nil {
+		t.Fatalf("own event: %v", err)
+	}
+
+	items, err := s.ListEventHistory(ctx, humanB, EventHistoryFilter{Limit: 200})
+	if err != nil {
+		t.Fatalf("B lists: %v", err)
+	}
+	for _, it := range items {
+		if it.ID == *a.EventID {
+			t.Fatalf("B's history carries A's event %d", it.ID)
+		}
+	}
+	if _, err := s.EventHistoryByID(ctx, humanB, *a.EventID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("B reading A's event = %v, want ErrNotFound", err)
+	}
+	if d, err := s.EventHistoryByID(ctx, humanA, *a.EventID); err != nil || d.ID != *a.EventID {
+		t.Fatalf("A reading its own event = %+v, %v", d.EventHistoryItem, err)
+	}
+
+	// An unscoped caller (empty or malformed owner) gets nothing, never an unfiltered scan.
+	for _, owner := range []string{"", "not-a-uuid"} {
+		if items, err := s.ListEventHistory(ctx, owner, EventHistoryFilter{}); err != nil || len(items) != 0 {
+			t.Fatalf("ListEventHistory(%q) = %d rows, %v; want none", owner, len(items), err)
+		}
+		if _, err := s.EventHistoryByID(ctx, owner, *a.EventID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("EventHistoryByID(%q) = %v, want ErrNotFound", owner, err)
+		}
+	}
+
+	// Owner-less: visible to nobody, A included.
+	if _, err := s.pool.Exec(ctx, `UPDATE events SET endpoint_id = NULL WHERE id = $1`, *a.EventID); err != nil {
+		t.Fatalf("orphan event: %v", err)
+	}
+	for _, human := range []string{humanA, humanB} {
+		if _, err := s.EventHistoryByID(ctx, human, *a.EventID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("owner-less event visible to %s: %v", human, err)
+		}
+	}
+}
+
+// F14: two owners' deliveries sharing (source, external_id) are two events; neither is answered
+// with the other's, and each owner still dedups its own redelivery.
+// Governing: SPEC-0033 REQ "Closing the Audited Surfaces", scenario "Dedup cannot cross owners".
+func TestTenancyEventDedupCannotCrossOwners(t *testing.T) {
+	s, ctx := testStore(t)
+	_, epA, _, epB := tenants(t, s, ctx)
+	in := func(ep string) EventInput {
+		return EventInput{Source: "github", Family: "webhook", ExternalID: "shared-delivery",
+			TrustMode: "signed", Verified: true, Payload: []byte(`{}`), EndpointID: ep}
+	}
+	idA, err := s.InsertEvent(ctx, in(epA))
+	if err != nil {
+		t.Fatalf("A: %v", err)
+	}
+	idB, err := s.InsertEvent(ctx, in(epB))
+	if err != nil {
+		t.Fatalf("B: %v", err)
+	}
+	if idA == idB {
+		t.Fatalf("B's delivery was answered with A's event %d", idA)
+	}
+	again, err := s.InsertEvent(ctx, in(epA))
+	if err != nil || again != idA {
+		t.Fatalf("A's redelivery = %d (%v), want its own event %d", again, err, idA)
+	}
+}

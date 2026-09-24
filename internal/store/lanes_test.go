@@ -71,7 +71,7 @@ func TestRoutingOnceMintsAWorkOrderAtMostOnce(t *testing.T) {
 	if ev2 == ev1 || len(repeat) != 0 || countTodos() != 1 {
 		t.Fatalf("repeat = (event %d, %d todos, %d total), want a new event and no todo", ev2, len(repeat), countTodos())
 	}
-	if ev, err := s.EventHistoryByID(ctx, ev2); err != nil || !strings.Contains(string(ev.RoutingTrace), `"once": "repeat"`) {
+	if ev, err := s.EventHistoryByID(ctx, ownerOf(t, s, ctx, ep), ev2); err != nil || !strings.Contains(string(ev.RoutingTrace), `"once": "repeat"`) {
 		t.Fatalf("repeat event trace = %s (%v), want once repeat marked", ev.RoutingTrace, err)
 	}
 

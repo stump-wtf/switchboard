@@ -31,7 +31,7 @@ var eventVerbNames = []string{
 
 // --- fakeStore event-history methods (the struct lives in mcp_test.go) ---
 
-func (f *fakeStore) ListEventHistory(_ context.Context, flt store.EventHistoryFilter) ([]store.EventHistoryItem, error) {
+func (f *fakeStore) ListEventHistory(_ context.Context, ownerHumanID string, flt store.EventHistoryFilter) ([]store.EventHistoryItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
@@ -55,6 +55,9 @@ func (f *fakeStore) ListEventHistory(_ context.Context, flt store.EventHistoryFi
 	var out []store.EventHistoryItem
 	for _, e := range f.events {
 		it := e.EventHistoryItem
+		if f.eventOwners[it.ID] != ownerHumanID {
+			continue
+		}
 		if flt.Provider != "" && it.Provider != flt.Provider {
 			continue
 		}
@@ -84,27 +87,32 @@ func (f *fakeStore) ListEventHistory(_ context.Context, flt store.EventHistoryFi
 	return out, nil
 }
 
-func (f *fakeStore) EventHistoryByID(_ context.Context, id int64) (store.EventHistoryDetail, error) {
+func (f *fakeStore) EventHistoryByID(_ context.Context, ownerHumanID string, id int64) (store.EventHistoryDetail, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return store.EventHistoryDetail{}, f.failErr
 	}
 	e, ok := f.events[id]
-	if !ok {
+	if !ok || f.eventOwners[id] != ownerHumanID {
 		return store.EventHistoryDetail{}, store.ErrNotFound
 	}
 	return e, nil
 }
 
-// putEvent seeds an event row.
-func (f *fakeStore) putEvent(e store.EventHistoryDetail) {
+// putEvent seeds an event row owned by "h-1", the owner every fake endpoint carries.
+func (f *fakeStore) putEvent(e store.EventHistoryDetail) { f.putEventFor("h-1", e) }
+
+// putEventFor seeds an event row owned by ownerHumanID; the fake's reads filter on it the way the
+// store's owner predicate does (SPEC-0033 REQ "Owner-Scoped History Reads").
+func (f *fakeStore) putEventFor(ownerHumanID string, e store.EventHistoryDetail) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e.ReceivedAt.IsZero() {
 		e.ReceivedAt = time.Now()
 	}
 	f.events[e.ID] = e
+	f.eventOwners[e.ID] = ownerHumanID
 }
 
 // rawStructured returns a tool's structured output as a raw map, for asserting which keys are

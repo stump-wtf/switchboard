@@ -5,8 +5,12 @@ package store
 // get_webhook_event. Both are projections of exactly the `events` table columns
 // (internal/db/migrations/0001_init.sql) so the MCP, HTTP, and UI surfaces never drift.
 //
+// Every read here is owner-scoped: it takes the caller's owner and returns only events whose
+// events.endpoint_id belongs to that owner, so a second tenant gets nothing and a foreign id reads
+// exactly like an unknown one (ErrNotFound). An event with no owner is invisible to every caller.
+//
 // Governing: ADR-0005 (compact list, full get), SPEC-0005 REQ "Event Shape Parity and Trust
-// Disclosure".
+// Disclosure"; ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads" (#194, F1).
 
 import (
 	"context"
@@ -70,11 +74,27 @@ type EventHistoryFilter struct {
 	CursorID   int64
 }
 
+// eventInReach is the tenant predicate every history read applies: the event's owning endpoint
+// belongs to the caller's human. Today's reach is human-level (a human's endpoints all see that
+// human's history); #411 replaces the human id with a store.Reach value and this builder is the one
+// place that changes. Kept as a builder rather than inlined so the security boundary cannot drift
+// between the list and the single-row read. The owner id is bound at param.
+func eventInReach(param string) string {
+	return `endpoint_id IN (SELECT ep.id FROM endpoints ep JOIN agents ag ON ag.id = ep.agent_id
+		WHERE ag.owner_human_id = ` + param + `)`
+}
+
 // ListEventHistory returns event summaries newest first under the stable
 // `received_at DESC, id DESC` order SPEC-0005 REQ "Deterministic Pagination and Filtering" pins.
 // Filters and the keyset cursor are composed as AND-ed conditions with ordinal placeholders so a
 // zero-valued filter field contributes no predicate at all.
-func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]EventHistoryItem, error) {
+//
+// Only events owned by ownerHumanID are returned; a malformed or empty owner returns nothing rather
+// than an unscoped scan. Governing: SPEC-0033 REQ "Owner-Scoped History Reads".
+func (s *Store) ListEventHistory(ctx context.Context, ownerHumanID string, f EventHistoryFilter) ([]EventHistoryItem, error) {
+	if !isUUID(ownerHumanID) {
+		return nil, nil
+	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 50
@@ -91,6 +111,7 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 		args = append(args, v)
 		return "$" + strconv.Itoa(len(args))
 	}
+	conds = append(conds, eventInReach(ph(ownerHumanID)))
 	if f.Provider != "" {
 		conds = append(conds, "source = "+ph(f.Provider))
 	}
@@ -109,10 +130,7 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 		// rows land at the head between requests.
 		conds = append(conds, "(received_at, id) < ("+ph(f.CursorTime)+", "+ph(f.CursorID)+")")
 	}
-	where := ""
-	if len(conds) > 0 {
-		where = "WHERE " + strings.Join(conds, " AND ")
-	}
+	where := "WHERE " + strings.Join(conds, " AND ")
 	query := fmt.Sprintf(`
 		SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at,
 			COALESCE(webhook_id::text, ''), routing_trace
@@ -164,9 +182,17 @@ func scanEventDetail(row pgx.Row) (EventHistoryDetail, error) {
 	return e, nil
 }
 
-// EventHistoryByID returns the full sanitized record for one event, or ErrNotFound.
-func (s *Store) EventHistoryByID(ctx context.Context, id int64) (EventHistoryDetail, error) {
-	e, err := scanEventDetail(s.pool.QueryRow(ctx, eventDetailSelect+` WHERE id = $1`, id))
+// EventHistoryByID returns the full sanitized record for one event owned by ownerHumanID, or
+// ErrNotFound. Another owner's event, an owner-less event and an id that does not exist are the same
+// ErrNotFound, so probing ids reveals nothing. Replay calls this before it reads anything else, so a
+// foreign event's payload is never loaded. Governing: SPEC-0033 REQ "Owner-Scoped History Reads",
+// scenario "Replay of a foreign event".
+func (s *Store) EventHistoryByID(ctx context.Context, ownerHumanID string, id int64) (EventHistoryDetail, error) {
+	if !isUUID(ownerHumanID) {
+		return EventHistoryDetail{}, ErrNotFound
+	}
+	e, err := scanEventDetail(s.pool.QueryRow(ctx,
+		eventDetailSelect+` WHERE id = $1 AND `+eventInReach("$2"), id, ownerHumanID))
 	if errors.Is(err, ErrNotFound) {
 		return EventHistoryDetail{}, ErrNotFound
 	}

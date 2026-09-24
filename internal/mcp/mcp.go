@@ -99,8 +99,11 @@ type ToolStore interface {
 	HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error)
 	CompleteTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
 	FailTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
-	ListEventHistory(ctx context.Context, f store.EventHistoryFilter) ([]store.EventHistoryItem, error)
-	EventHistoryByID(ctx context.Context, id int64) (store.EventHistoryDetail, error)
+	// The event-history reads are owner-scoped: the caller's owner human id is a required argument,
+	// so no tool can compile an unscoped history read. Governing: SPEC-0033 REQ "Owner-Scoped
+	// History Reads".
+	ListEventHistory(ctx context.Context, ownerHumanID string, f store.EventHistoryFilter) ([]store.EventHistoryItem, error)
+	EventHistoryByID(ctx context.Context, ownerHumanID string, id int64) (store.EventHistoryDetail, error)
 	// SPEC-0006 webhook self-management (webhooks.go): switchboard mints and HOLDS the signing
 	// secret so it can HMAC-verify inbound deliveries per SPEC-0003; the plaintext secret is
 	// persisted server-side and revealed exactly once at create/rotate time.
