@@ -8,8 +8,9 @@ This page documents the changes that need action when you move between Switchboa
 releases. It is written for people running their own Switchboard; if you are on the
 published image, check which release you are actually running first.
 
-To find your version, run `switchboard version`, or read it from `/healthz`. Newer builds
-also report it over MCP as `serverInfo.version`.
+To find your version, run `switchboard version`, or read the `X-Switchboard-Version` response
+header from `/healthz` (e.g. `curl -sI http://127.0.0.1:8080/healthz | grep -i switchboard-version`).
+Newer builds also report it over MCP as `serverInfo.version`.
 
 ## Upgrading to v0.3.0
 

@@ -58,6 +58,9 @@ func runServe(c *cli, args []string) int {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: config.LogLevel()}))
 	cfg := config.FromEnv()
+	// The build version reaches /healthz as the X-Switchboard-Version response header, so the
+	// Upgrading guide's "confirm the build actually took" step is checkable over HTTP (issue #25).
+	cfg.Version = version
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

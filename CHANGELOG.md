@@ -13,6 +13,13 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+### Added
+
+- `/healthz` reports the build version as the `X-Switchboard-Version` response header (the body
+  stays bare `ok`, so existing probes are untouched). The Upgrading guide's verify step — confirm
+  the new build actually took — is now executable over HTTP, without a shell in the container or
+  a vended endpoint. (#25)
+
 ## [0.3.0] - 2026-09-22
 
 The first release since `v0.2.0`, and the first release under

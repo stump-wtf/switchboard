@@ -34,7 +34,7 @@ import (
 func newTestRouter(t *testing.T) chi.Router {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := config.Config{BaseURL: "https://sb.example.com"}
+	cfg := config.Config{BaseURL: "https://sb.example.com", Version: "test"}
 	st := store.New(nil)
 	authr, err := auth.New(context.Background(), cfg, st, log)
 	if err != nil {
@@ -446,3 +446,23 @@ func TestMachineAPIOAuthGuard(t *testing.T) {
 
 // (The valid-operator-grant happy path is covered DB-backed by TestMVPRegistrationToDoorbell; a
 // nil store here cannot serve it.)
+
+// TestHealthzReportsBuildVersion: /healthz carries the build version as the X-Switchboard-Version
+// response header (issue #25) so the Upgrading guide's "confirm the build actually took" step is
+// checkable over HTTP, without a shell in the container. The body stays bare "ok" — existing
+// probes match on it — and an empty Version (unstamped/test harness) omits the header rather
+// than sending an empty one.
+func TestHealthzReportsBuildVersion(t *testing.T) {
+	r := newTestRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /healthz: got %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "ok\n" {
+		t.Fatalf("GET /healthz body: got %q, want %q", got, "ok\n")
+	}
+	if got := rec.Header().Get("X-Switchboard-Version"); got != "test" {
+		t.Fatalf("X-Switchboard-Version: got %q, want %q", got, "test")
+	}
+}
