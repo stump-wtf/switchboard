@@ -56,7 +56,7 @@ func (f *fakeStore) EventForWebhook(_ context.Context, _ int64, _ string) (store
 	return store.EventHistoryDetail{}, store.ErrNotFound
 }
 
-func (f *fakeStore) RecentWebhookEvents(context.Context, string, int) ([]store.EventHistoryDetail, error) {
+func (f *fakeStore) WebhookEventsBefore(context.Context, string, time.Time, int64, int) ([]store.EventHistoryDetail, error) {
 	return nil, nil
 }
 
