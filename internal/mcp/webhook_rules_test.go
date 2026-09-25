@@ -76,6 +76,12 @@ func ruleSessions(t *testing.T) (context.Context, *routeFixture, func(human stri
 	if _, err := pool.Exec(ctx, `UPDATE endpoints SET webhook_queues = ARRAY['reviews','forge'] WHERE id = $1`, f.epA1); err != nil {
 		t.Fatalf("set ceiling: %v", err)
 	}
+	// The rule tests exercise rules, not trust, so webhookA takes the migrated allow_all shape: its
+	// sample payloads carry no sender, and under an empty list the trust gate would hold them before
+	// any rule ran. Tests of the gate set their own list.
+	if _, err := f.st.SetWebhookTrustedActors(ctx, f.webhookA, f.epA1, []byte(`{"allow_all":true}`)); err != nil {
+		t.Fatalf("set trust: %v", err)
+	}
 	verbs := append(append(append([]string{}, allRuleVerbs...), allRouteVerbs...), "get_webhook_event", "list_webhook_events")
 	open := func(human string) (*sdk.ClientSession, string) {
 		agent, slug := f.agentA1, "rules-a-44444444"

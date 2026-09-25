@@ -189,10 +189,20 @@ func TestTestWebhookRulesReportsTheTrustGate(t *testing.T) {
 	if !res.Held || res.Actor == nil || res.Actor.IsTrusted() || *res.Actor.Sender != "mallory" {
 		t.Fatalf("outsider dry-run = %+v, want held with mallory untrusted", res)
 	}
+	// The decision is what the receiver records for a held delivery, not what the rules would do;
+	// the rules' outcome is reported aside, and a held delivery previews no work order.
+	if d := res.Decision; d.Disposition != routing.DispositionFaulted || !d.Faulted || d.Queue != "" || len(d.Endpoints) != 0 ||
+		res.Trace.Stage != routing.StageTrustGate || res.Trace.Cause != routing.CauseUntrustedActor || res.WorkOrder != nil {
+		t.Fatalf("outsider decision = %+v, trace %+v, want the trust gate's faulted outcome", d, res.Trace)
+	}
+	if res.RulesWould == nil || res.RulesWould.Decision.Queue != "forge" || res.RulesWould.Decision.Disposition != routing.DispositionRouted ||
+		res.RulesWould.Trace.RuleID != "outsider" {
+		t.Fatalf("rules_would = %+v, want the outsider rule routing to forge", res.RulesWould)
+	}
 	res = testWebhookRulesOut{}
 	callOK(t, ctx, cs, "test_webhook_rules", map[string]any{"webhook_id": f.webhookA, "payload": issue("joestump"),
 		"headers": hdr, "rules": rules}, &res)
-	if res.Held || !res.Actor.IsTrusted() || res.Decision.Queue != "forge" || res.Trace.RuleID != "outsider" {
+	if res.Held || res.RulesWould != nil || !res.Actor.IsTrusted() || res.Decision.Queue != "forge" || res.Trace.RuleID != "outsider" {
 		t.Fatalf("maintainer dry-run = %+v, want trusted and routed by the author_trusted rule", res)
 	}
 	actor, _ := res.Envelope["actor"].(map[string]any)

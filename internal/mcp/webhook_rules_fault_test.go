@@ -42,12 +42,6 @@ func TestWebhookRuleSaveRefusesFaultsOnRecentDeliveries(t *testing.T) {
 	ctx, f, open := ruleSessions(t)
 	cs, _ := open("A")
 	var out webhookRulesOut
-	// The seeded deliveries carry no sender, so they reach the rules only under allow_all (the
-	// migrated shape); under the fixture's empty list the gate would hold them and the dry-run would
-	// rightly skip them (TestWebhookRuleSaveDryRunSkipsHeldDeliveries).
-	if _, err := f.st.SetWebhookTrustedActors(ctx, f.webhookA, f.epA1, []byte(`{"allow_all":true}`)); err != nil {
-		t.Fatalf("set trust: %v", err)
-	}
 
 	// A number plus a string faults. With no stored deliveries there is nothing to dry-run against,
 	// so the save goes through.
