@@ -238,7 +238,7 @@ func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 
 	// If the host is a literal IP, check it directly — no DNS to resolve, and no rebinding possible.
 	if literal := net.ParseIP(host); literal != nil {
-		if err := v.checkIP(literal, uint16(portN)); err != nil {
+		if err := v.checkIP(literal, uint16(portN), "address is"); err != nil {
 			return Target{}, err
 		}
 		t.IPs = []net.IP{literal}
@@ -247,15 +247,17 @@ func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 
 	addrs, err := v.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return Target{}, fmt.Errorf("%w: resolve %q: %v", ErrValidation, host, err)
+		return Target{}, &Rejection{Summary: "host did not resolve",
+			err: fmt.Errorf("%w: resolve %q: %v", ErrValidation, host, err)}
 	}
 	if len(addrs) == 0 {
-		return Target{}, fmt.Errorf("%w: host %q resolved to no addresses", ErrValidation, host)
+		return Target{}, &Rejection{Summary: "host did not resolve",
+			err: fmt.Errorf("%w: host %q resolved to no addresses", ErrValidation, host)}
 	}
 	// Fail closed if ANY resolved address is disallowed: the dialer may connect to any of them, so a
 	// single private answer among public ones is enough to reach an internal service.
 	for _, a := range addrs {
-		if err := v.checkIP(a.IP, uint16(portN)); err != nil {
+		if err := v.checkIP(a.IP, uint16(portN), "host resolves to"); err != nil {
 			return Target{}, err
 		}
 		t.IPs = append(t.IPs, a.IP)
@@ -263,26 +265,44 @@ func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 	return t, nil
 }
 
+// Rejection is a refusal that depends on what the host resolved to. Error() names the address (and,
+// for a failed lookup, the resolver's own error) for the server log and the A2A path; Summary names
+// only the rule and the address class ("host resolves to a private address", "host did not
+// resolve"). A tenant-facing surface returns Summary, so the guard cannot be used as an oracle for
+// internal name-to-address mappings or the resolver's address: SPEC-0024 REQ-3 asks a refusal to
+// name the address class, nothing more. errors.Is(err, ErrValidation) holds through it.
+type Rejection struct {
+	Summary string
+	err     error
+}
+
+func (r *Rejection) Error() string { return r.err.Error() }
+func (r *Rejection) Unwrap() error { return r.err }
+
 // checkIP rejects an address that is not a permitted (public, routable, non-switchboard) target, or
-// an operator-allowlisted one that is switchboard's own listen address and port.
-func (v *Validator) checkIP(ip net.IP, port uint16) error {
+// an operator-allowlisted one that is switchboard's own listen address and port. subject leads the
+// tenant-safe Summary: "address is" for a literal, "host resolves to" for a lookup.
+func (v *Validator) checkIP(ip net.IP, port uint16, subject string) error {
+	reject := func(class string, format string, args ...any) error {
+		return &Rejection{Summary: subject + " " + class, err: fmt.Errorf("%w: "+format, append([]any{ErrValidation}, args...)...)}
+	}
 	if ip == nil {
-		return fmt.Errorf("%w: nil resolved address", ErrValidation)
+		return &Rejection{Summary: "host did not resolve", err: fmt.Errorf("%w: nil resolved address", ErrValidation)}
 	}
 	if reason := disallowedReason(ip); reason != "" {
 		if !v.allowlisted(ip) {
-			return fmt.Errorf("%w: address %s is %s", ErrValidation, ip, reason)
+			return reject(reason, "address %s is %s", ip, reason)
 		}
 		// Exempted by the operator allowlist: the range rule no longer protects switchboard itself,
 		// so compare against its own listen address and port.
 		if v.isOwnAddrPort(ip, port) {
-			return fmt.Errorf("%w: address %s port %d is switchboard's own listening address", ErrValidation, ip, port)
+			return reject("switchboard's own listening address", "address %s port %d is switchboard's own listening address", ip, port)
 		}
 		return nil
 	}
 	for _, own := range v.ownIPs {
 		if own.Equal(ip) {
-			return fmt.Errorf("%w: address %s is switchboard's own listening address", ErrValidation, ip)
+			return reject("switchboard's own listening address", "address %s is switchboard's own listening address", ip)
 		}
 	}
 	return nil
