@@ -46,6 +46,14 @@ lives on the webhook, not in the rules, so a rule edit can never remove it.
 > **Upgrading:** every `github`, `gitea` and `cairn` webhook that existed before the trust gate was
 > migrated to `{"allow_all": true}`, so it routes exactly as before. Replace it with a list:
 > `set_trusted_actors {"webhook_id": "…", "trusted_actors": {"logins": ["you"], "match": "sender"}}`.
+>
+> Endpoints vended before the trust gate do **not** hold `set_trusted_actors` or
+> `clear_trusted_actors`: endpoint scope never widens ([SPEC-0007](/specs/identity/spec)), and the
+> upgrade does not grant new verbs to existing endpoints. Re-vend the endpoint with the webhook
+> verbs (see [older endpoints](#before-you-start-older-endpoints)), or delete the webhook and create
+> it again with `create_webhook {"trusted_actors": …}` (which mints a new ingest URL and secret for
+> the producer). An older endpoint that creates a webhook
+> without a list is told the same thing in `create_webhook`'s warning.
 
 ## Actions
 
@@ -151,8 +159,12 @@ persists nothing, and lets the producer retry. A webhook with no rules is unaffe
 
 To catch faults before they reach live traffic, `set_webhook_rules`, `add_webhook_rule`,
 `update_webhook_rule` and `move_webhook_rule` dry-run the resulting rules against the webhook's 50
-most recent deliveries. If any rule faults on any of them, the save is refused, naming the rule,
-the event ids and the cause. `params` values must be a string, a number, a boolean, or a list of
+most recent deliveries that its trust gate passes today. If any rule faults on any of them, the save
+is refused, naming the rule, the event ids and the cause. Deliveries the gate would hold are
+skipped, since your rules never run on them: an outsider cannot block your saves with a payload
+built to fault, nor flood your real traffic out of the checked window. `test_webhook_rules` on a
+held delivery (`held: true`) reports the gate's decision, as live traffic records it, and puts
+what your rules would do in `rules_would`. `params` values must be a string, a number, a boolean, or a list of
 all strings or all numbers (`invalid_params` otherwise).
 
 ## The tools
