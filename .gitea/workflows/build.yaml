@@ -51,13 +51,21 @@ jobs:
     steps:
       - if: ${{ env.REG != '' }}
         uses: actions/checkout@v4
+        with:
+          # Full history and tags, so `git describe` below finds the last release tag. A shallow
+          # clone has no tags and describe would fall back to the bare abbreviated SHA.
+          fetch-depth: 0
 
-      # The commit date for the internal/buildinfo Date stamp (SPEC-0027 REQ-1). The image build
-      # cannot compute it: .git is outside the Docker build context.
+      # The internal/buildinfo Version and Date stamps (SPEC-0027 REQ-1). The image build cannot
+      # compute them: .git is outside the Docker build context. Version is the git describe, as
+      # the Makefile computes it (v0.3.0-12-g4369412), not the raw 40-char SHA — that stays in
+      # COMMIT.
       - if: ${{ env.REG != '' }}
-        name: Read the commit date
+        name: Read the version and commit date
         id: commit
-        run: echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+          echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
 
       - if: ${{ env.REG != '' }}
         name: Set up Docker Buildx
@@ -92,7 +100,7 @@ jobs:
           load: true
           tags: gitea.stump.rocks/stump.wtf/switchboard:scan-${{ gitea.run_id }}
           build-args: |
-            VERSION=${{ gitea.sha }}
+            VERSION=${{ steps.commit.outputs.version }}
             COMMIT=${{ gitea.sha }}
             DATE=${{ steps.commit.outputs.date }}
           cache-from: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache
@@ -114,7 +122,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ gitea.sha }}
+            VERSION=${{ steps.commit.outputs.version }}
             COMMIT=${{ gitea.sha }}
             DATE=${{ steps.commit.outputs.date }}
           cache-from: type=registry,ref=gitea.stump.rocks/stump.wtf/switchboard:buildcache
