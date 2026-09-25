@@ -55,8 +55,10 @@ const (
 	DefaultAttemptTTL    = 5 * time.Second
 	DefaultRatePerMinute = 120
 	MaxAttempts          = 3
-	maxResponseRead      = 64 << 10
-	secretSweepInterval  = 10 * time.Minute
+	// DisableAfter is how many failed deliveries in a row disable a hook (SPEC-0024 REQ-8).
+	DisableAfter        = 10
+	maxResponseRead     = 64 << 10
+	secretSweepInterval = 10 * time.Minute
 )
 
 // DefaultBackoff is the wait before the second and third attempts; each is jittered ±20%.
@@ -90,7 +92,23 @@ type Store interface {
 	GetNotifyHook(ctx context.Context, id, endpointID string) (store.NotifyHook, error)
 	NotifyHookSigningSecrets(ctx context.Context, id, endpointID string) (store.NotifyHookSecrets, error)
 	DestroyExpiredNotifyHookSecrets(ctx context.Context) (int64, error)
+	// RecordNotifyHookDelivery writes a finished delivery's health in one statement and reports
+	// whether that statement disabled the hook (SPEC-0024 REQ-8).
+	RecordNotifyHookDelivery(ctx context.Context, id string, delivered bool, status *int, lastError string, disableAfter int) (bool, error)
 }
+
+// Metrics is the SPEC-0024 REQ-11 counter seam; *metrics.Metrics satisfies it and is nil-safe.
+type Metrics interface {
+	NotifyHookNotification(typ, outcome string)
+	NotifyHookAttempt(result string)
+	NotifyHookDisabled(reason string)
+}
+
+type nopMetrics struct{}
+
+func (nopMetrics) NotifyHookNotification(string, string) {}
+func (nopMetrics) NotifyHookAttempt(string)              {}
+func (nopMetrics) NotifyHookDisabled(string)             {}
 
 // Delivery is the outcome of one notification to one hook, after all its attempts.
 type Delivery struct {
@@ -121,7 +139,9 @@ type Options struct {
 	// TLSConfig, when set, is cloned for every dial (tests add a RootCAs pool). ServerName is always
 	// overwritten with the URL's host.
 	TLSConfig *tls.Config
-	// OnDelivery observes every finished delivery (health and metrics hang off it). It must not block.
+	// Metrics receives the REQ-11 counters; nil counts nothing.
+	Metrics Metrics
+	// OnDelivery observes every finished delivery, after its health is recorded. It must not block.
 	OnDelivery func(Delivery)
 	// OnDrop observes a notification dropped before any attempt: "queue_full" or "rate_limited".
 	OnDrop func(reason string)
@@ -159,6 +179,9 @@ func NewDispatcher(o Options) *Dispatcher {
 	if o.RatePerMinute <= 0 {
 		o.RatePerMinute = DefaultRatePerMinute
 	}
+	if o.Metrics == nil {
+		o.Metrics = nopMetrics{}
+	}
 	log := o.Log
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -189,6 +212,7 @@ func (d *Dispatcher) Enqueue(t store.Todo, reason string) {
 
 func (d *Dispatcher) drop(reason string, attrs ...any) {
 	d.dropped.Add(1)
+	d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "dropped")
 	d.log.Warn("notify hook notification dropped", append([]any{"reason", reason}, attrs...)...)
 	if d.opts.OnDrop != nil {
 		d.opts.OnDrop(reason)
@@ -306,6 +330,7 @@ func (d *Dispatcher) deliver(ctx context.Context, ep store.NotifyEndpoint, h sto
 		start := time.Now()
 		status, result, aerr := d.attempt(ctx, cur.URL, msgID, body, secrets)
 		out.Attempts, out.Status, out.Result, out.Err = attempt, status, result, aerr
+		d.opts.Metrics.NotifyHookAttempt(result)
 		d.log.Info("notify hook attempt", "hook", h.ID, "notification", msgID, "attempt", attempt,
 			"result", result, "duration_ms", time.Since(start).Milliseconds())
 		if aerr == nil {
@@ -319,12 +344,51 @@ func (d *Dispatcher) deliver(ctx context.Context, ep store.NotifyEndpoint, h sto
 			return
 		}
 	}
-	if !out.Delivered {
+	if out.Delivered {
+		d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "delivered")
+	} else {
+		d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "failed")
 		d.log.Warn("notify hook delivery failed", "hook", h.ID, "notification", msgID, "attempts", out.Attempts,
 			"result", out.Result, "err", fmt.Errorf("hook %s: %w", h.ID, out.Err))
 	}
+	d.recordHealth(ctx, out)
 	if d.opts.OnDelivery != nil {
 		d.opts.OnDelivery(out)
+	}
+}
+
+// recordHealth writes the delivery's outcome on the hook row. A store failure is logged with the
+// hook and notification ids and the worker moves on: health is bookkeeping, never a reason to stall
+// deliveries (SPEC-0024 REQ-12 "Store outage during health update").
+func (d *Dispatcher) recordHealth(ctx context.Context, out Delivery) {
+	disabled, err := d.opts.Store.RecordNotifyHookDelivery(ctx, out.HookID, out.Delivered, out.Status, lastErrorClass(out), DisableAfter)
+	if err != nil {
+		d.log.Warn("notify hook health update failed", "hook", out.HookID, "notification", out.NotificationID,
+			"err", fmt.Errorf("hook %s health: %w", out.HookID, err))
+		return
+	}
+	if disabled {
+		d.opts.Metrics.NotifyHookDisabled("consecutive_failures")
+		d.log.Warn("notify hook disabled after consecutive failures", "hook", out.HookID, "endpoint", out.EndpointID,
+			"failures", DisableAfter, "result", out.Result,
+			"fix", "the owner re-enables it with rotate_notify_hook or from the endpoint card")
+	}
+}
+
+// lastErrorClass is the short classified reason stored as last_error: never response text.
+func lastErrorClass(out Delivery) string {
+	if out.Delivered {
+		return ""
+	}
+	switch out.Result {
+	case Result3xx:
+		return "redirect"
+	case Result4xx:
+		return "client_error"
+	case Result5xx:
+		return "server_error"
+	default:
+		return out.Result // timeout, network, tls, rejected_ssrf
 	}
 }
 
