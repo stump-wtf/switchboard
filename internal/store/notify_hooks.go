@@ -123,6 +123,12 @@ func (s *Store) openHookSecret(stored string) (string, error) {
 	return plaintext, nil
 }
 
+// notifyHookCeilingErr names the notify-hook resource in the error text while still matching
+// errors.Is(err, ErrCeilingExceeded), whose own message says "webhook" (it predates notify hooks).
+func notifyHookCeilingErr(max int) error {
+	return fmt.Errorf("store: notify hook ceiling (%d) reached: %w", max, ErrCeilingExceeded)
+}
+
 // CreateNotifyHook inserts a hook for an endpoint, enforcing the per-endpoint ceiling in the same
 // transaction: it locks the endpoint row (SELECT … FOR UPDATE), inserts, counts, and rolls back with
 // ErrCeilingExceeded when the count passes max, so two racing creates at the boundary serialize and
@@ -132,7 +138,7 @@ func (s *Store) openHookSecret(stored string) (string, error) {
 // belong to the caller (the verb layer runs the SSRF validator); the store enforces only the length.
 func (s *Store) CreateNotifyHook(ctx context.Context, endpointID, url string, queues []string, ignorePresence bool, secret string, max int) (NotifyHook, error) {
 	if max <= 0 {
-		return NotifyHook{}, ErrCeilingExceeded
+		return NotifyHook{}, notifyHookCeilingErr(max)
 	}
 	if url == "" || len(url) > MaxNotifyHookURLLen {
 		return NotifyHook{}, fmt.Errorf("store: notify hook url must be 1..%d bytes", MaxNotifyHookURLLen)
@@ -176,7 +182,7 @@ func (s *Store) CreateNotifyHook(ctx context.Context, endpointID, url string, qu
 		return NotifyHook{}, fmt.Errorf("store: create notify hook count: %w", err)
 	}
 	if count > max {
-		return NotifyHook{}, ErrCeilingExceeded
+		return NotifyHook{}, notifyHookCeilingErr(max)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return NotifyHook{}, fmt.Errorf("store: create notify hook commit: %w", err)
