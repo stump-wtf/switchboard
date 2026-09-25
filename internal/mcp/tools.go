@@ -35,6 +35,9 @@ const (
 	codeNotFound  = "not_found"
 	codeConflict  = "conflict"
 	codeInternal  = "internal"
+	// codeInvalid is a malformed argument, named in the message; no transition applies
+	// (SPEC-0034 REQ-5, REQ-19).
+	codeInvalid = "invalid"
 )
 
 // agentVerbs is the full SPEC-0006 drain-verb surface (verbs.go DrainVerbs). A tools/call naming
@@ -99,18 +102,18 @@ type listTodosOut struct {
 }
 
 // The lease-token fence fields (SPEC-0034 REQ-6): claim and claim_next take require_fence and
-// return lease_token once; heartbeat, complete and fail take lease_token back.
+// return lease_token once; heartbeat, complete, fail and release take lease_token back.
 type claimIn struct {
 	ID              string `json:"id" jsonschema:"the todo id to claim"`
 	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default 300)"`
-	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete and fail on this attempt must then present it"`
+	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete, fail and release on this attempt must then present it"`
 }
 
 // claimOut is claim's response: the todo row with every todoOut field at the top level, plus the
 // lease token of a fenced claim.
 type claimOut struct {
 	todoOut
-	LeaseToken string `json:"lease_token,omitempty" jsonschema:"present only when require_fence was true: the opaque token heartbeat, complete and fail on this attempt must present; returned only here, never again"`
+	LeaseToken string `json:"lease_token,omitempty" jsonschema:"present only when require_fence was true: the opaque token heartbeat, complete, fail and release on this attempt must present; returned only here, never again"`
 }
 
 type completeIn struct {
@@ -125,10 +128,18 @@ type failIn struct {
 	LeaseToken string `json:"lease_token,omitempty" jsonschema:"the lease_token from a claim made with require_fence; required for a fenced attempt, omitted for an unfenced one (a mismatch is conflict)"`
 }
 
+// releaseIn is release's input (SPEC-0034 REQ-9): the attempt report and the fence, no result.
+type releaseIn struct {
+	ID         string `json:"id" jsonschema:"the claimed todo id to hand back to the queue"`
+	Summary    string `json:"summary,omitempty" jsonschema:"optional note on why the attempt ended (for example daemon stopping), kept on the attempt; cut to 2048 bytes"`
+	Artifact   string `json:"artifact,omitempty" jsonschema:"optional mcp://cairn/<id> handle or absolute https URL (at most 512 bytes) kept on the attempt; never fetched. Anything else is invalid"`
+	LeaseToken string `json:"lease_token,omitempty" jsonschema:"the lease_token from a claim made with require_fence; required for a fenced attempt, omitted for an unfenced one (a mismatch is conflict)"`
+}
+
 type claimNextIn struct {
 	Queue           string `json:"queue,omitempty" jsonschema:"restrict the scan to one granted queue (default: all granted queues)"`
 	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default 300)"`
-	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete and fail on this attempt must then present it"`
+	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete, fail and release on this attempt must then present it"`
 }
 
 // claimNextOut carries the claimed todo, or Empty when the queues held no available work. Both
@@ -136,7 +147,7 @@ type claimNextIn struct {
 type claimNextOut struct {
 	Todo       *todoOut `json:"todo,omitempty" jsonschema:"the claimed todo; absent when empty is true"`
 	Empty      bool     `json:"empty" jsonschema:"true when no work was available - the normal idle answer, not an error"`
-	LeaseToken string   `json:"lease_token,omitempty" jsonschema:"present only when require_fence was true: the opaque token heartbeat, complete and fail on this attempt must present; returned only here, never again"`
+	LeaseToken string   `json:"lease_token,omitempty" jsonschema:"present only when require_fence was true: the opaque token heartbeat, complete, fail and release on this attempt must present; returned only here, never again"`
 }
 
 type heartbeatIn struct {
@@ -190,6 +201,15 @@ func (h *Handler) registerTools(srv *sdk.Server, ep store.AuthEndpoint) {
 			Name:        "fail",
 			Description: "Fail a claimed todo: retried while attempts remain, dead-lettered when exhausted.",
 		}, h.failTool(ep))
+	}
+	// Governing: SPEC-0034 REQ-9 — release changes state, so only its own grant registers it.
+	if hasScope(ep.ScopeVerbs, "release") {
+		sdk.AddTool(srv, &sdk.Tool{
+			Name: "release",
+			Description: "Hand a todo this endpoint holds back to the queue without a verdict (shutdown, " +
+				"operator stop, usage limit): it returns to pending, its attempt counter is unchanged, and " +
+				"no retry backoff applies. The attempt closes as released with the optional summary and artifact.",
+		}, h.releaseTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "heartbeat") {
 		sdk.AddTool(srv, &sdk.Tool{
@@ -320,6 +340,28 @@ func (h *Handler) failTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[failIn, tod
 			store.Report{Result: rawJSON(in.Result), TokenHash: leaseTokenHash(in.LeaseToken)})
 		if err != nil {
 			return nil, todoOut{}, h.mapStoreErr(ep, "fail", err)
+		}
+		return nil, toOut(t), nil
+	}
+}
+
+// releaseTool ends the caller's attempt without a verdict. The queue guard runs first, then the
+// report is checked, so a malformed artifact is refused before any transition; the store applies
+// ReleaseTodo's owner-and-endpoint predicate and the lease-token fence, and a miss classifies as
+// not_found or conflict like every lease verb.
+// Governing: SPEC-0034 REQ-9 "The release Verb", REQ-5, REQ-6, REQ-19.
+func (h *Handler) releaseTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[releaseIn, todoOut] {
+	return func(ctx context.Context, _ *sdk.CallToolRequest, in releaseIn) (*sdk.CallToolResult, todoOut, error) {
+		if err := h.guardQueue(ctx, ep, "release", in.ID); err != nil {
+			return nil, todoOut{}, err
+		}
+		r, err := attemptReport(in.Summary, in.Artifact, in.LeaseToken)
+		if err != nil {
+			return nil, todoOut{}, err
+		}
+		t, err := h.store.ReleaseTodoWith(ctx, ep.ID, in.ID, owner(ep), r)
+		if err != nil {
+			return nil, todoOut{}, h.mapStoreErr(ep, "release", err)
 		}
 		return nil, toOut(t), nil
 	}

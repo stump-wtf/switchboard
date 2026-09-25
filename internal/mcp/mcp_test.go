@@ -305,8 +305,8 @@ func (f *fakeStore) FailTodo(_ context.Context, endpointID, id, owner string, re
 }
 
 // The ...With lifecycle wraps the calls above and models the store's lease-token fence
-// (store.leaseFence): a claim records its hash, and heartbeat, complete and fail on a live claim
-// apply only when the presented hash equals it (nil equals nil), else store.ErrConflict.
+// (store.leaseFence): a claim records its hash, and heartbeat, complete, fail and release on a live
+// claim apply only when the presented hash equals it (nil equals nil), else store.ErrConflict.
 
 func (f *fakeStore) ClaimTodoWith(ctx context.Context, endpointID, id, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error) {
 	t, err := f.ClaimTodo(ctx, endpointID, id, owner, o.TTL)
@@ -353,6 +353,30 @@ func (f *fakeStore) FailTodoWith(ctx context.Context, endpointID, id, owner stri
 		f.setFence(id, nil)
 	}
 	return t, err
+}
+
+// ReleaseTodoWith mirrors store.ReleaseTodoWith: only the live holder, within this endpoint and
+// past the fence, returns the todo to pending with owner and lease cleared and attempt unchanged.
+func (f *fakeStore) ReleaseTodoWith(_ context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error) {
+	if f.fenceMiss(endpointID, id, r.TokenHash) {
+		return store.Todo{}, store.ErrConflict
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Todo{}, f.failErr
+	}
+	t, ok := f.scopedTodo(endpointID, id)
+	if !ok {
+		return store.Todo{}, store.ErrNotFound
+	}
+	if t.State != "claimed" || t.Owner != owner {
+		return store.Todo{}, store.ErrConflict
+	}
+	t.State, t.Owner, t.LeaseExpiresAt = "pending", "", nil
+	f.todos[id] = t
+	delete(f.fences, id)
+	return t, nil
 }
 
 // setFence records (or, for nil, clears) a todo's open-attempt fence.
