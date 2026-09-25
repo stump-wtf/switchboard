@@ -37,6 +37,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4.2.2
 
+      # The commit date for the internal/buildinfo Date stamp (SPEC-0027
+      # REQ-1). The image build cannot compute it: .git is outside the Docker
+      # build context (.dockerignore), so the binary has no VCS info either.
+      - name: Read the commit date
+        id: commit
+        run: echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3.6.0
 
@@ -71,6 +78,32 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: ghcr.io/stump-wtf/switchboard:scan-${{ github.run_id }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.commit.outputs.date }}
+
+      # Without the build-args above the Dockerfile's ARG VERSION=dev wins and
+      # the published image reports "dev" over MCP (SPEC-0027 REQ-1, REQ-14).
+      # A missing or misspelled build-arg still builds and exits 0, so assert
+      # the scan image reports exactly the tag before anything is pushed. The
+      # multi-arch push below passes the same build-args.
+      - name: Assert the image reports the tag, not "dev"
+        env:
+          TAG: ${{ github.ref_name }}
+          IMAGE: ghcr.io/stump-wtf/switchboard:scan-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if ! got="$(docker run --rm "$IMAGE" version 2>&1)"; then
+            echo "::error::could not run $IMAGE version — the assertion never ran: $got"
+            exit 1
+          fi
+          echo "version output: $got"
+          want="switchboard ${TAG}"
+          if [ "$got" != "$want" ]; then
+            echo "::error::image reports '$got', expected exactly '$want'."
+            exit 1
+          fi
 
       - name: Trivy image scan (fails closed on CRITICAL/HIGH)
         uses: docker://aquasec/trivy:0.65.0
@@ -88,3 +121,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.commit.outputs.date }}
