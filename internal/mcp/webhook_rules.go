@@ -86,7 +86,7 @@ type webhookRulesOut struct {
 	TargetQueue   string         `json:"target_queue" jsonschema:"the webhook's target queue"`
 	DefaultAction *actionIO      `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omitted means the target queue on every target"`
 	Rules         []ruleIO       `json:"rules" jsonschema:"the rules, in evaluation order (first match wins)"`
-	Params        map[string]any `json:"params,omitempty" jsonschema:"owner-set values rules read as $params (e.g. trusted-actor allowlists)"`
+	Params        map[string]any `json:"params" jsonschema:"owner-set values rules read as $params (e.g. trusted-actor allowlists); {} when none are set"`
 	Grant         grantOut       `json:"grant" jsonschema:"what actions may reach right now"`
 }
 
@@ -98,7 +98,7 @@ type setWebhookRulesIn struct {
 	WebhookID     string         `json:"webhook_id" jsonschema:"a webhook this endpoint's human owns"`
 	Rules         []ruleIO       `json:"rules" jsonschema:"the complete ordered rule list; replaces the current one atomically"`
 	DefaultAction *actionIO      `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omit for the webhook's target queue"`
-	Params        map[string]any `json:"params,omitempty" jsonschema:"values bound as $params in every rule; replaces the current params (omit to clear)"`
+	Params        map[string]any `json:"params,omitempty" jsonschema:"values bound as $params in every rule; replaces the current params when present. Omit to keep the current params unchanged; pass {} to clear them"`
 }
 
 type addWebhookRuleIn struct {
@@ -163,7 +163,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "set_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "set_webhook_rules",
-			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. An invalid rule rejects the save and keeps the previous configuration."},
+			Description: "Replace a webhook's routing configuration atomically: the ordered rules and the default action, plus the params rules read as $params when params is present. Omitting params keeps the saved params; params: {} clears them. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. An invalid rule rejects the save and keeps the previous configuration."},
 			h.setWebhookRulesTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
@@ -219,8 +219,15 @@ func (h *Handler) setWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[
 		for _, r := range in.Rules {
 			rules = append(rules, fromRuleIO(r))
 		}
-		return h.mutateRules(ctx, ep, "set_webhook_rules", in.WebhookID, func(routing.Config) (routing.Config, error) {
-			return routing.Config{Rules: rules, Default: fromActionIO(in.DefaultAction), Params: in.Params}, nil
+		return h.mutateRules(ctx, ep, "set_webhook_rules", in.WebhookID, func(cur routing.Config) (routing.Config, error) {
+			// Governing: SPEC-0026 REQ-4 "Params Are Never Cleared by Omission". An omitted params
+			// decodes to a nil map and keeps the params read under the row lock; an explicit {}
+			// decodes to an empty, non-nil map and clears them.
+			params := cur.Params
+			if in.Params != nil {
+				params = in.Params
+			}
+			return routing.Config{Rules: rules, Default: fromActionIO(in.DefaultAction), Params: params}, nil
 		})
 	}
 }
@@ -505,6 +512,9 @@ func rulesOut(wr store.WebhookRouting, g routing.Grant) webhookRulesOut {
 		if !slices.Contains(out.Grant.Queues, q) {
 			out.Grant.Queues = append(out.Grant.Queues, q)
 		}
+	}
+	if out.Params == nil {
+		out.Params = map[string]any{} // echo {} rather than omit, so a caller sees the params it left in force
 	}
 	if wr.Config.Default != nil {
 		a := toActionIO(*wr.Config.Default)
