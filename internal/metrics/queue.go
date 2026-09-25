@@ -20,10 +20,18 @@ package metrics
 // visible instead of flattening the graph to the exact reading this surface exists to prevent
 // (REQ-6).
 //
+// The same read also yields switchboard_quarantine_oldest_seconds (SPEC-0026 REQ-11): the age of the
+// oldest held delivery, taken from the reserved quarantine queue's row before label limiting, so it
+// can never fold into __other__. It is unlabeled, reports 0 when nothing is held, and shares the
+// collector's all-or-nothing rule. Nothing claims from quarantine, so the liveness alert would fire
+// on it forever; the documented alerts exclude queue="quarantine" and read this gauge instead.
+//
 // Governing: SPEC-0023 REQ-2 "Queue liveness — the mandatory pair", REQ-5 "Cardinality", REQ-6
 // "Honest absence"; design.md "Shape", "Zero-value series", "Cardinality control"; ADR-0028.
+// SPEC-0026 REQ-11 "Metrics"; ADR-0031.
 //
 // @joestump-agent 09/21/2026 - Added for issue #273 (SPEC-0023 story 2).
+// @joestump-agent 09/25/2026 - switchboard_quarantine_oldest_seconds, for #392.
 
 import (
 	"context"
@@ -82,6 +90,9 @@ func (m *Metrics) RegisterQueueStats(src QueueStatsSource, opts ...QueueOption) 
 		oldest: prometheus.NewDesc("switchboard_queue_oldest_pending_seconds",
 			"Age in seconds of the oldest pending todo on each known queue, computed at scrape time; 0 when none is pending.",
 			[]string{"queue"}, nil),
+		quarantineOldest: prometheus.NewDesc("switchboard_quarantine_oldest_seconds",
+			"Age in seconds of the oldest delivery waiting in quarantine, computed at scrape time; 0 when nothing is held.",
+			nil, nil),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -98,6 +109,8 @@ type queueCollector struct {
 	timeout time.Duration
 	todos   *prometheus.Desc
 	oldest  *prometheus.Desc
+	// quarantineOldest is SPEC-0026 REQ-11's unlabeled age gauge.
+	quarantineOldest *prometheus.Desc
 }
 
 // Describe implements prometheus.Collector. Both families are described up front so the registry
@@ -105,6 +118,7 @@ type queueCollector struct {
 func (c *queueCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.todos
 	ch <- c.oldest
+	ch <- c.quarantineOldest
 }
 
 // Collect implements prometheus.Collector: one bounded read, then either every series or none.
@@ -150,7 +164,11 @@ type queueAgg struct {
 func (c *queueCollector) build(stats []store.QueueStat) ([]prometheus.Metric, error) {
 	byLabel := make(map[string]*queueAgg, len(stats))
 	order := make([]string, 0, len(stats))
+	var quarantineOldest float64
 	for _, s := range stats {
+		if s.Queue == store.QueueQuarantine {
+			quarantineOldest = s.OldestPendingSeconds
+		}
 		label := c.m.QueueLabel(s.Queue)
 		a, ok := byLabel[label]
 		if !ok {
@@ -163,7 +181,12 @@ func (c *queueCollector) build(stats []store.QueueStat) ([]prometheus.Metric, er
 		}
 		a.oldest = max(a.oldest, s.OldestPendingSeconds)
 	}
-	out := make([]prometheus.Metric, 0, len(order)*(len(queueStates)+1))
+	out := make([]prometheus.Metric, 0, len(order)*(len(queueStates)+1)+1)
+	held, err := prometheus.NewConstMetric(c.quarantineOldest, prometheus.GaugeValue, quarantineOldest)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, held)
 	for _, label := range order {
 		a := byLabel[label]
 		for i, state := range queueStates {

@@ -118,9 +118,13 @@ func TestDeclaredFamiliesMatchSpec(t *testing.T) {
 	m.WebhookVerifyFailure("github", "bad_signature")
 	m.RoutingDecision("wh-1", "", ActionQueue)
 	m.RoutingFault("timeout")
+	m.QuarantineHeld(QuarantineUntrustedActor)
+	m.QuarantineResolved(ResolvedReleased, "human:h1")
 	m.CollectionError("queue")
 
 	want := map[string]string{
+		"switchboard_quarantine_items_total":          "reason",
+		"switchboard_quarantine_resolved_total":       "by,outcome",
 		"switchboard_routing_faults_total":            "cause",
 		"switchboard_todos_created_total":             "queue,source",
 		"switchboard_todos_claimed_total":             "queue",
@@ -338,6 +342,8 @@ func TestNilReceiverIsNoOp(t *testing.T) {
 	m.WebhookVerifyFailure("github", "bad_signature")
 	m.RoutingDecision("wh", "", ActionQueue)
 	m.RoutingFault("timeout")
+	m.QuarantineHeld(QuarantineRuleFault)
+	m.QuarantineResolved(ResolvedExpired, "system")
 	m.CollectionError("queue")
 	m.InitCollectionErrors("queue")
 	if m.Registry() != nil {

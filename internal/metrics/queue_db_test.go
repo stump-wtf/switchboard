@@ -192,7 +192,7 @@ func TestQueueLivenessDatabaseFailureOmitsGauges(t *testing.T) {
 	pool.Close() // the database goes away; Cleanup's second Close is a no-op
 	got := scrapeQueueText(t, m)
 	for series := range got {
-		if strings.HasPrefix(series, "switchboard_queue_") {
+		if strings.HasPrefix(series, "switchboard_queue_") || strings.HasPrefix(series, "switchboard_quarantine_oldest_seconds") {
 			t.Errorf("scrape with the database down still carries %s; want both families omitted", series)
 		}
 	}

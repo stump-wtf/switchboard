@@ -18,6 +18,7 @@ package metrics
 import (
 	"log/slog"
 	"regexp"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -45,6 +46,19 @@ const (
 	FaultCauseError   = "error"
 	FaultCauseCompile = "compile"
 	FaultCauseBudget  = "budget"
+
+	// Quarantine reasons, resolution outcomes and resolvers (SPEC-0026 REQ-11).
+	QuarantineUntrustedActor = "untrusted_actor"
+	QuarantineRuleFault      = "rule_fault"
+	QuarantineRuleAction     = "rule_action"
+
+	ResolvedReleased  = "released"
+	ResolvedDiscarded = "discarded"
+	ResolvedExpired   = "expired"
+
+	ResolvedByHuman      = "human"
+	ResolvedByClassifier = "classifier"
+	ResolvedBySystem     = "system"
 )
 
 var (
@@ -90,6 +104,9 @@ type Metrics struct {
 	verifyFailures   *prometheus.CounterVec
 	// SPEC-0026 REQ-1 / REQ-11: deliveries whose routing stopped at a rule fault.
 	routingFaults *prometheus.CounterVec
+	// SPEC-0026 REQ-11: deliveries held in quarantine, and how held deliveries left it.
+	quarantineItems    *prometheus.CounterVec
+	quarantineResolved *prometheus.CounterVec
 
 	// REQ-6: a collector that could not compute its families says so here.
 	collectionErrors *prometheus.CounterVec
@@ -144,6 +161,14 @@ func New(opts Options) *Metrics {
 			Name: "switchboard_routing_faults_total",
 			Help: "Deliveries whose routing stopped at a rule fault and routed nowhere, by cause (timeout|error|compile|budget).",
 		}, []string{"cause"}),
+		quarantineItems: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_quarantine_items_total",
+			Help: "Deliveries held in the owner's quarantine, by reason (untrusted_actor|rule_fault|rule_action).",
+		}, []string{"reason"}),
+		quarantineResolved: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_quarantine_resolved_total",
+			Help: "Held deliveries that left quarantine, by outcome (released|discarded|expired) and resolver (human|classifier|system).",
+		}, []string{"outcome", "by"}),
 
 		collectionErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_metrics_collection_errors_total",
@@ -155,6 +180,7 @@ func New(opts Options) *Metrics {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.todosCreated, m.todosClaimed, m.todosCompleted, m.leasesExpired, m.todoAttempts,
 		m.deliveries, m.routingDecisions, m.verifyFailures, m.routingFaults,
+		m.quarantineItems, m.quarantineResolved,
 		m.collectionErrors,
 	)
 	return m
@@ -299,6 +325,35 @@ func faultCauseLabel(cause string) string {
 	default:
 		return Other
 	}
+}
+
+// QuarantineHeld counts one delivery newly held in quarantine (a redelivery collapsing onto its
+// existing item is not counted). reason is untrusted_actor, rule_fault or rule_action; anything else
+// reports as Other. Governing: SPEC-0026 REQ-11.
+func (m *Metrics) QuarantineHeld(reason string) {
+	if m == nil {
+		return
+	}
+	m.quarantineItems.WithLabelValues(oneOf(reason, QuarantineUntrustedActor, QuarantineRuleFault, QuarantineRuleAction)).Inc()
+}
+
+// QuarantineResolved counts one held delivery leaving quarantine. outcome is released, discarded
+// or expired. by is the resolver exactly as the store records it ("human:<id>",
+// "classifier:<slug>" or "system"); only its kind reaches the label, never the id or slug, so the
+// series stays bounded however many humans and classifiers there are. Governing: SPEC-0026 REQ-11,
+// SPEC-0023 REQ-5.
+func (m *Metrics) QuarantineResolved(outcome, by string) {
+	if m == nil {
+		return
+	}
+	m.quarantineResolved.WithLabelValues(oneOf(outcome, ResolvedReleased, ResolvedDiscarded, ResolvedExpired),
+		resolverLabel(by)).Inc()
+}
+
+// resolverLabel folds a recorded resolver onto its kind: human, classifier or system.
+func resolverLabel(by string) string {
+	kind, _, _ := strings.Cut(by, ":")
+	return oneOf(kind, ResolvedByHuman, ResolvedByClassifier, ResolvedBySystem)
 }
 
 // attemptBucket folds an attempt number into the three buckets REQ-3 names. A claim is always at

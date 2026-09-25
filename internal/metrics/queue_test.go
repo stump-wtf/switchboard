@@ -83,11 +83,12 @@ func queueCollectionErrors(t *testing.T, m *Metrics) float64 {
 	return v
 }
 
-// queueFamilySeries returns the series of every switchboard_queue_* family in series.
+// queueFamilySeries returns the series of every family the queue collector emits: switchboard_queue_*
+// and switchboard_quarantine_oldest_seconds.
 func queueFamilySeries(series map[string]float64) []string {
 	var out []string
 	for k := range series {
-		if strings.HasPrefix(k, "switchboard_queue_") {
+		if strings.HasPrefix(k, "switchboard_queue_") || strings.HasPrefix(k, "switchboard_quarantine_oldest_seconds") {
 			out = append(out, k)
 		}
 	}
