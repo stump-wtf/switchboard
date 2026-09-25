@@ -17,10 +17,12 @@ import (
 
 type countingMetrics struct{ created, claimed, finished, expired atomic.Int64 }
 
-func (c *countingMetrics) TodoCreated(string, string)  { c.created.Add(1) }
-func (c *countingMetrics) TodoClaimed(string, int)     { c.claimed.Add(1) }
-func (c *countingMetrics) TodoFinished(string, string) { c.finished.Add(1) }
-func (c *countingMetrics) LeaseExpired(string)         { c.expired.Add(1) }
+func (c *countingMetrics) TodoCreated(string, string)        { c.created.Add(1) }
+func (c *countingMetrics) TodoClaimed(string, int)           { c.claimed.Add(1) }
+func (c *countingMetrics) TodoFinished(string, string)       { c.finished.Add(1) }
+func (c *countingMetrics) LeaseExpired(string)               { c.expired.Add(1) }
+func (c *countingMetrics) QuarantineHeld(string)             {}
+func (c *countingMetrics) QuarantineResolved(string, string) {}
 
 func TestStoreMetricsSeamUnsetIsNoOp(t *testing.T) {
 	s := New(nil)
@@ -32,6 +34,8 @@ func TestStoreMetricsSeamUnsetIsNoOp(t *testing.T) {
 	m.TodoClaimed("q", 1)
 	m.TodoFinished("q", "complete")
 	m.LeaseExpired("q")
+	m.QuarantineHeld("untrusted_actor")
+	m.QuarantineResolved("released", "human:h1")
 }
 
 func TestStoreMetricsSeamRoutesAndClears(t *testing.T) {

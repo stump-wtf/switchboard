@@ -466,6 +466,7 @@ func (s *Store) RecordIntake(ctx context.Context, e EventInput, targetEndpointID
 			// wakeup, a doorbell or a notify hook: nothing tool-bearing is told it exists.
 			s.fireTodoHook("created", t)
 			s.metricsOrNop().TodoCreated(t.Queue, todoMetricSource(p))
+			s.metricsOrNop().QuarantineHeld(p.QuarantineReason) // Governing: SPEC-0026 REQ-11
 		}
 		return IntakeResult{EventID: ev.ID, Todos: []CreatedTodo{{Todo: t, New: wasNew}}, Disposition: disp, Inserted: inserted}, nil
 	}
