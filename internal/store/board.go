@@ -35,37 +35,54 @@ type BoardStats struct {
 // (an unfiltered count) so nothing is dropped from the grand total — matching the intentional-ignore
 // documented on TodoCounts. A dedicated A2A-state tile is the province of the A2A feature stories,
 // not story #58. Governing: SPEC-0018 REQ "Task State Machine Extension".
-// eventOwnedBy builds the tenant predicate for the EVENT-shaped reads below. An event has no
-// endpoint_id of its own — one delivery fans out to N todos, one per target endpoint (ADR-0022) —
-// so an event belongs to a human transitively: it is theirs if any todo it produced is theirs.
+// eventOwnedBy builds the tenant predicate for the EVENT-shaped reads below. Every event records
+// the endpoint that owns it (events.endpoint_id, 0024); an event without one has no provable owner
+// and is invisible to every board, as SPEC-0033 requires. Over owned events, the board shows a
+// human the events that produced their work: one delivery fans out to N todos, one per target
+// endpoint (ADR-0022), and an event is on a human's board if any todo it produced is theirs.
 //
-// That is a strictly narrower rule than it looks. A delivery fanned out to two tenants is visible
-// to BOTH, which is correct: each of them genuinely received that work. What it never does is
-// expose an event whose todos all belong to somebody else, which is what the unscoped reads did.
+// That is a strictly narrower rule than it looks. A delivery fanned out to two tenants (a friend
+// route) is visible to BOTH, which is correct: each of them genuinely received that work, and the
+// recipient's todo needs the event's trust metadata. What it never does is expose an event whose
+// todos all belong to somebody else, which is what the unscoped reads did.
 //
 // The second arm covers DEDUPED deliveries, and it is not optional. A redelivery collapses onto an
 // earlier todo and is left with no todo of its own (createTodo dedups on the idempotency key), so
-// the first arm alone makes it ownerless — it would vanish from its rightful owner's feed, and the
-// "deduped" stage the feed renders would never appear again. It belongs to whoever owns the todo it
-// collapsed onto, matched on the same external_id ↔ idempotency_key relation the Deduped flag uses.
+// the first arm alone makes it ownerless: it would vanish from its rightful owner's feed, and the
+// "deduped" stage the feed renders would never appear again. See eventDedupedOnto for the match.
 // Caught by TestTodoItemTrustModeAndDedupCount, which is why that test earns its keep.
 //
 // Kept as one builder beside ownedByHuman in queue_view.go for the same reason: the predicate is
 // the security boundary, and a boundary copy-pasted into six queries is a boundary that drifts.
 // It takes the placeholder as an argument because the owner id appears twice in it.
-// Governing: SPEC-0007 REQ "Human as Accountable Principal"; SPEC-0013 (operator board).
+// Governing: SPEC-0007 REQ "Human as Accountable Principal"; SPEC-0013 (operator board); ADR-0038,
+// SPEC-0033 REQ "Owner-Scoped History Reads".
 func eventOwnedBy(param string) string {
-	return `(
+	return `(e.endpoint_id IS NOT NULL AND (
 		EXISTS (SELECT 1 FROM todos t
 		          JOIN endpoints ep ON ep.id = t.endpoint_id
 		          JOIN agents    ag ON ag.id = ep.agent_id
 		         WHERE t.event_id = e.id AND ag.owner_human_id = ` + param + `)
-		OR (e.external_id IS NOT NULL AND EXISTS (
+		OR ` + eventDedupedOnto(param) + `
+	))`
+}
+
+// eventDedupedOnto is the predicate "event e collapsed onto a todo the human at param holds": a
+// todo whose idempotency key is e's external id AND whose own event has e's owner. The owner match
+// is the tenant boundary (F14): since 0024 two owners can each hold an event with the same external
+// id, so matching the key alone would put A's event on B's feed, flag it deduped there, and count
+// A's delivery in B's dedup badge. Matching the todo's EVENT owner rather than the todo's endpoint
+// keeps a friend-route recipient's deduped redeliveries: their todo is on their own endpoint, but
+// its event is still the sender's. The source is deliberately not matched, because two sources
+// delivering one key is a dedup by design (TestTodoItemTrustModeAndDedupCount).
+// Governing: ADR-0038, SPEC-0033 REQ "Closing the Audited Surfaces" (F14).
+func eventDedupedOnto(param string) string {
+	return `(e.external_id IS NOT NULL AND EXISTS (
 		      SELECT 1 FROM todos d
+		        JOIN events    de  ON de.id = d.event_id AND de.endpoint_id = e.endpoint_id
 		        JOIN endpoints dep ON dep.id = d.endpoint_id
 		        JOIN agents    dag ON dag.id = dep.agent_id
-		       WHERE d.idempotency_key = e.external_id AND dag.owner_human_id = ` + param + `))
-	)`
+		       WHERE d.idempotency_key = e.external_id AND dag.owner_human_id = ` + param + `))`
 }
 
 func (s *Store) BoardStats(ctx context.Context, ownerHumanID string) (BoardStats, error) {
@@ -118,11 +135,7 @@ func (s *Store) RecentEvents(ctx context.Context, ownerHumanID string, limit int
 	rows, err := s.pool.Query(ctx, `
 		SELECT e.id, e.source, COALESCE(e.event_type, ''), e.trust_mode, e.received_at,
 			COALESCE(t.id, ''), COALESCE(t.state, ''), COALESCE(t.owner, ''),
-			(t.id IS NULL AND e.external_id IS NOT NULL
-				AND EXISTS (SELECT 1 FROM todos d
-				              JOIN endpoints dep ON dep.id = d.endpoint_id
-				              JOIN agents    dag ON dag.id = dep.agent_id AND dag.owner_human_id = $1
-				             WHERE d.idempotency_key = e.external_id)) AS deduped
+			(t.id IS NULL AND `+eventDedupedOnto("$1")+`) AS deduped
 		FROM events e
 		-- The LATERAL picks the row the feed SHOWS, so it must be scoped too, not just the outer
 		-- filter: without the join here a visible event would render another tenant's todo id,

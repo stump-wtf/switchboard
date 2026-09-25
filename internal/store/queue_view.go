@@ -78,7 +78,11 @@ func (s *Store) TodoCounts(ctx context.Context, ownerHumanID string) (TodoCounts
 
 // TodoItem is one enriched row of the Todos view table and the detail drawer: the durable todo plus
 // its originating event's trust mode ("queue" for event-less todos) and the count of deliveries its
-// idempotency key collapsed (≥1; the badge shows only when >1).
+// idempotency key collapsed (≥1; the badge shows only when >1). The count is bounded to events with
+// the same owner as the todo's own event: since 0024 another owner can hold an event with the same
+// external id, and counting it would leak that owner's delivery into this badge (F14). A todo with
+// no event, or whose event has no owner, counts 0. Governing: ADR-0038, SPEC-0033 REQ "Closing the
+// Audited Surfaces" (F14).
 type TodoItem struct {
 	Todo
 	TrustMode  string
@@ -117,7 +121,8 @@ func (s *Store) ListTodoItems(ctx context.Context, ownerHumanID, filter, query s
 		SELECT `+todoColsT+`,
 			COALESCE(e.trust_mode, 'queue') AS trust_mode,
 			(SELECT count(*) FROM events ev
-			   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key)::int AS dedup_count
+			   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key
+			     AND ev.endpoint_id = e.endpoint_id)::int AS dedup_count
 		FROM todos t`+ownedByHuman+`$1
 		LEFT JOIN events e ON e.id = t.event_id
 		WHERE ($2 = '' OR t.state = $2)
@@ -158,7 +163,8 @@ func (s *Store) GetTodoItem(ctx context.Context, ownerHumanID, id string) (TodoI
 		SELECT `+todoColsT+`,
 			COALESCE(e.trust_mode, 'queue') AS trust_mode,
 			(SELECT count(*) FROM events ev
-			   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key)::int AS dedup_count
+			   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key
+			     AND ev.endpoint_id = e.endpoint_id)::int AS dedup_count
 		FROM todos t`+ownedByHuman+`$1
 		LEFT JOIN events e ON e.id = t.event_id
 		WHERE t.id = $2`, ownerHumanID, id)

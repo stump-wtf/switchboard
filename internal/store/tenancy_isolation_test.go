@@ -347,3 +347,124 @@ func TestTenancyEventDedupCannotCrossOwners(t *testing.T) {
 		t.Fatalf("A's redelivery = %d (%v), want its own event %d", again, err, idA)
 	}
 }
+
+// The board must filter the way history does (#194). Since F14, two owners can each hold an event
+// with the same external id, and the board's dedup relation (external_id ↔ idempotency_key) must
+// not join across them: B's feed, EventByID, LIVE rate and dedup badge carry nothing of A's.
+// Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads", REQ "Closing the Audited
+// Surfaces" scenario "Dedup cannot cross owners (F14)".
+func TestTenancyBoardDedupCannotCrossOwners(t *testing.T) {
+	s, ctx := testStore(t)
+	humanA, epA, humanB, epB := tenants(t, s, ctx)
+	a := seedOwnedTodo(t, s, ctx, epA, "shared-delivery", "A")
+	b := seedOwnedTodo(t, s, ctx, epB, "shared-delivery", "B")
+	if a.EventID == nil || b.EventID == nil || *a.EventID == *b.EventID {
+		t.Fatalf("fixture: want two events, got A %v and B %v", a.EventID, b.EventID)
+	}
+
+	evs, err := s.RecentEvents(ctx, humanB, 50)
+	if err != nil {
+		t.Fatalf("B's feed: %v", err)
+	}
+	if len(evs) != 1 || evs[0].ID != *b.EventID || evs[0].Deduped {
+		t.Fatalf("B's feed = %+v, want only B's event %d, not deduped", evs, *b.EventID)
+	}
+	if _, err := s.EventByID(ctx, humanB, *a.EventID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("B reading A's same-key event = %v, want ErrNotFound", err)
+	}
+	stats, err := s.BoardStats(ctx, humanB)
+	if err != nil {
+		t.Fatalf("B's stats: %v", err)
+	}
+	if stats.EventsPerMin != 1 {
+		t.Fatalf("B's LIVE rate = %d, want 1 (A's same-key delivery counted)", stats.EventsPerMin)
+	}
+	items, err := s.ListTodoItems(ctx, humanB, "", "", 100)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("B's todos = %d (%v), want 1", len(items), err)
+	}
+	if items[0].DedupCount != 1 {
+		t.Fatalf("B's dedup count = %d, want 1 (A's delivery counted)", items[0].DedupCount)
+	}
+	if it, err := s.GetTodoItem(ctx, humanA, a.ID); err != nil || it.DedupCount != 1 {
+		t.Fatalf("A's drawer dedup count = %d (%v), want 1", it.DedupCount, err)
+	}
+}
+
+// A friend-route recipient keeps its deduped redeliveries on the board: the delivery is owned by the
+// sender's endpoint and lands on the recipient's, and a second delivery of the same key (from
+// another source) collapses onto the recipient's todo. The recipient's feed flags it deduped and
+// its badge counts both, while the sender, who holds no todo for it, sees neither event.
+func TestTenancyBoardDedupFollowsFriendRoute(t *testing.T) {
+	s, ctx := testStore(t)
+	humanA, epA, humanB, epB := tenants(t, s, ctx)
+	deliver := func(source string) int64 {
+		t.Helper()
+		id, _, err := s.CreateEventTodos(ctx, EventInput{Source: source, Family: "webhook", EventType: "push",
+			ExternalID: "routed-key", TrustMode: "signed", Verified: true, Payload: []byte(`{}`), EndpointID: epA},
+			[]string{epB}, CreateTodoParams{Queue: "q", Source: source, Kind: "push", Title: "t", IdempotencyKey: "routed-key"})
+		if err != nil {
+			t.Fatalf("deliver %s: %v", source, err)
+		}
+		return id
+	}
+	first, second := deliver("github"), deliver("gitea")
+	if first == second {
+		t.Fatalf("fixture: want two events, got %d twice", first)
+	}
+
+	evs, err := s.RecentEvents(ctx, humanB, 50)
+	if err != nil {
+		t.Fatalf("B's feed: %v", err)
+	}
+	var sawSecondDeduped bool
+	for _, e := range evs {
+		if e.ID == second && e.Deduped {
+			sawSecondDeduped = true
+		}
+	}
+	if len(evs) != 2 || !sawSecondDeduped {
+		t.Fatalf("recipient's feed = %+v, want both events and %d flagged deduped", evs, second)
+	}
+	items, err := s.ListTodoItems(ctx, humanB, "", "", 100)
+	if err != nil || len(items) != 1 || items[0].DedupCount != 2 {
+		t.Fatalf("recipient's todos = %+v (%v), want one todo with dedup count 2", items, err)
+	}
+	if evs, err := s.RecentEvents(ctx, humanA, 50); err != nil || len(evs) != 0 {
+		t.Fatalf("sender's feed = %+v (%v), want nothing: it holds no todo for the delivery", evs, err)
+	}
+}
+
+// SPEC-0033: an event whose owner cannot be established is invisible to agents AND to the board,
+// even to the holder of the todo it produced.
+func TestTenancyBoardHidesOwnerlessEvents(t *testing.T) {
+	s, ctx := testStore(t)
+	humanA, epA, _, _ := tenants(t, s, ctx)
+	a := seedOwnedTodo(t, s, ctx, epA, "iso-ownerless-board", "A")
+	if a.EventID == nil {
+		t.Fatal("fixture: seeded todo has no event")
+	}
+	// Positive control: owned, it is on A's board.
+	if _, err := s.EventByID(ctx, humanA, *a.EventID); err != nil {
+		t.Fatalf("A reading its owned event = %v", err)
+	}
+
+	if _, err := s.pool.Exec(ctx, `UPDATE events SET endpoint_id = NULL WHERE id = $1`, *a.EventID); err != nil {
+		t.Fatalf("orphan event: %v", err)
+	}
+	if _, err := s.EventByID(ctx, humanA, *a.EventID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("owner-less event on A's board = %v, want ErrNotFound", err)
+	}
+	evs, err := s.RecentEvents(ctx, humanA, 50)
+	if err != nil {
+		t.Fatalf("A's feed: %v", err)
+	}
+	for _, e := range evs {
+		if e.ID == *a.EventID {
+			t.Fatalf("owner-less event %d is in A's feed", e.ID)
+		}
+	}
+	if stats, err := s.BoardStats(ctx, humanA); err != nil || stats.EventsPerMin != 0 {
+		t.Fatalf("A's LIVE rate = %d (%v), want 0", stats.EventsPerMin, err)
+	}
+}

@@ -201,7 +201,14 @@ func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool,
 // onto the todo. On success it returns the event id, the todo, and whether a NEW todo was created
 // (false = idempotent duplicate). Governing: SPEC-0002/0004 REQ atomic ingestion — event and todo
 // commit together or not at all.
+//
+// A delivery with no webhook and no explicit owner is owned by its one target endpoint, exactly as
+// an operator push records it, so it never lands owner-less (and invisible) by omission.
+// Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads".
 func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoParams) (int64, Todo, bool, error) {
+	if e.EndpointID == "" && e.WebhookID == "" {
+		e.EndpointID = p.EndpointID
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, Todo{}, false, err
