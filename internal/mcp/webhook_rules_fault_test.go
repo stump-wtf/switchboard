@@ -42,6 +42,12 @@ func TestWebhookRuleSaveRefusesFaultsOnRecentDeliveries(t *testing.T) {
 	ctx, f, open := ruleSessions(t)
 	cs, _ := open("A")
 	var out webhookRulesOut
+	// The seeded deliveries carry no sender, so they reach the rules only under allow_all (the
+	// migrated shape); under the fixture's empty list the gate would hold them and the dry-run would
+	// rightly skip them (TestWebhookRuleSaveDryRunSkipsHeldDeliveries).
+	if _, err := f.st.SetWebhookTrustedActors(ctx, f.webhookA, f.epA1, []byte(`{"allow_all":true}`)); err != nil {
+		t.Fatalf("set trust: %v", err)
+	}
 
 	// A number plus a string faults. With no stored deliveries there is nothing to dry-run against,
 	// so the save goes through.
@@ -144,4 +150,44 @@ func TestTestWebhookRulesReportsFaultedAndEventsFilter(t *testing.T) {
 		t.Fatalf("routed filter = %+v, want event %d", list.Events, routed)
 	}
 	callErr(t, ctx, cs, "list_webhook_events", map[string]any{"disposition": "sideways"}, codeInvalidArgument)
+}
+
+// The save-time dry-run checks only deliveries the trust gate would pass today, because only those
+// reach the rules on live traffic. An outsider's held deliveries, however many and however built to
+// fault, never refuse the owner's save, and a flood of them does not push the owner's trusted traffic
+// out of the checked window: a trusted delivery behind more than a window of held ones still refuses
+// a rule that faults on it. Governing: SPEC-0026 REQ-3, REQ-5.
+func TestWebhookRuleSaveDryRunSkipsHeldDeliveries(t *testing.T) {
+	ctx, f, open := ruleSessions(t)
+	cs, _ := open("A")
+	if _, err := f.st.SetWebhookTrustedActors(ctx, f.webhookA, f.epA1, []byte(`{"logins":["joestump"],"match":"sender"}`)); err != nil {
+		t.Fatalf("set trust: %v", err)
+	}
+	// Oldest: one trusted delivery on which .m faults. Then more than a full window of mallory's
+	// held deliveries, on which .n faults.
+	trusted := seedStoredEvent(t, f, "trusted", `{"sender":{"login":"JoeStump"},"n":1,"m":"x"}`, "")
+	held := make([]int64, 0, dryRunEvents+10)
+	for i := range dryRunEvents + 10 {
+		held = append(held, seedStoredEvent(t, f, "held-"+strconv.Itoa(i),
+			`{"sender":{"login":"mallory"},"n":"a","m":1}`, store.DispositionFaulted))
+	}
+
+	var out webhookRulesOut
+	callOK(t, ctx, cs, "add_webhook_rule", map[string]any{"webhook_id": f.webhookA, "id": "on-n",
+		"expr": `.payload.n + 1 > 1`, "action": map[string]any{"queue": "reviews"}}, &out)
+	if len(out.Rules) != 1 || out.Rules[0].ID != "on-n" {
+		t.Fatalf("rules = %+v, want on-n saved: it faults only on held deliveries", out.Rules)
+	}
+	callOK(t, ctx, cs, "remove_webhook_rule", map[string]any{"webhook_id": f.webhookA, "rule_id": "on-n"}, &out)
+
+	msg := callErr(t, ctx, cs, "add_webhook_rule", map[string]any{"webhook_id": f.webhookA, "id": "on-m",
+		"expr": `.payload.m + 1 > 1`, "action": map[string]any{"queue": "reviews"}}, codeInvalidArgument)
+	if !strings.Contains(msg, "on-m") || !strings.Contains(msg, "events "+strconv.FormatInt(trusted, 10)) {
+		t.Fatalf("refusal %q, want rule on-m on the trusted event %d", msg, trusted)
+	}
+	for _, id := range held {
+		if strings.Contains(msg, strconv.FormatInt(id, 10)) {
+			t.Fatalf("refusal %q names held event %d", msg, id)
+		}
+	}
 }
