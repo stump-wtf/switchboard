@@ -23,6 +23,9 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   history, newest first (`attempts_limit`, default 20, maximum 50). `list_todos` implies it, so
   existing endpoints get it without a re-vend. A foreign todo, or one outside the granted queues,
   answers `not_found` exactly as an unknown id does. (#326)
+- **Attempt history on the Board.** The todo drawer lists each attempt, newest first: who claimed
+  it, when, how it ended, and a "died" marker with the last heartbeat when the lease lapsed with
+  no report. It updates live while open. The A2UI todo detail lists the same history. (#329)
 
 ## [0.3.0] - 2026-09-22
 
