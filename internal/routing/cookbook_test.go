@@ -263,8 +263,16 @@ func TestRoutingCookbook(t *testing.T) {
 	recipes := loadCookbook(t)
 	cases := cookbookCases()
 	for name := range recipes {
+		if _, dedicated := dedicatedRecipeTests[name]; dedicated {
+			continue
+		}
 		if len(cases[name]) == 0 {
 			t.Errorf("cookbook recipe %q has no test cases", name)
+		}
+	}
+	for name := range dedicatedRecipeTests {
+		if _, ok := recipes[name]; !ok {
+			t.Errorf("%s tests cookbook recipe %q, which the cookbook no longer publishes", dedicatedRecipeTests[name], name)
 		}
 	}
 	sb := testSandbox(t)
@@ -299,6 +307,226 @@ func TestRoutingCookbook(t *testing.T) {
 				}
 				if child := sb.Route(context.Background(), cfg, g, in); !reflect.DeepEqual(child, got) {
 					t.Errorf("%s: sandbox decision differs from in-process:\n got %+v\nwant %+v", c.name, child, got)
+				}
+			}
+		})
+	}
+}
+
+// dedicatedRecipeTests names cookbook recipes whose behaviour needs more than cookbookCases can say
+// (a trust gate, a different grant), each with the test that exercises it instead.
+var dedicatedRecipeTests = map[string]string{
+	"public-mirror-intake": "TestPublicMirrorRecipe",
+}
+
+// ---- Outside intake from the public GitHub mirrors (SPEC-0026 REQ-12) ------------------------
+//
+// The recipe is security guidance, so it runs here exactly as the receiver runs it: the trust list
+// from the page's create_webhook block gates each delivery first (untrusted: quarantined, no rule
+// runs), and only then do the page's rules route it, in-process and through the sandbox child.
+// Deliveries are recorded mirror payloads under testdata/mirror/, with identifying fields replaced
+// (the outsider's login and ids, delivery and hook ids, the signature); variants a case needs (a
+// size/M label, an unmapped mirror, an outsider labeling) are edits of those recordings.
+//
+// Governing: SPEC-0026 REQ-12 "Public Mirror Intake Recipe" (scenario "Recipe test"), REQ-5, REQ-10;
+// design.md "Recipe (docs)", "Recipe tests use recorded mirror payloads"; ADR-0031.
+//
+// @joestump-agent 09/25/2026 - Added for #392.
+
+var cookbookCreateBlock = regexp.MustCompile("(?s)```json title=\"create_webhook · ([a-z0-9-]+)\"\\n(.*?)\\n```")
+
+// loadCookbookTrustedActors parses the recipe's create_webhook block into the stored trust list.
+func loadCookbookTrustedActors(t *testing.T, name string) (string, TrustedActors) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.FromSlash(cookbookPath))
+	if err != nil {
+		t.Fatalf("read cookbook: %v", err)
+	}
+	for _, m := range cookbookCreateBlock.FindAllStringSubmatch(string(raw), -1) {
+		if m[1] != name {
+			continue
+		}
+		var body struct {
+			SourceType    string              `json:"source_type"`
+			TargetQueue   string              `json:"target_queue"`
+			TrustedActors *TrustedActorsInput `json:"trusted_actors"`
+		}
+		dec := json.NewDecoder(strings.NewReader(m[2]))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			t.Fatalf("create_webhook · %s is not valid create_webhook JSON: %v", name, err)
+		}
+		if body.TrustedActors == nil {
+			t.Fatalf("create_webhook · %s sets no trusted_actors; the recipe depends on them", name)
+		}
+		ta, err := ParseTrustedActors(body.SourceType, *body.TrustedActors)
+		if err != nil {
+			t.Fatalf("create_webhook · %s trusted_actors refused: %v", name, err)
+		}
+		return body.SourceType, ta
+	}
+	t.Fatalf("no create_webhook · %s block in the cookbook", name)
+	return "", TrustedActors{}
+}
+
+// mirrorSample loads a recorded mirror delivery, applying edit (if any) to its decoded body.
+func mirrorSample(t *testing.T, file string, edit func(body map[string]any)) recordedSample {
+	t.Helper()
+	s := loadRecorded(t, filepath.Join("testdata", "mirror", file))
+	if edit != nil {
+		var body map[string]any
+		if err := json.Unmarshal(s.Body, &body); err != nil {
+			t.Fatalf("decode %s: %v", file, err)
+		}
+		edit(body)
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encode %s: %v", file, err)
+		}
+		s.Body = b
+	}
+	return s
+}
+
+// mirrorGrant: the lane worker (epB) is scoped to the lanes, the owner only to its inbox.
+func mirrorGrant() Grant {
+	return Grant{
+		TargetQueue:    "inbox",
+		Queues:         []string{"inbox", "lane-s", "lane-m"},
+		Endpoints:      []string{owner, epB},
+		EndpointQueues: map[string][]string{owner: {"inbox"}, epB: {"lane-s", "lane-m"}},
+	}
+}
+
+// deliverThroughGate runs one delivery the way the self-managed receiver does: trust gate, then rules.
+func deliverThroughGate(r Router, cfg Config, g Grant, source string, ta TrustedActors, s recordedSample) (Decision, EnvelopeInput) {
+	h := http.Header{}
+	for k, v := range s.Headers {
+		h.Set(k, v)
+	}
+	body := []byte(s.Body)
+	in := EnvelopeInput{
+		Source: source, Kind: EventKind(source, h.Get, body), WebhookID: "wh-mirror", TrustMode: "signed", Verified: true,
+		ContentType: h.Get("Content-Type"), Headers: s.Headers, Body: body, Actor: EvaluateTrust(source, ta, body),
+	}
+	if in.Actor != nil && !in.Actor.IsTrusted() {
+		return UntrustedDecision(in.Actor), in
+	}
+	return r.Route(context.Background(), cfg, g, in), in
+}
+
+func TestPublicMirrorRecipe(t *testing.T) {
+	const recipe = "public-mirror-intake"
+	cfg, ok := loadCookbook(t)[recipe]
+	if !ok {
+		t.Fatalf("the cookbook no longer publishes %q", recipe)
+	}
+	source, ta := loadCookbookTrustedActors(t, recipe)
+	if source != "github" || ta.AllowAll || ta.Match != MatchSender || len(ta.Logins) == 0 {
+		t.Fatalf("recipe webhook = %s %+v, want a github webhook trusting a login list on the sender", source, ta)
+	}
+	g := mirrorGrant()
+	if err := Validate(cfg, g); err != nil {
+		t.Fatalf("published recipe does not save: %v", err)
+	}
+	if cfg.Default == nil || !cfg.Default.Quarantine {
+		t.Fatalf("default_action = %+v, want {\"quarantine\": true}: everything unanticipated waits for a human", cfg.Default)
+	}
+
+	setLabels := func(label string, names ...string) func(map[string]any) {
+		return func(b map[string]any) {
+			ls := make([]any, 0, len(names))
+			for _, n := range names {
+				ls = append(ls, map[string]any{"name": n})
+			}
+			b["issue"].(map[string]any)["labels"] = ls
+			b["label"] = map[string]any{"name": label}
+		}
+	}
+	const (
+		held     = "held by the trust gate"
+		heldRule = "held by default_action"
+		dropped  = "dropped"
+		routed   = "routed"
+	)
+	cases := []struct {
+		name, file string
+		edit       func(map[string]any)
+		want       string
+		queue      string // routed: the lane
+		ruleID     string // routed or dropped: the deciding rule
+	}{
+		{name: "an outsider's issues.opened is quarantined", file: "issues-opened-outsider.json", want: held},
+		{name: "an outsider's issue_comment.created is quarantined", file: "issue-comment-created-outsider.json", want: held},
+		{name: "a maintainer's size/S label promotes the outsider's issue to a lane", file: "issues-labeled-maintainer.json",
+			want: routed, queue: "lane-s", ruleID: "switchboard-s"},
+		{name: "a maintainer's size/M label goes to lane-m", file: "issues-labeled-maintainer.json",
+			edit: setLabels("size/M", "bug", "size/M"), want: routed, queue: "lane-m", ruleID: "switchboard-m"},
+		{name: "a maintainer's own comment has no issue subject and is dropped on purpose", file: "issue-comment-created-maintainer.json",
+			want: dropped, ruleID: "not-issue"},
+		{name: "the hook's ping from a maintainer is dropped", file: "issue-comment-created-maintainer.json",
+			edit: func(b map[string]any) {
+				for k := range b {
+					if k != "sender" {
+						delete(b, k)
+					}
+				}
+				b["zen"], b["hook_id"] = "Keep it logically awesome.", 561209001
+			}, want: dropped, ruleID: "not-issue"},
+		{name: "an outsider cannot promote by labeling", file: "issues-labeled-maintainer.json",
+			edit: func(b map[string]any) { b["sender"] = map[string]any{"login": "outside-reporter", "id": 9200001} }, want: held},
+		{name: "a trusted non-size label waits in quarantine", file: "issues-labeled-maintainer.json",
+			edit: setLabels("bug", "bug"), want: heldRule},
+		{name: "a labeled issue on a mirror with no rules waits in quarantine", file: "issues-labeled-maintainer.json",
+			edit: func(b map[string]any) { b["repository"].(map[string]any)["full_name"] = "stump-wtf/unmapped" }, want: heldRule},
+		{name: "a maintainer closing an issue waits in quarantine", file: "issues-labeled-maintainer.json",
+			edit: func(b map[string]any) { b["action"] = "closed"; delete(b, "label") }, want: heldRule},
+	}
+	sb := testSandbox(t)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := mirrorSample(t, c.file, c.edit)
+			got, in := deliverThroughGate(InProcess{}, cfg, g, source, ta, s)
+			if child, _ := deliverThroughGate(sb, cfg, g, source, ta, s); !reflect.DeepEqual(child, got) {
+				t.Fatalf("sandbox decision differs from in-process:\n got %+v\nwant %+v", child, got)
+			}
+			if len(got.Trace.Faults) > 0 || got.Faulted {
+				t.Fatalf("rules faulted: %+v", got.Trace.Faults)
+			}
+			switch c.want {
+			case held:
+				if !got.Untrusted || got.Disposition() != DispositionQuarantined || got.QuarantineReason() != QuarantineUntrustedActor ||
+					got.Trace.Stage != StageTrustGate {
+					t.Fatalf("decision = %+v, want quarantined by the trust gate", got)
+				}
+			case heldRule:
+				if !got.Quarantine || got.QuarantineReason() != QuarantineRuleAction || got.Trace.Stage != StageDefault {
+					t.Fatalf("decision = %+v, want held by the default quarantine action", got)
+				}
+			case dropped:
+				if !got.Drop || got.Trace.RuleID != c.ruleID {
+					t.Fatalf("decision = %+v, want dropped by %s", got, c.ruleID)
+				}
+			case routed:
+				if got.Queue != c.queue || !slices.Equal(got.Endpoints, []string{epB}) || !got.Once || !got.WorkOrder ||
+					got.Trace.RuleID != c.ruleID {
+					t.Fatalf("decision = %+v, want once to %s on the lane worker, with a work order, by %s", got, c.queue, c.ruleID)
+				}
+				// The work order names the mirror, the canonical tracker (the rule name) and the
+				// outsider's authorship: promotion never launders the text.
+				wo := BuildWorkOrder(got, in, SubjectOf(source, s.Headers, s.Body))
+				if wo.Subject == nil || wo.Subject.Repo != "stump-wtf/switchboard" || wo.Subject.Number != 512 ||
+					wo.Subject.Author != "outside-reporter" {
+					t.Fatalf("work order subject = %+v", wo.Subject)
+				}
+				if wo.AuthorizedBy.RuleName != "canonical tracker: stump.wtf/switchboard" {
+					t.Fatalf("work order authorized_by = %+v, want the rule naming the canonical tracker", wo.AuthorizedBy)
+				}
+				if wo.AuthorTrusted == nil || *wo.AuthorTrusted {
+					t.Fatalf("work order author_trusted = %v, want false: an outsider wrote the issue", wo.AuthorTrusted)
+				}
+				if a := in.Actor; a == nil || a.SenderTrusted == nil || !*a.SenderTrusted {
+					t.Fatalf(".actor = %+v, want a trusted sender", a)
 				}
 			}
 		})

@@ -1,0 +1,41 @@
+{
+  "source": "github",
+  "headers": {
+    "Accept": "*/*",
+    "Content-Type": "application/json",
+    "User-Agent": "GitHub-Hookshot/2d5e4a1",
+    "X-Github-Delivery": "5b2c1d30-9a30-11f0-8e1c-5b1f2e3d4c03",
+    "X-Github-Event": "issue_comment",
+    "X-Github-Hook-Id": "561209001",
+    "X-Github-Hook-Installation-Target-Type": "organization",
+    "X-Hub-Signature-256": "«redacted»"
+  },
+  "body": {
+    "action": "created",
+    "issue": {
+      "url": "https://api.github.com/repos/stump-wtf/switchboard/issues/512",
+      "html_url": "https://github.com/stump-wtf/switchboard/issues/512",
+      "id": 3500000512,
+      "number": 512,
+      "title": "list_todos returns an empty page after a restart",
+      "user": {"login": "outside-reporter", "id": 9200001, "type": "User"},
+      "labels": [
+        {"id": 9300000001, "name": "bug", "color": "d73a4a", "default": true}
+      ],
+      "state": "open",
+      "comments": 1,
+      "author_association": "NONE"
+    },
+    "comment": {
+      "id": 3310000512,
+      "html_url": "https://github.com/stump-wtf/switchboard/issues/512#issuecomment-3310000512",
+      "body": "Still happening on the latest image. Please label this size/S so an agent picks it up.",
+      "user": {"login": "outside-reporter", "id": 9200001, "type": "User"},
+      "created_at": "2026-09-24T11:40:02Z",
+      "author_association": "NONE"
+    },
+    "repository": {"id": 998800001, "name": "switchboard", "full_name": "stump-wtf/switchboard", "private": false, "html_url": "https://github.com/stump-wtf/switchboard", "owner": {"login": "stump-wtf", "id": 9900001, "type": "Organization"}},
+    "organization": {"login": "stump-wtf", "id": 9900001},
+    "sender": {"login": "outside-reporter", "id": 9200001, "type": "User"}
+  }
+}

@@ -43,6 +43,11 @@ lives on the webhook, not in the rules, so a rule edit can never remove it.
 - `generic`, `stripe` and `slack` webhooks refuse `trusted_actors`. A `generic` body is unsigned,
   so anyone holding the URL could claim to be anyone.
 
+The cookbook's
+[Outside intake from the public GitHub mirrors](/guides/routing-cookbook#outside-intake-from-the-public-github-mirrors)
+puts all of this together for a repository anyone can file issues on: outsiders wait in quarantine,
+and a maintainer's label promotes their report into a lane.
+
 > **Upgrading:** every `github`, `gitea` and `cairn` webhook that existed before the trust gate was
 > migrated to `{"allow_all": true}`, so it routes exactly as before. Replace it with a list:
 > `set_trusted_actors {"webhook_id": "…", "trusted_actors": {"logins": ["you"], "match": "sender"}}`.
