@@ -395,7 +395,8 @@ func scopeBullets(queues, verbs []string) []string {
 	}
 
 	var bullets []string
-	if has("list_todos") {
+	// get_todo reads the same rows list_todos lists (SPEC-0034 REQ-8), so either earns the read line.
+	if has("list_todos") || has("get_todo") {
 		bullets = append(bullets, "read todos on "+strings.Join(queues, " · "))
 	}
 	// The lease-bound lifecycle verbs (everything on the drain surface past reading).

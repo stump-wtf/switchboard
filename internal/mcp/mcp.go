@@ -106,6 +106,8 @@ type ToolStore interface {
 	HeartbeatTodoWith(ctx context.Context, endpointID, id, owner string, ttl time.Duration, tokenHash []byte) (store.Todo, error)
 	CompleteTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error)
 	FailTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error)
+	// TodoAttempts is get_todo's history read (SPEC-0034 REQ-8, REQ-10): endpoint-scoped, newest first.
+	TodoAttempts(ctx context.Context, endpointID, id string, limit int) ([]store.Attempt, int, int, error)
 	ListEventHistory(ctx context.Context, f store.EventHistoryFilter) ([]store.EventHistoryItem, error)
 	EventHistoryByID(ctx context.Context, id int64) (store.EventHistoryDetail, error)
 	// SPEC-0006 webhook self-management (webhooks.go): switchboard mints and HOLDS the signing

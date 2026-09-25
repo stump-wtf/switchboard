@@ -51,6 +51,8 @@ type fakeStore struct {
 	// fences holds the open attempt's lease-token hash by todo id (SPEC-0034 REQ-6); absent is
 	// unfenced.
 	fences map[string][]byte
+	// attempts is each todo's seeded attempt history, newest first (SPEC-0034; get_todo reads it).
+	attempts map[string][]store.Attempt
 }
 
 // RingOnAttach hands out attachRings once. Deliberately ignores failErr: a stream open in a test
@@ -74,6 +76,7 @@ func newFakeStore() *fakeStore {
 		webhookSecrets: map[string]string{},
 		settings:       map[string]string{},
 		fences:         map[string][]byte{},
+		attempts:       map[string][]store.Attempt{},
 	}
 }
 
@@ -375,6 +378,25 @@ func (f *fakeStore) fenceMiss(endpointID, id string, hash []byte) bool {
 	return !bytes.Equal(f.fences[id], hash)
 }
 
+// TodoAttempts mirrors store.TodoAttempts over the seeded history: endpoint-scoped, a foreign or
+// unknown id is ErrNotFound, the limit is clamped to 20/50, and total counts every seeded attempt.
+func (f *fakeStore) TodoAttempts(_ context.Context, endpointID, id string, limit int) ([]store.Attempt, int, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return nil, 0, 0, f.failErr
+	}
+	if _, ok := f.scopedTodo(endpointID, id); !ok {
+		return nil, 0, 0, store.ErrNotFound
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	limit = min(limit, 50)
+	all := f.attempts[id]
+	return append([]store.Attempt(nil), all[:min(limit, len(all))]...), len(all), 0, nil
+}
+
 // putTodo seeds a todo row.
 func (f *fakeStore) putTodo(t store.Todo) {
 	f.mu.Lock()
@@ -592,7 +614,8 @@ func TestHandshake(t *testing.T) {
 	}
 
 	// tools/list advertises exactly the endpoint's allowlisted verbs (SPEC-0014 REQ "Agent Tool
-	// Surface over MCP") — this endpoint was vended with list_todos + claim only.
+	// Surface over MCP") — this endpoint was vended with list_todos + claim only, and list_todos
+	// implies get_todo (SPEC-0034 REQ-8).
 	tools, err := cs.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
@@ -602,7 +625,7 @@ func TestHandshake(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	if want := []string{"claim", "list_todos"}; !slices.Equal(names, want) {
+	if want := []string{"claim", "get_todo", "list_todos"}; !slices.Equal(names, want) {
 		t.Fatalf("advertised tools = %v, want %v", names, want)
 	}
 

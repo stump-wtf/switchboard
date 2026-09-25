@@ -66,6 +66,15 @@ func TestScopeBulletsNeverAdvertiseBeyondScope(t *testing.T) {
 		t.Errorf("bullets %q name verbs outside the stored scope", wide)
 	}
 
+	// get_todo alone earns the read line, and names no verb beyond it (SPEC-0034 REQ-8).
+	if got := scopeBullets([]string{"ci"}, []string{"get_todo"}); len(got) != 1 || got[0] != "read todos on ci" {
+		t.Fatalf("get_todo-only bullets = %q, want exactly the read line", got)
+	}
+	// ...and beside list_todos it adds nothing: one read line, not two.
+	if got := scopeBullets([]string{"ci"}, []string{"list_todos", "get_todo"}); len(got) != 1 {
+		t.Fatalf("list_todos+get_todo bullets = %q, want one read line", got)
+	}
+
 	// A verb outside every known family renders verbatim, never embellished.
 	odd := scopeBullets([]string{"q"}, []string{"future_verb"})
 	if len(odd) != 1 || odd[0] != "future_verb" {
