@@ -90,7 +90,7 @@ func TestFailFriendActionMapsStoreErrors(t *testing.T) {
 	}{
 		{store.ErrNotFound, http.StatusNotFound, "not found"},
 		{store.ErrInvalidTransition, http.StatusConflict, "conflict"},
-		{store.ErrScopeExceedsRequest, http.StatusBadRequest, "granted scope exceeds requested"},
+		{store.ErrScopeExceedsRequest, http.StatusBadRequest, "granted scope exceeds the request or what a friend may be granted"},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
