@@ -253,6 +253,38 @@ func TestEnvelopeActorIsReadableAndUnforgeable(t *testing.T) {
 	if woPlain := BuildWorkOrder(Decision{Queue: "forge"}, EnvelopeInput{Source: "github", Body: body}, nil); woPlain.AuthorTrusted != nil {
 		t.Fatalf("ungated work order author_trusted = %v, want absent", *woPlain.AuthorTrusted)
 	}
+
+	// On the wire (REQ-10: a work order from a delivery with .actor MUST carry author_trusted): false
+	// on a list, null under allow_all, and absent only where there is no .actor at all.
+	allowAll := EnvelopeInput{Source: "github", Body: body,
+		Actor: EvaluateTrust("github", mustParse(t, "github", `{"allow_all":true}`), body)}
+	for _, c := range []struct {
+		name string
+		in   EnvelopeInput
+		want string // the author_trusted member, or "" for absent
+	}{
+		{"list", in, `"author_trusted":false`},
+		{"allow_all", allowAll, `"author_trusted":null`},
+		{"no actor", EnvelopeInput{Source: "generic", Body: body}, ""},
+	} {
+		raw, err := json.Marshal(BuildWorkOrder(Decision{Queue: "forge"}, c.in, nil))
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", c.name, err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("%s: %s: %v", c.name, raw, err)
+		}
+		v, present := m["author_trusted"]
+		switch {
+		case c.want == "" && present:
+			t.Fatalf("%s: work order %s carries author_trusted, want it absent", c.name, raw)
+		case c.want != "" && (!present || `"author_trusted":`+string(v) != c.want):
+			t.Fatalf("%s: work order %s, want %s", c.name, raw, c.want)
+		case m["authority"] == nil || m["lane"] == nil:
+			t.Fatalf("%s: work order %s lost its other fields", c.name, raw)
+		}
+	}
 }
 
 // .actor survives the trip through the sandbox child: the parent's verdict is what rules see there.
