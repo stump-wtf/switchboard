@@ -271,6 +271,12 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 		}
 		if out.TrustedActors != nil {
 			out.Warning = trustWarning(*out.TrustedActors)
+			// Endpoint scope is immutable (SPEC-0007): an endpoint vended before the trust verbs
+			// existed cannot call them, so the empty-list advice to use set_trusted_actors would be a
+			// dead end. Say what does work. Governing: SPEC-0026 REQ-5.
+			if out.Warning == trustEmptyWarning && !hasScope(ep.ScopeVerbs, "set_trusted_actors") {
+				out.Warning += ". " + trustNoSetVerbWarning
+			}
 		}
 		// Reveal the secret exactly once (signed only). It is returned solely here; every later read
 		// (list_webhooks) omits it.

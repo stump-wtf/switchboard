@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
@@ -59,6 +61,38 @@ func (f *fakeStore) SetWebhookTrustedActors(_ context.Context, id, endpointID st
 
 var trustVerbs = []string{"create_webhook", "list_webhooks", "set_trusted_actors", "clear_trusted_actors"}
 
+// An endpoint vended before the trust verbs existed holds create_webhook but not set_trusted_actors
+// (endpoint scope never widens, SPEC-0007). Its empty-list warning must not end at a verb it cannot
+// call: it says to recreate the webhook with trusted_actors or re-vend, and recreating works.
+func TestCreateWebhookWarnsWhenTrustVerbsAreNotGranted(t *testing.T) {
+	pool, ctx := routeTestPool(t)
+	f := newRouteFixture(t, ctx, pool)
+	epID, token := mustEndpoint(t, ctx, f.st, f.agentA1, "trust-old-99999999", []string{"create_webhook", "list_webhooks", "delete_webhook"})
+	if _, err := pool.Exec(ctx, `UPDATE endpoints SET webhook_max = 10,
+		webhook_source_types = ARRAY['github'], webhook_queues = ARRAY['reviews'] WHERE id = $1`, epID); err != nil {
+		t.Fatalf("set ceiling: %v", err)
+	}
+	cs := routeSession(t, ctx, f.st, "trust-old-99999999", token)
+
+	var created webhookOut
+	callOK(t, ctx, cs, "create_webhook", map[string]any{"source_type": "github", "target_queue": "reviews"}, &created)
+	if !strings.Contains(created.Warning, "quarantined") || !strings.Contains(created.Warning, "not granted set_trusted_actors") ||
+		!strings.Contains(created.Warning, "re-vend") {
+		t.Fatalf("warning = %q, want the empty-list warning plus the recreate/re-vend path", created.Warning)
+	}
+	// The verb really is out of reach for this endpoint.
+	if res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "set_trusted_actors", Arguments: map[string]any{
+		"webhook_id": created.WebhookID, "trusted_actors": map[string]any{"logins": []string{"joestump"}}}}); err == nil && !res.IsError {
+		t.Fatal("set_trusted_actors succeeded on an endpoint that was not granted it")
+	}
+	var recreated webhookOut
+	callOK(t, ctx, cs, "create_webhook", map[string]any{"source_type": "github", "target_queue": "reviews",
+		"trusted_actors": map[string]any{"logins": []string{"joestump"}}}, &recreated)
+	if recreated.TrustedActors == nil || len(recreated.TrustedActors.Logins) != 1 || recreated.Warning != "" {
+		t.Fatalf("recreate with a list = %+v, want the list and no warning", recreated)
+	}
+}
+
 func TestTrustedActorVerbs(t *testing.T) {
 	pool, ctx := routeTestPool(t)
 	f := newRouteFixture(t, ctx, pool)
@@ -76,6 +110,9 @@ func TestTrustedActorVerbs(t *testing.T) {
 	if created.TrustedActors == nil || created.TrustedActors.AllowAll || len(created.TrustedActors.Logins) != 0 ||
 		created.TrustedActors.Match != routing.MatchSender || !strings.Contains(created.Warning, "quarantined") {
 		t.Fatalf("create without a list = %+v, want an empty list and the quarantine warning", created)
+	}
+	if strings.Contains(created.Warning, "re-vend") {
+		t.Fatalf("warning %q sends an endpoint that holds set_trusted_actors to re-vend", created.Warning)
 	}
 	var listed webhookOut
 	callOK(t, ctx, cs, "create_webhook", map[string]any{"source_type": "gitea", "target_queue": "reviews",
