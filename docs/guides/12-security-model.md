@@ -33,19 +33,13 @@ The event history keeps it for later inspection and replay. So treat a payload a
   `get_webhook_event`, `replay_webhook_event`). The web wizard leaves them unchecked; a CLI vend
   includes them.
 
-:::warning Known limitation: event history is not per-user yet
-
-The event-history tools and the recent-events resource read the **whole instance's** deliveries,
-not only the caller's. `list_webhook_events` filters by provider, event type, and time but not by
-owner; `get_webhook_event` returns any event by id; and `replay_webhook_event` can re-send any of
-them. On an instance with more than one user, an endpoint granted these tools can read, and replay,
-every other user's deliveries.
-
-Until this is fixed, **don't grant `list_webhook_events`, `get_webhook_event`, or
-`replay_webhook_event` to any endpoint whose holder shouldn't see every user's deliveries.** A fix
-that scopes event history to its owner is planned, and this note goes away when it ships.
-
-:::
+- **Event history is yours alone.** Every stored delivery records the endpoint that owns it: the
+  webhook's endpoint, or the endpoint an operator pushed to. The event-history tools and the
+  `switchboard://events/recent` resource return only deliveries owned by one of your endpoints, and
+  another user's event id answers `not_found`, exactly like an id that doesn't exist. Deleting a
+  webhook keeps its deliveries in your history. Deliveries recorded before owners existed, whose
+  webhook was already deleted, have no provable owner, so no one can read them, and they age out
+  through retention.
 - **`replay_webhook_event` sends a stored payload back out** to a target, so treat it as a
   data-forwarding tool, not just a debugging one.
 
