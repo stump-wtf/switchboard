@@ -25,6 +25,13 @@ package routing
 //	               {provider, action, event_type, repo, number, title, url, state, author, sender,
 //	               labels (names), label (GitHub's changed label, else null), body_size, label_event,
 //	               key} — parsed in Go from the body (subject.go), identical across the two forges
+//	.actor         {sender, author, sender_trusted, author_trusted, trusted}: who acted, parsed in
+//	               Go from the verified body (actor.go), and the trust gate's verdict against the
+//	               webhook's trusted_actors. Names are null when not parsed; every flag is null on a
+//	               source with no actor projection, and the per-actor flags are null under allow_all.
+//	               A payload's own "actor" key lives under .payload and cannot reach it.
+//
+// @joestump-agent 09/25/2026 - Added .actor (ADR-0031, SPEC-0026 REQ-10, #385).
 //
 // @joestump-agent 09/11/2026 - Added .issue and the cairn on_behalf_of/handle fields (ADR-0025); cairn
 // handoffs are described by tags, not a label map.
@@ -54,6 +61,10 @@ type EnvelopeInput struct {
 	ContentType string
 	Headers     map[string]string
 	Body        []byte
+	// Actor is the trust gate's verdict for this delivery (.actor), computed by the receiver or the
+	// dry-run from the webhook's trusted_actors, never by the evaluator. Nil means the gate did not
+	// run: .actor then carries the parsed names with null flags. Governing: SPEC-0026 REQ-10.
+	Actor *ActorTrust `json:",omitempty"`
 }
 
 // Envelope builds the rule input. It uses only the value types gojq accepts (map[string]any,
@@ -76,6 +87,7 @@ func Envelope(in EnvelopeInput) map[string]any {
 		"payload":      payload,
 		"artifact":     nil,
 		"issue":        nil,
+		"actor":        actorEnvelope(in),
 	}
 	if in.Source == SourceCairn {
 		env["artifact"] = cairnArtifact(payload)
