@@ -227,6 +227,12 @@ func (s *Store) GetNotifyHook(ctx context.Context, id, endpointID string) (Notif
 // that REQ-8 auto-disabled (consecutive_failures) is re-enabled with its failure count reset; an
 // operator disable is the human's call and survives a rotation. One conditional UPDATE: another
 // endpoint's or an unknown id affects no row and is ErrNotFound.
+//
+// The store trusts its caller for both inputs, as CreateNotifyHook does. grace is the
+// rotate_notify_hook verb's fixed 24h (notifyhook.RotationGrace, #354); a non-positive grace ends
+// the dual-signing at once. The secret's Standard Webhooks format is guaranteed by
+// notifyhook.MintSecret, its only producer; the store cannot re-check it with
+// notifyhook.DecodeSecret, because the dispatcher in package notifyhook (#358) imports store.
 func (s *Store) RotateNotifyHookSecret(ctx context.Context, id, endpointID, newSecret string, grace time.Duration) (NotifyHook, error) {
 	sealed, err := s.sealHookSecret(newSecret)
 	if err != nil {
