@@ -55,6 +55,11 @@ func FriendGrantable(verbs []string) []string {
 	return out
 }
 
+// ErrNothingGrantable is returned when a friend request names verbs and none of them is one a friend
+// edge may carry (FriendGrantable leaves nothing). Storing it would record a live edge that asks for
+// nothing yet occupies the pair's unique key, so it is refused, matching the A2A intake's 400. F3.
+var ErrNothingGrantable = errors.New("store: no requested verb may be granted to a friend")
+
 // ErrFriendshipInactive is returned when a cross-agent work handoff is attempted against an edge
 // that is not an active friendship — the edge is not approved, or its vended endpoint has been
 // revoked (SPEC-0010 "Work Flows as Todos"; a pending/denied/revoked friendship grants nothing).
@@ -136,9 +141,14 @@ type CreateFriendRequestParams struct {
 // in the key so two tenants' personas sharing a name never collide or learn of each other (F13).
 //
 // Requested verbs a friend edge can never grant are dropped here, so the approver is never shown a
-// webhook or event verb they might believe they are granting (F3).
+// webhook or event verb they might believe they are granting (F3). A request whose verbs are all
+// non-grantable is refused with ErrNothingGrantable rather than stored empty.
 func (s *Store) CreateFriendRequest(ctx context.Context, p CreateFriendRequestParams) (FriendEdge, error) {
+	asked := len(p.RequestedVerbs)
 	p.RequestedVerbs = FriendGrantable(p.RequestedVerbs)
+	if asked > 0 && len(p.RequestedVerbs) == 0 {
+		return FriendEdge{}, ErrNothingGrantable
+	}
 	direction := p.Direction
 	if direction == "" {
 		direction = "outbound"

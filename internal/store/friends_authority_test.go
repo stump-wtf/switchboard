@@ -55,6 +55,28 @@ func TestFriendGrantIsBoundedToCreateForAndDrain(t *testing.T) {
 	}
 }
 
+// A request whose every verb is non-grantable is refused, not stored as an edge that asks for
+// nothing yet holds the pair's live unique key.
+func TestFriendRequestWithNothingGrantableIsRefused(t *testing.T) {
+	s, ctx := testStore(t)
+	target := mustHuman(t, s, ctx, "pocket|f3-none", "Target")
+	_, err := s.CreateFriendRequest(ctx, CreateFriendRequestParams{
+		FromPersona: "x@x", ToPersona: "t@t", ToHuman: target.ID,
+		RequestedVerbs: []string{"set_webhook_rules", "list_webhook_events"},
+	})
+	if !errors.Is(err, ErrNothingGrantable) {
+		t.Fatalf("request for only ungrantable verbs = %v, want ErrNothingGrantable", err)
+	}
+	edges, err := s.ListFriendEdges(ctx, target.ID)
+	if err != nil || len(edges) != 0 {
+		t.Fatalf("refused request left edges %+v (%v)", edges, err)
+	}
+	// The same pair can still ask for something grantable.
+	mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "x@x", ToPersona: "t@t", ToHuman: target.ID, RequestedVerbs: []string{"create_for"},
+	})
+}
+
 // Scenario "Friend requests from different tenants do not collide (F13)": two humans each send from
 // a persona named "reviewer" to the same target persona; both requests exist. The same human's
 // second live request still collides (the anti-flood invariant).

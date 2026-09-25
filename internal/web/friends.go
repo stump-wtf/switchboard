@@ -254,15 +254,23 @@ func remoteHostFromHandle(handle string) string {
 }
 
 // friendCardFromEdge builds one friend card from a store edge. Established (approved) edges show
-// the negotiated (granted) scope; every other state shows the requested scope. The local/remote
+// the negotiated (granted) scope; every other state shows the requested scope (a pending edge's
+// verbs filtered to what a friend may be granted). The local/remote
 // split is direction-aware: an inbound edge's local face is to_persona (the remote requester is
 // from_persona); a locally sent (direction=outgoing) edge inverts that — from_persona is the local
 // agent and to_persona is the remote handle being asked.
 func friendCardFromEdge(e store.FriendEdge) friendCard {
 	group, label := friendGroupForEdge(e.State, e.Direction)
 	intents, queues, negotiated := e.RequestedVerbs, e.RequestedQueues, false
-	if e.State == "approved" {
+	switch e.State {
+	case "approved":
 		intents, queues, negotiated = e.GrantedVerbs, e.GrantedQueues, true
+	case "pending":
+		// A pending edge recorded before F3 may still request webhook or event verbs. The approve
+		// page renders these as pre-checked grant chips, so show only what a friend may be granted:
+		// the approver is never offered a verb that cannot be granted, and the default form submits
+		// a grant the store accepts. Governing: SPEC-0033 REQ "Closing the Audited Surfaces" (F3).
+		intents = store.FriendGrantable(e.RequestedVerbs)
 	}
 	local, remote := e.ToPersona, e.FromPersona
 	if e.Direction == friendDirectionOutgoing {
@@ -471,6 +479,12 @@ func (h *Handler) AddFriend(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			http.Error(w, "a live friend request for this pair already exists", http.StatusConflict)
+			return
+		}
+		if errors.Is(err, store.ErrNothingGrantable) {
+			// Every submitted intent is one a friend can never be granted (F3); the A2A intake
+			// answers the same input with a 400 too.
+			http.Error(w, "none of the requested intents can be granted to a friend", http.StatusBadRequest)
 			return
 		}
 		h.fail(w, err)

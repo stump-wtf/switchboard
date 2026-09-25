@@ -79,6 +79,22 @@ func TestAddFriendValidation(t *testing.T) {
 	}
 }
 
+// TestFriendCardOffersOnlyGrantableVerbsWhilePending: a pending edge recorded before F3 may still
+// request webhook or event verbs; its card (which the approve page renders as pre-checked grant
+// chips) shows only what a friend may be granted, while a denied edge keeps its record as asked.
+func TestFriendCardOffersOnlyGrantableVerbsWhilePending(t *testing.T) {
+	pending := friendCardFromEdge(store.FriendEdge{ID: "e1", State: "pending",
+		RequestedVerbs: []string{"create_for", "set_webhook_rules", "list_webhook_events", "claim"}})
+	if got := strings.Join(pending.Intents, ","); got != "create_for,claim" {
+		t.Fatalf("pending card intents = %q, want create_for,claim", got)
+	}
+	denied := friendCardFromEdge(store.FriendEdge{ID: "e2", State: "denied",
+		RequestedVerbs: []string{"set_webhook_rules"}})
+	if got := strings.Join(denied.Intents, ","); got != "set_webhook_rules" {
+		t.Fatalf("denied card intents = %q, want the request as recorded", got)
+	}
+}
+
 // TestFailFriendActionMapsStoreErrors pins the generic error contract: each friend-edge sentinel
 // maps to a distinguishable status with no internal detail; anything else is a generic 500.
 func TestFailFriendActionMapsStoreErrors(t *testing.T) {
