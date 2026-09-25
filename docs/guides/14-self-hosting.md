@@ -346,6 +346,64 @@ scrape_configs:
 A series appears only once there is something to count. A counter nothing has incremented yet is
 absent rather than zero, because a zero and an unmeasured value look identical once scraped.
 
+### Intake and quarantine series
+
+Rules fail closed, and untrusted deliveries wait in the owner's quarantine (see
+[Route events with jq rules](/guides/routing-rules#quarantine)). Four series watch that path:
+
+| Series | Type | Labels |
+|---|---|---|
+| `switchboard_routing_faults_total` | counter | `cause`: `timeout`, `error`, `compile`, `budget` |
+| `switchboard_quarantine_items_total` | counter | `reason`: `untrusted_actor`, `rule_fault`, `rule_action` |
+| `switchboard_quarantine_resolved_total` | counter | `outcome`: `released`, `discarded`, `expired`; `by`: `human`, `classifier`, `system` |
+| `switchboard_quarantine_oldest_seconds` | gauge | none. It is the age of the oldest held delivery, or `0` when nothing is held. |
+
+`by` says what kind of resolver acted, never which one: a human's id and a classifier's slug stay
+out of the labels. Quarantine is also an ordinary queue in `switchboard_queue_todos`, with
+`queue="quarantine"`, so its depth shows up next to every other queue.
+
+### Alerts
+
+These rules load into Prometheus or vmalert as they are. Switchboard's test suite reads this block
+and evaluates the two queue alerts against the real collector's output. If an expression here stops
+doing what this section says, the build fails.
+
+```yaml title="switchboard-alerts.yaml"
+groups:
+  - name: switchboard
+    rules:
+      - alert: SwitchboardQueueStalled
+        expr: |
+          switchboard_queue_todos{state="pending",queue!="quarantine"} > 0
+            and ignoring(state) switchboard_queue_todos{state="claimed",queue!="quarantine"} == 0
+        for: 30m
+        annotations:
+          summary: "Work is waiting on {{ $labels.queue }} and nothing is claiming it."
+      - alert: SwitchboardQuarantineWaiting
+        expr: switchboard_quarantine_oldest_seconds > 86400
+        for: 15m
+        annotations:
+          summary: "A delivery has waited in quarantine for over a day. Release or discard it."
+      - alert: SwitchboardRoutingFaults
+        expr: increase(switchboard_routing_faults_total[15m]) > 0
+        annotations:
+          summary: "A routing rule faulted ({{ $labels.cause }}). Faulted deliveries are held, not routed."
+      - alert: SwitchboardMetricsCollectorFailing
+        expr: increase(switchboard_metrics_collection_errors_total[10m]) > 0
+        annotations:
+          summary: "The {{ $labels.collector }} collector failed, so its gauges are missing."
+```
+
+- **The liveness alert must exclude `quarantine`.** Nothing ever claims from it: a human or a
+  classifier releases or discards held items, so `claimed` is always `0` there. Without the
+  `queue!="quarantine"` matchers, the alert would fire from the first held delivery until the last
+  one was resolved.
+- **Quarantine gets an age alert instead.** Held items expire after 30 days, or sooner under your
+  retention setting. A day-old item is someone's report that nobody has looked at. Tune the
+  threshold to how often you review the Quarantine view.
+- **A routing fault is always worth a look.** A faulted delivery went nowhere, and a rule that
+  faults on every delivery quietly starves the lane behind it.
+
 ## Where to go next
 
 - [Concepts in five minutes](/getting-started/concepts) — the model your users will work in.
