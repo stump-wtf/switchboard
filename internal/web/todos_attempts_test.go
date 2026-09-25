@@ -97,7 +97,7 @@ func TestDrawerShowsReapedAttemptWithDiedMarkerAndHeartbeat(t *testing.T) {
 		t.Errorf("owner attempt should name the Board claim and keep its summary:\n%s", owner)
 	}
 	i3, i2, i1 := strings.Index(out, `data-sb-attempt="3"`), strings.Index(out, `data-sb-attempt="2"`), strings.Index(out, `data-sb-attempt="1"`)
-	if !(i3 < i2 && i2 < i1) {
+	if i3 > i2 || i2 > i1 {
 		t.Errorf("attempts not newest first: seq3@%d seq2@%d seq1@%d", i3, i2, i1)
 	}
 
@@ -187,7 +187,7 @@ func TestDrawerAttemptsAccessibility(t *testing.T) {
 		t.Fatalf("missing landmark: dialog@%d heading@%d labelled-section@%d live-region@%d list@%d",
 			dialog, heading, section, region, list)
 	}
-	if !(dialog < section && section < heading && heading < region && region < list) {
+	if dialog > section || section > heading || heading > region || region > list {
 		t.Errorf("want dialog > section > heading, then live region > list; got %d %d %d %d %d",
 			dialog, section, heading, region, list)
 	}
