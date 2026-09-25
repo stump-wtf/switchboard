@@ -162,10 +162,14 @@ Switchboard ADR-0039 (attempt history, F-X3) builds its relay loop on.
 
 ### A per-instance bounded queue, with no persistence
 
-**Choice**: a buffered channel of 1024 notifications per instance, drained by a worker pool of 8
-goroutines. Each notification carries its hook row snapshot, which is re-read before each attempt
-so that delete and disable take effect. Retries run inside the worker with `time.Timer`, not by
-re-enqueueing.
+**Choice**: two buffered channels of 1024 per instance, drained by one worker pool of 8
+goroutines. The first holds ready todos waiting to be matched; each carries only the ids, queue,
+attempt, reason and the sender text already cut to its body limit, never the payload, so a full
+queue pins kilobytes rather than the todos' multi-megabyte payloads. Matching turns each todo into
+one delivery job per matching hook on the second channel, so one hook's timeouts and retries never
+hold back a sibling hook's first attempt. The endpoint, its scope, the hook and its secrets are
+re-read before each attempt, so a revoke, a scope shrink, a delete and a disable all stop the next
+attempt. Retries run inside the worker with `time.Timer`, not by re-enqueueing.
 
 **Rationale**: the ADR-0013 contract is that a restart loses hints and nothing else. A persistent
 outbox would turn a hint into a delivery guarantee we have promised no one. It would also add a

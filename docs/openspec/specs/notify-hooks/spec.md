@@ -263,11 +263,14 @@ notification MUST carry exactly these fields:
 ```json
 {"type": "todo.ready", "reason": "created", "todo_id": "td_…", "queue": "inbox",
  "kind": "pull_request", "source": "gitea", "summary": "PR #482 opened in …",
- "endpoint": "<slug>", "attempt": 1, "created_at": "2026-09-22T14:03:11Z"}
+ "endpoint": "<slug>", "attempt": 0, "created_at": "2026-09-22T14:03:11Z"}
 ```
 
 `reason` MUST be `created` or `requeued` (REQ-6). `attempt` MUST be the todo's current attempt
-number. `summary` MUST be the todo's title after the neutralization the channel doorbell applies,
+count: the number of times it has been claimed so far, so `0` on a `created` notification and at
+least `1` on a `requeued` one after a lease expiry. `created_at` MUST be the time this notification
+was made, not the time the todo was created, so each requeue carries a fresh time; a receiver
+deduplicates on `webhook-id`, never on `created_at`. `summary` MUST be the todo's title after the neutralization the channel doorbell applies,
 truncated to 200 characters. `kind` and `source` MUST be omitted when the todo has none.
 
 The body MUST NOT contain any field of the todo's payload, any request headers, the routing trace,
@@ -363,7 +366,10 @@ Switchboard MUST read at most 64 KiB of the response body and then discard it. A
 count as delivered.
 
 A notification MUST have at most 3 attempts, with backoff of about 1 second and then about 5
-seconds, jittered. A network error, a timeout, `408`, `429` or a `5xx` MUST be retried. Any other
+seconds, jittered. A network error, a timeout, `408`, `429` or a `5xx` MUST be retried. A hook host
+that fails to resolve at attempt time is a network error (or a timeout, when the lookup times out)
+and nothing is dialled; only an address the SSRF guard rejects is `rejected_ssrf`, and that is
+never retried. Any other
 status, including every `3xx` and every `4xx` except `408` and `429`, MUST end the notification
 without retry.
 
@@ -386,8 +392,12 @@ The ADR-0013 contract holds: the todo stays `pending` and claimable.
 
 - **GIVEN** the delivery queue on an instance is full
 - **WHEN** another notification is produced
-- **THEN** it is dropped, one warning is logged with the hook id and not the URL, the dropped
-  counter increments, and no todo changes state
+- **THEN** it is dropped, one warning is logged with the hook id (or, when it is dropped before any
+  hook is matched, the endpoint and todo ids) and never the URL, the dropped counter increments,
+  and no todo changes state
+
+A sustained overflow MAY coalesce these warnings to one line per reason per short window, provided
+the line reports how many drops it stands for and every drop is still counted.
 
 ### REQ-8: Hook Health and Auto-Disable
 
