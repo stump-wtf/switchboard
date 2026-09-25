@@ -51,6 +51,9 @@ package mcp
 // @joestump-agent 09/25/2026 - The save-time dry-run skips deliveries the trust gate would hold
 // (SPEC-0026 REQ-5): live traffic never runs rules on them, so an outsider's payload could otherwise
 // refuse the owner's saves. It pages back past them to find 50 that pass (#385 review).
+//
+// @joestump-agent 09/25/2026 - test_webhook_rules reports a held delivery's decision and trace as the
+// receiver records them (the trust gate's), with the rules' outcome moved to rules_would.
 
 import (
 	"context"
@@ -175,7 +178,17 @@ type testWebhookRulesOut struct {
 	Envelope  map[string]any     `json:"envelope,omitempty" jsonschema:"the JSON document the rules evaluated (write expressions against these paths)"`
 	// Governing: SPEC-0026 REQ-5, REQ-10.
 	Actor *routing.ActorTrust `json:"actor,omitempty" jsonschema:"github/gitea/cairn: who acted and the trust gate's verdict against the webhook's trusted_actors (.actor)"`
-	Held  bool                `json:"held,omitempty" jsonschema:"true when the trust gate would hold this delivery before any rule ran; the decision shows what the rules would do with it"`
+	// Held reports the receiver's outcome, not the rules': live traffic records a held delivery with
+	// the trust gate's decision and trace and never runs the rules, so decision and trace say exactly
+	// that, and rules_would carries what the rules would have done had the actor been trusted.
+	Held       bool           `json:"held,omitempty" jsonschema:"true when the trust gate would hold this delivery before any rule ran: decision and trace are then the trust gate's (what live traffic records), and rules_would shows what the rules would do if the actor were trusted"`
+	RulesWould *rulesWouldOut `json:"rules_would,omitempty" jsonschema:"only when held: the decision and trace the rules would produce if the actor were trusted; live traffic never evaluates them for this delivery"`
+}
+
+// rulesWouldOut is what the rules would do with a held delivery, had the trust gate passed it.
+type rulesWouldOut struct {
+	Decision decisionOut   `json:"decision" jsonschema:"where the delivery would go if its actor were trusted"`
+	Trace    routing.Trace `json:"trace" jsonschema:"the routing trace the rules would produce"`
 }
 
 // registerWebhookRuleTools installs the endpoint's allowlisted rule verbs.
@@ -212,7 +225,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "test_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "test_webhook_rules",
-			Description: "Dry-run routing: evaluate the saved rules (or candidate rules) against a sample payload or one of this webhook's stored events, and return the decision, the trace, and the envelope the rules saw. A faulted decision (faulted: true) is blocking: that delivery would be recorded and routed nowhere. Saves nothing."},
+			Description: "Dry-run routing: evaluate the saved rules (or candidate rules) against a sample payload or one of this webhook's stored events, and return the decision, the trace, and the envelope the rules saw. A faulted decision (faulted: true) is blocking: that delivery would be recorded and routed nowhere. On a github, gitea or cairn webhook, a delivery whose actor the trust gate would hold (held: true) reports the gate's decision, exactly as live traffic records it, and rules_would shows what the rules would do if the actor were trusted. Saves nothing."},
 			h.testWebhookRulesTool(ep))
 	}
 }
@@ -391,12 +404,23 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 			// disposition is claimed for it.
 			out.Decision.Disposition = ""
 		}
+		if out.Held {
+			// The receiver never runs the rules on a held delivery: it records the trust gate's
+			// decision and trace (ingest selfmanaged.go). Report exactly that, so an agent reading
+			// decision.disposition sees what live traffic records, and move the rules' hypothetical
+			// outcome aside. No once key or work order: a held delivery claims and mints neither.
+			// Governing: SPEC-0026 REQ-5, REQ-13 "trust gate".
+			held := routing.UntrustedDecision(env.Actor)
+			out.RulesWould = &rulesWouldOut{Decision: out.Decision, Trace: out.Trace}
+			out.Decision = decisionOut{Disposition: held.Disposition(), Faulted: held.Faulted, Fault: held.Fault}
+			out.Trace = held.Trace
+		}
 		subject := routing.SubjectOf(wr.SourceType, env.Headers, env.Body)
-		if d.Once && !d.Drop && !d.Faulted {
+		if d.Once && !d.Drop && !d.Faulted && !out.Held {
 			out.OnceKey = routing.OnceKey(subject, d.Queue)
 			out.Trace.OnceKey = out.OnceKey
 		}
-		if d.WorkOrder && !d.Drop && !d.Faulted {
+		if d.WorkOrder && !d.Drop && !d.Faulted && !out.Held {
 			wo := routing.BuildWorkOrder(d, env, subject)
 			out.WorkOrder = &wo
 		}
