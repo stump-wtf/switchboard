@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -413,6 +414,32 @@ func TestReplayDownstreamNon2xxReported(t *testing.T) {
 	callOK(t, ctx, rig.cs, "replay_webhook_event", map[string]any{"id": 5}, &out)
 	if !out.Delivered || out.ResponseStatus == nil || *out.ResponseStatus != http.StatusInternalServerError {
 		t.Fatalf("replay = %+v, want delivered with status 500", out)
+	}
+}
+
+// A failed POST's error — which replay logs at WARN — carries the underlying cause, never the target
+// URL: a token in the query string must not reach the log. Governing: SPEC-0005 REQ "Replay Safety".
+func TestReplayFailureErrorOmitsTargetURL(t *testing.T) {
+	ctx := testCtx(t)
+	g := newReplayGuard(newScriptedResolver(map[string][][]string{"replay.example": {{publicIP}}}))
+	g.connect = func(_ context.Context, network, _ string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: network, Err: io.ErrUnexpectedEOF}
+	}
+	target, err := url.Parse("https://replay.example/hook?token=s3cr3t-in-query")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered, _, _, err := doReplay(ctx, g.client(), target, []byte(`{}`), http.Header{})
+	if delivered || err == nil {
+		t.Fatalf("doReplay = delivered %v, err %v; want a transport failure", delivered, err)
+	}
+	for _, leak := range []string{"s3cr3t-in-query", "token=", "/hook"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("replay error %q leaks %q", err, leak)
+		}
+	}
+	if !strings.Contains(err.Error(), io.ErrUnexpectedEOF.Error()) {
+		t.Fatalf("replay error %q lost the underlying cause", err)
 	}
 }
 

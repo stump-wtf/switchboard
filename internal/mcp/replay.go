@@ -251,6 +251,14 @@ func doReplay(ctx context.Context, client *http.Client, target *url.URL, payload
 	resp, err := client.Do(req)
 	elapsed = time.Since(start)
 	if err != nil {
+		// The client wraps its failure in a *url.Error whose text carries the full target URL,
+		// query string included, and the caller logs this error. A token-in-URL target must not
+		// reach the log, so keep only the underlying cause; target_host is the one target field
+		// the log carries. Governing: SPEC-0005 REQ "Replay Safety".
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = uerr.Err
+		}
 		return false, nil, elapsed, fmt.Errorf("replay POST: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
