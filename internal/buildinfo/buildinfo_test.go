@@ -47,10 +47,30 @@ func TestResolve(t *testing.T) {
 			want: Info{Version: "v0.3.0"},
 		},
 		{
-			// Scenario "Plain local build": (devel) module, VCS settings present.
-			name: "plain local build: dev plus vcs revision and time",
+			// Scenario "Plain local build": since Go 1.24 a build off a release tag stamps a
+			// pseudo-version, which is reported as it is.
+			name: "plain local build: vcs pseudo-version plus revision and time",
+			read: readFrom(vcsInfo("v0.3.1-0.20260923185201-4369412033b4", rev, when), true),
+			want: Info{Version: "v0.3.1-0.20260923185201-4369412033b4", Commit: rev, Date: when},
+		},
+		{
+			// A modified tree adds +dirty; that is reported too, never hidden.
+			name: "plain local build: dirty tree",
+			read: readFrom(vcsInfo("v0.3.1-0.20260923185201-4369412033b4+dirty", rev, when), true),
+			want: Info{Version: "v0.3.1-0.20260923185201-4369412033b4+dirty", Commit: rev, Date: when},
+		},
+		{
+			// A (devel) module with VCS settings: a build where Go could not derive a version.
+			name: "(devel) module: dev plus vcs revision and time",
 			read: readFrom(vcsInfo("(devel)", rev, when), true),
 			want: Info{Version: "dev", Commit: rev, Date: when},
+		},
+		{
+			// Scenario "Build without VCS information": -buildvcs=false leaves (devel) and no
+			// settings, so a missed -X stamp reports dev (what release.yaml's assertion relies on).
+			name: "-buildvcs=false: dev, no commit or date",
+			read: readFrom(vcsInfo("(devel)", "", ""), true),
+			want: Info{Version: "dev"},
 		},
 		{
 			name:    "partial stamp: missing fields fall back per field",

@@ -21,11 +21,14 @@ import (
 // guardedDirs are scanned relative to this package's directory.
 var guardedDirs = []string{"../mcp", "../web"}
 
-// protocolVersions are identifiers whose literal is the version of an external protocol or schema,
-// not of Switchboard, so they are exempt by name (REQ-1: "Protocol versions … are exempt by name").
+// protocolVersions are identifiers whose literal is the version of something other than
+// Switchboard, so they are exempt by name (REQ-1: protocol versions, and versions of something
+// other than Switchboard, "are exempt by name").
 var protocolVersions = map[string]bool{
 	"a2aProtocolVersion": true, // A2A protocol version the agent card speaks (internal/web/agentcard.go)
-	"cardVersion":        true, // agent-card schema version (internal/web/agentcard.go)
+	// The persona's own version, advertised in its A2A agent card's `version` field
+	// (internal/web/agentcard.go). A persona is not Switchboard, so this is not the build version.
+	"cardVersion": true,
 }
 
 var versionLiteral = regexp.MustCompile(`^v?\d+\.\d+\.\d+`)
