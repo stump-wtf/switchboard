@@ -93,6 +93,10 @@ before saving. If any rule faults on any of them, the save MUST fail with `inval
 keep the previous configuration. The error MUST name each faulting rule id, the event id and the
 cause. A webhook with no stored events MUST skip the dry-run.
 
+On a webhook with a trust gate (REQ-5), the dry-run MUST skip every stored event the gate would hold
+under the current `trusted_actors`, because rules never run on those, and MUST count only events the
+gate passes toward the 50. An event an untrusted actor sent MUST NOT refuse a save.
+
 Every `params` value MUST be a string, a number, a boolean, or a list whose elements are all
 strings or all numbers. Any other shape, including nested objects and mixed lists, MUST be refused
 with `invalid_argument` naming the key.
@@ -154,6 +158,10 @@ Management:
   items.
 
 These verbs MUST join the webhook-management verb family for grants, the vend wizard and consent.
+Endpoint scope stays immutable (SPEC-0007): the upgrade MUST NOT add them to an existing endpoint's
+scope. An endpoint without `set_trusted_actors` gets them by re-vending, and `create_webhook`'s
+empty-list warning MUST tell such an endpoint to recreate the webhook with `trusted_actors` or to
+re-vend.
 A `webhook_id` that another endpoint owns MUST be answered with `not_found`, exactly like an
 unknown id.
 
