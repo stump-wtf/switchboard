@@ -109,14 +109,16 @@ func New(opts ...Option) *Validator {
 // permitted (public) address that is not one of switchboard's own listening addresses. It resolves
 // the host on each call, so calling it immediately before a delivery attempt re-checks the current
 // DNS answer and catches a rebind to a disallowed range. Any non-nil error wraps ErrValidation and
-// carries context; the delivery path MUST treat a non-nil error as fail-closed (do not connect).
+// carries context for the server log; the delivery path MUST treat a non-nil error as fail-closed (do
+// not connect). The context can name a resolved address, so a caller-facing message uses
+// PublicReason(err), never err.Error().
 //
 // It rejects if ANY resolved address is disallowed (not just the first): a host that resolves to both
 // a public and a private address must not be reachable, since Go's dialer may pick any of them.
 func (v *Validator) Validate(ctx context.Context, raw string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return fmt.Errorf("%w: unparseable url: %v", ErrValidation, err)
+		return &refusal{RefusedMalformed, fmt.Sprintf("unparseable url: %v", err)}
 	}
 	scheme := strings.ToLower(u.Scheme)
 	switch scheme {
@@ -124,15 +126,15 @@ func (v *Validator) Validate(ctx context.Context, raw string) error {
 		// always allowed
 	case "http":
 		if !v.allowHTTP {
-			return fmt.Errorf("%w: scheme %q requires https (http allowed only under the operator opt-in for non-prod)", ErrValidation, u.Scheme)
+			return &refusal{RefusedScheme, fmt.Sprintf("scheme %q requires https (http allowed only under the operator opt-in for non-prod)", u.Scheme)}
 		}
 	default:
-		return fmt.Errorf("%w: scheme %q not allowed (must be https)", ErrValidation, u.Scheme)
+		return &refusal{RefusedScheme, fmt.Sprintf("scheme %q not allowed (must be https)", u.Scheme)}
 	}
 
 	host := u.Hostname()
 	if host == "" {
-		return fmt.Errorf("%w: url has no host", ErrValidation)
+		return &refusal{RefusedMalformed, "url has no host"}
 	}
 
 	// If the host is a literal IP, check it directly — no DNS to resolve, and no rebinding possible.
@@ -145,10 +147,10 @@ func (v *Validator) Validate(ctx context.Context, raw string) error {
 
 	addrs, err := v.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return fmt.Errorf("%w: resolve %q: %v", ErrValidation, host, err)
+		return &refusal{RefusedUnresolvable, fmt.Sprintf("resolve %q: %v", host, err)}
 	}
 	if len(addrs) == 0 {
-		return fmt.Errorf("%w: host %q resolved to no addresses", ErrValidation, host)
+		return &refusal{RefusedUnresolvable, fmt.Sprintf("host %q resolved to no addresses", host)}
 	}
 	// Fail closed if ANY resolved address is disallowed: the dialer may connect to any of them, so a
 	// single private answer among public ones is enough to reach an internal service.
@@ -163,14 +165,14 @@ func (v *Validator) Validate(ctx context.Context, raw string) error {
 // checkIP rejects an address that is not a permitted (public, routable, non-switchboard) target.
 func (v *Validator) checkIP(ip net.IP) error {
 	if ip == nil {
-		return fmt.Errorf("%w: nil resolved address", ErrValidation)
+		return &refusal{RefusedAddress, "nil resolved address"}
 	}
 	if reason := disallowedReason(ip); reason != "" {
-		return fmt.Errorf("%w: address %s is %s", ErrValidation, ip, reason)
+		return &refusal{RefusedAddress, fmt.Sprintf("address %s is %s", ip, reason)}
 	}
 	for _, own := range v.ownIPs {
 		if own.Equal(ip) {
-			return fmt.Errorf("%w: address %s is switchboard's own listening address", ErrValidation, ip)
+			return &refusal{RefusedAddress, fmt.Sprintf("address %s is switchboard's own listening address", ip)}
 		}
 	}
 	return nil
