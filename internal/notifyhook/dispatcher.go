@@ -14,8 +14,9 @@ package notifyhook
 //     and no redirects.
 //   - Sign: Standard Webhooks, dual-signed during a rotation grace. The webhook-id is stable across
 //     a notification's attempts; each attempt has its own timestamp and signature.
-//   - Retry: at most 3 attempts, about 1s then 5s apart with jitter, for network errors, timeouts,
-//     408, 429 and 5xx only.
+//   - Retry: at most 3 attempts, about 1s then 5s apart with jitter, for network errors (a host
+//     that fails to resolve is one), timeouts, 408, 429 and 5xx only. An address the SSRF guard
+//     rejects is never retried.
 //
 // Nothing is persisted: a restart loses in-flight notifications and nothing else. No log line
 // carries a secret, a signature or a URL's query string (URLs are logged only through RedactURL,
@@ -336,7 +337,8 @@ func (d *Dispatcher) attempt(ctx context.Context, rawURL, msgID string, body []b
 
 	target, err := ValidateURL(actx, d.opts.Validator, rawURL)
 	if err != nil {
-		return nil, ResultRejectedSSRF, fmt.Errorf("%w: %v", ErrSSRF, err)
+		result, cerr := classifyValidateErr(actx, err)
+		return nil, result, cerr
 	}
 	sig, err := signatureHeader(secrets, msgID, time.Now().Unix(), body)
 	if err != nil {
@@ -440,6 +442,23 @@ func (d *Dispatcher) pinnedTransport(target push.Target) *http.Transport {
 		ResponseHeaderTimeout:  d.opts.AttemptTTL,
 		MaxResponseHeaderBytes: maxResponseRead,
 	}
+}
+
+// classifyValidateErr maps a dial-time ValidateURL failure. A host that did not resolve (a resolver
+// outage, SERVFAIL, NXDOMAIN, or the lookup hitting the attempt deadline) is a network error or a
+// timeout, which REQ-7 retries; nothing was dialled either way, so no connection is ever opened on an
+// unknown answer. Only an address-policy rejection (a disallowed or rebound address, a bad scheme or
+// URL) is rejected_ssrf, and that is never retried.
+func classifyValidateErr(ctx context.Context, err error) (string, error) {
+	if !errors.Is(err, push.ErrResolve) {
+		return ResultRejectedSSRF, fmt.Errorf("%w: %v", ErrSSRF, err)
+	}
+	var dnsErr *net.DNSError
+	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded ||
+		(errors.As(err, &dnsErr) && dnsErr.IsTimeout) {
+		return ResultTimeout, fmt.Errorf("%w: resolving the hook host", ErrTimeout)
+	}
+	return ResultNetwork, fmt.Errorf("%w: resolving the hook host", ErrRetryable)
 }
 
 // classifyNetErr maps a transport error to a REQ-11 result and a sentinel. The message is the

@@ -31,6 +31,33 @@ import (
 // scheme, host, or resolved address that failed) per SPEC-0019 REQ "Error Handling Standards".
 var ErrValidation = errors.New("push: webhook target validation failed")
 
+// ErrResolve additionally marks a rejection caused by the host not resolving at all (a lookup
+// error or timeout, or an empty answer), as opposed to an address it resolved to being disallowed.
+// It always travels with ErrValidation, so a caller that checks only ErrValidation still fails
+// closed. A delivery-time caller uses it to tell a transient resolver outage (retryable) from an
+// address-policy rejection (never retried). The lookup error is in the chain too, so
+// errors.Is(err, context.DeadlineExceeded) works.
+//
+// Governing: SPEC-0024 REQ-7 (a network error or a timeout MUST be retried), REQ-8 (a DNS outage
+// must not be recorded as an SSRF rejection).
+var ErrResolve = errors.New("push: webhook target host did not resolve")
+
+// resolveError keeps Resolve's established message ("<ErrValidation>: resolve ...") while
+// unwrapping to ErrValidation, ErrResolve and the lookup error.
+type resolveError struct {
+	msg   string
+	cause error
+}
+
+func (e *resolveError) Error() string { return e.msg }
+
+func (e *resolveError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrValidation, ErrResolve}
+	}
+	return []error{ErrValidation, ErrResolve, e.cause}
+}
+
 // Resolver resolves a host to its IP addresses. It is injected so tests can drive the DNS-rebinding
 // scenario deterministically (register-time resolution vs. delivery-time resolution returning a
 // different, disallowed address) without real DNS. *net.Resolver satisfies it; DefaultResolver wraps
@@ -239,10 +266,10 @@ func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 
 	addrs, err := v.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return Target{}, fmt.Errorf("%w: resolve %q: %v", ErrValidation, host, err)
+		return Target{}, &resolveError{msg: fmt.Sprintf("%s: resolve %q: %v", ErrValidation, host, err), cause: err}
 	}
 	if len(addrs) == 0 {
-		return Target{}, fmt.Errorf("%w: host %q resolved to no addresses", ErrValidation, host)
+		return Target{}, &resolveError{msg: fmt.Sprintf("%s: host %q resolved to no addresses", ErrValidation, host)}
 	}
 	// Fail closed if ANY resolved address is disallowed: the dialer may connect to any of them, so a
 	// single private answer among public ones is enough to reach an internal service.
