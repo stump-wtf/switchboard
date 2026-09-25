@@ -1,0 +1,21 @@
+{
+  "source": "github",
+  "headers": {"Content-Type": "application/json", "X-Github-Event": "pull_request_review", "X-Github-Delivery": "9c3a2e60-9a11-11f0-8e1c-1f2a3b4c5d6e"},
+  "body": {
+    "action": "submitted",
+    "review": {
+      "id": 2210000001,
+      "state": "approved",
+      "body": "LGTM",
+      "user": {"login": "joestump-agent", "id": 9100003, "type": "User"}
+    },
+    "pull_request": {
+      "number": 42,
+      "title": "fix: handle empty input",
+      "html_url": "https://github.com/joestump/claude-skills/pull/42",
+      "user": {"login": "outsider-one", "id": 9100001, "type": "User"}
+    },
+    "repository": {"full_name": "joestump/claude-skills"},
+    "sender": {"login": "joestump-agent", "id": 9100003, "type": "User"}
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "source": "github",
+  "headers": {"Content-Type": "application/json", "X-Github-Event": "push", "X-Github-Delivery": "ad4b3f70-9a11-11f0-8e1c-1f2a3b4c5d6e"},
+  "body": {
+    "ref": "refs/heads/main",
+    "before": "5093946000000000000000000000000000000000",
+    "after": "a02e575000000000000000000000000000000000",
+    "pusher": {"name": "joestump", "email": "noreply@example.com"},
+    "commits": [{"id": "a02e575000000000000000000000000000000000", "message": "docs: tweak", "author": {"name": "Joe", "username": "joestump"}}],
+    "repository": {"full_name": "joestump/claude-skills"},
+    "sender": {"login": "JoeStump", "id": 9100004, "type": "User"}
+  }
+}
