@@ -83,12 +83,11 @@ func queueCollectionErrors(t *testing.T, m *Metrics) float64 {
 	return v
 }
 
-// queueFamilySeries returns the series of every family the queue collector emits: switchboard_queue_*
-// and switchboard_quarantine_oldest_seconds.
+// queueFamilySeries returns the series of every switchboard_queue_* family in series.
 func queueFamilySeries(series map[string]float64) []string {
 	var out []string
 	for k := range series {
-		if strings.HasPrefix(k, "switchboard_queue_") || strings.HasPrefix(k, "switchboard_quarantine_oldest_seconds") {
+		if strings.HasPrefix(k, "switchboard_queue_") {
 			out = append(out, k)
 		}
 	}
@@ -162,6 +161,9 @@ func TestQueueCollectorFailureOmitsBothFamilies(t *testing.T) {
 				}
 				if got := queueFamilySeries(series); len(got) != 0 {
 					t.Fatalf("scrape %d: failed collector still emitted %v; want both families omitted", scrape, got)
+				}
+				if v, ok := series["switchboard_quarantine_oldest_seconds"]; ok {
+					t.Fatalf("scrape %d: failed collector still emitted switchboard_quarantine_oldest_seconds = %v", scrape, v)
 				}
 				if got := queueCollectionErrors(t, m); got != float64(scrape) {
 					t.Errorf("scrape %d: collection errors = %v, want %d", scrape, got, scrape)
