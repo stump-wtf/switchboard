@@ -34,10 +34,17 @@ When no ldflags were applied, `buildinfo` MUST fall back to `runtime/debug.ReadB
 * `Commit` and `Date` MUST come from the `vcs.revision` and `vcs.time` settings when present,
   otherwise be empty.
 
+Since Go 1.24, `go build` in a git checkout sets the main module's version from VCS: the tag when
+HEAD is exactly a release tag, otherwise a pseudo-version, with `+dirty` for a modified tree. The
+fallback reports that version as it is. The goreleaser build MUST pass `-buildvcs=false`, so a
+release whose `-X` stamp is missed reports `dev` rather than the VCS-derived tag, and REQ-13's
+assertion can catch it.
+
 Packages other than `internal/buildinfo` MUST NOT hold a version literal for Switchboard itself. A test MUST fail if a string
 literal matching `^v?\d+\.\d+\.\d+` is assigned to an identifier containing `version` in
 `internal/mcp` or `internal/web`. Protocol versions, such as the A2A protocol version, are exempt
-by name.
+by name. So are versions of something other than Switchboard, such as the `version` a persona's
+A2A agent card advertises (`cardVersion`): that is the persona's version, not the build's.
 
 #### Scenario: Release build
 
@@ -53,8 +60,16 @@ by name.
 
 #### Scenario: Plain local build
 
-- **WHEN** a developer runs `go build ./cmd/switchboard` in a clean checkout
-- **THEN** `Version` is `dev` and `Commit` is the checkout's revision
+- **WHEN** a developer runs `go build ./cmd/switchboard` in a clean checkout whose HEAD is not a
+  release tag
+- **THEN** `Version` is Go's pseudo-version for that commit (for example
+  `v0.3.1-0.20260923185201-4369412033b4`), and `Commit` is the checkout's revision
+
+#### Scenario: Build without VCS information
+
+- **WHEN** a developer runs `go build -buildvcs=false ./cmd/switchboard`, or builds outside a
+  checkout with no ldflags
+- **THEN** `Version` is `dev`, and `Commit` and `Date` are empty
 
 ### REQ-2: MCP Server Version and Session Instructions
 
