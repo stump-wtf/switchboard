@@ -239,6 +239,7 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 		// reaches this path with a token trust mode.
 		if e.Verified || e.TrustMode == "token" {
 			s.fireDoorbell(t)
+			s.fireReady(t, ReadyCreated) // SPEC-0024 REQ-6: same gate, same commit
 		}
 	}
 	return ev.ID, t, created, nil
@@ -446,6 +447,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 		// anonymous (open) source never reaches this path carrying a token trust mode.
 		if e.Verified || e.TrustMode == "token" {
 			s.fireDoorbell(ct.Todo)
+			s.fireReady(ct.Todo, ReadyCreated) // SPEC-0024 REQ-6: same gate, same commit
 		}
 	}
 	return ev.ID, out, false, nil
@@ -767,25 +769,32 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 // Governing: SPEC-0003 REQ "Bounded Retries via max_attempts" (scheduled backoff).
 func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 	rows, err := s.pool.Query(ctx, `
-		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, next_retry_at=NULL,
-			updated_at=now()
-		WHERE state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
-		RETURNING `+todoCols)
+		WITH upd AS (
+			UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, next_retry_at=NULL,
+				updated_at=now()
+			WHERE state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
+			RETURNING *
+		)
+		SELECT `+todoCols+`, `+movedPushEligible+` FROM upd`)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 	var requeued []Todo
+	var eligible []bool
 	for rows.Next() {
-		t, err := scanTodo(rows)
+		var pushEligible bool
+		t, err := scanTodo(rows, &pushEligible)
 		if err != nil {
 			return 0, err
 		}
 		requeued = append(requeued, t)
+		eligible = append(eligible, pushEligible)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	s.fireRequeued(requeued, eligible)
 	// One wakeup per (endpoint, queue), not per queue: the todo_ready payload is now endpoint-scoped
 	// (TodoReadyPayload), so collapsing on queue alone would emit a single notification naming
 	// whichever endpoint happened to come first and silently strand every other tenant re-queued in
@@ -800,6 +809,24 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 		}
 	}
 	return int64(len(requeued)), nil
+}
+
+// movedPushEligible re-applies the SPEC-0011 sender gate to the rows a requeue statement's `upd`
+// CTE moved: the todo's delivery event exists and either verified or arrived on a token-trust
+// self-managed webhook. The requeue UPDATEs carry no gate of their own, so without this an
+// unverified todo that someone claimed by id and abandoned would reach the notify-hook dispatcher
+// on its way back to pending. Governing: SPEC-0024 REQ-6 ("Requeue re-applies the sender gate"), design.md "Fire from
+// the existing doorbell hook, plus the requeue paths".
+const movedPushEligible = `EXISTS (SELECT 1 FROM events ev WHERE ev.id = upd.event_id AND (ev.verified OR ev.trust_mode = 'token'))`
+
+// fireRequeued tells the ready hook about every moved row that landed back in pending and passes
+// the sender gate. A reaped row that dead-lettered (failed) is not ready and fires nothing.
+func (s *Store) fireRequeued(moved []Todo, eligible []bool) {
+	for i, t := range moved {
+		if t.State == "pending" && eligible[i] {
+			s.fireReady(t, ReadyRequeued)
+		}
+	}
 }
 
 // RetryTodo re-enqueues a failed todo immediately: the explicit agent "Retry now" that re-queues a
@@ -1172,22 +1199,26 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
-		SELECT `+todoCols+` FROM upd`)
+		SELECT `+todoCols+`, `+movedPushEligible+` FROM upd`)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 	var reaped []Todo
+	var eligible []bool
 	for rows.Next() {
-		t, err := scanTodo(rows)
+		var pushEligible bool
+		t, err := scanTodo(rows, &pushEligible)
 		if err != nil {
 			return 0, err
 		}
 		reaped = append(reaped, t)
+		eligible = append(eligible, pushEligible)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	s.fireRequeued(reaped, eligible)
 	// One lease expiry per reaped row, requeued or dead-lettered alike (SPEC-0023 REQ-3). A
 	// dead-letter here deliberately does NOT also count TodoFinished(outcome="fail"): that counter
 	// is claimant-reported outcomes, and nobody reported this one. Lease expiry is its own signal, and
