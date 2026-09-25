@@ -90,10 +90,14 @@ func WithResolver(r Resolver) Option {
 
 // WithOwnListenAddrs registers switchboard's own listening address(es) so a target resolving to one
 // of them is rejected. Each addr is a listen address (host, host:port, or a bare IP); the host
-// portion is parsed as an IP and non-IP hosts (e.g. a "0.0.0.0" wildcard is an IP and is kept; a
-// "localhost" bind is already covered by the loopback rule) are skipped. A ":8080"-style
-// port-only bind contributes no specific IP (it binds all interfaces, already covered by the
-// range rules), so it is skipped without error.
+// portion is parsed as an IP (a "0.0.0.0" wildcard is an IP and is kept). A ":8080"-style port-only
+// bind contributes no specific IP (it binds all interfaces, already covered by the range rules).
+//
+// A host that is not an IP literal ("localhost:8080", "myhost:8080") names no address the guard can
+// compare against, so its port is treated like a bind on every interface: an allowlist-exempted
+// address on that port is refused. That fails closed; resolving the name here would pin whatever it
+// resolved to at startup (SPEC-0024 REQ-3: switchboard's own listen address and port stay rejected
+// even when listed).
 func WithOwnListenAddrs(addrs ...string) Option {
 	return func(v *Validator) {
 		for _, a := range addrs {
@@ -449,8 +453,9 @@ func parseListenIPs(addr string) []net.IP {
 }
 
 // parseListenAddrPort extracts a listen address's specific address and port, or — for a bind on
-// every interface (":8080", "0.0.0.0:8080", "[::]:8080") — the port alone. A listen address with no
-// port yields neither.
+// every interface (":8080", "0.0.0.0:8080", "[::]:8080") or a host that is not an IP literal
+// ("localhost:8080", whose addresses the guard cannot know) — the port alone, so it fails closed. A
+// listen address with no port yields neither.
 func parseListenAddrPort(addr string) (netip.AddrPort, uint16) {
 	host, portS, err := net.SplitHostPort(strings.TrimSpace(addr))
 	if err != nil {
@@ -465,7 +470,8 @@ func parseListenAddrPort(addr string) (netip.AddrPort, uint16) {
 	}
 	a, err := netip.ParseAddr(host)
 	if err != nil {
-		return netip.AddrPort{}, 0
+		// A hostname bind: refuse its port on every allowlisted address (fail closed).
+		return netip.AddrPort{}, uint16(port)
 	}
 	if a.IsUnspecified() {
 		return netip.AddrPort{}, uint16(port)
