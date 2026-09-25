@@ -250,6 +250,24 @@ func (s *Store) TodoAttempts(ctx context.Context, endpointID, id string, limit i
 	return s.todoAttempts(ctx, `t.endpoint_id = $3`, id, limit, endpointID)
 }
 
+// TodoAttemptsOperatorOwned is TodoAttempts for the Board's todo drawer: the scope is the human who
+// owns the todo's endpoint, the same owning-human predicate GetTodoOperatorOwned carries (operatorOwns,
+// written here over alias t). Another human's todo and a never-minted id are both ErrNotFound, and
+// nothing reveals whether a foreign todo has attempts. The agent-facing path MUST use TodoAttempts.
+//
+// Governing: SPEC-0034 REQ-10 "Tenant Isolation" (Board reads use the owning-human predicate),
+// REQ-13 "Operator Surfaces"; ADR-0022.
+func (s *Store) TodoAttemptsOperatorOwned(ctx context.Context, ownerHumanID, id string, limit int) ([]Attempt, int, int, error) {
+	// A human id is a uuid like an endpoint id: an empty or malformed one is the same clean miss
+	// rather than a cast error from Postgres.
+	if err := endpointScope(ownerHumanID); err != nil {
+		return nil, 0, 0, err
+	}
+	return s.todoAttempts(ctx, `EXISTS (SELECT 1 FROM endpoints ep
+			JOIN agents ag ON ag.id = ep.agent_id
+			WHERE ep.id = t.endpoint_id AND ag.owner_human_id = $3)`, id, limit, ownerHumanID)
+}
+
 // todoAttempts runs the scoped attempt read; scope is the todo predicate over alias t, and its
 // parameter is $3.
 func (s *Store) todoAttempts(ctx context.Context, scope, id string, limit int, scopeArg any) ([]Attempt, int, int, error) {
