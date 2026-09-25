@@ -184,6 +184,8 @@ func (h *Handler) createNotifyHookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 		}
 		target, err := notifyhook.ValidateURL(ctx, deps.Validator, in.URL)
 		if err != nil {
+			// The full error (resolved address, resolver detail; never the query) stays in the log.
+			h.log.Info("mcp create_notify_hook url refused", "slug", ep.Slug, "err", err)
 			return nil, createNotifyHookOut{}, &toolError{codeInvalidArgument, hookURLRejection(err)}
 		}
 		secret, err := notifyhook.MintSecret()
@@ -307,10 +309,17 @@ func hookID(raw string) (string, error) {
 	return strings.ToLower(id), nil
 }
 
-// hookURLRejection is the invalid_argument message for a refused URL. The validator's messages name
-// the rule and the address class, never the query string (ValidateURL parses first and reports a
-// parse failure generically), so they are safe to return; the sentinel prefixes are trimmed.
+// hookURLRejection is the invalid_argument message for a refused URL. A refusal that depends on what
+// the host resolved to answers with its push.Rejection Summary, which names the address class but
+// never the resolved address or the resolver's error, so a tenant cannot map internal names to
+// addresses through it. The remaining messages describe only the caller's own input (scheme, port,
+// length, userinfo) and never the query string (ValidateURL parses first and reports a parse
+// failure generically), so they are returned with the sentinel prefixes trimmed.
 func hookURLRejection(err error) string {
+	var rej *push.Rejection
+	if errors.As(err, &rej) {
+		return "url refused: " + rej.Summary
+	}
 	msg := err.Error()
 	for _, prefix := range []string{push.ErrValidation.Error() + ": ", notifyhook.ErrInvalidURL.Error() + ": "} {
 		msg = strings.TrimPrefix(msg, prefix)

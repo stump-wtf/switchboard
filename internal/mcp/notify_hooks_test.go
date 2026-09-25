@@ -356,6 +356,53 @@ func TestCreateNotifyHookTargetValidation(t *testing.T) {
 	}
 }
 
+// failingResolver answers every lookup with a resolver error that names the resolver's address, as
+// the Go resolver does.
+type failingResolver struct{}
+
+func (failingResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: host, Server: "127.0.0.11:53", IsNotFound: true}
+}
+
+// A refusal names the address class only: never the address a hostname resolved to, nor the
+// resolver's error or address, so create_notify_hook is not an oracle for internal DNS.
+func TestCreateNotifyHookRefusalDoesNotLeakResolution(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cases := []struct {
+		name    string
+		res     push.Resolver
+		url     string
+		want    string
+		leakers []string
+	}{
+		{name: "private resolution", res: newHookResolver(), url: "https://internal.example.com/sb",
+			want: "url refused: host resolves to a private address", leakers: []string{"10.0.0.5"}},
+		{name: "loopback resolution", res: newHookResolver(), url: "https://harness.local/sb",
+			want: "url refused: host resolves to a loopback address", leakers: []string{"127.0.0.1"}},
+		{name: "empty answer", res: newHookResolver(), url: "https://unknown.example.com/sb",
+			want: "url refused: host did not resolve"},
+		{name: "resolver error", res: failingResolver{}, url: "https://db.internal/sb",
+			want: "url refused: host did not resolve", leakers: []string{"127.0.0.11", "no such host", "lookup"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeHookStore()
+			cs := notifyHookSession(t, ctx, allNotifyHookVerbs, hookConfig(st, tc.res, 5))
+			msg := callErr(t, ctx, cs, "create_notify_hook", map[string]any{"url": tc.url}, codeInvalidArgument)
+			if !strings.Contains(msg, tc.want) {
+				t.Fatalf("refusal %q, want %q", msg, tc.want)
+			}
+			for _, l := range tc.leakers {
+				if strings.Contains(msg, l) {
+					t.Fatalf("refusal %q leaks %q", msg, l)
+				}
+			}
+		})
+	}
+}
+
 func TestCreateNotifyHookCeilingAndQueues(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

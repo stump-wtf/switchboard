@@ -167,6 +167,34 @@ func TestAllowlistHostnameListenAddrFailsClosed(t *testing.T) {
 	}
 }
 
+// A resolution-dependent refusal is a *Rejection: Error() keeps the address for logs, Summary names
+// only the class, and errors.Is(err, ErrValidation) still holds.
+func TestRejectionSummaryOmitsAddress(t *testing.T) {
+	ctx := context.Background()
+	v := New(WithResolver(&fakeResolver{byHost: map[string][]net.IPAddr{"svc": ipAddrs("172.18.0.5")}}))
+	cases := map[string]string{
+		"https://svc/":        "host resolves to a private address",
+		"https://172.18.0.5/": "address is a private address",
+		"https://nohost/":     "host did not resolve",
+	}
+	for u, want := range cases {
+		err := v.Validate(ctx, u)
+		var rej *Rejection
+		if !errors.Is(err, ErrValidation) || !errors.As(err, &rej) {
+			t.Fatalf("%s: want a *Rejection wrapping ErrValidation, got %v", u, err)
+		}
+		if rej.Summary != want {
+			t.Errorf("%s: Summary %q, want %q", u, rej.Summary, want)
+		}
+		if strings.Contains(rej.Summary, "172.18.0.5") {
+			t.Errorf("%s: Summary %q names the address", u, rej.Summary)
+		}
+	}
+	if err := v.Validate(ctx, "https://svc/"); !strings.Contains(err.Error(), "172.18.0.5") {
+		t.Fatalf("Error() must keep the address for the server log, got %v", err)
+	}
+}
+
 func TestParseCIDRList(t *testing.T) {
 	got := mustCIDRs(t, " 10.0.0.0/8 ,,127.0.0.1, fd00::/8 ")
 	want := []string{"10.0.0.0/8", "127.0.0.1/32", "fd00::/8"}
