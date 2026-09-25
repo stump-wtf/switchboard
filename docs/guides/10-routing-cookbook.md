@@ -217,6 +217,14 @@ rather than the label that changed. Things to know:
 
 ### Only act on trusted people
 
+> **Prefer `trusted_actors`.** A `github`, `gitea` or `cairn` webhook has a first-class trust list,
+> checked in Go before any rule runs, and a stranger's delivery waits in quarantine instead of being
+> dropped. Set it with `set_trusted_actors` (see
+> [Trusted actors](/guides/routing-rules#trusted-actors-who-may-start-work)), and read the verdict
+> in rules as `.actor`. The jq rule below still works as an extra layer, but it drops where the gate
+> holds, and every rule set has to repeat it. [Outside intake from the public GitHub mirrors](#outside-intake-from-the-public-github-mirrors)
+> shows the `trusted_actors` form end to end.
+
 Drop anything a stranger opened, commented on, or labeled. It goes first, so no later rule can
 route it:
 
@@ -380,3 +388,112 @@ everything. On those, a title prefix plus the actor works instead:
   "params": {"cairn_actors": ["alice@example.com"]}
 }
 ```
+
+### Outside intake from the public GitHub mirrors
+
+A public GitHub mirror, such as <https://github.com/stump-wtf/switchboard>, takes issues from
+anyone, while the code, the canonical tracker and the fixes live somewhere else. Every word an
+outsider writes there is untrusted input, and some of it will be written to steer an agent. This
+recipe lets outsiders report freely while making sure nothing they write reaches an agent until a
+maintainer has looked at it:
+
+- An outsider's issue or comment waits in the owner's **quarantine**. No agent is handed it.
+- A **maintainer's label** promotes the issue into a lane, with a work order that names the
+  canonical tracker.
+- The work order still says the text is an outsider's (`author_trusted: false`), all the way
+  downstream.
+
+**1. One webhook for the whole organization.** Create a signed `github` webhook whose trust list is
+the maintainers, matched on the **sender**:
+
+```json title="create_webhook · public-mirror-intake"
+{
+  "source_type": "github",
+  "target_queue": "inbox",
+  "trusted_actors": {"logins": ["joestump", "joestump-agent"], "match": "sender"}
+}
+```
+
+Install it once at the organization level, so every mirror, including ones you add later, is
+covered: **Organization settings → Webhooks → Add webhook**. Use the `ingest_url` (it starts with
+your `$SWITCHBOARD_URL`) as the **Payload URL**, `application/json` as the **Content type**, and the
+`signing_secret` as the **Secret**. Under **Let me select individual events**, tick only **Issues**
+and **Issue comments**. [Receive your first webhook](/getting-started/first-webhook#github) walks
+through the same form.
+
+`match: "sender"` is what makes promotion work. The maintainer who labels an issue is its sender,
+so the `labeled` delivery is trusted even though an outsider wrote the issue.
+
+**2. The rules.** Route trusted label changes to lanes, drop what has no issue, and leave
+everything else in quarantine:
+
+```json title="set_webhook_rules · public-mirror-intake"
+{
+  "webhook_id": "<webhook id>",
+  "rules": [
+    {"id": "not-issue", "name": "trusted deliveries with no issue subject: maintainers' own comments, the hook ping",
+     "expr": ".issue == null",
+     "action": {"drop": true}},
+    {"id": "switchboard-s", "name": "canonical tracker: stump.wtf/switchboard",
+     "expr": ".issue.repo == \"stump-wtf/switchboard\" and .issue.label_event and any(.issue.labels[]; . == \"size/S\")",
+     "action": {"queue": "lane-s", "exclusive": true, "once": true, "work_order": true}},
+    {"id": "switchboard-m", "name": "canonical tracker: stump.wtf/switchboard",
+     "expr": ".issue.repo == \"stump-wtf/switchboard\" and .issue.label_event and any(.issue.labels[]; . == \"size/M\")",
+     "action": {"queue": "lane-m", "exclusive": true, "once": true, "work_order": true}}
+  ],
+  "default_action": {"quarantine": true}
+}
+```
+
+The trust gate runs before any of these rules, so they only ever see a maintainer's deliveries:
+
+| Delivery | Outcome |
+|---|---|
+| An outsider opens an issue, or comments on one | Quarantined by the trust gate (`untrusted_actor`). No rule runs. |
+| A maintainer adds `size/S` or `size/M` to an issue on a mapped mirror | Routed to `lane-s` or `lane-m` on one endpoint, once per issue and lane, with a work order. |
+| A maintainer comments, or GitHub sends the hook's `ping` | Dropped by `not-issue`. Only `issues` events carry `.issue`, so these have none. |
+| Any other trusted issue event: an unsized label, an edit, a close, an issue on a mirror with no rules yet | Held by `default_action` (`rule_action`) for a human to look at. |
+
+**3. Map each mirror to its canonical tracker.** A fix lands on the canonical tracker, not on the
+mirror, so the worker has to know where that is. The work order already carries the mirror in
+`subject.repo` (`stump-wtf/switchboard`) and the rule that authorized it in `authorized_by`. Give
+each mirror its own pair of lane rules, and name the canonical tracker in the rule's `name`. The
+worker reads it from `work_order.authorized_by.rule_name`. The name comes from your rules, never from
+the payload, so an outsider cannot choose where the work goes. A mirror you have not mapped yet
+matches no lane rule, and its labeled issues wait in quarantine rather than landing in a lane with
+no tracker.
+
+**The promotion flow.** An outsider opens issue #512 on the mirror, and it waits in quarantine. A
+maintainer reads it on GitHub, reproduces it, and labels it `size/S`. That `labeled` delivery comes
+from a trusted sender, so it reaches the rules, and `switchboard-s` puts one work order on `lane-s`:
+
+```json
+{
+  "lane": "lane-s",
+  "source": "github",
+  "verified": true,
+  "authorized_by": {"stage": "rule", "rule_id": "switchboard-s", "rule_name": "canonical tracker: stump.wtf/switchboard"},
+  "subject": {"type": "issue", "provider": "github", "repo": "stump-wtf/switchboard", "number": 512,
+              "author": "outside-reporter", "sender": "joestump", "labels": ["bug", "size/S"], "…": "…"},
+  "author_trusted": false,
+  "authority": "semi-trusted task: …"
+}
+```
+
+The original `opened` item stays in quarantine. Discard it from the Quarantine view once the issue
+is promoted, or let it expire after 30 days.
+
+> **`author_trusted: false` travels with the work.** Promotion says a maintainer chose to act on
+> the issue. It does not make the issue's text trustworthy. The title, the body, and every comment
+> are still what the outsider typed, and they may be written to steer an agent. A worker that gets a
+> work order with `author_trusted: false` treats the issue as a bug report to verify, never as
+> instructions. Rules can route those orders to a more cautious lane by testing
+> `.actor.author_trusted == false`.
+
+- **Issue-form labels promote nothing.** A form that applies `bug` when an outsider opens an issue
+  sends an `opened` delivery from the outsider, which the trust gate holds. Only a size label added
+  by a maintainer routes.
+- **Trust is the sender's login.** GitHub logins can be renamed and then reused by someone else.
+  Remove a maintainer who leaves, and check the list after any rename.
+- **Grant the lanes twice**, as with any lane rule: as webhook queues, so the rules can name them,
+  and as scoped queues on the lane workers' endpoints, so `exclusive` finds a target.
