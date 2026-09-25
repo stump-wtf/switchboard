@@ -13,6 +13,13 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+### Added
+
+- **Lease-token fence.** `claim` and `claim_next` take `require_fence`; a fenced claim returns a
+  one-time `lease_token` that `heartbeat`, `complete` and `fail` must then present, so another
+  worker on the same endpoint, or a stale one, gets `conflict` instead of closing the attempt.
+  Only the token's SHA-256 is stored. (#325)
+
 ## [0.3.0] - 2026-09-22
 
 The first release since `v0.2.0`, and the first release under

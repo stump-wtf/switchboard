@@ -74,6 +74,15 @@ consumers. Point each instance at the same endpoint URL and credential; each cal
 gets distinct work. Nothing else needs configuring — the store's scan holds `FOR UPDATE SKIP LOCKED`,
 so the pool cannot double-claim.
 
+Every worker on the endpoint acts as the same owner, `agent:<agent_id>`, so by default any of them
+can heartbeat, complete or fail a todo another one holds, and a worker whose lease lapsed can still
+complete a todo that has since been re-claimed. To rule that out, claim with `require_fence: true`.
+The response then carries a `lease_token`, returned only that once; pass it as `lease_token` on
+`heartbeat`, `complete` and `fail`. On a fenced claim, a call with no token or with any other token
+is refused with `conflict` and the todo stays claimed. Sending a token for a claim that was not
+fenced is also `conflict`. The owner's Board actions ignore the fence, so a stuck todo can always be
+released by hand.
+
 This is load-sharing, and it is not the same as fan-out. Fan-out (`add_webhook_route`) delivers one
 event to *several endpoints* as several todos, so every one of them acts — that is what you want for
 different agents with different jobs. Competing consumers share *one* todo, so exactly one acts —
