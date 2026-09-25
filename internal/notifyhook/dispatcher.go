@@ -210,6 +210,10 @@ func (d *Dispatcher) Enqueue(t store.Todo, reason string) {
 	}
 }
 
+// drop counts and logs a notification shed before any attempt. The units differ by reason, and the
+// metric's help text says so: "rate_limited" is one hook's notification, while "queue_full" is one
+// ready todo, dropped before its hooks were matched (that needs a store read Enqueue must not make),
+// so it counts once whether the todo would have fanned out to zero hooks or several.
 func (d *Dispatcher) drop(reason string, attrs ...any) {
 	d.dropped.Add(1)
 	d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "dropped")

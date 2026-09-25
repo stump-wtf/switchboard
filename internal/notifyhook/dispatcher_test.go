@@ -586,13 +586,18 @@ func TestDispatchDrops(t *testing.T) {
 	st := newMemStore()
 	var drops []string
 	var mu sync.Mutex
-	d := NewDispatcher(Options{Store: st, Validator: push.New(), Max: 5, QueueSize: 1,
+	met := newCountingMetrics()
+	d := NewDispatcher(Options{Store: st, Validator: push.New(), Max: 5, QueueSize: 1, Metrics: met,
 		OnDrop: func(r string) { mu.Lock(); drops = append(drops, r); mu.Unlock() }})
-	// Not running: the queue holds one, and the second is dropped.
+	// Not running: the queue holds one, and the second is dropped. A queue_full drop is one ready
+	// todo, counted once before any hook is matched (this endpoint has none).
 	d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
 	d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
 	if d.Dropped() != 1 || len(drops) != 1 || drops[0] != "queue_full" {
 		t.Fatalf("dropped = %d %v, want one queue_full", d.Dropped(), drops)
+	}
+	if notes, _, _ := met.snapshot(); notes["todo.ready/dropped"] != 1 || len(notes) != 1 {
+		t.Fatalf("queue_full metrics = %v, want one todo.ready/dropped", notes)
 	}
 
 	rcv := newReceiver(t)

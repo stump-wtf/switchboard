@@ -157,7 +157,7 @@ func New(opts Options) *Metrics {
 
 		notifyNotifications: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_notify_hook_notifications_total",
-			Help: "Outbound notify-hook notifications, by type (todo.ready|todos.backlog) and outcome (delivered|failed|dropped).",
+			Help: "Outbound notify-hook notifications, by type (todo.ready|todos.backlog) and outcome (delivered|failed|dropped). delivered, failed and rate-limited drops count one per hook; a full delivery queue drops before hooks are matched, so it counts one per ready todo, whatever its hook count (zero included).",
 		}, []string{"type", "outcome"}),
 		notifyAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_notify_hook_attempts_total",
@@ -202,6 +202,13 @@ func (m *Metrics) InitNotifyHookSeries() {
 
 // NotifyHookNotification counts one notification's final outcome: NotifyDelivered, NotifyFailed
 // (after its attempts), or NotifyDropped (queue full or over the per-hook rate limit).
+//
+// The unit is one hook's notification, except for a queue_full drop. The bounded queue sits on the
+// ingest path and holds ready todos, not per-hook notifications, because matching hooks needs a
+// store read that SPEC-0024 REQ-7 keeps off that path. A queue_full drop is therefore counted once
+// per dropped todo: once for a todo whose endpoint has three matching hooks, and once for one with
+// none. Read a dropped rate as "the dispatcher is shedding load", not as a count of receivers that
+// missed a notification.
 func (m *Metrics) NotifyHookNotification(typ, outcome string) {
 	if m == nil {
 		return
