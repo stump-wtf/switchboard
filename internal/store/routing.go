@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -226,11 +227,30 @@ func (s *Store) EventForWebhook(ctx context.Context, eventID int64, webhookID st
 // UpdateWebhookRouting takes its row lock: a pooled read inside that lock deadlocks the pool under
 // concurrent rule edits (see mcp/webhook_rules.go). idx_events_webhook covers the scan.
 func (s *Store) RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]EventHistoryDetail, error) {
+	return s.WebhookEventsBefore(ctx, webhookID, time.Time{}, 0, limit)
+}
+
+// WebhookEventsBefore is RecentWebhookEvents one page further back: up to limit of webhookID's
+// deliveries strictly older than the (beforeAt, beforeID) keyset, newest first. A zero beforeAt
+// starts at the newest. The save-time dry-run pages with it past deliveries the trust gate would
+// hold, so an outsider's flood cannot push the owner's trusted traffic out of the checked window.
+// Governing: SPEC-0026 REQ-3, REQ-5; ADR-0005 (keyset over offset).
+func (s *Store) WebhookEventsBefore(ctx context.Context, webhookID string, beforeAt time.Time, beforeID int64, limit int) ([]EventHistoryDetail, error) {
 	if !isUUID(webhookID) || limit <= 0 {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, eventDetailSelect+`
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if beforeAt.IsZero() {
+		rows, err = s.pool.Query(ctx, eventDetailSelect+`
 		WHERE webhook_id = $1 ORDER BY received_at DESC, id DESC LIMIT $2`, webhookID, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, eventDetailSelect+`
+		WHERE webhook_id = $1 AND (received_at, id) < ($2, $3) ORDER BY received_at DESC, id DESC LIMIT $4`,
+			webhookID, beforeAt, beforeID, limit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store: recent webhook events: %w", err)
 	}

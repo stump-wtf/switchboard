@@ -287,6 +287,13 @@ func TestCreateIntakeEventTodosFaultedSpendsTheSlot(t *testing.T) {
 	if one, err := s.RecentWebhookEvents(ctx, wh.ID, 1); err != nil || len(one) != 1 || one[0].ID != evRouted {
 		t.Fatalf("recent limit 1 = %+v (%v), want only the newest", one, err)
 	}
+	// The next page starts strictly after the keyset it is given.
+	if older, err := s.WebhookEventsBefore(ctx, wh.ID, recent[0].ReceivedAt, recent[0].ID, 50); err != nil || len(older) != 1 || older[0].ID != evID {
+		t.Fatalf("events before the newest = %+v (%v), want only event %d", older, err, evID)
+	}
+	if past, err := s.WebhookEventsBefore(ctx, wh.ID, recent[1].ReceivedAt, recent[1].ID, 50); err != nil || len(past) != 0 {
+		t.Fatalf("events before the oldest = %d (%v), want none", len(past), err)
+	}
 	if none, err := s.RecentWebhookEvents(ctx, "not-a-uuid", 5); err != nil || len(none) != 0 {
 		t.Fatalf("recent for a bad id = %d (%v), want none", len(none), err)
 	}

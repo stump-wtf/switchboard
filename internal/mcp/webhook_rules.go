@@ -47,6 +47,10 @@ package mcp
 // that faults on any of them. The dry-run runs before the lock, and the locked write saves the
 // checked candidate only if the stored config is unchanged (conflict otherwise). test_webhook_rules
 // reports faulted as blocking (#212).
+//
+// @joestump-agent 09/25/2026 - The save-time dry-run skips deliveries the trust gate would hold
+// (SPEC-0026 REQ-5): live traffic never runs rules on them, so an outsider's payload could otherwise
+// refuse the owner's saves. It pages back past them to find 50 that pass (#385 review).
 
 import (
 	"context"
@@ -185,22 +189,22 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "set_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "set_webhook_rules",
-			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. First match wins, and a rule that errors or times out stops evaluation: the delivery is recorded and routed nowhere. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries."},
+			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. First match wins, and a rule that errors or times out stops evaluation: the delivery is recorded and routed nowhere. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries that its trust gate passes."},
 			h.setWebhookRulesTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "add_webhook_rule",
-			Description: "Insert one routing rule into a webhook's rule list at a position (default: last). The expression is compiled and the action checked before saving, and the resulting rules are dry-run against the webhook's 50 most recent deliveries: a rule that faults on any of them is refused."},
+			Description: "Insert one routing rule into a webhook's rule list at a position (default: last). The expression is compiled and the action checked before saving, and the resulting rules are dry-run against the webhook's 50 most recent deliveries that its trust gate passes: a rule that faults on any of them is refused."},
 			h.addWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "update_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "update_webhook_rule",
-			Description: "Change a routing rule's name, expression, or action in place. Refused if the resulting rules fault on any of the webhook's 50 most recent deliveries."},
+			Description: "Change a routing rule's name, expression, or action in place. Refused if the resulting rules fault on any of the webhook's 50 most recent deliveries that its trust gate passes."},
 			h.updateWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "move_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "move_webhook_rule",
-			Description: "Move a routing rule to a new position. Order is precedence: the first matching rule wins. Refused if the reordered rules fault on any of the webhook's 50 most recent deliveries."},
+			Description: "Move a routing rule to a new position. Order is precedence: the first matching rule wins. Refused if the reordered rules fault on any of the webhook's 50 most recent deliveries that its trust gate passes."},
 			h.moveWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "remove_webhook_rule") {
@@ -482,9 +486,15 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 	return nil, rulesOut(wr, g), nil
 }
 
-// dryRunEvents bounds the save-time dry-run: at most this many of the webhook's latest deliveries,
-// each inside the per-event evaluation budget (SPEC-0026 REQ-3, "Rate Limiting").
-const dryRunEvents = 50
+// dryRunEvents bounds the save-time dry-run: at most this many of the webhook's latest deliveries
+// that the trust gate would pass, each inside the per-event evaluation budget (SPEC-0026 REQ-3,
+// "Rate Limiting"). dryRunScanPages bounds how far back it reads to find them, a page of
+// dryRunEvents at a time, so an outsider's flood of held deliveries costs at most that many cheap
+// Go trust checks and never a sandbox evaluation.
+const (
+	dryRunEvents    = 50
+	dryRunScanPages = 10
+)
 
 // dryRunSave evaluates a candidate configuration against the webhook's most recent stored
 // deliveries and refuses it with invalid_argument if any rule faults on any of them. The error names
@@ -495,31 +505,53 @@ const dryRunEvents = 50
 //
 // The sandbox being unavailable is not the candidate's fault. It refuses the save with
 // "unavailable", so the agent can retry, rather than blaming a rule.
-// Governing: SPEC-0026 REQ-3 "Save-Time Fault Refusal and Param Typing"; ADR-0031.
+//
+// Only deliveries the trust gate would pass TODAY are checked, because only those ever reach the
+// rules on live traffic (the receiver holds the rest before any rule runs). Checking a held one
+// would let anyone who can make the producer send (on a public repository, anyone who can open an
+// issue) refuse the owner's saves with a payload built to fault, and a flood of them would push the
+// owner's real traffic out of the window. Held deliveries are skipped and the scan pages further
+// back, up to dryRunScanPages, to find dryRunEvents that pass.
+// Governing: SPEC-0026 REQ-3 "Save-Time Fault Refusal and Param Typing", REQ-5; ADR-0031.
 func (h *Handler) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg routing.Config, g routing.Grant) error {
 	if len(cfg.Rules) == 0 {
 		return nil
 	}
-	events, err := h.store.RecentWebhookEvents(ctx, wr.WebhookID, dryRunEvents)
-	if err != nil {
-		return err
-	}
 	router := h.rulesRouter()
 	faults := map[string][]int64{} // "rule_id (cause)" -> event ids, newest first
 	var order []string
-	for _, ev := range events {
-		d := router.Route(ctx, cfg, g, storedEnvelope(wr, ev))
-		if d.Unavailable {
-			return &toolError{codeUnavailable, "routing is unavailable, so the rules could not be checked against recent deliveries; retry shortly"}
+	checked := 0
+	var cursor store.EventHistoryDetail // zero: start at the newest
+scan:
+	for page := 0; page < dryRunScanPages; page++ {
+		events, err := h.store.WebhookEventsBefore(ctx, wr.WebhookID, cursor.ReceivedAt, cursor.ID, dryRunEvents)
+		if err != nil {
+			return err
 		}
-		if !d.Faulted {
-			continue
+		for _, ev := range events {
+			env := storedEnvelope(wr, ev)
+			if env.Actor != nil && !env.Actor.IsTrusted() {
+				continue // held by the trust gate: live traffic never runs the rules on it
+			}
+			d := router.Route(ctx, cfg, g, env)
+			if d.Unavailable {
+				return &toolError{codeUnavailable, "routing is unavailable, so the rules could not be checked against recent deliveries; retry shortly"}
+			}
+			if d.Faulted {
+				k := d.Fault.RuleID + " (" + d.Fault.Cause + ")"
+				if _, seen := faults[k]; !seen {
+					order = append(order, k)
+				}
+				faults[k] = append(faults[k], ev.ID)
+			}
+			if checked++; checked == dryRunEvents {
+				break scan
+			}
 		}
-		k := d.Fault.RuleID + " (" + d.Fault.Cause + ")"
-		if _, seen := faults[k]; !seen {
-			order = append(order, k)
+		if len(events) < dryRunEvents {
+			break // no older deliveries
 		}
-		faults[k] = append(faults[k], ev.ID)
+		cursor = events[len(events)-1]
 	}
 	if len(order) == 0 {
 		return nil
