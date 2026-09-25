@@ -1,0 +1,16 @@
+{{define "content"}}
+{{/* Governing: SPEC-0026 REQ-9 "Quarantine View and Owner Signals" (ADR-0031; ADR-0018 charm-web).
+     The held deliveries on this human's endpoints: a delivery from an untrusted actor, one whose
+     rules faulted, or one a rule sent here. Nothing on this page reaches an agent until the human
+     releases it. Everything a sender wrote renders through contextual escaping, and the payload is a
+     text node in a collapsed <pre>, never HTML or Markdown. Actions are CSRF-carrying POSTs that
+     re-render #sb-quarantine-panel (HTMX) or 303 back here (no JS). */}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">quarantine</h1>
+    <p class="sb-tagline">held deliveries · nothing here reaches an agent until you release it · untrusted actors, rule faults and rule holds · expires after 30 days</p>
+  </div>
+</div>
+
+{{template "quarantine_panel" .Quarantine}}
+{{end}}

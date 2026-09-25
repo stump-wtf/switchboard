@@ -87,6 +87,21 @@ type endpointCard struct {
 	// machine-readable data (data-sb-expires-at); nil = valid until revoked. Governing: SPEC-0016
 	// REQ "Credential Lifetime".
 	ExpiresAt *time.Time
+	// Webhooks are the endpoint's self-managed webhooks with their intake signals: the open
+	// quarantine count, the faults over the last 24 hours, and the allow_all warning. Governing:
+	// SPEC-0026 REQ-9 (the webhook card's counts), REQ-1 (the fault warning), REQ-5 (allow_all).
+	Webhooks []webhookSignalView
+}
+
+// webhookSignalView is one webhook row on an endpoint card.
+type webhookSignalView struct {
+	ID          string
+	ShortID     string
+	Source      string
+	TargetQueue string
+	AllowAll    bool
+	Quarantined int
+	Faults24h   int
 }
 
 // cardInitials derives the endpoint card's two-letter avatar tile from the agent name: the first
@@ -206,9 +221,25 @@ func (h *Handler) endpointCards(r *http.Request, human *store.Human) []endpointC
 		h.log.Warn("endpoints list", "err", err)
 		return nil
 	}
+	byEndpoint := map[string][]webhookSignalView{}
+	if len(eps) > 0 {
+		sigs, err := h.store.WebhookSignalsForHuman(r.Context(), human.ID)
+		if err != nil {
+			// Degrade to cards without webhook rows; the Quarantine view still lists every item.
+			h.log.Warn("endpoints webhook signals", "err", err)
+		}
+		for _, sg := range sigs {
+			byEndpoint[sg.EndpointID] = append(byEndpoint[sg.EndpointID], webhookSignalView{
+				ID: sg.WebhookID, ShortID: shortID(sg.WebhookID), Source: sg.SourceType, TargetQueue: sg.TargetQueue,
+				AllowAll: sg.AllowAll, Quarantined: sg.Quarantined, Faults24h: sg.Faults24h,
+			})
+		}
+	}
 	cards := make([]endpointCard, 0, len(eps))
 	for _, ep := range eps {
-		cards = append(cards, h.cardFromStore(ep, human.DisplayName))
+		card := h.cardFromStore(ep, human.DisplayName)
+		card.Webhooks = byEndpoint[ep.ID]
+		cards = append(cards, card)
 	}
 	return cards
 }

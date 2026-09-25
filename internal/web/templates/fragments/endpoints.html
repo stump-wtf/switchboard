@@ -40,6 +40,8 @@
     {{/* The endpoint's address: possessing URL + credential IS the capability (SPEC-0007). */}}
     <div class="sb-epcard__row"><dt class="sb-microlabel">URL</dt><dd><code class="sb-code" data-sb-ep-url="{{$c.URL}}">{{$c.URL}}</code></dd></div>
     <div class="sb-epcard__row"><dt class="sb-microlabel">Credential</dt><dd><code class="sb-code">{{$c.CredPrefix}}…</code> <span class="sb-muted">hashed · shown once at vend</span></dd></div>
+    {{/* The endpoint's webhooks with their intake signals (SPEC-0026 REQ-9; fragments/quarantine.html). */}}
+    {{template "endpoint_webhooks" $c.Webhooks}}
   </dl>
   <div class="sb-epcard__foot">
     {{if eq $c.State "revoked"}}

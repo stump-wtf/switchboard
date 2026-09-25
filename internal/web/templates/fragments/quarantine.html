@@ -1,0 +1,76 @@
+{{/* Quarantine-view fragments (SPEC-0026 REQ-9; split per view by SPEC-0015 REQ "Live Fragment
+     Architecture"). Governing: ADR-0031, ADR-0018. */}}
+
+{{/* quarantine_panel — the action notice and the held-item list. Data: web.quarantinePanelView.
+     The whole panel is the swap target of every action (hx-target="#sb-quarantine-panel"), and it is
+     aria-live="polite", so a release, discard or refusal is announced without moving focus. The
+     notice text comes from a fixed table (quarantine.go); nothing a request carried is reflected. */}}
+{{define "quarantine_panel"}}<div id="sb-quarantine-panel" aria-live="polite" data-sb-quarantine>
+  {{with .Notice}}<p class="sb-callout{{if eq .Kind "warn"}} sb-callout--warn{{else if eq .Kind "danger"}} sb-callout--danger{{end}}" role="status" data-sb-quarantine-notice="{{.Code}}">{{.Text}}</p>{{end}}
+  {{if .Error}}<p class="sb-callout sb-callout--danger" role="status">the quarantine list could not be read · reload to try again</p>
+  {{else}}{{$csrf := .CSRF}}
+  {{range .Items}}{{template "quarantine_item" dict "I" . "CSRF" $csrf}}
+  {{else}}<p class="sb-empty" data-sb-quarantine-empty>nothing held · every delivery was trusted and routed</p>{{end}}
+  {{end}}
+</div>{{end}}
+
+{{/* quarantine_item — one held delivery. Args via dict: I web.quarantineItemView, CSRF string.
+     Shows the reason and its detail (the actor and trust flags, or the fault, or the holding rule),
+     the source, kind and receiving webhook, the escaped title, and the payload collapsed by default
+     as escaped text. Every form posts to a fixed path under /quarantine/{id} and carries the CSRF
+     token both ways (hidden field for no-JS, hx-headers for HTMX). */}}
+{{define "quarantine_item"}}{{$i := .I}}<article id="sb-quar-{{$i.ID}}" class="sb-card sb-quar" data-sb-quar-item="{{$i.ID}}" data-sb-quar-reason="{{$i.Reason}}" aria-labelledby="sb-quar-title-{{$i.ID}}">
+  <div class="sb-quar__head">
+    <span class="sb-badge sb-badge--{{if eq $i.Reason "rule_fault"}}revoked{{else}}open{{end}}" data-sb-quar-reason-label>{{$i.ReasonLabel}}</span>
+    <span class="sb-quar__src sb-mono">{{$i.Source}}{{if $i.Kind}} · {{$i.Kind}}{{end}}</span>
+    <span class="sb-muted sb-mono">{{$i.ShortID}} · {{reltime $i.ReceivedAt}}</span>
+  </div>
+  <h2 class="sb-quar__title" id="sb-quar-title-{{$i.ID}}" data-sb-quar-title>{{if $i.Title}}{{$i.Title}}{{else}}(untitled delivery){{end}}</h2>
+  <dl class="sb-epcard__scope">
+    {{if $i.HasActor}}
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Sender</dt><dd data-sb-quar-sender><code class="sb-code">{{if $i.Sender}}{{$i.Sender}}{{else}}—{{end}}</code>{{if $i.SenderTrusted}} <span class="sb-chip sb-chip--mono">{{$i.SenderTrusted}}</span>{{end}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Author</dt><dd data-sb-quar-author><code class="sb-code">{{if $i.Author}}{{$i.Author}}{{else}}—{{end}}</code>{{if $i.AuthorTrusted}} <span class="sb-chip sb-chip--mono">{{$i.AuthorTrusted}}</span>{{end}}</dd></div>
+    {{end}}
+    {{if $i.FaultCause}}<div class="sb-epcard__row"><dt class="sb-microlabel">Fault</dt><dd data-sb-quar-fault><code class="sb-code">{{$i.FaultCause}}</code>{{if $i.FaultDetail}} <span class="sb-muted">{{$i.FaultDetail}}</span>{{end}}</dd></div>{{end}}
+    {{if $i.RuleID}}<div class="sb-epcard__row"><dt class="sb-microlabel">Rule</dt><dd><code class="sb-code">{{$i.RuleID}}</code></dd></div>{{end}}
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Webhook</dt><dd><code class="sb-code">{{if $i.WebhookID}}{{$i.WebhookID}}{{else}}—{{end}}</code>{{if $i.Endpoint}} <span class="sb-muted">on {{$i.Endpoint}}</span>{{end}}{{if $i.TrustMode}} <span class="sb-badge sb-badge--{{$i.TrustMode}}" title="{{trustdef $i.TrustMode}}">{{$i.TrustMode}}</span>{{end}}</dd></div>
+  </dl>
+  {{/* The payload, collapsed by default. A text node inside <pre>: markup and Markdown in it stay
+       inert text. sb-disclosure.js mirrors the open state onto the summary's aria-expanded. */}}
+  <details class="sb-quar__payload" data-sb-disclosure>
+    <summary class="sb-quar__payload-summary" aria-expanded="false" aria-controls="sb-quar-payload-{{$i.ID}}">payload</summary>
+    <pre class="sb-pre" id="sb-quar-payload-{{$i.ID}}" data-sb-quar-payload>{{$i.Payload}}</pre>
+  </details>
+  <div class="sb-quar__acts">
+    <form method="post" action="/quarantine/{{$i.ID}}/release" class="sb-quar__form" hx-post="/quarantine/{{$i.ID}}/release" hx-target="#sb-quarantine-panel" hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label class="sb-microlabel" for="sb-quar-queue-{{$i.ID}}">queue (optional)</label>
+      <input class="sb-input" id="sb-quar-queue-{{$i.ID}}" name="queue" maxlength="128" placeholder="the rules decide" autocomplete="off">
+      <button type="submit" class="sb-btn sb-btn--mono" aria-label="Release {{$i.ShortID}}">release</button>
+    </form>
+    {{if $i.CanTrust}}
+    <form method="post" action="/quarantine/{{$i.ID}}/trust" class="sb-quar__form" hx-post="/quarantine/{{$i.ID}}/trust" hx-target="#sb-quarantine-panel" hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button type="submit" class="sb-btn sb-btn--mono sb-btn--success" aria-label="Trust {{$i.TrustFor}} on this webhook and release {{$i.ShortID}}" data-sb-quar-trust>trust actor · release</button>
+    </form>
+    {{end}}
+    <form method="post" action="/quarantine/{{$i.ID}}/discard" class="sb-quar__form" hx-post="/quarantine/{{$i.ID}}/discard" hx-target="#sb-quarantine-panel" hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label class="sb-microlabel" for="sb-quar-reason-{{$i.ID}}">reason</label>
+      <input class="sb-input" id="sb-quar-reason-{{$i.ID}}" name="reason" maxlength="500" required placeholder="spam, duplicate, not ours" autocomplete="off">
+      <button type="submit" class="sb-btn sb-btn--mono sb-btn--danger" aria-label="Discard {{$i.ShortID}}">discard</button>
+    </form>
+  </div>
+</article>{{end}}
+
+{{/* endpoint_webhooks — the webhook rows on an endpoint card: each webhook's source and target
+     queue, its open quarantine count (linking to the Quarantine view), its faults over the last 24
+     hours, and a warning when it trusts every verified sender. Data: []web.webhookSignalView.
+     Governing: SPEC-0026 REQ-9 (counts), REQ-1 (fault warning), REQ-5 (allow_all warning). */}}
+{{define "endpoint_webhooks"}}{{if .}}<div class="sb-epcard__row"><dt class="sb-microlabel">Webhooks</dt><dd><ul class="sb-quar-webhooks">
+  {{range .}}<li data-sb-webhook="{{.ID}}"><code class="sb-code">{{.ShortID}}</code> {{.Source}} → <span class="sb-chip sb-chip--queue">{{.TargetQueue}}</span>
+    {{if gt .Quarantined 0}}<a class="sb-chip sb-chip--mono" href="/quarantine" data-sb-webhook-quarantined="{{.Quarantined}}">{{.Quarantined}} held</a>{{else}}<span class="sb-muted" data-sb-webhook-quarantined="0">0 held</span>{{end}}
+    {{if gt .Faults24h 0}}<span class="sb-chip sb-chip--mono sb-quar-fault" data-sb-webhook-faults="{{.Faults24h}}" title="deliveries whose rules faulted in the last 24 hours; they are held in quarantine">⚠ {{.Faults24h}} faulted · 24h</span>{{else}}<span class="sb-muted" data-sb-webhook-faults="0">0 faults · 24h</span>{{end}}
+    {{if .AllowAll}}<span class="sb-chip sb-chip--mono sb-quar-fault" data-sb-webhook-allow-all title="allow_all trusts every verified sender: anyone who can make the producer send reaches your rules">⚠ trusts every sender</span>{{end}}
+  </li>{{end}}
+</ul></dd></div>{{end}}{{end}}

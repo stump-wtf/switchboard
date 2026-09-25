@@ -36,7 +36,7 @@ var tmplFS embed.FS
 // Startup parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
 // "Application Shell And Navigation" (providers joins the IA).
-var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "quickvend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "authorize"}
+var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "quickvend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "authorize", "quarantine"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -79,6 +79,11 @@ type Handler struct {
 	// streams promptly, not just future requests. Governing: SPEC-0014 REQ "Concurrency Safety"
 	// scenario "Revocation closes live streams", ADR-0008 (revoke is instant and total).
 	endpointRevoked func(endpointID string)
+
+	// quarantine releases and discards held deliveries for the Quarantine view (quarantine.go). Nil
+	// until the server wires the intake service, and every action then answers "unavailable".
+	// Governing: SPEC-0026 REQ-9.
+	quarantine QuarantineService
 }
 
 // SetEndpointRevokedHook registers fn to observe successful endpoint revocations. Wire it before
@@ -158,7 +163,7 @@ func dict(pairs ...any) (map[string]any, error) {
 // live counts, database connectivity, and the avatar initials.
 // Governing: SPEC-0015 REQ "Application Shell And Navigation" (six-view IA).
 type shell struct {
-	Active          string // board | todos | endpoints | personas | friends — marks aria-current on the nav
+	Active          string // board | todos | endpoints | personas | friends | quarantine — marks aria-current on the nav
 	TodoCount       int    // total todos (every state), shown beside the Todos rail entry (design record, #179)
 	LiveRate        int    // events/min for the LIVE pill (hidden when zero)
 	DBConnected     bool   // pool ping result — the rail footer indicator
@@ -166,6 +171,7 @@ type shell struct {
 	PersonasEnabled bool   // render the Personas rail entry only when the capability is enabled
 	FriendsEnabled  bool   // friending capability on — reveal the Friends rail entry (SPEC-0013)
 	FriendsIncoming int    // pending incoming friend requests — the rail badge (shown when nonzero)
+	QuarantineCount int    // open quarantine items in the human's scope — the rail badge (SPEC-0026 REQ-9)
 }
 
 type view struct {
@@ -212,6 +218,9 @@ type view struct {
 	FriendApprove *friendApproveView
 	// FriendRevoke feeds the friend revoke confirm page (templates/friend_revoke.html).
 	FriendRevoke *friendRevokeView
+
+	// Quarantine view (SPEC-0026 REQ-9): the held deliveries and the last action's notice.
+	Quarantine *quarantinePanelView
 }
 
 // buildShell computes the layout-shell state. Store errors are logged and rendered as the
@@ -242,6 +251,7 @@ func (h *Handler) buildShell(ctx context.Context, active string, human *store.Hu
 			}
 		}
 	}
+	sh.QuarantineCount = h.quarantineCount(ctx, human.ID)
 	stats, err := h.store.BoardStats(ctx, human.ID)
 	if err != nil {
 		h.log.Warn("shell board stats", "err", err)

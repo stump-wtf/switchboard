@@ -85,6 +85,19 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 			return renderPage(t, h, "vend", view{Title: "Vend endpoint", Human: human, CSRF: "tok",
 				Shell: sh, PersonasEnabled: true, Vend: v})
 		}(),
+		// The Quarantine view shows sender-written text by design (SPEC-0026 REQ-9): every slot of a
+		// held item, and the endpoint card's webhook rows, must flow through contextual escaping.
+		"quarantine": renderPage(t, h, "quarantine", view{Title: "Quarantine", Human: human, CSRF: "tok",
+			Shell: shell{Active: "quarantine", DBConnected: true, Initials: "JS", QuarantineCount: 1},
+			Quarantine: &quarantinePanelView{CSRF: "tok", Items: []quarantineItemView{{
+				ID: "td_1", ShortID: "td_1", Reason: "untrusted_actor", ReasonLabel: payload, Source: payload,
+				Kind: payload, Title: payload, TrustMode: payload, WebhookID: payload, Endpoint: payload,
+				HasActor: true, Sender: payload, Author: payload, SenderTrusted: payload, FaultCause: payload,
+				FaultDetail: payload, RuleID: payload, Payload: payload, CanTrust: true, TrustFor: payload,
+				ReceivedAt: time.Now()}}}}),
+		"endpoint-webhooks": renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: human, CSRF: "tok", Shell: sh,
+			EndpointCards: []endpointCard{{ID: "e1", State: "active", Webhooks: []webhookSignalView{{
+				ID: payload, ShortID: payload, Source: payload, TargetQueue: payload, Quarantined: 1, Faults24h: 1, AllowAll: true}}}}}),
 		"revoke": renderPage(t, h, "revoke", view{Title: "Revoke endpoint", Human: human, CSRF: "tok",
 			Shell: sh, PersonasEnabled: true, RevokeConfirm: &revokeConfirmView{Card: card}}),
 		"reveal": renderFrag(t, h, "vend_reveal", revealView{AgentName: payload, Slug: payload,

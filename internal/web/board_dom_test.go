@@ -223,7 +223,7 @@ func TestBoardExposesPresentationJSContract(t *testing.T) {
 	}
 	// The layout links the split helper modules so the hooks are actually driven.
 	for _, js := range []string{"/static/js/sb-live.js", "/static/js/sb-overlay.js", "/static/js/sb-vend.js",
-		"/static/js/sb-theme.js", "/static/js/sb-keys.js"} {
+		"/static/js/sb-theme.js", "/static/js/sb-keys.js", "/static/js/sb-disclosure.js"} {
 		if !strings.Contains(body, js) {
 			t.Errorf("layout must link %s", js)
 		}
