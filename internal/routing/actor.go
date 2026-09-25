@@ -320,11 +320,11 @@ const (
 )
 
 // UntrustedDecision is the outcome for a delivery the trust gate held: no rule ran, nothing is
-// routed, and the trace records the actor verdict. Until the quarantine queue lands (#386), it takes
-// the fail-closed faulted path: the event is recorded, and no todo is created.
-// Governing: SPEC-0026 REQ-5 "Evaluation" (an untrusted delivery is not evaluated by rules).
+// routed, and the trace records the actor verdict. The receiver quarantines it on the owner endpoint
+// as untrusted_actor.
+// Governing: SPEC-0026 REQ-5 "Evaluation" (an untrusted delivery is not evaluated by rules), REQ-6.
 func UntrustedDecision(a *ActorTrust) Decision {
-	return Decision{Faulted: true, Untrusted: true,
+	return Decision{Untrusted: true,
 		Trace: Trace{Stage: StageTrustGate, Cause: CauseUntrustedActor, Actor: a}}
 }
 

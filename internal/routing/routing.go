@@ -111,9 +111,14 @@ const (
 //     the same issue or artifact routed to the same queue records its event but mints no todo.
 //   - WorkOrder attaches a switchboard-authored work order (subject, provenance, authorizing rule) to
 //     each todo it mints.
+//
+// Quarantine is the third terminal action (SPEC-0026 REQ-6): it holds the delivery on the owner's
+// quarantine queue, which no tool-bearing agent is handed, until a human or classifier releases or
+// discards it. It is exclusive with Queue and Drop and takes no flags.
 type Action struct {
-	Queue     string   `json:"queue,omitempty"`
-	Drop      bool     `json:"drop,omitempty"`
+	Queue      string   `json:"queue,omitempty"`
+	Drop       bool     `json:"drop,omitempty"`
+	Quarantine bool     `json:"quarantine,omitempty"`
 	Endpoints []string `json:"endpoints,omitempty"`
 	Exclusive bool     `json:"exclusive,omitempty"`
 	Once      bool     `json:"once,omitempty"`
@@ -385,19 +390,26 @@ func paramScalarKind(v any) string {
 
 // checkAction validates one action's shape and reachability, returning ("", "") when it is fine.
 func checkAction(a Action, g Grant) (string, string) {
+	terminal := 0
+	for _, set := range []bool{a.Drop, a.Quarantine, strings.TrimSpace(a.Queue) != ""} {
+		if set {
+			terminal++
+		}
+	}
+	nonQueue := a.Drop || a.Quarantine
 	switch {
-	case a.Drop && a.Queue != "":
-		return CodeInvalidRule, "action must set exactly one of queue or drop"
-	case !a.Drop && strings.TrimSpace(a.Queue) == "":
-		return CodeInvalidRule, "action must set exactly one of queue or drop"
-	case a.Drop && len(a.Endpoints) > 0:
+	case terminal != 1:
+		return CodeInvalidRule, "action must set exactly one of queue, drop or quarantine"
+	case a.Queue == QueueQuarantine:
+		return CodeInvalidRule, `queue "quarantine" is reserved; use {"quarantine": true} to hold a delivery for review`
+	case nonQueue && len(a.Endpoints) > 0:
 		return CodeInvalidRule, "endpoints is only valid with a queue action"
-	case a.Drop && (a.Exclusive || a.Once || a.WorkOrder):
+	case nonQueue && (a.Exclusive || a.Once || a.WorkOrder):
 		return CodeInvalidRule, "exclusive, once and work_order are only valid with a queue action"
 	case len(a.Endpoints) > MaxActionEndpoint:
 		return CodeInvalidRule, fmt.Sprintf("at most %d endpoints per action", MaxActionEndpoint)
 	}
-	if a.Drop {
+	if nonQueue {
 		return "", ""
 	}
 	if !queueGranted(a.Queue, g) {
@@ -452,12 +464,29 @@ func exclusiveTarget(eps []string, queue string, g Grant) (string, bool) {
 }
 
 func queueGranted(q string, g Grant) bool {
-	return q != "" && (q == g.TargetQueue || slices.Contains(g.Queues, q))
+	return q != "" && q != QueueQuarantine && (q == g.TargetQueue || slices.Contains(g.Queues, q))
 }
 
+// QueueGranted reports whether a queue is within a grant: the webhook's target queue or its owner's
+// webhook-queue ceiling, and never the reserved quarantine queue. A release that names a queue is
+// held to it (SPEC-0026 REQ-7).
+func QueueGranted(q string, g Grant) bool { return queueGranted(q, g) }
+
+// QueueQuarantine is the reserved queue a quarantined delivery waits on (SPEC-0026 REQ-6). It is
+// refused as a webhook target, an endpoint scope or ceiling queue, and a rule action's queue.
+const QueueQuarantine = "quarantine"
+
+// Quarantine reasons (todos.quarantine_reason, SPEC-0026 REQ-6).
+const (
+	QuarantineUntrustedActor = "untrusted_actor"
+	QuarantineRuleFault      = "rule_fault"
+	QuarantineRuleAction     = "rule_action"
+)
+
 // Dispositions are the outcome of intake for one delivery, recorded on its event row (SPEC-0026
-// "Disposition"). Quarantined is reserved for the quarantine queue (SPEC-0026 REQ-6). Until that
-// lands, a faulted delivery is recorded with no todo.
+// "Disposition"). A faulted delivery keeps the faulted disposition, so faults stay findable, and is
+// also held on the quarantine queue. An untrusted delivery, or one a rule quarantined, is
+// quarantined.
 const (
 	DispositionRouted      = "routed"
 	DispositionDropped     = "dropped"
@@ -478,8 +507,9 @@ type Decision struct {
 	Endpoints   []string   // the endpoints to mint todos on, a subset of Grant.Endpoints in its order
 	Once        bool       // the action asked for at-most-once per (subject, queue)
 	WorkOrder   bool       // the action asked for a work order on each todo
-	Faulted     bool       // evaluation stopped at a rule fault; nothing is routed (SPEC-0026 REQ-1)
-	Untrusted   bool       // the trust gate held it before any rule ran; also Faulted until quarantine (REQ-5)
+	Faulted     bool       // evaluation stopped at a rule fault; quarantined as rule_fault (SPEC-0026 REQ-1)
+	Untrusted   bool       // the trust gate held it before any rule ran; quarantined as untrusted_actor (REQ-5)
+	Quarantine  bool       // a rule's {"quarantine": true} matched; quarantined as rule_action (REQ-6)
 	Unavailable bool       // the evaluator could not run at all for this delivery (SPEC-0026 REQ-2)
 	Fault       *RuleFault // the fault that stopped evaluation, when Faulted or Unavailable
 	Trace       Trace
@@ -492,11 +522,27 @@ func (d Decision) Disposition() string {
 	switch {
 	case d.Faulted || d.Unavailable:
 		return DispositionFaulted
+	case d.Untrusted || d.Quarantine:
+		return DispositionQuarantined
 	case d.Drop:
 		return DispositionDropped
 	default:
 		return DispositionRouted
 	}
+}
+
+// QuarantineReason is why a decision holds its delivery on the quarantine queue, or "" when it does
+// not (SPEC-0026 REQ-6 triggers).
+func (d Decision) QuarantineReason() string {
+	switch {
+	case d.Untrusted:
+		return QuarantineUntrustedActor
+	case d.Faulted:
+		return QuarantineRuleFault
+	case d.Quarantine:
+		return QuarantineRuleAction
+	}
+	return ""
 }
 
 // Trace records how a delivery was routed. It is persisted on the event and on every todo the
@@ -637,6 +683,10 @@ func run(ctx context.Context, code *gojq.Code, event map[string]any, vars any) (
 func apply(a Action, g Grant) (Decision, bool) {
 	if a.Drop {
 		return Decision{Drop: true}, true
+	}
+	if a.Quarantine {
+		// Held on the owner endpoint's quarantine queue whatever the fan-out; the receiver places it.
+		return Decision{Quarantine: true}, true
 	}
 	if !queueGranted(a.Queue, g) {
 		return Decision{}, false

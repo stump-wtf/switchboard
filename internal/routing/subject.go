@@ -125,8 +125,11 @@ type WorkOrder struct {
 	// about something an untrusted author wrote, even though a trusted sender moved it here. It is
 	// absent when there is no per-actor verdict: the source has no actor projection, or the webhook
 	// trusts everyone (allow_all). A worker treats absent as not trusted.
-	AuthorTrusted *bool  `json:"author_trusted,omitempty"`
-	Authority     string `json:"authority"`
+	AuthorTrusted *bool `json:"author_trusted,omitempty"`
+	// ReleasedBy names who let this work out of quarantine ("human:<id>" or "classifier:<slug>"),
+	// empty for a delivery that was never held. Governing: SPEC-0026 REQ-10.
+	ReleasedBy string `json:"released_by,omitempty"`
+	Authority  string `json:"authority"`
 }
 
 // WorkOrderRule names the routing decision that produced the work order.
@@ -147,6 +150,9 @@ func BuildWorkOrder(d Decision, in EnvelopeInput, s *Subject) WorkOrder {
 	}
 	if in.Actor != nil {
 		wo.AuthorTrusted = in.Actor.AuthorTrusted
+	}
+	if in.Release != nil {
+		wo.ReleasedBy = in.Release.By
 	}
 	return wo
 }
