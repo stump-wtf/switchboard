@@ -232,13 +232,12 @@ func TestResolveWebhookTargetsOrderAndScopes(t *testing.T) {
 func TestWebhookRoutingParamsRoundTrip(t *testing.T) {
 	s, ctx := testStore(t)
 	ep := seedEndpoint(t, s, ctx, "params", "q")
-	human := ownerOf(t, s, ctx, ep)
 	wh, err := s.CreateWebhook(ctx, ep, "cairn", "q", "signed", "tok-params", "whsec", 5)
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
 	params := map[string]any{"cairn_actors": []any{"joestump-agent"}, "require_verified": true}
-	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, human, func(WebhookRouting) (routing.Config, error) {
+	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, ep, func(WebhookRouting) (routing.Config, error) {
 		return routing.Config{Params: params}, nil
 	}); err != nil {
 		t.Fatalf("set params: %v", err)
@@ -248,7 +247,7 @@ func TestWebhookRoutingParamsRoundTrip(t *testing.T) {
 		gotRaw, _ := json.Marshal(got.Config.Params)
 		t.Fatalf("params = %s (%v), want %v", gotRaw, err, params)
 	}
-	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, human, func(WebhookRouting) (routing.Config, error) {
+	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, ep, func(WebhookRouting) (routing.Config, error) {
 		return routing.Config{}, nil
 	}); err != nil {
 		t.Fatalf("clear params: %v", err)

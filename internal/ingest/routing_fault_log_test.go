@@ -60,11 +60,11 @@ func TestSelfManagedRoutingFaultIsWarned(t *testing.T) {
 	ing, pool, ctx, logs := ingestWithLogCapture(t, Config{})
 	ing.SetRouter(routing.InProcess{})
 	st := store.New(pool)
-	h, _, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-fault", cairnSecret)
+	_, _, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-fault", cairnSecret)
 
 	// "trust" stands in for an allowlist that has stopped working — the shape that matters, because
 	// a trust rule that faults admits nobody at that rule and the delivery continues past it.
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "trust", Expr: `error("boom")`, Action: routing.Action{Drop: true}},
 		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
 	}})
@@ -94,8 +94,8 @@ func TestSelfManagedRoutingWithoutFaultsIsQuiet(t *testing.T) {
 	ing, pool, ctx, logs := ingestWithLogCapture(t, Config{})
 	ing.SetRouter(routing.InProcess{})
 	st := store.New(pool)
-	h, _, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-quiet", cairnSecret)
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	_, _, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-quiet", cairnSecret)
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
 	}})
 

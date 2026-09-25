@@ -51,9 +51,10 @@ func TestFriendRequestPendingGrantsNothing(t *testing.T) {
 		t.Fatalf("pending edge must persist zero endpoints, got %d", n)
 	}
 
-	// A second LIVE request for the same directional pair collides (anti-flood invariant).
+	// A second LIVE request for the same directional pair between the same humans collides
+	// (anti-flood invariant; the humans are in the key since SPEC-0033 F13).
 	if _, err := s.CreateFriendRequest(ctx, CreateFriendRequestParams{
-		FromPersona: "a@a", ToPersona: "b@b", ToHuman: target.ID,
+		FromPersona: "a@a", ToPersona: "b@b", FromHuman: requester.ID, ToHuman: target.ID,
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("duplicate live request must be ErrConflict, got %v", err)
 	}
@@ -628,7 +629,7 @@ func TestFriendRequestOutgoingDirectionPersists(t *testing.T) {
 	// A duplicate LIVE outgoing request for the same pair collides (anti-flood unique index).
 	if _, err := s.CreateFriendRequest(ctx, CreateFriendRequestParams{
 		FromPersona: "local-agent", ToPersona: "zed@far.example", Direction: "outgoing",
-		ToHuman: sender.ID,
+		FromHuman: sender.ID, ToHuman: sender.ID,
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("duplicate live outgoing request must be ErrConflict, got %v", err)
 	}

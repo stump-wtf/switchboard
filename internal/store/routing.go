@@ -6,9 +6,13 @@ package store
 // callback, while the webhook row is locked — so a concurrent edit can never interleave between
 // "validated against the grant" and "written".
 //
-// Ownership is checked at the HUMAN, exactly as the ADR-0022 route verbs do: a webhook is its owning
-// human's to configure from any of that human's endpoints, and an unknown, malformed, or
-// another-human's webhook id is uniformly ErrNotFound.
+// Ownership is checked at the webhook's OWN endpoint: only the endpoint that owns a webhook may read or
+// change its rules, and an unknown, malformed, or any-other-endpoint's webhook id is uniformly
+// ErrNotFound. Human-level ownership let any endpoint of a human, including a friend endpoint vended on
+// that human's agent, rewrite the human's rules and dry-run them over the human's payloads (F3, F19).
+//
+// Governing: ADR-0038, SPEC-0033 REQ "Closing the Audited Surfaces" (F19), scenario "Rule verbs stay
+// on their own webhook".
 //
 // Governing: ADR-0024, SPEC-0020 REQ "Rule Validation at Save Time", REQ "Isolation and Tenant
 // Safety"; ADR-0022; ADR-0012.
@@ -106,13 +110,14 @@ func (s *Store) WebhookRoutingByID(ctx context.Context, webhookID string) (Webho
 	WHERE w.id = $1`, webhookID))
 }
 
-// WebhookRoutingForHuman reads a webhook's routing when ownerHumanID owns it, else ErrNotFound.
-func (s *Store) WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHumanID string) (WebhookRouting, error) {
-	if !isUUID(webhookID) || !isUUID(ownerHumanID) {
+// WebhookRoutingForEndpoint reads a webhook's routing when endpointID is the endpoint that owns it,
+// else ErrNotFound.
+func (s *Store) WebhookRoutingForEndpoint(ctx context.Context, webhookID, endpointID string) (WebhookRouting, error) {
+	if !isUUID(webhookID) || !isUUID(endpointID) {
 		return WebhookRouting{}, ErrNotFound
 	}
 	return scanWebhookRouting(s.pool.QueryRow(ctx, webhookRoutingSelect+`
-	WHERE w.id = $1 AND a.owner_human_id = $2`, webhookID, ownerHumanID))
+	WHERE w.id = $1 AND w.endpoint_id = $2`, webhookID, endpointID))
 }
 
 // UpdateWebhookRouting replaces a webhook's routing configuration with whatever mutate returns,
@@ -124,9 +129,11 @@ func (s *Store) WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHuma
 // mutate runs while this transaction holds a pooled connection, so it MUST NOT touch the pool (any
 // Store read): on a pool of N connections, N concurrent updates would each hold one and block forever
 // acquiring another. Read what validation needs before calling.
-func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanID string,
+//
+// Only the webhook's own endpoint (endpointID) may update it; any other caller is ErrNotFound.
+func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, endpointID string,
 	mutate func(WebhookRouting) (routing.Config, error)) (WebhookRouting, error) {
-	if !isUUID(webhookID) || !isUUID(ownerHumanID) {
+	if !isUUID(webhookID) || !isUUID(endpointID) {
 		return WebhookRouting{}, ErrNotFound
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -136,8 +143,8 @@ func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanI
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	wr, err := scanWebhookRouting(tx.QueryRow(ctx, webhookRoutingSelect+`
-	WHERE w.id = $1 AND a.owner_human_id = $2
-	FOR UPDATE OF w`, webhookID, ownerHumanID))
+	WHERE w.id = $1 AND w.endpoint_id = $2
+	FOR UPDATE OF w`, webhookID, endpointID))
 	if err != nil {
 		return WebhookRouting{}, err
 	}

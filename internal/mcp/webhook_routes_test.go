@@ -56,7 +56,7 @@ func (f *fakeStore) ListWebhookRoutes(_ context.Context, _ string) ([]store.Webh
 	return nil, nil
 }
 
-func (f *fakeStore) WebhookOwnerEndpointForHuman(_ context.Context, _, _ string) (string, error) {
+func (f *fakeStore) WebhookOwnerEndpointFor(_ context.Context, _, _ string) (string, error) {
 	return "", store.ErrNotFound
 }
 
@@ -150,6 +150,7 @@ type routeFixture struct {
 	epA1, epA2, epB    string // endpoint ids
 	slugA1             string
 	tokenA1            string
+	slugB, tokenB      string // epB's own credential: B's webhook is configured only from epB (F19)
 	webhookA, webhookB string // webhook ids owned by epA1 / epB
 }
 
@@ -167,7 +168,8 @@ func newRouteFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rou
 	f.slugA1 = "agent-a1-11111111"
 	f.epA1, f.tokenA1 = mustEndpoint(t, ctx, st, f.agentA1, f.slugA1, allRouteVerbs)
 	f.epA2, _ = mustEndpoint(t, ctx, st, f.agentA2, "agent-a2-22222222", allRouteVerbs)
-	f.epB, _ = mustEndpoint(t, ctx, st, f.agentB, "agent-b-33333333", allRouteVerbs)
+	f.slugB = "agent-b-33333333"
+	f.epB, f.tokenB = mustEndpoint(t, ctx, st, f.agentB, f.slugB, allRouteVerbs)
 
 	f.webhookA = mustWebhook(t, ctx, st, f.epA1, "tok-a")
 	f.webhookB = mustWebhook(t, ctx, st, f.epB, "tok-b")
@@ -726,14 +728,11 @@ func TestWebhookRouteVerbsScopeGated(t *testing.T) {
 
 func mustTargets(t *testing.T, ctx context.Context, f *routeFixture, webhookID string) []string {
 	t.Helper()
-	owner, err := f.st.WebhookOwnerEndpointForHuman(ctx, webhookID, f.humanA)
+	wr, err := f.st.WebhookRoutingByID(ctx, webhookID)
 	if err != nil {
-		// Not A's webhook — resolve against B, the only other human in the fixture.
-		if owner, err = f.st.WebhookOwnerEndpointForHuman(ctx, webhookID, f.humanB); err != nil {
-			t.Fatalf("resolve webhook owner: %v", err)
-		}
+		t.Fatalf("resolve webhook owner: %v", err)
 	}
-	targets, err := f.st.ResolveWebhookTargets(ctx, webhookID, owner)
+	targets, err := f.st.ResolveWebhookTargets(ctx, webhookID, wr.EndpointID)
 	if err != nil {
 		t.Fatalf("resolve webhook targets: %v", err)
 	}

@@ -47,9 +47,15 @@ func cairnHandoffBody(eventID, title, handoffTo string) string {
 		eventID, time.Now().UTC().Format(time.RFC3339Nano), title, handoffTo)
 }
 
-func setRules(t *testing.T, ctx context.Context, st *store.Store, webhookID, humanID string, cfg routing.Config) {
+// setRules saves cfg as the webhook's rules, acting as the webhook's own endpoint (the only caller
+// the store lets change them, SPEC-0033 F19).
+func setRules(t *testing.T, ctx context.Context, st *store.Store, webhookID string, cfg routing.Config) {
 	t.Helper()
-	if _, err := st.UpdateWebhookRouting(ctx, webhookID, humanID, func(store.WebhookRouting) (routing.Config, error) {
+	wr, err := st.WebhookRoutingByID(ctx, webhookID)
+	if err != nil {
+		t.Fatalf("resolve webhook: %v", err)
+	}
+	if _, err := st.UpdateWebhookRouting(ctx, webhookID, wr.EndpointID, func(store.WebhookRouting) (routing.Config, error) {
 		return cfg, nil
 	}); err != nil {
 		t.Fatalf("set rules: %v", err)
@@ -179,8 +185,8 @@ func TestSelfManagedRoutingDropIsRecordedButSilent(t *testing.T) {
 	ing, hub, pool, ctx, _ := testIngestDeps(t, Config{})
 	ing.SetRouter(routing.InProcess{})
 	st := store.New(pool)
-	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-drop", cairnSecret)
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	_, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-drop", cairnSecret)
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "noise", Expr: `.artifact.title | startswith("[noise]")`, Action: routing.Action{Drop: true}},
 	}})
 	ch, cancel := hub.Subscribe(owner.ID, []string{"inbox"})
@@ -203,7 +209,7 @@ func TestSelfManagedRoutingDropIsRecordedButSilent(t *testing.T) {
 
 	// The owner removes the rule; a redelivery of the dropped event is STILL dropped (its dedup slot
 	// was spent by the first decision), while a new delivery routes normally.
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{})
+	setRules(t, ctx, st, wh.ID, routing.Config{})
 	rec = postSelfManaged(ing, "cairn-drop", noise, cairnHeaders(noise, "evt-noise"))
 	if r := routed(t, rec); !r.Dropped {
 		t.Fatalf("redelivery after rule change = %+v, want still dropped", r)
@@ -225,8 +231,8 @@ func TestSelfManagedRoutingOnHeaders(t *testing.T) {
 	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
 	ing.SetRouter(routing.InProcess{})
 	st := store.New(pool)
-	h, _, wh := seedWebhook(t, st, ctx, "generic", "token", "forge", "generic-headers", "")
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	_, _, wh := seedWebhook(t, st, ctx, "generic", "token", "forge", "generic-headers", "")
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "ci", Expr: `.kind == "workflow_run" or .headers["x-gitea-event"] == "workflow_job"`, Action: routing.Action{Drop: true}},
 	}})
 	rec := postSelfManaged(ing, "generic-headers", `{"action":"completed"}`, map[string]string{"X-Gitea-Event": "workflow_run", "X-Gitea-Delivery": "d-ci"})
@@ -252,7 +258,7 @@ func TestSelfManagedRoutingNarrowsFanOutWithinTheGrant(t *testing.T) {
 		t.Fatalf("add route: %v", err)
 	}
 	setWebhookQueues(t, ctx, pool, owner.ID, "inbox", "handoff")
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "to-pool2", Expr: `.artifact.metadata.handoff_to == "pool2"`, Action: routing.Action{Queue: "handoff", Endpoints: []string{pool2.ID}}},
 	}})
 
@@ -291,7 +297,7 @@ func TestSelfManagedRoutingNarrowsFanOutWithinTheGrant(t *testing.T) {
 	// ["inbox", "handoff"], so the owner's grant remains ["inbox", "handoff"] and a rule
 	// to "handoff" continues to route there (SPEC-0020 REQ "Rule Validation at Save Time"
 	// plus the fix: vending an endpoint for queue Q demonstrably grants the owner Q).
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "to-handoff", Expr: `true`, Action: routing.Action{Queue: "handoff"}},
 	}})
 	setWebhookQueues(t, ctx, pool, owner.ID, "inbox")
@@ -316,9 +322,9 @@ func TestSelfManagedRoutingCannotReachAnotherTenant(t *testing.T) {
 	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
 	ing.SetRouter(routing.InProcess{})
 	st := store.New(pool)
-	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-tenant", cairnSecret)
+	_, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-tenant", cairnSecret)
 	_, stranger := seedEndpoint(t, st, ctx, "stranger", []string{"inbox"})
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "escape", Expr: `true`, Action: routing.Action{Queue: "inbox", Endpoints: []string{stranger.ID}}},
 	}, Default: &routing.Action{Queue: "inbox", Endpoints: []string{stranger.ID}}})
 

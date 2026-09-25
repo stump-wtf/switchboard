@@ -231,17 +231,18 @@ func (h *Handler) removeWebhookRouteTool(ep store.AuthEndpoint) sdk.ToolHandlerF
 
 // --- authorization helpers ---
 
-// ownedWebhook resolves a webhook the CALLING endpoint's human owns, returning the webhook's owning
-// endpoint id (its implicit delivery target). A webhook that does not exist, is malformed, or belongs
-// to another human is uniformly "not_found" — the same shape rotate_webhook/delete_webhook use, so
-// probing ids reveals nothing about another human's webhooks.
+// ownedWebhook resolves a webhook the CALLING endpoint owns, returning the webhook's owning endpoint id
+// (its implicit delivery target). A webhook that does not exist, is malformed, or belongs to any other
+// endpoint is uniformly "not_found" — the same shape rotate_webhook/delete_webhook use, so probing ids
+// reveals nothing about anyone else's webhooks.
 //
-// Ownership is checked at the HUMAN, not the endpoint: an agent may hold several endpoints under one
-// human (ADR-0008), and a human's own webhook is theirs to route from whichever of their endpoints is
-// driving the session. The tenant boundary ADR-0022 defends is between HUMANS; within one human,
-// endpoint scoping is the todo-visibility mechanism, not an ownership wall.
+// Ownership is checked at the webhook's own ENDPOINT, not the human. Human-level ownership let every
+// endpoint of a human act on all of that human's webhooks, and a friend endpoint is vended on the
+// approver's agent, so a friend could re-route the approver's deliveries (F3). A webhook now acts with
+// its own endpoint's authority and no other's. Governing: ADR-0038, SPEC-0033 REQ "Closing the
+// Audited Surfaces" (F19).
 func (h *Handler) ownedWebhook(ctx context.Context, ep store.AuthEndpoint, tool, webhookID string) (string, error) {
-	ownerEndpointID, err := h.store.WebhookOwnerEndpointForHuman(ctx, webhookID, ep.OwnerHumanID)
+	ownerEndpointID, err := h.store.WebhookOwnerEndpointFor(ctx, webhookID, ep.ID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			h.log.Warn("mcp webhook route on unowned webhook", "slug", ep.Slug, "tool", tool)

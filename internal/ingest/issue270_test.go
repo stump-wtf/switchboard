@@ -48,7 +48,7 @@ func TestIssue270DeliveryRoutesToVendedQueue(t *testing.T) {
 	if err := st.AddWebhookRoute(ctx, wh.ID, laneS.ID, h.ID); err != nil {
 		t.Fatalf("route lane-s pool: %v", err)
 	}
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "handoff-lane-s", Name: "handoff pinned to lane:s",
 			Expr:   `.source == "cairn" and any((.artifact.tags // [])[]; . == "lane:s")`,
 			Action: routing.Action{Queue: "lane-s", Endpoints: []string{laneS.ID}}},

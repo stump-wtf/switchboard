@@ -10,9 +10,11 @@ package mcp
 //
 //  1. VERB SCOPE — scopeGuard (tools.go) refuses these verbs outside the endpoint's allowlist; they
 //     are members of webhookVerbs (verbs.go).
-//  2. WEBHOOK OWNERSHIP — the caller's human must own the webhook (store.WebhookRoutingForHuman /
-//     UpdateWebhookRouting); unknown, malformed, and another human's webhook ids are uniformly
-//     not_found, exactly as the ADR-0022 route verbs answer.
+//  2. WEBHOOK OWNERSHIP — the calling endpoint must be the webhook's own endpoint
+//     (store.WebhookRoutingForEndpoint / UpdateWebhookRouting); unknown, malformed, and any other
+//     endpoint's webhook ids, the same human's included, are uniformly not_found, exactly as the
+//     ADR-0022 route verbs answer. Governing: ADR-0038, SPEC-0033 REQ "Closing the Audited
+//     Surfaces" (F3, F19).
 //  3. REACHABILITY — every save is validated by routing.Validate against a grant built from
 //     switchboard state alone: the webhook's target queue, its OWNER's allowed webhook queues (the
 //     owning endpoint's ceiling united with the queues of the owner's other active, unexpired
@@ -201,7 +203,7 @@ func (h *Handler) listWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 		if id == "" {
 			return nil, webhookRulesOut{}, &toolError{codeInvalidArgument, "webhook_id is required"}
 		}
-		wr, err := h.store.WebhookRoutingForHuman(ctx, id, ep.OwnerHumanID)
+		wr, err := h.store.WebhookRoutingForEndpoint(ctx, id, ep.ID)
 		if err != nil {
 			return nil, webhookRulesOut{}, h.mapRuleErr(ep, "list_webhook_rules", err)
 		}
@@ -299,7 +301,7 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 		if (in.EventID > 0) == (in.Payload != nil) {
 			return nil, testWebhookRulesOut{}, &toolError{codeInvalidArgument, "exactly one of event_id or payload is required"}
 		}
-		wr, err := h.store.WebhookRoutingForHuman(ctx, id, ep.OwnerHumanID)
+		wr, err := h.store.WebhookRoutingForEndpoint(ctx, id, ep.ID)
 		if err != nil {
 			return nil, testWebhookRulesOut{}, h.mapRuleErr(ep, "test_webhook_rules", err)
 		}
@@ -393,7 +395,7 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 	// forever on another, and ingest wedges with them. Targets read a moment before the lock are as
 	// sound as targets read under it — the lock never covered webhook_routes or endpoint state — and
 	// every delivery re-applies the grant anyway. The queue ceiling still comes from the locked row.
-	pre, err := h.store.WebhookRoutingForHuman(ctx, id, ep.OwnerHumanID)
+	pre, err := h.store.WebhookRoutingForEndpoint(ctx, id, ep.ID)
 	if err != nil {
 		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 	}
@@ -406,7 +408,7 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 	}
 	var g routing.Grant
-	wr, err := h.store.UpdateWebhookRouting(ctx, id, ep.OwnerHumanID, func(cur store.WebhookRouting) (routing.Config, error) {
+	wr, err := h.store.UpdateWebhookRouting(ctx, id, ep.ID, func(cur store.WebhookRouting) (routing.Config, error) {
 		next, err := change(cur.Config)
 		if err != nil {
 			return routing.Config{}, err

@@ -33,7 +33,8 @@ func TestUpdateWebhookRoutingIsOwnedAndAtomic(t *testing.T) {
 	s, ctx := testStore(t)
 	epA := seedEndpoint(t, s, ctx, "routing-a", "q")
 	epB := seedEndpoint(t, s, ctx, "routing-b", "q")
-	humanA, humanB := ownerOf(t, s, ctx, epA), ownerOf(t, s, ctx, epB)
+	// A second endpoint of A's own human: F19 says it is a stranger to epA's webhook too.
+	epA2 := vendUnder(t, s, ctx, ownerOf(t, s, ctx, epA), "routing-a2", "q")
 	wh, err := s.CreateWebhook(ctx, epA, "cairn", "q", "signed", "tok-routing-a", "whsec_a", 5)
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
@@ -52,38 +53,42 @@ func TestUpdateWebhookRoutingIsOwnedAndAtomic(t *testing.T) {
 		Rules:   []routing.Rule{{ID: "r1", Name: "one", Expr: `.kind == "x"`, Action: routing.Action{Queue: "q", Endpoints: []string{epA}}}},
 		Default: &routing.Action{Drop: true},
 	}
-	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, humanA, func(WebhookRouting) (routing.Config, error) { return cfg, nil }); err != nil {
+	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, epA, func(WebhookRouting) (routing.Config, error) { return cfg, nil }); err != nil {
 		t.Fatalf("owner update: %v", err)
 	}
-	got, err := s.WebhookRoutingForHuman(ctx, wh.ID, humanA)
+	got, err := s.WebhookRoutingForEndpoint(ctx, wh.ID, epA)
 	if err != nil || !reflect.DeepEqual(got.Config, cfg) {
 		t.Fatalf("reread = %+v (%v), want %+v", got.Config, err, cfg)
 	}
 
-	// Another human learns nothing and changes nothing — and its mutate callback never runs.
-	if _, err := s.WebhookRoutingForHuman(ctx, wh.ID, humanB); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("other human read = %v, want ErrNotFound", err)
-	}
-	called := false
-	_, err = s.UpdateWebhookRouting(ctx, wh.ID, humanB, func(WebhookRouting) (routing.Config, error) {
-		called = true
-		return routing.Config{}, nil
-	})
-	if !errors.Is(err, ErrNotFound) || called {
-		t.Fatalf("other human update = %v (mutate called: %v), want ErrNotFound without calling mutate", err, called)
+	// Another human's endpoint, and a sibling endpoint of the SAME human, learn nothing and change
+	// nothing — and the mutate callback never runs. Governing: SPEC-0033 REQ "Closing the Audited
+	// Surfaces" (F19), scenario "Rule verbs stay on their own webhook".
+	for name, other := range map[string]string{"other human": epB, "sibling endpoint": epA2} {
+		if _, err := s.WebhookRoutingForEndpoint(ctx, wh.ID, other); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s read = %v, want ErrNotFound", name, err)
+		}
+		called := false
+		_, err = s.UpdateWebhookRouting(ctx, wh.ID, other, func(WebhookRouting) (routing.Config, error) {
+			called = true
+			return routing.Config{}, nil
+		})
+		if !errors.Is(err, ErrNotFound) || called {
+			t.Fatalf("%s update = %v (mutate called: %v), want ErrNotFound without calling mutate", name, err, called)
+		}
 	}
 	for _, id := range []string{"", "not-a-uuid"} {
 		if _, err := s.WebhookRoutingByID(ctx, id); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("routing by malformed id %q = %v, want ErrNotFound", id, err)
 		}
-		if _, err := s.UpdateWebhookRouting(ctx, id, humanA, func(WebhookRouting) (routing.Config, error) { return cfg, nil }); !errors.Is(err, ErrNotFound) {
+		if _, err := s.UpdateWebhookRouting(ctx, id, epA, func(WebhookRouting) (routing.Config, error) { return cfg, nil }); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("update malformed id %q = %v, want ErrNotFound", id, err)
 		}
 	}
 
 	// A failed validation (any mutate error) leaves the previous configuration in force.
 	invalid := errors.New("rule 0: expr does not parse")
-	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, humanA, func(WebhookRouting) (routing.Config, error) {
+	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, epA, func(WebhookRouting) (routing.Config, error) {
 		return routing.Config{}, invalid
 	}); !errors.Is(err, invalid) {
 		t.Fatalf("failing mutate = %v, want its error unchanged", err)
@@ -93,7 +98,7 @@ func TestUpdateWebhookRoutingIsOwnedAndAtomic(t *testing.T) {
 	}
 
 	// Clearing persists an empty list and a NULL default: back to the target queue.
-	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, humanA, func(WebhookRouting) (routing.Config, error) { return routing.Config{}, nil }); err != nil {
+	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, epA, func(WebhookRouting) (routing.Config, error) { return routing.Config{}, nil }); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	var rules string

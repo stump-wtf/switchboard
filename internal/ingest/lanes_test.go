@@ -82,7 +82,7 @@ func newLanesWorld(t *testing.T) *lanesWorld {
 		if err := st.AddWebhookRoute(ctx, wh.ID, w.dup.ID, h.ID); err != nil {
 			t.Fatalf("route dup: %v", err)
 		}
-		setRules(t, ctx, st, wh.ID, h.ID, pack)
+		setRules(t, ctx, st, wh.ID, pack)
 	}
 	return w
 }
