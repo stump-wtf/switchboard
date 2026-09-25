@@ -33,6 +33,9 @@ const (
 		"(recorded and routed nowhere) until trusted actors, or allow_all, are set with set_trusted_actors"
 	trustAllowAllWarning = "allow_all trusts every verified sender: anyone who can make the producer send " +
 		"(for a public repository, anyone who can open an issue) reaches your rules; prefer a list"
+	trustNoSetVerbWarning = "This endpoint was not granted set_trusted_actors (endpoints vended before it existed " +
+		"lack it, and endpoint scope never widens): delete this webhook and create it again with trusted_actors, " +
+		"or have the owner re-vend the endpoint with the verb"
 )
 
 type setTrustedActorsIn struct {
