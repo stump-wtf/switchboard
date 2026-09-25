@@ -122,14 +122,32 @@ type WorkOrder struct {
 	AuthorizedBy WorkOrderRule `json:"authorized_by"`
 	Subject      *Subject      `json:"subject,omitempty"`
 	// AuthorTrusted is the trust gate's author verdict (SPEC-0026 REQ-10). false means the work is
-	// about something an untrusted author wrote, even though a trusted sender moved it here. It is
-	// absent when there is no per-actor verdict: the source has no actor projection, or the webhook
-	// trusts everyone (allow_all). A worker treats absent as not trusted.
+	// about something an untrusted author wrote, even though a trusted sender moved it here. A work
+	// order built from a delivery with .actor always carries the key: null under allow_all, where
+	// there is no per-actor verdict. It is absent only on a source with no actor projection. A worker
+	// treats null or absent as not trusted.
 	AuthorTrusted *bool `json:"author_trusted,omitempty"`
 	// ReleasedBy names who let this work out of quarantine ("human:<id>" or "classifier:<slug>"),
 	// empty for a delivery that was never held. Governing: SPEC-0026 REQ-10.
 	ReleasedBy string `json:"released_by,omitempty"`
 	Authority  string `json:"authority"`
+	// gated records that the delivery had .actor, so author_trusted is emitted even when null.
+	gated bool
+}
+
+// MarshalJSON emits author_trusted as null, rather than dropping it, when the delivery had .actor
+// but no per-actor verdict (allow_all). SPEC-0026 REQ-10: a work order built from a delivery with
+// .actor MUST carry author_trusted. Governing: SPEC-0026 REQ-10.
+func (w WorkOrder) MarshalJSON() ([]byte, error) {
+	type plain WorkOrder // no methods, so no recursion
+	if !w.gated || w.AuthorTrusted != nil {
+		return json.Marshal(plain(w))
+	}
+	// The shallower author_trusted field shadows the embedded one, and has no omitempty.
+	return json.Marshal(struct {
+		plain
+		AuthorTrusted *bool `json:"author_trusted"`
+	}{plain: plain(w)})
 }
 
 // WorkOrderRule names the routing decision that produced the work order.
@@ -149,7 +167,7 @@ func BuildWorkOrder(d Decision, in EnvelopeInput, s *Subject) WorkOrder {
 		Subject:      s, Authority: WorkOrderAuthority,
 	}
 	if in.Actor != nil {
-		wo.AuthorTrusted = in.Actor.AuthorTrusted
+		wo.AuthorTrusted, wo.gated = in.Actor.AuthorTrusted, true
 	}
 	if in.Release != nil {
 		wo.ReleasedBy = in.Release.By
