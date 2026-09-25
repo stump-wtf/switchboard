@@ -90,7 +90,6 @@ and `.headers`.
 | `.payload` | the body parsed as JSON, or `null` when it is not JSON |
 | `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id` (authenticated), `on_behalf_of` (client-reported `name/version`), `expires_at`, `tags` (cairn's string list), `metadata` (`null`: cairn sends none) |
 | `.issue` | Gitea/GitHub `issues` events only (`null` otherwise, pull requests included): `provider`, `action`, `event_type`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels` (names), `label` (GitHub's changed label), `body_size`, `label_event`, `key` |
-
 | `.actor` | `{sender, author, sender_trusted, author_trusted, trusted}`: who acted, parsed from the verified body, and the trust gate's verdict. Names are `null` when the body has none (a push has no author). Every flag is `null` on sources with no trust gate (`generic`, `stripe`, `slack`), and the two per-actor flags are `null` under `allow_all`. A payload's own `actor` key stays under `.payload` and cannot reach `.actor`. |
 
 `.issue` reads the same on both forges: Gitea's label change (`issue_label`, action `label_updated`)
