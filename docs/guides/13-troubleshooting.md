@@ -70,10 +70,18 @@ anything.
   - **Gitea vs GitHub actions differ.** A label change is `label_updated` on Gitea and `labeled` on
     GitHub.
   - **An earlier rule matched.** First match wins; check `rule_id` on the trace.
-- **`faults` is present.** The rule errored (`error`), ran too long (`timeout`,
-  `budget_exhausted`), or no longer compiles (`compile_error`). A faulting rule counts as no match.
-  A jq error usually means indexing into a missing value; use `//` defaults (`.payload.issue.title
-  // ""`) and `[]?` for lists.
+- **`stage: fault` (disposition `faulted`).** The rule at `rule_id` errored (`error`), ran too
+  long (`timeout`, `budget_exhausted`), or no longer compiles (`compile_error`). Evaluation stopped
+  there and the delivery was recorded with no todo, so it did not fall through to later rules or
+  the default. A jq error usually means indexing into a missing value; use `//` defaults
+  (`.payload.issue.title // ""`) and `[]?` for lists. `list_webhook_events {"disposition":
+  "faulted"}` lists every one, and `test_webhook_rules {"event_id": …}` reproduces it.
+- **A rule save is refused, naming events.** The rules fault on some of the webhook's 50 most
+  recent deliveries. Dry-run the named event ids with `test_webhook_rules`, fix the expression, and
+  save again.
+- **The producer sees `503 routing unavailable`.** The rule sandbox could not run (it failed to
+  start, is saturated, or died), so nothing was recorded. The producer's retry lands once it is
+  healthy. Check the server log for the matching error.
 - **`cause: rule_not_granted`.** The rule matched, but its queue or one of its `endpoints` is no
   longer reachable: the route was removed or the target revoked. The default applied, and later
   rules were skipped.
