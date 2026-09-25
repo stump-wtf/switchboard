@@ -111,6 +111,8 @@ type ToolStore interface {
 	CreateWebhookWithTrust(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int, trustedActors []byte) (store.Webhook, error)
 	WebhookForEndpoint(ctx context.Context, id, endpointID string) (store.Webhook, error)
 	SetWebhookTrustedActors(ctx context.Context, id, endpointID string, trustedActors []byte) (store.Webhook, error)
+	// QuarantineCounts is list_webhooks' per-webhook count of open quarantine items (SPEC-0026 REQ-5).
+	QuarantineCounts(ctx context.Context, endpointID string) (map[string]int, error)
 	ListWebhooks(ctx context.Context, endpointID string) ([]store.Webhook, error)
 	RotateWebhookSecret(ctx context.Context, id, endpointID, newSecret, newIngestToken string) (store.Webhook, error)
 	DeleteWebhook(ctx context.Context, id, endpointID string) error

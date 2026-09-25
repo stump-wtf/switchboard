@@ -25,6 +25,21 @@ type fakePruneStore struct {
 	calls int
 	res   store.PruneResult
 	errs  []error // errs[i] returned on call i (nil past the end)
+	// expires counts ExpireQuarantine calls, which ride every prune tick (SPEC-0026 REQ-6).
+	expires int
+}
+
+func (f *fakePruneStore) ExpireQuarantine(context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expires++
+	return 0, nil
+}
+
+func (f *fakePruneStore) expireCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.expires
 }
 
 func (f *fakePruneStore) Prune(ctx context.Context) (store.PruneResult, error) {
@@ -78,6 +93,8 @@ func TestPrunerRunsAtStartupAndOnTicksThenStopsOnCancel(t *testing.T) {
 	done := startPruner(ctx, fake, log, 2*time.Millisecond)
 	// >= 3 calls proves both the startup prune and the periodic ticks fire.
 	waitFor(t, func() bool { return fake.count() >= 3 }, "pruner never reached 3 Prune calls (startup + ticks)")
+	// Quarantine expiry rides the same tick (SPEC-0026 REQ-6).
+	waitFor(t, func() bool { return fake.expireCount() >= 3 }, "pruner never expired quarantine on its ticks")
 
 	cancel()
 	select {

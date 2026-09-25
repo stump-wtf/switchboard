@@ -562,6 +562,10 @@ const pruneInterval = time.Hour
 // interface so the loop wiring is unit-testable without a database.
 type pruneStore interface {
 	Prune(ctx context.Context) (store.PruneResult, error)
+	// ExpireQuarantine auto-discards held deliveries past 30 days, or past the retention bound when
+	// that is shorter (SPEC-0026 REQ-6). It rides the hourly retention tick: expiry is measured in
+	// days, and the sweep is one statement that is safe under concurrent instances.
+	ExpireQuarantine(ctx context.Context) (int64, error)
 }
 
 // pruner periodically enforces the hybrid age + row-cap retention policy by invoking store.Prune,
@@ -573,6 +577,16 @@ type pruneStore interface {
 // of the process. Governing: SPEC-0004 REQ "Hybrid Retention and Bounded Growth", ADR-0002.
 func pruner(ctx context.Context, st pruneStore, log *slog.Logger, interval time.Duration) {
 	prune := func() {
+		// Expire held deliveries first: they are todos, and an expired one is then an ordinary
+		// terminal todo that retention ages out like any other.
+		if n, err := st.ExpireQuarantine(ctx); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Warn("quarantine expiry failed", "err", err)
+		} else if n > 0 {
+			log.Info("quarantine expired", "count", n)
+		}
 		res, err := st.Prune(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
