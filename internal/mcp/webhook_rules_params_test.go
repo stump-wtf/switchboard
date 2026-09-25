@@ -9,6 +9,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -56,6 +57,26 @@ func TestSetWebhookRulesInDecodesOmittedParamsAsNil(t *testing.T) {
 			}
 		})
 	}
+
+	// An explicit null is not "omitted": the SDK's input-schema validation rejects it as a tool
+	// error before the handler runs, so it can neither keep nor clear the stored params.
+	t.Run("explicit null", func(t *testing.T) {
+		got, gotNil = map[string]any{"sentinel": true}, false
+		res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "set_webhook_rules",
+			Arguments: map[string]any{"webhook_id": "wh", "rules": []any{}, "params": nil}})
+		if err != nil {
+			t.Fatalf("tools/call: protocol error %v, want tool error", err)
+		}
+		if !res.IsError {
+			t.Fatalf("params: null succeeded, want a schema-validation tool error")
+		}
+		if text := contentText(res); !strings.Contains(text, "params") {
+			t.Fatalf("error = %q, want it to name params", text)
+		}
+		if _, ok := got["sentinel"]; !ok || gotNil {
+			t.Fatalf("handler ran with params %#v, want it never invoked", got)
+		}
+	})
 }
 
 // callRaw returns a verb's structured content as a plain map, so a test can tell an echoed {} from
