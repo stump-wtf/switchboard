@@ -133,16 +133,13 @@ func (m *memStore) RecordNotifyHookDelivery(_ context.Context, id string, delive
 		return false, m.healthErr
 	}
 	h, ok := m.hooks[id]
-	if !ok {
-		return false, nil
+	if !ok || !h.Enabled {
+		return false, nil // deleted or disabled: both branches leave the row alone
 	}
 	h.LastStatus = status
 	if delivered {
 		h.ConsecutiveFailures, h.LastError = 0, nil
 		m.hooks[id] = h
-		return false, nil
-	}
-	if !h.Enabled {
 		return false, nil
 	}
 	h.ConsecutiveFailures++

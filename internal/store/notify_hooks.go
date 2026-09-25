@@ -341,9 +341,12 @@ func (s *Store) NotifyEndpointForDispatch(ctx context.Context, endpointID string
 // A delivered notification resets consecutive_failures to 0. A failed one increments it and, in the
 // same UPDATE, disables the hook once it reaches disableAfter, so two instances failing the same
 // hook at once serialize on the row and cannot both miss the threshold. A hook that is already
-// disabled, or was deleted, is left alone (no row; false, nil). lastError is a short classified
-// reason (timeout, tls, rejected_ssrf, redirect, ...), never response text; status is nil for a
-// network-level failure. Not endpoint-scoped: only the dispatcher calls it, with a hook id it read
+// disabled, or was deleted, is left alone (no row; false, nil) by BOTH branches: a delivery that
+// was in flight on another instance when the hook was disabled must not rewrite the health that
+// explains the disable (a hook disabled for consecutive_failures showing 0 failures and no
+// last_error). Re-enabling is rotate_notify_hook's job, never a late 2xx's. lastError is a short
+// classified reason (timeout, tls, rejected_ssrf, redirect, ...), never response text; status is
+// nil for a network-level failure. Not endpoint-scoped: only the dispatcher calls it, with a hook id it read
 // under the hook's endpoint.
 func (s *Store) RecordNotifyHookDelivery(ctx context.Context, id string, delivered bool, status *int, lastError string, disableAfter int) (bool, error) {
 	if !isUUID(id) {
@@ -353,7 +356,7 @@ func (s *Store) RecordNotifyHookDelivery(ctx context.Context, id string, deliver
 		if _, err := s.pool.Exec(ctx, `
 			UPDATE notify_hooks
 			   SET consecutive_failures = 0, last_attempt_at = now(), last_status = $2, last_error = NULL
-			 WHERE id = $1`, id, status); err != nil {
+			 WHERE id = $1 AND enabled`, id, status); err != nil {
 			return false, fmt.Errorf("store: record notify hook %s delivery: %w", id, err)
 		}
 		return false, nil

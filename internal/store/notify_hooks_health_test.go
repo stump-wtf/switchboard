@@ -58,6 +58,16 @@ func TestNotifyHookHealthRecordAndDisable(t *testing.T) {
 	if got2, _ := s.GetNotifyHook(ctx, h.ID, ep); got2.ConsecutiveFailures != 10 {
 		t.Fatalf("a disabled hook's count moved: %d", got2.ConsecutiveFailures)
 	}
+	// Nor does a late success rewrite it: another instance's in-flight notification that answers 2xx
+	// after the disable must not leave a failures-disabled hook showing 0 failures and no last_error.
+	if disabled, err := s.RecordNotifyHookDelivery(ctx, h.ID, true, &ok, "", 10); err != nil || disabled {
+		t.Fatalf("success on a disabled hook: %v %v", disabled, err)
+	}
+	if got2, _ := s.GetNotifyHook(ctx, h.ID, ep); got2.Enabled || got2.ConsecutiveFailures != 10 ||
+		got2.LastError == nil || *got2.LastError != "timeout" || got2.LastStatus != nil ||
+		got2.DisabledReason == nil || *got2.DisabledReason != NotifyHookDisabledFailures {
+		t.Fatalf("a late success rewrote a disabled hook's health: %+v", got2)
+	}
 	if _, err := s.RecordNotifyHookDelivery(ctx, "not-a-uuid", false, nil, "timeout", 10); err != nil {
 		t.Fatalf("malformed id: %v", err)
 	}
