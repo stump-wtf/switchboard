@@ -32,14 +32,25 @@ The event history keeps it for later inspection and replay. So treat a payload a
 - **Grant the event-history tools only where the job needs them** (`list_webhook_events`,
   `get_webhook_event`, `replay_webhook_event`). The web wizard leaves them unchecked; a CLI vend
   includes them.
-
-- **Event history is yours alone.** Every stored delivery records the endpoint that owns it: the
-  webhook's endpoint, or the endpoint an operator pushed to. The event-history tools and the
-  `switchboard://events/recent` resource return only deliveries owned by one of your endpoints, and
-  another user's event id answers `not_found`, exactly like an id that doesn't exist. Deleting a
-  webhook keeps its deliveries in your history. Deliveries recorded before owners existed, whose
-  webhook was already deleted, have no provable owner, so no one can read them, and they age out
-  through retention.
+- **Event history is scoped to you, not to one endpoint.** Every stored delivery records the
+  endpoint that owns it: the webhook's endpoint, or the endpoint an operator pushed to. The
+  event-history tools and the `switchboard://events/recent` resource return only deliveries owned by
+  one of your endpoints, and another user's event id answers `not_found`, exactly like an id that
+  doesn't exist. But **any of your own endpoints granted these tools reads all of your deliveries**,
+  on every webhook, whatever queues it was vended for. The grant is the boundary, so leave the tools
+  off an endpoint that should only see its own queue.
+- **A friend-approved endpoint reads none of your history.** Approving a friend request mints the
+  friend's endpoint on one of your agents. Even if the request asked for the event-history tools and
+  you approved it unchanged, that endpoint lists nothing, and every event id answers `not_found`.
+  Uncheck those tools when you approve anyway: they grant a friend nothing today, and a friend
+  endpoint's own authority is still being designed.
+- **Deleting a webhook keeps its deliveries** in your history. **Permanently deleting an endpoint
+  deletes the deliveries it owns**, including ones its webhooks routed to a friend. The friend's
+  todos keep their payload but lose the link to the delivery, so they show trust `queue` and no
+  longer count as verified for channel pushes. Keep a revoked endpoint, rather than deleting it, while
+  anyone still has work from it.
+- Deliveries recorded before owners existed, whose webhook was already deleted, have no provable
+  owner, so no one can read them, on the board or through the tools. They age out through retention.
 - **`replay_webhook_event` sends a stored payload back out** to a target, so treat it as a
   data-forwarding tool, not just a debugging one.
 
