@@ -82,10 +82,14 @@ type ClaimedAttempt struct {
 // before) and the attempt's summary and artifact. Summary is clipped, never rejected (REQ-5).
 // Artifact is stored as given; validating its shape is the caller's job, because a malformed handle
 // is a caller bug that deserves an `invalid` error rather than silent truncation.
+//
+// TokenHash is the SHA-256 of the lease token the caller presented, or nil when it presented none.
+// It is checked against the open attempt's fence (leaseFence) and never stored.
 type Report struct {
-	Result   []byte
-	Summary  string
-	Artifact string
+	Result    []byte
+	Summary   string
+	Artifact  string
+	TokenHash []byte
 }
 
 // ClipSummary cuts s to AttemptSummaryMax bytes at the last complete UTF-8 rune, reporting whether
@@ -203,6 +207,25 @@ func closedArmUnreported(outcome, disposition string) string {
 // scheduled retry on a failed row means it dead-lettered.
 const failDisposition = `CASE WHEN upd.state = 'failed' AND upd.next_retry_at IS NULL
 				THEN 'dead_lettered' ELSE 'retry_scheduled' END`
+
+// leaseFence is the lease-token predicate on the agent's heartbeat, complete, fail and release
+// statements. param is the bound lease-token hash ($N, nil for no token). The statement applies only
+// when the todo's open attempt carries exactly that hash: a matching token on a fenced attempt, or no
+// token on an unfenced one. A token on an unfenced attempt, no token on a fenced one, or another
+// attempt's token all make the UPDATE miss, and classifyMiss reports the row that is still there as
+// ErrConflict: the same answer as "not the owner", so a mismatch never reveals that a fence exists.
+// The hashes are fixed-length digests compared in SQL, so timing reveals nothing about the token.
+// The Board's ...OperatorOwned statements omit it, so the owning human can always recover a stuck
+// attempt.
+//
+// Governing: SPEC-0034 REQ-6 "Lease Token Fence", REQ-19 "Error Handling Standards"; design.md
+// "The fence is a hash on the open attempt".
+func leaseFence(param string) string {
+	return `
+			AND NOT EXISTS (SELECT 1 FROM todo_attempts a
+				WHERE a.todo_id = todos.id AND a.ended_at IS NULL
+					AND a.lease_token_hash IS DISTINCT FROM ` + param + `::bytea)`
+}
 
 // reportArgs returns the bound summary, truncated flag and artifact for a report.
 func reportArgs(r Report) (summary string, truncated bool, artifact string) {

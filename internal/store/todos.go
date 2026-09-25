@@ -661,15 +661,22 @@ const heartbeatTail = `,
 // last_heartbeat_at and lease_expires_at move in the same statement (SPEC-0034 REQ-4). Governing:
 // SPEC-0003 REQ "Visibility Window, Lease, Heartbeat".
 func (s *Store) HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (Todo, error) {
+	return s.HeartbeatTodoWith(ctx, endpointID, id, owner, ttl, nil)
+}
+
+// HeartbeatTodoWith is HeartbeatTodo with the lease-token fence: tokenHash is the SHA-256 of the
+// token the caller presented, nil for none, and a mismatch with the open attempt is ErrConflict.
+// Governing: SPEC-0034 REQ-6 "Lease Token Fence", REQ-19.
+func (s *Store) HeartbeatTodoWith(ctx context.Context, endpointID, id, owner string, ttl time.Duration, tokenHash []byte) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
 	}
 	row := s.pool.QueryRow(ctx, `
 		WITH upd AS (
 			UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
-			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$4
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$4`+leaseFence("$5")+`
 			RETURNING todos.*
-		)`+heartbeatTail, endpointID, id, ttl.String(), owner)
+		)`+heartbeatTail, endpointID, id, ttl.String(), owner, tokenHash)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
@@ -684,7 +691,8 @@ func (s *Store) CompleteTodo(ctx context.Context, endpointID, id, owner string, 
 }
 
 // CompleteTodoWith is CompleteTodo with the attempt report: the open attempt closes
-// completed/done with the report's summary and artifact (SPEC-0034 REQ-3).
+// completed/done with the report's summary and artifact (SPEC-0034 REQ-3), and r.TokenHash must
+// match the attempt's lease-token fence (REQ-6).
 func (s *Store) CompleteTodoWith(ctx context.Context, endpointID, id, owner string, r Report) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
@@ -693,11 +701,11 @@ func (s *Store) CompleteTodoWith(ctx context.Context, endpointID, id, owner stri
 	row := s.pool.QueryRow(ctx, `
 		WITH upd AS (
 			UPDATE todos SET state='done', result=$4, completed_at=now(), updated_at=now()
-			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3`+leaseFence("$8")+`
 			RETURNING todos.*
 		),
 		`+closedArm("completed", "'done'", "NULLIF($5::text, '')", "$6::boolean", "NULLIF($7::text, '')")+`
-		`+closedSelect, endpointID, id, owner, r.Result, summary, truncated, artifact)
+		`+closedSelect, endpointID, id, owner, r.Result, summary, truncated, artifact, r.TokenHash)
 	var closed bool
 	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -725,7 +733,8 @@ func (s *Store) FailTodo(ctx context.Context, endpointID, id, owner string, resu
 }
 
 // FailTodoWith is FailTodo with the attempt report: the open attempt closes failed, with
-// disposition retry_scheduled below the cap and dead_lettered at it (SPEC-0034 REQ-3).
+// disposition retry_scheduled below the cap and dead_lettered at it (SPEC-0034 REQ-3), and
+// r.TokenHash must match the attempt's lease-token fence (REQ-6).
 func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, r Report) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
@@ -739,12 +748,12 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 					ELSE now() + make_interval(secs =>
 						LEAST($5::float8 * power(2, GREATEST(attempt, 1) - 1), $6::float8)) END,
 				lease_expires_at = NULL, result = $4, updated_at = now()
-			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3`+leaseFence("$10")+`
 			RETURNING todos.*
 		),
 		`+closedArm("failed", failDisposition, "NULLIF($7::text, '')", "$8::boolean", "NULLIF($9::text, '')")+`
 		`+closedSelect, endpointID, id, owner, r.Result,
-		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact)
+		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact, r.TokenHash)
 	var closed bool
 	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -921,8 +930,9 @@ func (s *Store) ReleaseTodo(ctx context.Context, endpointID, id, owner string) (
 }
 
 // ReleaseTodoWith is ReleaseTodo with the attempt report: the open attempt closes
-// released/requeued with the report's summary and artifact (SPEC-0034 REQ-3, REQ-9). A release
-// has no result, so r.Result is ignored.
+// released/requeued with the report's summary and artifact (SPEC-0034 REQ-3, REQ-9), and
+// r.TokenHash must match the attempt's lease-token fence (REQ-6). A release has no result, so
+// r.Result is ignored.
 func (s *Store) ReleaseTodoWith(ctx context.Context, endpointID, id, owner string, r Report) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
@@ -931,11 +941,11 @@ func (s *Store) ReleaseTodoWith(ctx context.Context, endpointID, id, owner strin
 	row := s.pool.QueryRow(ctx, `
 		WITH upd AS (
 			UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
-			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3`+leaseFence("$7")+`
 			RETURNING todos.*
 		),
 		`+closedArm("released", "'requeued'", "NULLIF($4::text, '')", "$5::boolean", "NULLIF($6::text, '')")+`
-		`+closedSelect, endpointID, id, owner, summary, truncated, artifact)
+		`+closedSelect, endpointID, id, owner, summary, truncated, artifact, r.TokenHash)
 	var closed bool
 	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
