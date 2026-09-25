@@ -23,6 +23,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/ingest"
 	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
 	"github.com/stump-wtf/switchboard/internal/metrics"
+	"github.com/stump-wtf/switchboard/internal/notifyhook"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
 	"github.com/stump-wtf/switchboard/internal/push"
 	"github.com/stump-wtf/switchboard/internal/store"
@@ -148,6 +149,18 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		push.WithOwnListenAddrs(cfg.Addr),
 	)
 	mcph.SetNotifyHooks(mcpsrv.NotifyHookConfig{Store: st, Validator: hookValidator, Max: cfg.NotifyHookMax})
+	// The delivery dispatcher subscribes to the store's ready hook: sender-gated creations and
+	// requeues, fired once per transition on the instance that performed it. It is deliberately NOT
+	// behind the doorbellGate below: that gate suppresses re-rings of the channel doorbell for a
+	// minute, and a requeue inside that window must still reach a hook (SPEC-0024 REQ-6). With the
+	// ceiling at 0 nothing subscribes, so existing hooks receive nothing (the REQ-1 kill switch).
+	if cfg.NotifyHookMax > 0 {
+		dispatcher := notifyhook.NewDispatcher(notifyhook.Options{
+			Store: st, Validator: hookValidator, Log: log, Max: cfg.NotifyHookMax,
+		})
+		st.SetTodoReadyHook(dispatcher.Enqueue)
+		go dispatcher.Run(ctx)
+	}
 	switch {
 	case cfg.NotifyHookMax == 0:
 		log.Info("notify hooks disabled", "reason", "SWITCHBOARD_NOTIFY_HOOK_MAX=0")
