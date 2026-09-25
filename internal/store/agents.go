@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -163,6 +164,11 @@ func (s *Store) CreateEndpoint(ctx context.Context, agentID, credHash, credPrefi
 // the optional credential lifetime chosen at vend time; nil = valid until revoked (SPEC-0016 REQ
 // "Credential Lifetime").
 func createEndpoint(ctx context.Context, q querier, agentID, credHash, credPrefix, slug string, queues, verbs []string, personaID any, expiresAt *time.Time, webhookMax int, webhookSourceTypes, webhookQueues []string) (Endpoint, error) {
+	// Every vend path lands here, so this is where the reserved quarantine queue is refused as a
+	// scope queue or a webhook-queue ceiling. Governing: SPEC-0026 REQ-6.
+	if err := CheckQueueNames(append(slices.Clone(queues), webhookQueues...)...); err != nil {
+		return Endpoint{}, err
+	}
 	var e Endpoint
 	// The ceiling columns are `text[] NOT NULL DEFAULT '{}'`, and a nil Go slice encodes as SQL
 	// NULL — not as the column default — so passing nil violates the NOT NULL constraint outright:
@@ -583,6 +589,8 @@ func (s *Store) KnownQueues(ctx context.Context) ([]string, error) {
 			UNION ALL
 			SELECT unnest(scope_queues) FROM endpoints
 		) AS qs
+		-- quarantine is reserved (SPEC-0026 REQ-6): never offered as a queue to scope onto an endpoint.
+		WHERE q <> 'quarantine'
 		ORDER BY q`)
 	if err != nil {
 		return nil, fmt.Errorf("store: known queues: %w", err)

@@ -57,12 +57,20 @@ type Todo struct {
 	// WorkOrder is the switchboard-authored work order (routing.WorkOrder JSON) when a work_order
 	// routing action minted this todo, nil otherwise. Governing: ADR-0025, SPEC-0020 REQ "Work Orders".
 	WorkOrder []byte
+	// Quarantine (SPEC-0026 REQ-6, REQ-7): why the delivery was held (untrusted_actor, rule_fault or
+	// rule_action; kept after release as history), the structured detail (actor verdict, fault), and
+	// who released it and when. All empty for a todo that was never held.
+	QuarantineReason string
+	QuarantineDetail []byte
+	ReleasedBy       string
+	ReleasedAt       *time.Time
 }
 
 const todoCols = `id, endpoint_id::text, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
 	COALESCE(idempotency_key,''), COALESCE(assignee,''), state, COALESCE(owner,''),
 	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at,
-	next_retry_at, routing_trace, work_order`
+	next_retry_at, routing_trace, work_order,
+	COALESCE(quarantine_reason,''), quarantine_detail, COALESCE(released_by,''), released_at`
 
 // scanTodo scans a todoCols row. extra receives any columns a query returns after todoCols (the
 // claim paths' lease-takeover flag).
@@ -72,7 +80,7 @@ func scanTodo(row pgx.Row, extra ...any) (Todo, error) {
 	err := row.Scan(append([]any{&t.ID, &endpointID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
 		&t.IdempotencyKey, &t.Assignee, &t.State, &t.Owner, &t.LeaseExpiresAt, &t.Attempt,
 		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt, &t.NextRetryAt, &t.RoutingTrace,
-		&t.WorkOrder}, extra...)...)
+		&t.WorkOrder, &t.QuarantineReason, &t.QuarantineDetail, &t.ReleasedBy, &t.ReleasedAt}, extra...)...)
 	if endpointID != nil {
 		t.EndpointID = *endpointID
 	}
@@ -140,6 +148,11 @@ type CreateTodoParams struct {
 	// mints its todos only if no earlier delivery already claimed the key (ADR-0025).
 	OnceKey   string
 	WorkOrder []byte // routing.WorkOrder JSON stored on each minted todo (ADR-0025)
+	// QuarantineReason, when set, holds the delivery: exactly one todo on the single target (the
+	// webhook's owner endpoint), on the quarantine queue, with QuarantineDetail. Governing:
+	// SPEC-0026 REQ-6.
+	QuarantineReason string
+	QuarantineDetail []byte
 	// origin overrides Source as the created counter's source label, for callers whose Source is
 	// free text (a friend handoff stores the persona name). Metrics-only: never persisted, never
 	// shown, and unexported so only store code can set it. See todoMetricSource.
@@ -317,6 +330,18 @@ func withheld(disposition string) bool {
 	return disposition == DispositionDropped || disposition == DispositionFaulted
 }
 
+// eventHeld reports whether a delivery was held on the quarantine queue: some todo of the event
+// carries a quarantine reason, whether it is still waiting, was released or was discarded.
+func eventHeld(ctx context.Context, q querier, eventID int64) (bool, error) {
+	var held bool
+	if err := q.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM todos WHERE event_id = $1 AND quarantine_reason IS NOT NULL)`, eventID,
+	).Scan(&held); err != nil {
+		return false, fmt.Errorf("store: read prior quarantine: %w", err)
+	}
+	return held, nil
+}
+
 // CreateIntakeEventTodos records a verified delivery with the outcome intake decided for it,
 // e.Disposition (empty means routed), and mints its todos when that outcome is routed. It returns
 // the disposition that actually applies. For a redelivery, that is the disposition the ORIGINAL
@@ -334,10 +359,18 @@ func (s *Store) CreateIntakeEventTodos(ctx context.Context, e EventInput, target
 		e.Disposition = DispositionRouted
 	}
 	disp := e.Disposition
-	if disp != DispositionRouted && !withheld(disp) {
+	quarantine := p.QuarantineReason != ""
+	switch {
+	case quarantine:
+		// Quarantine is exactly one todo on the owner endpoint, whatever the fan-out (SPEC-0026
+		// REQ-6), and only for the dispositions that hold a delivery.
+		if len(targetEndpointIDs) != 1 || (disp != DispositionQuarantined && disp != DispositionFaulted) {
+			return 0, nil, "", fmt.Errorf("store: quarantine needs exactly the owner endpoint and a quarantined or faulted disposition")
+		}
+		p.Queue, p.OnceKey, p.WorkOrder = QueueQuarantine, "", nil
+	case disp != DispositionRouted && !withheld(disp):
 		return 0, nil, "", fmt.Errorf("store: unsupported intake disposition %q", disp)
-	}
-	if !withheld(disp) && len(targetEndpointIDs) == 0 {
+	case !withheld(disp) && len(targetEndpointIDs) == 0:
 		return 0, nil, "", fmt.Errorf("store: CreateEventTodos requires at least one target endpoint")
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -350,15 +383,53 @@ func (s *Store) CreateIntakeEventTodos(ctx context.Context, e EventInput, target
 	if err != nil {
 		return 0, nil, "", err
 	}
-	if !inserted && !withheld(disp) {
-		// The first intake outcome recorded for a delivery is the one that counts for a withhold.
+	if !inserted {
+		// The first intake outcome recorded for a delivery owns its dedup slot. A redelivery of a
+		// withheld delivery stays withheld. A redelivery of a held one collapses onto the todo it
+		// already has (quarantined, or wherever a release moved it), and mints nothing new, whatever
+		// today's rules say. Governing: SPEC-0020 REQ "Drop Action Semantics"; SPEC-0026 REQ-6.
 		var prior string
 		if err := tx.QueryRow(ctx, `SELECT disposition FROM events WHERE id = $1`, ev.ID).Scan(&prior); err != nil {
 			return 0, nil, "", fmt.Errorf("store: read prior disposition: %w", err)
 		}
-		if withheld(prior) {
-			disp = prior
+		held, err := eventHeld(ctx, tx, ev.ID)
+		if err != nil {
+			return 0, nil, "", err
 		}
+		switch {
+		case held:
+			out, err := eventTodos(ctx, tx, ev.ID)
+			if err != nil {
+				return 0, nil, "", err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return 0, nil, "", err
+			}
+			return ev.ID, out, prior, nil
+		case withheld(prior) && !withheld(disp):
+			disp, quarantine = prior, false
+		}
+	}
+	if quarantine {
+		p.EventID = &ev.ID
+		p.EndpointID = targetEndpointIDs[0]
+		t, wasNew, err := createTodo(ctx, tx, p)
+		if err != nil {
+			return 0, nil, "", fmt.Errorf("store: quarantine: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return 0, nil, "", err
+		}
+		if inserted {
+			s.fireEventHook(ev)
+		}
+		if wasNew {
+			// Visible to its owner (the Board's queue lists, the Quarantine view), but never a
+			// wakeup, a doorbell or a notify hook: nothing tool-bearing is told it exists.
+			s.fireTodoHook("created", t)
+			s.metricsOrNop().TodoCreated(t.Queue, todoMetricSource(p))
+		}
+		return ev.ID, []CreatedTodo{{Todo: t, New: wasNew}}, disp, nil
 	}
 	if withheld(disp) {
 		if err := tx.Commit(ctx); err != nil {
@@ -510,14 +581,16 @@ func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool,
 		return Todo{}, false, fmt.Errorf("store: createTodo requires a non-empty EndpointID")
 	}
 	row := q.QueryRow(ctx, `
-		INSERT INTO todos (id, endpoint_id, queue, source, kind, title, payload, event_id, idempotency_key, assignee, routing_trace, work_order)
-		VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8, NULLIF($9,''), NULLIF($10,''), $11, $12)
+		INSERT INTO todos (id, endpoint_id, queue, source, kind, title, payload, event_id, idempotency_key, assignee, routing_trace, work_order,
+			quarantine_reason, quarantine_detail)
+		VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8, NULLIF($9,''), NULLIF($10,''), $11, $12, NULLIF($13,''), $14)
 		ON CONFLICT (endpoint_id, idempotency_key)
 			WHERE idempotency_key IS NOT NULL AND state <> 'done'
 				AND (state <> 'failed' OR next_retry_at IS NOT NULL)
 			DO NOTHING
 		RETURNING `+todoCols,
-		id, p.EndpointID, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee, p.RoutingTrace, p.WorkOrder)
+		id, p.EndpointID, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee, p.RoutingTrace, p.WorkOrder,
+		p.QuarantineReason, p.QuarantineDetail)
 	t, err := scanTodo(row)
 	if err == nil {
 		return t, true, nil
@@ -557,6 +630,9 @@ func TodoReadyPayload(endpointID, queue string) string { return endpointID + ":"
 // owning endpoint id and queue name. Correctness never depends on delivery (SPEC-0004): errors are
 // swallowed by design.
 func (s *Store) notifyTodoReady(ctx context.Context, endpointID, queue string) {
+	if queue == QueueQuarantine {
+		return // nothing waits on quarantine; a wakeup would only tell a listener it exists (SPEC-0026 REQ-6)
+	}
 	// pg_notify is used (not a literal NOTIFY) so the channel payload is passed as a bound
 	// parameter rather than interpolated into SQL text (Parameterized Queries Only).
 	_, _ = s.pool.Exec(ctx, `SELECT pg_notify('todo_ready', $1)`, TodoReadyPayload(endpointID, queue))
@@ -581,7 +657,7 @@ func (s *Store) ClaimTodo(ctx context.Context, endpointID, id, owner string, ttl
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
 			SELECT id AS cand_id, state AS prior_state FROM todos
-			WHERE id=$2 AND endpoint_id=$1 AND (assignee IS NULL OR assignee=$3)
+			WHERE id=$2 AND endpoint_id=$1 AND queue <> 'quarantine' AND (assignee IS NULL OR assignee=$3)
 				AND (state='pending'
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
@@ -642,7 +718,7 @@ func (s *Store) ClaimNext(ctx context.Context, endpointID string, queues []strin
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
 			SELECT id AS cand_id, state AS prior_state FROM todos
-			WHERE endpoint_id=$4 AND queue = ANY($3) AND (assignee IS NULL OR assignee=$1)
+			WHERE endpoint_id=$4 AND queue = ANY($3) AND queue <> 'quarantine' AND (assignee IS NULL OR assignee=$1)
 				AND (state='pending'
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
@@ -677,7 +753,7 @@ func (s *Store) HeartbeatTodo(ctx context.Context, endpointID, id, owner string,
 	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
-		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$4
+		WHERE id=$2 AND endpoint_id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$4
 		RETURNING `+todoCols, endpointID, id, ttl.String(), owner)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -694,7 +770,7 @@ func (s *Store) CompleteTodo(ctx context.Context, endpointID, id, owner string, 
 	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='done', result=$4, completed_at=now(), updated_at=now()
-		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+		WHERE id=$2 AND endpoint_id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$3
 		RETURNING `+todoCols, endpointID, id, owner, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -725,7 +801,7 @@ func (s *Store) FailTodo(ctx context.Context, endpointID, id, owner string, resu
 				ELSE now() + make_interval(secs =>
 					LEAST($5::float8 * power(2, GREATEST(attempt, 1) - 1), $6::float8)) END,
 			lease_expires_at = NULL, result = $4, updated_at = now()
-		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+		WHERE id=$2 AND endpoint_id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$3
 		RETURNING `+todoCols, endpointID, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds())
 	t, err := scanTodo(row)
@@ -764,7 +840,7 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, next_retry_at=NULL,
 			updated_at=now()
-		WHERE state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
+		WHERE state='failed' AND queue <> 'quarantine' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
 		RETURNING `+todoCols)
 	if err != nil {
 		return 0, err
@@ -812,7 +888,7 @@ func (s *Store) RetryTodo(ctx context.Context, endpointID, id string) (Todo, err
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, attempt=0,
 			result=NULL, claimed_at=NULL, completed_at=NULL, next_retry_at=NULL, updated_at=now()
-		WHERE id=$2 AND endpoint_id=$1 AND state='failed'
+		WHERE id=$2 AND endpoint_id=$1 AND queue <> 'quarantine' AND state='failed'
 		RETURNING `+todoCols, endpointID, id)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -849,7 +925,7 @@ func (s *Store) RetryTodoOperatorOwned(ctx context.Context, ownerHumanID, id str
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, attempt=0,
 			result=NULL, claimed_at=NULL, completed_at=NULL, next_retry_at=NULL, updated_at=now()
-		WHERE id=$1 AND state='failed'`+operatorOwns+`$2)
+		WHERE id=$1 AND queue <> 'quarantine' AND state='failed'`+operatorOwns+`$2)
 		RETURNING `+todoCols, id, ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -875,7 +951,7 @@ func (s *Store) ReleaseTodo(ctx context.Context, endpointID, id, owner string) (
 	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
-		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+		WHERE id=$2 AND endpoint_id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$3
 		RETURNING `+todoCols, endpointID, id, owner)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -893,7 +969,7 @@ func (s *Store) ReleaseTodo(ctx context.Context, endpointID, id, owner string) (
 func (s *Store) ReleaseTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$3)
+		WHERE id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$2`+operatorOwns+`$3)
 		RETURNING `+todoCols, id, owner, ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -918,7 +994,7 @@ func (s *Store) ListTodos(ctx context.Context, endpointID string, queues []strin
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
-		WHERE endpoint_id = $1 AND queue = ANY($2) AND ($3 = '' OR state = $3)
+		WHERE endpoint_id = $1 AND queue = ANY($2) AND queue <> 'quarantine' AND ($3 = '' OR state = $3)
 		ORDER BY created_at DESC LIMIT $4`, endpointID, queues, state, limit)
 	if err != nil {
 		return nil, err
@@ -952,7 +1028,7 @@ func (s *Store) PendingDoorbellTodos(ctx context.Context, endpointID, queue stri
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
-		WHERE endpoint_id = $1 AND queue = $2 AND state = 'pending' AND event_id IS NOT NULL
+		WHERE endpoint_id = $1 AND queue = $2 AND queue <> 'quarantine' AND state = 'pending' AND event_id IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM events e WHERE e.id = todos.event_id AND e.verified)
 		ORDER BY created_at LIMIT $3`, endpointID, queue, limit)
 	if err != nil {
@@ -984,7 +1060,7 @@ func (s *Store) PendingDoorbellTodosByQueue(ctx context.Context, queue string, l
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
-		WHERE queue = $1 AND state = 'pending' AND event_id IS NOT NULL
+		WHERE queue = $1 AND queue <> 'quarantine' AND state = 'pending' AND event_id IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM events e WHERE e.id = todos.event_id AND e.verified)
 		ORDER BY created_at LIMIT $2`, queue, limit)
 	if err != nil {
@@ -1008,7 +1084,7 @@ func (s *Store) GetTodo(ctx context.Context, endpointID, id string) (Todo, error
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
 	}
-	row := s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos WHERE id = $1 AND endpoint_id = $2`, id, endpointID)
+	row := s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos WHERE id = $1 AND endpoint_id = $2 AND queue <> 'quarantine'`, id, endpointID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ErrNotFound
@@ -1040,7 +1116,7 @@ func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, ow
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
 			SELECT id AS cand_id, state AS prior_state FROM todos
-			WHERE id=$1 AND (assignee IS NULL OR assignee=$2)
+			WHERE id=$1 AND queue <> 'quarantine' AND (assignee IS NULL OR assignee=$2)
 				AND (state='pending'
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
@@ -1067,7 +1143,7 @@ func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, ow
 func (s *Store) CompleteTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='done', result=$3, completed_at=now(), updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$4)
+		WHERE id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$2`+operatorOwns+`$4)
 		RETURNING `+todoCols, id, owner, result, ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1090,7 +1166,7 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 				ELSE now() + make_interval(secs =>
 					LEAST($4::float8 * power(2, GREATEST(attempt, 1) - 1), $5::float8)) END,
 			lease_expires_at = NULL, result = $3, updated_at = now()
-		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$6)
+		WHERE id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$2`+operatorOwns+`$6)
 		RETURNING `+todoCols, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), ownerHumanID)
 	t, err := scanTodo(row)
@@ -1109,7 +1185,7 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 func (s *Store) HeartbeatTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$4)
+		WHERE id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$2`+operatorOwns+`$4)
 		RETURNING `+todoCols, id, owner, ttl.String(), ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1134,7 +1210,7 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 		UPDATE todos SET
 			state = CASE WHEN attempt >= max_attempts THEN 'failed' ELSE 'pending' END,
 			owner = NULL, lease_expires_at = NULL, updated_at = now()
-		WHERE state='claimed' AND lease_expires_at < now()
+		WHERE state='claimed' AND queue <> 'quarantine' AND lease_expires_at < now()
 		RETURNING `+todoCols)
 	if err != nil {
 		return 0, err
@@ -1191,10 +1267,10 @@ func (s *Store) classifyMiss(ctx context.Context, endpointID, id string) error {
 	var err error
 	if endpointID == "" {
 		err = s.pool.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM todos WHERE id=$1)`, id).Scan(&exists)
+			`SELECT EXISTS(SELECT 1 FROM todos WHERE id=$1 AND queue <> 'quarantine')`, id).Scan(&exists)
 	} else {
 		err = s.pool.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM todos WHERE id=$1 AND endpoint_id=$2)`, id, endpointID).Scan(&exists)
+			`SELECT EXISTS(SELECT 1 FROM todos WHERE id=$1 AND endpoint_id=$2 AND queue <> 'quarantine')`, id, endpointID).Scan(&exists)
 	}
 	if err != nil {
 		return err
@@ -1398,7 +1474,7 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			-- revocation happens to old endpoints they are also the oldest rows in the table —
 			-- exactly the rows a globally oldest-first sweep reaches for. Excluded at the source.
 			JOIN endpoints ep ON ep.id = t.endpoint_id AND ep.state = 'active'
-			WHERE t.state = 'pending'
+			WHERE t.state = 'pending' AND t.queue <> 'quarantine'
 			  AND t.ring_attempts < $1
 			  -- Sender gate (SPEC-0011): only a todo whose delivery event exists AND passed
 			  -- per-source verification — or came from a token-trust self-managed webhook,
@@ -1498,7 +1574,7 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 		WHERE id IN (
 			SELECT t.id FROM todos t
 			WHERE t.endpoint_id = $1
-			  AND t.queue = ANY($2)
+			  AND t.queue = ANY($2) AND t.queue <> 'quarantine'
 			  AND t.state = 'pending'
 			  AND t.ring_attempts < $3
 			  -- Sender gate (SPEC-0011): the predicate RingUnclaimed applies, unchanged.
@@ -1556,7 +1632,7 @@ func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []strin
 			),
 			updated_at = now(),
 			completed_at = now()
-		WHERE endpoint_id = ANY($1::uuid[]) AND state IN ('pending', 'claimed', 'input-required', 'auth-required')`,
+		WHERE endpoint_id = ANY($1::uuid[]) AND queue <> 'quarantine' AND state IN ('pending', 'claimed', 'input-required', 'auth-required')`,
 		endpointIDs); err != nil {
 		return fmt.Errorf("store: dead-letter endpoint todos: %w", err)
 	}

@@ -42,7 +42,7 @@ func (s *Store) CancelTodo(ctx context.Context, id string, result []byte) (Todo,
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='canceled', owner=NULL, lease_expires_at=NULL,
 			next_retry_at=NULL, result=$2, completed_at=now(), updated_at=now()
-		WHERE id=$1 AND state IN ('pending', 'claimed', 'input-required', 'auth-required')
+		WHERE id=$1 AND queue <> 'quarantine' AND state IN ('pending', 'claimed', 'input-required', 'auth-required')
 		RETURNING `+todoCols, id, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -67,7 +67,7 @@ func (s *Store) RejectTodo(ctx context.Context, id string, result []byte) (Todo,
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='rejected', lease_expires_at=NULL, next_retry_at=NULL,
 			result=$2, completed_at=now(), updated_at=now()
-		WHERE id=$1 AND state='pending'
+		WHERE id=$1 AND queue <> 'quarantine' AND state='pending'
 		RETURNING `+todoCols, id, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -95,7 +95,7 @@ func (s *Store) InterruptTodo(ctx context.Context, id, owner, state string, resu
 	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state=$3, result=$4, updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2
+		WHERE id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$2
 		RETURNING `+todoCols, id, owner, state, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -118,7 +118,7 @@ func (s *Store) InterruptTodo(ctx context.Context, id, owner, state string, resu
 func (s *Store) ResumeTodo(ctx context.Context, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE todos SET state='claimed', result=$3, updated_at=now()
-		WHERE id=$1 AND owner=$2 AND state IN ('input-required', 'auth-required')
+		WHERE id=$1 AND queue <> 'quarantine' AND owner=$2 AND state IN ('input-required', 'auth-required')
 		RETURNING `+todoCols, id, owner, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -68,6 +68,9 @@ func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targe
 // the source's empty list on github, gitea and cairn (which trusts no one: new webhooks fail closed)
 // and NULL on other sources. Governing: SPEC-0026 REQ-5 ("omitting it MUST store an empty list").
 func (s *Store) CreateWebhookWithTrust(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int, trustedActors []byte) (Webhook, error) {
+	if err := CheckQueueNames(targetQueue); err != nil {
+		return Webhook{}, err // the reserved quarantine queue is never a target (SPEC-0026 REQ-6)
+	}
 	if trustedActors == nil {
 		if empty, ok := routing.DefaultTrustedActors(sourceType); ok {
 			raw, err := json.Marshal(empty)

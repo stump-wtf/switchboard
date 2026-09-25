@@ -161,6 +161,11 @@ func (s *Store) SetTodoDoorbellHook(fn TodoDoorbellHook) {
 // fireDoorbell invokes the registered doorbell hook, if any. Callers fire it only after a durable
 // commit AND only when the todo's delivery event passed per-source verification (the sender gate).
 func (s *Store) fireDoorbell(t Todo) {
+	// A quarantined todo never rings an ordinary doorbell, whatever path reaches here: the
+	// SPEC-0011 sender gate is amended by SPEC-0026 REQ-6. Classifier doorbells (REQ-8) carry no todo.
+	if t.Queue == QueueQuarantine {
+		return
+	}
 	if fn := s.doorbellHook.Load(); fn != nil {
 		(*fn)(t)
 	}
