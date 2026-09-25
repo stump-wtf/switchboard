@@ -93,8 +93,29 @@ verdict, or the fault):
 - **`quarantine` is reserved.** It is refused as a webhook target queue, an endpoint scope or
   ceiling queue, and a rule's `queue`.
 
-`list_webhooks` shows each webhook's open quarantine count. The owner's Quarantine view, which
-releases and discards held items, is described in SPEC-0026 REQ-9.
+`list_webhooks` shows each webhook's open quarantine count.
+
+### The Quarantine view
+
+In the web UI, **Quarantine** in the left rail lists the held items on every one of your endpoints,
+newest first, with a badge counting them. Each item shows its reason and detail (the sender and
+author with their trust flags, the rule fault, or the rule that held it), the source, kind and
+receiving webhook, and the title. Its payload is collapsed, and when you expand it, it is shown as
+plain text: HTML, scripts and Markdown in it are never rendered. Three actions:
+
+- **release** routes it through the webhook's rules, or straight to the queue you name (it must be
+  the webhook's target queue or one of the endpoint's allowed webhook queues).
+- **trust actor · release** adds the delivery's actor to the webhook's `trusted_actors`, then
+  releases it through the rules. Which name it adds follows the list's `match`: the sender
+  (`sender`, the default), the author (`author`), or both (`both`); on a Cairn webhook, the signed
+  `actor_id`. It is offered only for `untrusted_actor` items, and refused for rule faults.
+- **discard** completes it with the reason you give (up to 500 characters).
+
+A release that the rules send back to quarantine, fault on, or drop, or one that loses a race with
+another release or discard, is shown as a **conflict**, and the item stays listed. Each webhook row
+on its endpoint card shows the webhook's open quarantine count, its faulted deliveries over the
+last 24 hours, and a warning when it trusts every sender (`allow_all`). You see only your own
+endpoints' items; another person's item ids answer not found.
 
 ## What a rule sees
 
