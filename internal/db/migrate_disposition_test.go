@@ -114,3 +114,49 @@ func TestMigrate0023BackfillsTrustedActors(t *testing.T) {
 		t.Fatal("a github webhook without trusted_actors was accepted")
 	}
 }
+
+// 0028 reserves the queue name "quarantine": it aborts, naming the counts, when existing work or
+// configuration already uses that name, rather than hiding it behind the new default filter. On a
+// clean database it applies, and a quarantine row then requires its reason. Governing: SPEC-0026
+// REQ-6; design.md pre-migration check.
+func TestMigrate0028ReservesQuarantine(t *testing.T) {
+	pool, ctx := migrateTestPool(t)
+	before := migrationsBefore(t, "0028_quarantine.sql")
+	if err := applyMigrations(ctx, pool, before, "migrations"); err != nil {
+		t.Fatalf("apply chain before 0028: %v", err)
+	}
+	var ep string
+	if err := pool.QueryRow(ctx, `
+		WITH h AS (INSERT INTO humans (oidc_subject) VALUES ('sub-0028') RETURNING id),
+		     a AS (INSERT INTO agents (owner_human_id, name) SELECT id, 'bot-0028' FROM h RETURNING id)
+		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug, scope_queues)
+		SELECT id, 'hash-0028', 'sbk_0028', 'bot-0028-aaaa', ARRAY['quarantine'] FROM a RETURNING id::text`).Scan(&ep); err != nil {
+		t.Fatalf("seed endpoint: %v", err)
+	}
+	err := Migrate(ctx, pool)
+	if err == nil || !strings.Contains(err.Error(), `"quarantine" is now reserved`) || !strings.Contains(err.Error(), "1 endpoint scope") {
+		t.Fatalf("migrate with a queue named quarantine = %v, want an abort naming the use", err)
+	}
+	if recorded(t, pool, ctx, "0028_quarantine.sql") {
+		t.Fatal("0028 was recorded despite aborting")
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE endpoints SET scope_queues = ARRAY['held'] WHERE id = $1`, ep); err != nil {
+		t.Fatalf("rename queue: %v", err)
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate after renaming: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO todos (id, endpoint_id, queue, source, kind, title)
+		VALUES ('td_q_noreason', $1, 'quarantine', 'github', 'webhook', 't')`, ep); err == nil {
+		t.Fatal("a quarantine todo without a reason was accepted")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO todos (id, endpoint_id, queue, source, kind, title, quarantine_reason)
+		VALUES ('td_q_ok', $1, 'quarantine', 'github', 'webhook', 't', 'untrusted_actor')`, ep); err != nil {
+		t.Fatalf("a quarantine todo with a reason was refused: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO todos (id, endpoint_id, queue, source, kind, title, quarantine_reason)
+		VALUES ('td_q_bad', $1, 'quarantine', 'github', 'webhook', 't', 'vibes')`, ep); err == nil {
+		t.Fatal("an unknown quarantine reason was accepted")
+	}
+}
