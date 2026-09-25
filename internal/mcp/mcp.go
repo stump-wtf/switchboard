@@ -106,6 +106,11 @@ type ToolStore interface {
 	// persisted server-side and revealed exactly once at create/rotate time.
 	// Governing: ADR-0012 (agents self-manage webhooks), SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency".
 	CreateWebhook(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int) (store.Webhook, error)
+	// SPEC-0026 REQ-5 trusted actors (trusted_actors.go): create with a trust list, read one of the
+	// endpoint's own webhooks, and replace its list. All three are endpoint-scoped.
+	CreateWebhookWithTrust(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int, trustedActors []byte) (store.Webhook, error)
+	WebhookForEndpoint(ctx context.Context, id, endpointID string) (store.Webhook, error)
+	SetWebhookTrustedActors(ctx context.Context, id, endpointID string, trustedActors []byte) (store.Webhook, error)
 	ListWebhooks(ctx context.Context, endpointID string) ([]store.Webhook, error)
 	RotateWebhookSecret(ctx context.Context, id, endpointID, newSecret, newIngestToken string) (store.Webhook, error)
 	DeleteWebhook(ctx context.Context, id, endpointID string) error
@@ -426,6 +431,8 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	// the same allowlist-filtered registration (webhook_routes.go).
 	h.registerWebhookRouteTools(srv, ep)
 	h.registerWebhookRuleTools(srv, ep)
+	// SPEC-0026 REQ-5 trust verbs (trusted_actors.go), also in the webhook family.
+	h.registerTrustedActorTools(srv, ep)
 	h.registerEventResources(srv, ep)
 	// The #102 A2UI resource surface (a2ui.go): queue and todo detail rendered as
 	// application/a2ui+json for A2UI-capable hosts.

@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -33,6 +34,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -100,6 +102,9 @@ func (h *Handler) ingestURL(token string) string {
 type createWebhookIn struct {
 	SourceType  string `json:"source_type" jsonschema:"the ingestion source type to create (must be within this endpoint's allowed source types)"`
 	TargetQueue string `json:"target_queue" jsonschema:"the todo queue delivered events route to (must be within this endpoint's allowed webhook queues)"`
+	// TrustedActors is who may start work through a github, gitea or cairn webhook (SPEC-0026
+	// REQ-5). Omitted, the list is empty and trusts no one.
+	TrustedActors *routing.TrustedActorsInput `json:"trusted_actors,omitempty" jsonschema:"github/gitea/cairn only: who may start work here ({logins, match} for github/gitea, {actor_ids} for cairn, or {allow_all: true}); omitted means an empty list, which holds every delivery until actors are set"`
 }
 
 // webhookOut is the create/rotate result: the ingest URL, trust mode, and — for a signed-type
@@ -114,6 +119,9 @@ type webhookOut struct {
 	TargetQueue   string `json:"target_queue" jsonschema:"the queue delivered events route to"`
 	TrustMode     string `json:"trust_mode" jsonschema:"trust mode switchboard verifies under: signed or token (derived, not agent-supplied)"`
 	SigningSecret string `json:"signing_secret,omitempty" jsonschema:"signed webhooks only: the HMAC signing secret, revealed once — paste it into the producer's webhook config; switchboard will not show it again"`
+	// Governing: SPEC-0026 REQ-5 (the create result says an empty list holds every delivery).
+	TrustedActors *routing.TrustedActors `json:"trusted_actors,omitempty" jsonschema:"github/gitea/cairn only: the stored trust list"`
+	Warning       string                 `json:"warning,omitempty" jsonschema:"what the trust list means for deliveries, when it deserves attention"`
 }
 
 type listWebhooksIn struct{}
@@ -128,6 +136,9 @@ type webhookMetaOut struct {
 	TrustMode   string `json:"trust_mode" jsonschema:"trust mode: signed or token"`
 	CreatedAt   string `json:"created_at" jsonschema:"RFC 3339 creation time"`
 	RotatedAt   string `json:"rotated_at,omitempty" jsonschema:"RFC 3339 time of the last secret/URL rotation, if any"`
+	// Governing: SPEC-0026 REQ-5 (list_webhooks echoes the field and flags allow_all).
+	TrustedActors *routing.TrustedActors `json:"trusted_actors,omitempty" jsonschema:"github/gitea/cairn only: who may start work through this webhook"`
+	AllowAll      bool                   `json:"allow_all" jsonschema:"true when this webhook trusts every verified sender (flagged: prefer a list)"`
 }
 
 // ceilingOut is the endpoint's vended webhook ceiling plus current usage, so an agent can see how
@@ -220,6 +231,19 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 		if !hasScope(ep.WebhookQueues, targetQueue) {
 			return nil, webhookOut{}, &toolError{codeForbidden, "target queue " + targetQueue + " is not in this endpoint's allowed webhook queues"}
 		}
+		// The trust list, when given, is validated against the source before anything is minted. On a
+		// source with no actor projection it is refused, saying why. Omitted, the store writes the
+		// source's empty list (trusts no one). Governing: SPEC-0026 REQ-5.
+		var trustRaw []byte
+		if in.TrustedActors != nil {
+			ta, err := routing.ParseTrustedActors(sourceType, *in.TrustedActors)
+			if err != nil {
+				return nil, webhookOut{}, &toolError{codeInvalidArgument, err.Error()}
+			}
+			if trustRaw, err = json.Marshal(ta); err != nil {
+				return nil, webhookOut{}, h.mapWebhookErr(ep, "create_webhook", err)
+			}
+		}
 
 		// For a signed-type webhook switchboard mints the HMAC signing secret and HOLDS it server-side
 		// (it recomputes the HMAC over inbound bodies to verify per SPEC-0003) — and reveals it to the
@@ -236,13 +260,17 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 			return nil, webhookOut{}, &toolError{codeInternal, "internal error"}
 		}
 
-		w, err := h.store.CreateWebhook(ctx, ep.ID, sourceType, targetQueue, trustMode, ingestToken, secret, ep.WebhookMax)
+		w, err := h.store.CreateWebhookWithTrust(ctx, ep.ID, sourceType, targetQueue, trustMode, ingestToken, secret, ep.WebhookMax, trustRaw)
 		if err != nil {
 			return nil, webhookOut{}, h.mapWebhookErr(ep, "create_webhook", err)
 		}
 		out := webhookOut{
 			WebhookID: w.ID, IngestURL: h.ingestURL(w.IngestToken),
 			SourceType: w.SourceType, TargetQueue: w.TargetQueue, TrustMode: w.TrustMode,
+			TrustedActors: trustedActorsView(w),
+		}
+		if out.TrustedActors != nil {
+			out.Warning = trustWarning(*out.TrustedActors)
 		}
 		// Reveal the secret exactly once (signed only). It is returned solely here; every later read
 		// (list_webhooks) omits it.
@@ -272,8 +300,10 @@ func (h *Handler) listWebhooksTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[lis
 			row := webhookMetaOut{
 				WebhookID: w.ID, IngestURL: h.ingestURL(w.IngestToken),
 				SourceType: w.SourceType, TargetQueue: w.TargetQueue, TrustMode: w.TrustMode,
-				CreatedAt: w.CreatedAt.UTC().Format(time.RFC3339),
+				CreatedAt:     w.CreatedAt.UTC().Format(time.RFC3339),
+				TrustedActors: trustedActorsView(w),
 			}
+			row.AllowAll = row.TrustedActors != nil && row.TrustedActors.AllowAll
 			if w.RotatedAt != nil {
 				row.RotatedAt = w.RotatedAt.UTC().Format(time.RFC3339)
 			}
