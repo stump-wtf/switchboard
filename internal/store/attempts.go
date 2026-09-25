@@ -17,6 +17,7 @@ package store
 // Bounds", REQ-18 "Database Operation Standards".
 //
 // @joestump-agent 09/23/2026 - Added for #315 (epic #313).
+// @joestump-agent 09/25/2026 - Added FinalAttempt, the dead-letter hook context, for #330.
 
 import (
 	"context"
@@ -188,7 +189,8 @@ func closedArm(outcome, disposition, summary, truncated, artifact string) string
 				summary_truncated = ` + truncated + `, artifact = ` + artifact + `
 			FROM upd
 			WHERE a.todo_id = upd.id AND a.ended_at IS NULL
-			RETURNING a.todo_id
+			RETURNING a.todo_id, a.seq AS fa_seq, a.outcome AS fa_outcome,
+				a.disposition AS fa_disposition, a.summary AS fa_summary, a.artifact AS fa_artifact
 		)`
 }
 
@@ -196,6 +198,56 @@ func closedArm(outcome, disposition, summary, truncated, artifact string) string
 // attempt actually closed. The flag, not the transition, is what the attempts-closed counter counts
 // (SPEC-0034 REQ-14), so a todo that somehow had no open attempt is never counted as a close.
 const closedSelect = `SELECT ` + todoCols + `, EXISTS (SELECT 1 FROM closed c WHERE c.todo_id = upd.id) FROM upd`
+
+// FinalAttempt is the attempt a dead-letter transition closed, plus the todo's attempts_total. It
+// rides on the Todo that transition hands to the committed-transition hook, so SPEC-0029's
+// notification sinks can say what was tried rather than only that it failed. It is set by fail at
+// the cap (agent and Board) and by the reaper at the cap, and only when an attempt actually closed
+// dead_lettered; every other Todo, including a fail below the cap, leaves it nil. The revocation
+// cascade fires no transition hook, so it never builds one.
+//
+// Summary and Artifact are nil when nobody reported one: a reap, or the Board's fail.
+//
+// Governing: SPEC-0034 REQ-15 "Dead-Letter Context for Notifications".
+type FinalAttempt struct {
+	Seq           int
+	Outcome       string // failed | reaped
+	Died          bool   // derived as on Attempt: outcome is lease_expired or reaped (REQ-4)
+	Summary       *string
+	Artifact      *string
+	AttemptsTotal int
+}
+
+// closedSelectFinal is closedSelect for the statements that can dead-letter: after the closed flag
+// it returns whether the close dead-lettered the todo and that attempt's REQ-15 fields, read from
+// the closing CTE's RETURNING, so the payload costs no second round trip. Scan it with finalScan.
+// At most one attempt is open per todo, so the join yields at most one closed row per upd row.
+const closedSelectFinal = `SELECT ` + todoCols + `, c.todo_id IS NOT NULL,
+			c.fa_disposition IS NOT DISTINCT FROM 'dead_lettered', c.fa_seq, c.fa_outcome,
+			COALESCE(c.fa_outcome IN ('lease_expired', 'reaped'), false), c.fa_summary, c.fa_artifact,
+			upd.attempts_total
+		FROM upd LEFT JOIN closed c ON c.todo_id = upd.id`
+
+// finalScan receives the columns closedSelectFinal returns after todoCols.
+type finalScan struct {
+	closed, dead, died         bool
+	seq                        *int
+	outcome, summary, artifact *string
+	total                      int
+}
+
+func (f *finalScan) dest() []any {
+	return []any{&f.closed, &f.dead, &f.seq, &f.outcome, &f.died, &f.summary, &f.artifact, &f.total}
+}
+
+// attach sets t.FinalAttempt when the scanned close dead-lettered the todo.
+func (f *finalScan) attach(t *Todo) {
+	if !f.dead || f.seq == nil || f.outcome == nil {
+		return
+	}
+	t.FinalAttempt = &FinalAttempt{Seq: *f.seq, Outcome: *f.outcome, Died: f.died,
+		Summary: f.summary, Artifact: f.artifact, AttemptsTotal: f.total}
+}
 
 // closedArmUnreported closes with no summary or artifact: deaths, cancels, revocations, and the
 // Board's actions, where no holder reported anything.

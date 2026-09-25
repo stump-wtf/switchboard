@@ -57,6 +57,10 @@ type Todo struct {
 	// WorkOrder is the switchboard-authored work order (routing.WorkOrder JSON) when a work_order
 	// routing action minted this todo, nil otherwise. Governing: ADR-0025, SPEC-0020 REQ "Work Orders".
 	WorkOrder []byte
+	// FinalAttempt is the attempt a dead-letter transition closed, set only on the Todo that
+	// transition returns and hands to the transition hook; nil everywhere else.
+	// Governing: SPEC-0034 REQ-15 "Dead-Letter Context for Notifications".
+	FinalAttempt *FinalAttempt
 }
 
 const todoCols = `id, endpoint_id::text, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
@@ -752,14 +756,15 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 			RETURNING todos.*
 		),
 		`+closedArm("failed", failDisposition, "NULLIF($7::text, '')", "$8::boolean", "NULLIF($9::text, '')")+`
-		`+closedSelect, endpointID, id, owner, r.Result,
+		`+closedSelectFinal, endpointID, id, owner, r.Result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact, r.TokenHash)
-	var closed bool
-	t, err := scanTodo(row, &closed)
+	var f finalScan
+	t, err := scanTodo(row, f.dest()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
 	}
-	if err == nil && closed {
+	f.attach(&t) // at the cap, the hook payload carries the final attempt (SPEC-0034 REQ-15)
+	if err == nil && f.closed {
 		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
@@ -1185,14 +1190,15 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("failed", failDisposition)+`
-		`+closedSelect, id, owner, result,
+		`+closedSelectFinal, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), ownerHumanID)
-	var closed bool
-	t, err := scanTodo(row, &closed)
+	var f finalScan
+	t, err := scanTodo(row, f.dest()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
-	if err == nil && closed {
+	f.attach(&t) // at the cap, the hook payload carries the final attempt (SPEC-0034 REQ-15)
+	if err == nil && f.closed {
 		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
@@ -1241,7 +1247,7 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
-		`+closedSelect)
+		`+closedSelectFinal)
 	if err != nil {
 		return 0, err
 	}
@@ -1249,13 +1255,14 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 	var reaped []Todo
 	var closed []bool
 	for rows.Next() {
-		var c bool
-		t, err := scanTodo(rows, &c)
+		var f finalScan
+		t, err := scanTodo(rows, f.dest()...)
 		if err != nil {
 			return 0, err
 		}
+		f.attach(&t) // a reap at the cap carries its final attempt (SPEC-0034 REQ-15)
 		reaped = append(reaped, t)
-		closed = append(closed, c)
+		closed = append(closed, f.closed)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
