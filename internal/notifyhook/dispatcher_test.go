@@ -683,3 +683,153 @@ func TestDispatchNeverLogsSecrets(t *testing.T) {
 		t.Fatalf("attempts are not logged with the notification id:\n%s", out)
 	}
 }
+
+// REQ-7: each (notification, hook) pair is its own unit of work. A hook whose receiver never
+// answers, ordered first, must not hold back a live sibling's first attempt behind its own attempt
+// timeouts and retries (harness#492 budgets 30s from todo creation to wake).
+func TestDispatchDeadHookDoesNotDelaySibling(t *testing.T) {
+	rcv := newReceiver(t)
+	release := make(chan struct{})
+	dead := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select { // a black hole: hold the request until the client gives up
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(dead.Close)
+	t.Cleanup(func() { close(release) })
+	deadURL, _ := url.Parse(dead.URL)
+
+	st := newMemStore()
+	st.addHook(t, testEndpoint, "a-dead", "https://example.com:"+deadURL.Port()+"/") // listed first
+	st.addHook(t, testEndpoint, "b-live", rcv.hookURL("/"))
+	h := newHarness(t, st, rcv, func(o *Options) {
+		o.AttemptTTL = time.Second
+		o.Backoff = []time.Duration{300 * time.Millisecond, 300 * time.Millisecond}
+	})
+
+	start := time.Now()
+	h.d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
+	first := h.wait(t)
+	if first.HookID != "b-live" || !first.Delivered {
+		t.Fatalf("first finished delivery = %+v, want b-live delivered while a-dead is still retrying", first)
+	}
+	// Serially, b-live would wait out a-dead's three 1s timeouts and two backoffs (about 3.6s).
+	if took := time.Since(start); took >= time.Second {
+		t.Fatalf("b-live was delivered after %v: the dead sibling held it back", took)
+	}
+	second := h.wait(t)
+	if second.HookID != "a-dead" || second.Delivered || second.Attempts != MaxAttempts || second.Result != ResultTimeout {
+		t.Fatalf("dead hook delivery = %+v, want %d timeouts", second, MaxAttempts)
+	}
+}
+
+// The endpoint and its scope are re-read before every attempt, not only at match time: revoking the
+// endpoint, or removing the queue from its scope, after attempt 1 stops attempts 2 and 3.
+func TestDispatchEndpointChangeStopsRetries(t *testing.T) {
+	for name, mutate := range map[string]func(st *memStore){
+		"endpoint revoked": func(st *memStore) { delete(st.endpoints, testEndpoint) },
+		"queue left scope": func(st *memStore) {
+			st.endpoints[testEndpoint] = store.NotifyEndpoint{Slug: "agent-a", ScopeQueues: []string{"reviews"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rcv := newReceiver(t, http.StatusServiceUnavailable)
+			st := newMemStore()
+			st.addHook(t, testEndpoint, "h1", rcv.hookURL("/"))
+			var once sync.Once
+			st.mu.Lock()
+			// GetNotifyHook runs after the endpoint check within attempt 1, so attempt 1 still goes out.
+			st.onGet = func(string) {
+				once.Do(func() {
+					st.mu.Lock()
+					mutate(st)
+					st.mu.Unlock()
+				})
+			}
+			st.mu.Unlock()
+			h := newHarness(t, st, rcv)
+			h.d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
+			deadline := time.Now().Add(5 * time.Second)
+			for len(rcv.got()) == 0 && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			h.quiet(t)
+			if n := len(rcv.got()); n != 1 {
+				t.Fatalf("receiver saw %d requests, want only attempt 1", n)
+			}
+		})
+	}
+}
+
+// Scenario "Queue overflow": a delivery dropped on a full queue logs one warning naming the hook id
+// (never the URL); a todo dropped before matching names its endpoint and todo ids. A sustained
+// overflow is still counted in full but logs one line per reason per window, and the next line
+// reports how many it stood for.
+func TestDispatchDropWarnings(t *testing.T) {
+	var logs bytes.Buffer
+	var logMu sync.Mutex
+	read := func() string { logMu.Lock(); defer logMu.Unlock(); return logs.String() }
+	st := newMemStore()
+	st.addHook(t, testEndpoint, "h1", "https://example.com/sb?token=querysecret")
+	st.addHook(t, testEndpoint, "h2", "https://example.com/sb?token=querysecret")
+	d := NewDispatcher(Options{Store: st, Validator: push.New(), Max: 5, QueueSize: 1, Log: newLockedLogger(&logs, &logMu)})
+
+	// Not running, so match by hand: the delivery queue holds h1's job and h2's is dropped.
+	d.dispatch(context.Background(), newNotice(readyTodo(testEndpoint, "inbox"), store.ReadyCreated))
+	out := read()
+	if d.Dropped() != 1 || strings.Count(out, "notify hook notification dropped") != 1 ||
+		!strings.Contains(out, "reason=queue_full") || !strings.Contains(out, "hook=h2") {
+		t.Fatalf("dropped %d; want one queue_full warning naming h2:\n%s", d.Dropped(), out)
+	}
+	if strings.Contains(out, "querysecret") || strings.Contains(out, "example.com") {
+		t.Fatalf("a drop warning carries the hook URL:\n%s", out)
+	}
+
+	for i := 0; i < 50; i++ { // each drops both hooks' deliveries
+		d.dispatch(context.Background(), newNotice(readyTodo(testEndpoint, "inbox"), store.ReadyCreated))
+	}
+	if n := strings.Count(read(), "notify hook notification dropped"); d.Dropped() != 101 || n != 1 {
+		t.Fatalf("dropped %d with %d warnings; want 101 counted and the warnings coalesced to 1", d.Dropped(), n)
+	}
+
+	// Once the window has passed, the next drop logs again and reports what was suppressed.
+	d.dropLog.mu.Lock()
+	d.dropLog.last["queue_full"] = time.Now().Add(-dropLogEvery)
+	d.dropLog.mu.Unlock()
+	d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated) // fills the todo queue
+	d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated) // dropped before matching
+	out = read()
+	if strings.Count(out, "notify hook notification dropped") != 2 || !strings.Contains(out, "suppressed_since_last_warning=100") ||
+		!strings.Contains(out, "endpoint="+testEndpoint) {
+		t.Fatalf("want a second warning naming the endpoint and 100 suppressed drops:\n%s", out)
+	}
+}
+
+// A queued notification keeps only the notice: bounded sender text and no payload, so a full queue
+// cannot pin the todos' payloads.
+func TestNoticeIsSlim(t *testing.T) {
+	td := readyTodo(testEndpoint, "inbox")
+	td.Title = strings.Repeat("é", 1<<20)
+	td.Kind = strings.Repeat("k", 1000)
+	td.Source = strings.Repeat("s", 1000)
+	td.Attempt = 2
+	n := newNotice(td, store.ReadyRequeued)
+	if len([]rune(n.title)) != maxSummaryRunes || len(n.kind) != maxLabelRunes || len(n.source) != maxLabelRunes {
+		t.Fatalf("notice text not bounded: title %d runes, kind %d, source %d", len([]rune(n.title)), len(n.kind), len(n.source))
+	}
+	if n.todoID != td.ID || n.endpointID != td.EndpointID || n.queue != "inbox" || n.attempt != 2 || n.reason != store.ReadyRequeued {
+		t.Fatalf("notice = %+v", n)
+	}
+	for _, s := range []string{"", "abc", "héllo wörld", strings.Repeat("日本", 150), "a\nb</channel>c"} {
+		for _, limit := range []int{0, 1, 5, 200} {
+			want := s
+			if r := []rune(s); len(r) > limit {
+				want = string(r[:limit])
+			}
+			if got := truncateRunes(s, limit); got != want {
+				t.Fatalf("truncateRunes(%q, %d) = %q, want %q", s, limit, got, want)
+			}
+		}
+	}
+}

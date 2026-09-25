@@ -6,9 +6,12 @@ package notifyhook
 //
 //   - Trigger: the store's ready hook (store.SetTodoReadyHook), fired after commit and only for
 //     todos that pass the SPEC-0011 sender gate, on creation and on requeue. Enqueue never blocks:
-//     a full queue drops the notification and logs it.
+//     a full queue drops the notification and logs it. A queued notification keeps only the few
+//     todo fields its body needs (notice), never the payload, so the bound is on memory too.
 //   - Match: the hook's endpoint must be live, the todo's queue must be in the endpoint's CURRENT
-//     scope, and in the hook's queue filter when it has one.
+//     scope, and in the hook's queue filter when it has one. Each matching hook becomes its own
+//     delivery job on a second bounded queue, so one hook's retries never delay a sibling's first
+//     attempt; the endpoint, scope and hook are re-checked before every attempt.
 //   - Dial: the URL is re-validated before every attempt, and the connection goes to an address from
 //     that same resolution (no second lookup), with TLS verified against the URL's host, no proxy
 //     and no redirects.
@@ -58,6 +61,10 @@ const (
 	MaxAttempts          = 3
 	maxResponseRead      = 64 << 10
 	secretSweepInterval  = 10 * time.Minute
+	// dropLogEvery coalesces drop warnings: at most one line per reason in this window, carrying
+	// how many drops it stood for, so a sustained overflow cannot flood the log. Every drop is
+	// still counted (Dropped, OnDrop).
+	dropLogEvery = 10 * time.Second
 )
 
 // DefaultBackoff is the wait before the second and third attempts; each is jittered ±20%.
@@ -128,19 +135,30 @@ type Options struct {
 	OnDrop func(reason string)
 }
 
-type job struct {
-	todo   store.Todo
-	reason string
+// delivery is one notification bound for one hook: the unit a worker runs, retries included.
+type delivery struct {
+	n      notice
+	hookID string
 }
 
-// Dispatcher owns the bounded queue and its workers.
+// Dispatcher owns the two bounded queues and their workers: ready todos waiting to be matched, and
+// (notification, hook) deliveries waiting to be sent.
 type Dispatcher struct {
-	opts    Options
-	log     *slog.Logger
-	queue   chan job
-	limiter *hookLimiter
-	dropped atomic.Int64
-	started atomic.Bool
+	opts       Options
+	log        *slog.Logger
+	queue      chan notice
+	deliveries chan delivery
+	limiter    *hookLimiter
+	dropped    atomic.Int64
+	started    atomic.Bool
+	dropLog    dropLogger
+}
+
+// dropLogger coalesces drop warnings per reason (see dropLogEvery).
+type dropLogger struct {
+	mu         sync.Mutex
+	last       map[string]time.Time
+	suppressed map[string]int64
 }
 
 // NewDispatcher builds a dispatcher; Run starts it.
@@ -165,10 +183,12 @@ func NewDispatcher(o Options) *Dispatcher {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Dispatcher{
-		opts:    o,
-		log:     log,
-		queue:   make(chan job, o.QueueSize),
-		limiter: newHookLimiter(o.RatePerMinute),
+		opts:       o,
+		log:        log,
+		queue:      make(chan notice, o.QueueSize),
+		deliveries: make(chan delivery, o.QueueSize),
+		limiter:    newHookLimiter(o.RatePerMinute),
+		dropLog:    dropLogger{last: map[string]time.Time{}, suppressed: map[string]int64{}},
 	}
 }
 
@@ -177,23 +197,39 @@ func (d *Dispatcher) Dropped() int64 { return d.dropped.Load() }
 
 // Enqueue hands a ready todo to the workers. It never blocks and never fails the caller: this runs
 // on the ingest and reaper paths (SPEC-0024 REQ-7). Its signature matches store.TodoReadyHook.
+// Only a slim notice is queued, so the todo's payload (up to the 5 MiB body cap), routing trace and
+// work order are collectable as soon as the store hook returns.
 func (d *Dispatcher) Enqueue(t store.Todo, reason string) {
 	if d.opts.Max <= 0 || t.EndpointID == "" {
 		return // the kill switch, and a system todo no endpoint owns (REQ-1)
 	}
 	select {
-	case d.queue <- job{todo: t, reason: reason}:
+	case d.queue <- newNotice(t, reason):
 	default:
-		d.drop("queue_full", "todo", t.ID)
+		// No hook is matched yet, so the endpoint id stands in for the hook id (never the URL).
+		d.drop("queue_full", "endpoint", t.EndpointID, "todo", t.ID)
 	}
 }
 
+// drop counts a notification dropped before any attempt and logs it, coalescing the warning to one
+// line per reason per dropLogEvery. Attrs name hook, endpoint and todo ids only, never a URL.
 func (d *Dispatcher) drop(reason string, attrs ...any) {
 	d.dropped.Add(1)
-	d.log.Warn("notify hook notification dropped", append([]any{"reason", reason}, attrs...)...)
 	if d.opts.OnDrop != nil {
 		d.opts.OnDrop(reason)
 	}
+	now := time.Now()
+	d.dropLog.mu.Lock()
+	if last, ok := d.dropLog.last[reason]; ok && now.Sub(last) < dropLogEvery {
+		d.dropLog.suppressed[reason]++
+		d.dropLog.mu.Unlock()
+		return
+	}
+	suppressed := d.dropLog.suppressed[reason]
+	d.dropLog.last[reason], d.dropLog.suppressed[reason] = now, 0
+	d.dropLog.mu.Unlock()
+	d.log.Warn("notify hook notification dropped",
+		append([]any{"reason", reason, "suppressed_since_last_warning", suppressed}, attrs...)...)
 }
 
 // Run starts the workers and the expired-secret sweep, and blocks until ctx is done and every
@@ -212,8 +248,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 				select {
 				case <-ctx.Done():
 					return
-				case j := <-d.queue:
-					d.dispatch(ctx, j)
+				case n := <-d.queue:
+					d.dispatch(ctx, n)
+				case dj := <-d.deliveries:
+					d.deliver(ctx, dj)
 				}
 			}
 		}()
@@ -239,75 +277,76 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	wg.Wait()
 }
 
-// dispatch fans one ready todo out to its endpoint's matching hooks.
-func (d *Dispatcher) dispatch(ctx context.Context, j job) {
-	t := j.todo
-	ep, err := d.opts.Store.NotifyEndpointForDispatch(ctx, t.EndpointID)
+// dispatch matches one ready todo against its endpoint's hooks and queues one delivery per matching
+// hook, so each hook's attempts and retries run independently of its siblings'.
+func (d *Dispatcher) dispatch(ctx context.Context, n notice) {
+	ep, err := d.opts.Store.NotifyEndpointForDispatch(ctx, n.endpointID)
 	if errors.Is(err, store.ErrNotFound) {
 		return // revoked, expired or deleted: its hooks do not fire
 	}
 	if err != nil {
-		d.log.Warn("notify hook dispatch: endpoint lookup", "todo", t.ID, "err", fmt.Errorf("dispatch %s: %w", t.ID, err))
+		d.log.Warn("notify hook dispatch: endpoint lookup", "todo", n.todoID, "err", fmt.Errorf("dispatch %s: %w", n.todoID, err))
 		return
 	}
 	// The scope is read at fire time, so a queue removed from the scope stops every hook at once.
-	if !slices.Contains(ep.ScopeQueues, t.Queue) {
+	if !slices.Contains(ep.ScopeQueues, n.queue) {
 		return
 	}
-	hooks, err := d.opts.Store.ListNotifyHooks(ctx, t.EndpointID)
+	hooks, err := d.opts.Store.ListNotifyHooks(ctx, n.endpointID)
 	if err != nil {
-		d.log.Warn("notify hook dispatch: list hooks", "todo", t.ID, "err", fmt.Errorf("dispatch %s: %w", t.ID, err))
+		d.log.Warn("notify hook dispatch: list hooks", "todo", n.todoID, "err", fmt.Errorf("dispatch %s: %w", n.todoID, err))
 		return
 	}
 	for _, h := range hooks {
-		if !h.Enabled || (len(h.Queues) > 0 && !slices.Contains(h.Queues, t.Queue)) {
+		if !h.Enabled || !hookWants(h, n.queue) {
 			continue
 		}
 		if !d.limiter.allow(h.ID, time.Now()) {
-			d.drop("rate_limited", "hook", h.ID, "todo", t.ID)
+			d.drop("rate_limited", "hook", h.ID, "todo", n.todoID)
 			continue
 		}
-		d.deliver(ctx, ep, h, t, j.reason)
+		select {
+		case d.deliveries <- delivery{n: n, hookID: h.ID}:
+		default:
+			d.drop("queue_full", "hook", h.ID, "todo", n.todoID)
+		}
 	}
 }
 
+// hookWants reports whether a hook's queue filter admits queue (no filter admits every queue).
+func hookWants(h store.NotifyHook, queue string) bool {
+	return len(h.Queues) == 0 || slices.Contains(h.Queues, queue)
+}
+
 // deliver runs one notification's attempts against one hook.
-func (d *Dispatcher) deliver(ctx context.Context, ep store.NotifyEndpoint, h store.NotifyHook, t store.Todo, reason string) {
+func (d *Dispatcher) deliver(ctx context.Context, dj delivery) {
+	n, hookID := dj.n, dj.hookID
 	now := time.Now()
 	msgID, err := newMessageID(now)
 	if err != nil {
-		d.log.Error("notify hook: message id", "hook", h.ID, "err", err)
+		d.log.Error("notify hook: message id", "hook", hookID, "err", err)
 		return
 	}
-	body, err := buildReadyBody(t, reason, ep.Slug, now)
-	if err != nil {
-		d.log.Error("notify hook: body", "hook", h.ID, "notification", msgID, "err", err)
-		return
-	}
-	out := Delivery{HookID: h.ID, EndpointID: h.EndpointID, NotificationID: msgID}
+	var body []byte
+	out := Delivery{HookID: hookID, EndpointID: n.endpointID, NotificationID: msgID}
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		if attempt > 1 && !sleepCtx(ctx, jitter(d.opts.Backoff[min(attempt-2, len(d.opts.Backoff)-1)])) {
 			return // shutting down: abandon, the todo is still pending
 		}
-		// Re-read the hook before every attempt so a delete or disable takes effect at once, and
-		// the secrets so a rotation mid-notification signs with the current pair.
-		cur, err := d.opts.Store.GetNotifyHook(ctx, h.ID, h.EndpointID)
-		if errors.Is(err, store.ErrNotFound) || (err == nil && !cur.Enabled) {
+		cur, slug, secrets, ok := d.reload(ctx, n, hookID, msgID)
+		if !ok {
 			return
 		}
-		if err != nil {
-			d.log.Warn("notify hook: reload", "hook", h.ID, "notification", msgID, "err", fmt.Errorf("hook %s reload: %w", h.ID, err))
-			return
-		}
-		secrets, err := d.opts.Store.NotifyHookSigningSecrets(ctx, h.ID, h.EndpointID)
-		if err != nil {
-			d.log.Warn("notify hook: secrets", "hook", h.ID, "notification", msgID, "err", fmt.Errorf("hook %s secrets: %w", h.ID, err))
-			return
+		if body == nil {
+			if body, err = buildReadyBody(n, slug, now); err != nil {
+				d.log.Error("notify hook: body", "hook", hookID, "notification", msgID, "err", err)
+				return
+			}
 		}
 		start := time.Now()
 		status, result, aerr := d.attempt(ctx, cur.URL, msgID, body, secrets)
 		out.Attempts, out.Status, out.Result, out.Err = attempt, status, result, aerr
-		d.log.Info("notify hook attempt", "hook", h.ID, "notification", msgID, "attempt", attempt,
+		d.log.Info("notify hook attempt", "hook", hookID, "notification", msgID, "attempt", attempt,
 			"result", result, "duration_ms", time.Since(start).Milliseconds())
 		if aerr == nil {
 			out.Delivered = true
@@ -321,12 +360,45 @@ func (d *Dispatcher) deliver(ctx context.Context, ep store.NotifyEndpoint, h sto
 		}
 	}
 	if !out.Delivered {
-		d.log.Warn("notify hook delivery failed", "hook", h.ID, "notification", msgID, "attempts", out.Attempts,
-			"result", out.Result, "err", fmt.Errorf("hook %s: %w", h.ID, out.Err))
+		d.log.Warn("notify hook delivery failed", "hook", hookID, "notification", msgID, "attempts", out.Attempts,
+			"result", out.Result, "err", fmt.Errorf("hook %s: %w", hookID, out.Err))
 	}
 	if d.opts.OnDelivery != nil {
 		d.opts.OnDelivery(out)
 	}
+}
+
+// reload re-reads, before every attempt, everything that decides whether the attempt may run: the
+// endpoint (a revoke stops the next attempt), its scope (a queue removed from it stops the next
+// attempt), the hook (a delete, a disable or a narrowed filter stops the next attempt) and its
+// secrets (a rotation mid-notification signs with the current pair). ok is false when the attempt
+// must not run; a lookup failure other than not-found is logged.
+func (d *Dispatcher) reload(ctx context.Context, n notice, hookID, msgID string) (hook store.NotifyHook, slug string, secrets store.NotifyHookSecrets, ok bool) {
+	ep, err := d.opts.Store.NotifyEndpointForDispatch(ctx, n.endpointID)
+	if errors.Is(err, store.ErrNotFound) {
+		return hook, "", secrets, false
+	}
+	if err != nil {
+		d.log.Warn("notify hook: endpoint reload", "hook", hookID, "notification", msgID, "err", fmt.Errorf("hook %s endpoint reload: %w", hookID, err))
+		return hook, "", secrets, false
+	}
+	if !slices.Contains(ep.ScopeQueues, n.queue) {
+		return hook, "", secrets, false
+	}
+	hook, err = d.opts.Store.GetNotifyHook(ctx, hookID, n.endpointID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && (!hook.Enabled || !hookWants(hook, n.queue))) {
+		return hook, "", secrets, false
+	}
+	if err != nil {
+		d.log.Warn("notify hook: reload", "hook", hookID, "notification", msgID, "err", fmt.Errorf("hook %s reload: %w", hookID, err))
+		return hook, "", secrets, false
+	}
+	secrets, err = d.opts.Store.NotifyHookSigningSecrets(ctx, hookID, n.endpointID)
+	if err != nil {
+		d.log.Warn("notify hook: secrets", "hook", hookID, "notification", msgID, "err", fmt.Errorf("hook %s secrets: %w", hookID, err))
+		return hook, "", secrets, false
+	}
+	return hook, ep.Slug, secrets, true
 }
 
 // attempt sends one signed request. It returns the HTTP status (nil without a response), the

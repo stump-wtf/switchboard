@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/stump-wtf/switchboard/internal/store"
 )
@@ -70,15 +69,46 @@ type readyBody struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// buildReadyBody renders a todo.ready notification. created_at is when this notification was made
-// (so a requeue carries a fresh time); the todo's own age is not something the receiver needs.
-func buildReadyBody(t store.Todo, reason, endpointSlug string, now time.Time) ([]byte, error) {
+// notice is all a queued notification keeps of its todo: the fields the dispatcher matches on and
+// the body carries, with the sender-supplied text already cut to its body limit. It deliberately
+// holds no payload, routing trace or work order, so a full queue pins kilobytes, not the todos'
+// multi-megabyte payloads. Neutralization still happens in buildReadyBody. It keeps the rune count
+// (a </channel> becomes «/channel», a newline a space), so truncating first yields the same length
+// of summary; a </channel> the limit cuts in half is left as an inert fragment.
+type notice struct {
+	todoID     string
+	endpointID string
+	queue      string
+	kind       string
+	source     string
+	title      string
+	attempt    int
+	reason     string
+}
+
+// newNotice copies the notice out of t. The sender-supplied strings are cloned after truncation so
+// the notice never shares (and so never pins) a larger backing string.
+func newNotice(t store.Todo, reason string) notice {
+	return notice{
+		todoID: t.ID, endpointID: t.EndpointID, queue: t.Queue,
+		kind:    strings.Clone(truncateRunes(t.Kind, maxLabelRunes)),
+		source:  strings.Clone(truncateRunes(t.Source, maxLabelRunes)),
+		title:   strings.Clone(truncateRunes(t.Title, maxSummaryRunes)),
+		attempt: t.Attempt,
+		reason:  reason,
+	}
+}
+
+// buildReadyBody renders a todo.ready notification. attempt is the todo's attempt count, the number
+// of times it has been claimed so far, so 0 on creation. created_at is when this notification was
+// made (so a requeue carries a fresh time), not when the todo was created (SPEC-0024 REQ-5).
+func buildReadyBody(n notice, endpointSlug string, now time.Time) ([]byte, error) {
 	b := readyBody{
-		Type: TypeTodoReady, Reason: reason, TodoID: t.ID, Queue: t.Queue,
-		Kind: truncateRunes(neutralize(t.Kind), maxLabelRunes), Source: truncateRunes(neutralize(t.Source), maxLabelRunes),
-		Summary:   truncateRunes(neutralize(t.Title), maxSummaryRunes),
+		Type: TypeTodoReady, Reason: n.reason, TodoID: n.todoID, Queue: n.queue,
+		Kind: truncateRunes(neutralize(n.kind), maxLabelRunes), Source: truncateRunes(neutralize(n.source), maxLabelRunes),
+		Summary:   truncateRunes(neutralize(n.title), maxSummaryRunes),
 		Endpoint:  endpointSlug,
-		Attempt:   t.Attempt,
+		Attempt:   n.attempt,
 		CreatedAt: now.UTC().Format(time.RFC3339),
 	}
 	out, err := json.Marshal(b)
@@ -104,11 +134,15 @@ func neutralize(s string) string {
 	return s
 }
 
-// truncateRunes cuts s to at most n runes without splitting a UTF-8 sequence.
+// truncateRunes cuts s to at most n runes without splitting a UTF-8 sequence. It walks at most n
+// runes, so a huge title costs no more than a short one (this runs on the ingest path).
 func truncateRunes(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
 	}
-	r := []rune(s)
-	return string(r[:n])
+	return s
 }
