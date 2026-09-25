@@ -46,6 +46,8 @@ type memStore struct {
 	secrets   map[string]store.NotifyHookSecrets
 	// onGet runs inside GetNotifyHook, before the answer, so a test can delete or disable mid-flight.
 	onGet func(id string)
+	// healthErr, when set, fails every health update (a store outage).
+	healthErr error
 }
 
 func newMemStore() *memStore {
@@ -122,6 +124,38 @@ func (m *memStore) NotifyHookSigningSecrets(_ context.Context, id, endpointID st
 }
 
 func (m *memStore) DestroyExpiredNotifyHookSecrets(context.Context) (int64, error) { return 0, nil }
+
+// RecordNotifyHookDelivery mirrors the store's single-statement health rule.
+func (m *memStore) RecordNotifyHookDelivery(_ context.Context, id string, delivered bool, status *int, lastError string, disableAfter int) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.healthErr != nil {
+		return false, m.healthErr
+	}
+	h, ok := m.hooks[id]
+	if !ok {
+		return false, nil
+	}
+	h.LastStatus = status
+	if delivered {
+		h.ConsecutiveFailures, h.LastError = 0, nil
+		m.hooks[id] = h
+		return false, nil
+	}
+	if !h.Enabled {
+		return false, nil
+	}
+	h.ConsecutiveFailures++
+	le := lastError
+	h.LastError = &le
+	disabled := false
+	if h.ConsecutiveFailures >= disableAfter {
+		reason := store.NotifyHookDisabledFailures
+		h.Enabled, h.DisabledReason, disabled = false, &reason, true
+	}
+	m.hooks[id] = h
+	return disabled, nil
+}
 
 // receiver is an httptest TLS server recording every request and answering from a script.
 type receiver struct {

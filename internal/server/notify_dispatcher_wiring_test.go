@@ -65,6 +65,10 @@ func (w *wiringStore) NotifyHookSigningSecrets(context.Context, string, string) 
 
 func (w *wiringStore) DestroyExpiredNotifyHookSecrets(context.Context) (int64, error) { return 0, nil }
 
+func (w *wiringStore) RecordNotifyHookDelivery(context.Context, string, bool, *int, string, int) (bool, error) {
+	return false, nil
+}
+
 func TestNotifyDispatcherWiring(t *testing.T) {
 	got := make(chan string, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +91,7 @@ func TestNotifyDispatcherWiring(t *testing.T) {
 
 	t.Run("ceiling 0 subscribes nothing", func(t *testing.T) {
 		st := &wiringStore{url: srv.URL, secret: secret}
-		if d := startNotifyDispatcher(ctx, st, v, 0, nil); d != nil {
+		if d := startNotifyDispatcher(ctx, st, v, 0, nil, nil); d != nil {
 			t.Fatal("a dispatcher was started with the ceiling at 0")
 		}
 		if _, subs := st.readyHook(); subs != 0 {
@@ -97,7 +101,7 @@ func TestNotifyDispatcherWiring(t *testing.T) {
 
 	t.Run("a ready todo reaches the hook", func(t *testing.T) {
 		st := &wiringStore{url: srv.URL, secret: secret}
-		if d := startNotifyDispatcher(ctx, st, v, 5, nil); d == nil {
+		if d := startNotifyDispatcher(ctx, st, v, 5, nil, nil); d == nil {
 			t.Fatal("no dispatcher with the ceiling at 5")
 		}
 		fire, subs := st.readyHook()

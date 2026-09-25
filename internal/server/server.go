@@ -145,12 +145,6 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err // Validate already refused a malformed list; kept for defence in depth
 	}
 	mcph.SetNotifyHooks(mcpsrv.NotifyHookConfig{Store: st, Validator: hookValidator, Max: cfg.NotifyHookMax})
-	// The delivery dispatcher subscribes to the store's ready hook: sender-gated creations and
-	// requeues, fired once per transition on the instance that performed it. It is deliberately NOT
-	// behind the doorbellGate below: that gate suppresses re-rings of the channel doorbell for a
-	// minute, and a requeue inside that window must still reach a hook (SPEC-0024 REQ-6). With the
-	// ceiling at 0 nothing subscribes, so existing hooks receive nothing (the REQ-1 kill switch).
-	startNotifyDispatcher(ctx, st, hookValidator, cfg.NotifyHookMax, log)
 	switch {
 	case cfg.NotifyHookMax == 0:
 		log.Info("notify hooks disabled", "reason", "SWITCHBOARD_NOTIFY_HOOK_MAX=0")
@@ -186,6 +180,14 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	st.SetMetrics(mtr)
 	ing.SetMetrics(mtr)
 	mtr.RegisterQueueStats(st) // REQ-2 queue-liveness gauges, computed at scrape time
+
+	// The delivery dispatcher subscribes to the store's ready hook: sender-gated creations and
+	// requeues, fired once per transition on the instance that performed it. It is deliberately NOT
+	// behind the doorbellGate below: that gate suppresses re-rings of the channel doorbell for a
+	// minute, and a requeue inside that window must still reach a hook (SPEC-0024 REQ-6). With the
+	// ceiling at 0 nothing subscribes, so existing hooks receive nothing (the REQ-1 kill switch).
+	// It is started after mtr exists so it counts into the process registry (REQ-11).
+	startNotifyDispatcher(ctx, st, hookValidator, cfg.NotifyHookMax, mtr, log)
 
 	r := newRouter(routerDeps{
 		st:    st,
@@ -717,13 +719,16 @@ type notifyDispatchStore interface {
 
 // startNotifyDispatcher subscribes a notify-hook dispatcher to st's ready hook and runs it on ctx,
 // returning it; with ceiling at 0 it subscribes nothing and returns nil (the SPEC-0024 REQ-1 kill
-// switch). It is split out of Run so a test drives the real wiring rather than a dispatcher it
-// built itself. Governing: SPEC-0024 REQ-1, REQ-6.
-func startNotifyDispatcher(ctx context.Context, st notifyDispatchStore, v *push.Validator, ceiling int, log *slog.Logger) *notifyhook.Dispatcher {
+// switch). It counts into mtr and creates the notify-hook series at zero, so /metrics shows them
+// from the first scrape, and a process with no dispatcher leaves them honestly absent. It is split
+// out of Run so a test drives the real wiring rather than a dispatcher it built itself.
+// Governing: SPEC-0024 REQ-1, REQ-6, REQ-11.
+func startNotifyDispatcher(ctx context.Context, st notifyDispatchStore, v *push.Validator, ceiling int, mtr *metrics.Metrics, log *slog.Logger) *notifyhook.Dispatcher {
 	if ceiling <= 0 {
 		return nil
 	}
-	d := notifyhook.NewDispatcher(notifyhook.Options{Store: st, Validator: v, Log: log, Max: ceiling})
+	mtr.InitNotifyHookSeries()
+	d := notifyhook.NewDispatcher(notifyhook.Options{Store: st, Validator: v, Log: log, Max: ceiling, Metrics: mtr})
 	st.SetTodoReadyHook(d.Enqueue)
 	go d.Run(ctx)
 	return d
