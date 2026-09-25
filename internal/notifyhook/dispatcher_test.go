@@ -460,6 +460,86 @@ func TestDispatchRebindingRejected(t *testing.T) {
 	}
 }
 
+// flakyResolver answers its first `fails` lookups with err, and 127.0.0.1 after that.
+type flakyResolver struct {
+	mu    sync.Mutex
+	fails int
+	err   error
+	calls int
+}
+
+func (r *flakyResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	if r.calls <= r.fails {
+		return nil, r.err
+	}
+	return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+}
+
+// REQ-7: a host that fails to resolve is a network error or a timeout, which is retried, never an
+// SSRF rejection. A transient resolver failure is followed by a delivery; a resolver that keeps
+// timing out ends as three timeout attempts; neither is ever labelled rejected_ssrf (REQ-8's
+// last_error would otherwise point the operator at an SSRF attempt during a DNS outage).
+func TestDispatchResolverFailureIsRetried(t *testing.T) {
+	allow, err := push.ParseCIDRList("127.0.0.1/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("transient failure then success", func(t *testing.T) {
+		rcv := newReceiver(t)
+		st := newMemStore()
+		secret := st.addHook(t, testEndpoint, "h1", rcv.hookURL("/"))
+		res := &flakyResolver{fails: 1, err: &net.DNSError{Err: "server misbehaving", Name: "example.com", IsTemporary: true}}
+		h := newHarness(t, st, rcv, func(o *Options) {
+			o.Validator = push.New(push.WithAllowCIDRs(allow...), push.WithResolver(res))
+		})
+		h.d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
+		dl := h.wait(t)
+		reqs := rcv.got()
+		if !dl.Delivered || dl.Attempts != 2 || dl.Result != Result2xx || len(reqs) != 1 {
+			t.Fatalf("delivery = %+v with %d requests, want delivered on attempt 2 after one DNS failure", dl, len(reqs))
+		}
+		r := reqs[0]
+		if !referenceVerify(secret, r.header.Get("webhook-id"), r.header.Get("webhook-timestamp"), r.body, r.header.Get("webhook-signature")) {
+			t.Fatal("the retried attempt does not verify")
+		}
+	})
+	t.Run("persistent lookup timeout", func(t *testing.T) {
+		rcv := newReceiver(t)
+		st := newMemStore()
+		st.addHook(t, testEndpoint, "h1", rcv.hookURL("/"))
+		res := &flakyResolver{fails: 100, err: &net.DNSError{Err: "i/o timeout", Name: "example.com", IsTimeout: true}}
+		h := newHarness(t, st, rcv, func(o *Options) {
+			o.Validator = push.New(push.WithAllowCIDRs(allow...), push.WithResolver(res))
+		})
+		h.d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
+		dl := h.wait(t)
+		if dl.Delivered || dl.Attempts != MaxAttempts || dl.Status != nil || dl.Result != ResultTimeout ||
+			!errors.Is(dl.Err, ErrTimeout) || errors.Is(dl.Err, ErrSSRF) {
+			t.Fatalf("delivery = %+v, want %d timeout attempts and no SSRF classification", dl, MaxAttempts)
+		}
+		if n := len(rcv.got()); n != 0 {
+			t.Fatalf("an unresolved host received %d requests", n)
+		}
+	})
+	t.Run("nxdomain is a network error", func(t *testing.T) {
+		rcv := newReceiver(t)
+		st := newMemStore()
+		st.addHook(t, testEndpoint, "h1", rcv.hookURL("/"))
+		res := &flakyResolver{fails: 100, err: &net.DNSError{Err: "no such host", Name: "example.com", IsNotFound: true}}
+		h := newHarness(t, st, rcv, func(o *Options) {
+			o.Validator = push.New(push.WithAllowCIDRs(allow...), push.WithResolver(res))
+		})
+		h.d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
+		dl := h.wait(t)
+		if dl.Delivered || dl.Attempts != MaxAttempts || dl.Result != ResultNetwork || !errors.Is(dl.Err, ErrRetryable) {
+			t.Fatalf("delivery = %+v, want %d network attempts", dl, MaxAttempts)
+		}
+	})
+}
+
 // REQ-1: a hook fires only for its own endpoint's todos, on its queue filter, within the endpoint's
 // current scope; a system todo, a revoked endpoint and the ceiling-0 kill switch fire nothing.
 func TestDispatchMatching(t *testing.T) {
