@@ -6,14 +6,16 @@ package mcp
 //
 // Resources:
 //   - switchboard://queue/{name}/a2ui — pending todos in one queue as a Card list with state badges
-//   - switchboard://todo/{id}/a2ui    — one todo's full detail with action context
+//   - switchboard://todo/{id}/a2ui    — one todo's full detail, attempt history and action context
 //
 // Both are read-only at the A2UI layer; the existing claim/complete/fail tools remain the only
 // mutation path. Per-credential scoping is identical to the underlying tools: the surface only
 // ever shows what the authorizing endpoint can already see.
 //
 // Governing: #102 Epic "A2UI resources over MCP", ADR-0005 (contract shape), SPEC-0006 REQ
-// "Todo Drain Verbs" (the queue these surfaces render).
+// "Todo Drain Verbs" (the queue these surfaces render), SPEC-0034 REQ-13 (attempt history).
+//
+// @joestump-agent 09/25/2026 - The todo detail lists the todo's attempts, for #329 (epic #313).
 
 import (
 	"context"
@@ -36,7 +38,18 @@ const (
 
 	// a2uiQueueLimit caps the number of todos rendered in the queue view.
 	a2uiQueueLimit = 25
+
+	// a2uiAttemptLimit caps the attempts the todo detail lists: get_todo's default page
+	// (SPEC-0034 REQ-8), the same number the Board drawer shows.
+	a2uiAttemptLimit = 20
 )
+
+// a2uiAttempts is the attempt history the todo detail renders: newest first, with the todo's
+// attempts_total so the view can say how many it left out.
+type a2uiAttempts struct {
+	Rows  []store.Attempt
+	Total int
+}
 
 // --- A2UI payload types (flat adjacency-list components) ---
 
@@ -133,7 +146,14 @@ func (h *Handler) todoA2UIResource(ep store.AuthEndpoint) sdk.ResourceHandler {
 		if !hasScope(ep.ScopeQueues, t.Queue) {
 			return nil, &toolError{codeForbidden, "todo's queue not in this endpoint's scope"}
 		}
-		payload := renderTodoA2UI(t)
+		// The attempt history comes through the same endpoint-scoped read get_todo uses, so the
+		// surface shows nothing the endpoint could not already read. Governing: SPEC-0034 REQ-10,
+		// REQ-13 "Operator Surfaces" (the A2UI todo detail lists the attempts).
+		atts, total, _, err := h.store.TodoAttempts(ctx, ep.ID, id, a2uiAttemptLimit)
+		if err != nil {
+			return nil, h.mapStoreErr(ep, "resources/read todo/a2ui attempts", err)
+		}
+		payload := renderTodoA2UI(t, a2uiAttempts{Rows: atts, Total: total})
 		body, err := json.Marshal(payload)
 		if err != nil {
 			h.log.Error("mcp todo a2ui marshal", "slug", ep.Slug, "err", err)
@@ -201,7 +221,7 @@ func renderQueueA2UI(queue string, todos []store.Todo) a2uiPayload {
 // title, full metadata, payload summary, attempt history, and a row of action buttons. The
 // buttons are label-only for now (claim/complete/fail) — wiring them to a2ui_action handlers is
 // parked until crush#221.
-func renderTodoA2UI(t store.Todo) a2uiPayload {
+func renderTodoA2UI(t store.Todo, hist a2uiAttempts) a2uiPayload {
 	var p a2uiPayload
 	p.Version = a2uiVersion
 	p.UpdateComponents.SurfaceID = "todo-" + sanitizeID(t.ID)
@@ -237,6 +257,11 @@ func renderTodoA2UI(t store.Todo) a2uiPayload {
 		)
 	}
 
+	// Attempt history, before the actions like the payload.
+	comps[1].Children = insertBefore(comps[1].Children, "actions", "divider-attempts", "attempts")
+	comps = append(comps, a2uiComponent{Component: "Divider", ID: "divider-attempts"})
+	comps = append(comps, renderAttemptsA2UI(hist)...)
+
 	// Action buttons — label-only, parked until crush#221.
 	comps = append(comps,
 		a2uiComponent{Component: "Row", ID: "actions", Children: []string{"btn-claim", "btn-complete", "btn-fail"}},
@@ -250,6 +275,99 @@ func renderTodoA2UI(t store.Todo) a2uiPayload {
 
 	p.UpdateComponents.Components = comps
 	return p
+}
+
+// renderAttemptsA2UI renders a todo's attempt history as the "attempts" Column: a heading, then a
+// Card per attempt, newest first, with the same facts as the Board drawer (number, claimant,
+// times, outcome and disposition, a died marker with the last heartbeat, summary, artifact). A2UI
+// has no link component, so every artifact, https or mcp://cairn, is text. store.Attempt carries
+// no session, claimer endpoint or lease-token hash, so none can appear here.
+// Governing: SPEC-0034 REQ-4, REQ-13 "Operator Surfaces".
+func renderAttemptsA2UI(hist a2uiAttempts) []a2uiComponent {
+	col := a2uiComponent{Component: "Column", ID: "attempts", Children: []string{"attempts-title"}}
+	comps := []a2uiComponent{{Component: "Text", ID: "attempts-title", Variant: "h3",
+		Text: fmt.Sprintf("Attempts (%d)", hist.Total)}}
+	if len(hist.Rows) == 0 {
+		col.Children = append(col.Children, "attempts-empty")
+		comps = append(comps, a2uiComponent{Component: "Text", ID: "attempts-empty", Variant: "caption", Text: "No attempts yet."})
+		return append([]a2uiComponent{col}, comps...)
+	}
+	list := a2uiComponent{Component: "List", ID: "attempts-list"}
+	col.Children = append(col.Children, "attempts-list")
+	for i, a := range hist.Rows {
+		cardID, colID := fmt.Sprintf("attempt-card-%d", i), fmt.Sprintf("attempt-col-%d", i)
+		headID, timesID := fmt.Sprintf("attempt-head-%d", i), fmt.Sprintf("attempt-times-%d", i)
+		inner := a2uiComponent{Component: "Column", ID: colID, Children: []string{headID, timesID}}
+		comps = append(comps,
+			a2uiComponent{Component: "Card", ID: cardID, Child: colID},
+			a2uiComponent{Component: "Text", ID: headID, Text: attemptHead(a)},
+			a2uiComponent{Component: "Text", ID: timesID, Variant: "caption", Text: attemptTimes(a)},
+		)
+		if a.Summary != "" {
+			id := fmt.Sprintf("attempt-summary-%d", i)
+			text := "Summary: " + a.Summary
+			if a.SummaryTruncated {
+				text += " (truncated)"
+			}
+			inner.Children = append(inner.Children, id)
+			comps = append(comps, a2uiComponent{Component: "Text", ID: id, Text: text})
+		}
+		if a.Artifact != "" {
+			id := fmt.Sprintf("attempt-artifact-%d", i)
+			inner.Children = append(inner.Children, id)
+			comps = append(comps, a2uiComponent{Component: "Text", ID: id, Variant: "caption", Text: "Artifact: " + a.Artifact})
+		}
+		comps = append(comps, inner)
+		list.Children = append(list.Children, cardID)
+	}
+	comps = append(comps, list)
+	if hidden := hist.Total - len(hist.Rows); hidden > 0 {
+		col.Children = append(col.Children, "attempts-more")
+		comps = append(comps, a2uiComponent{Component: "Text", ID: "attempts-more", Variant: "caption",
+			Text: fmt.Sprintf("%d earlier attempts not shown.", hidden)})
+	}
+	return append([]a2uiComponent{col}, comps...)
+}
+
+// attemptHead is an attempt's first line: number, who claimed, how it ended, and the died marker
+// in words, so it never depends on how a host styles the text.
+func attemptHead(a store.Attempt) string {
+	who := a.Claimant
+	if who == "" {
+		who = "agent"
+		if a.ClaimerKind == "owner" {
+			who = "owner (Board)"
+		}
+	}
+	parts := []string{fmt.Sprintf("#%d", a.Seq), who}
+	switch {
+	case a.Outcome == "":
+		parts = append(parts, "in progress")
+	case a.Disposition != "":
+		parts = append(parts, a.Outcome+" → "+a.Disposition)
+	default:
+		parts = append(parts, a.Outcome)
+	}
+	if a.Died {
+		parts = append(parts, "✝ died: no report")
+	}
+	return strings.Join(parts, " · ")
+}
+
+// attemptTimes is an attempt's time line: claimed, ended, and the last heartbeat (or, for a death,
+// that there was none).
+func attemptTimes(a store.Attempt) string {
+	parts := []string{"claimed " + a.ClaimedAt.UTC().Format(time.RFC3339)}
+	if a.EndedAt != nil {
+		parts = append(parts, "ended "+a.EndedAt.UTC().Format(time.RFC3339))
+	}
+	switch {
+	case a.LastHeartbeatAt != nil:
+		parts = append(parts, "last heartbeat "+a.LastHeartbeatAt.UTC().Format(time.RFC3339))
+	case a.Died:
+		parts = append(parts, "no heartbeat")
+	}
+	return strings.Join(parts, " · ")
 }
 
 // --- helpers ---
