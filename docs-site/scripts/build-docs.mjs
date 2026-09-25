@@ -326,4 +326,63 @@ writeFileSync(
   ),
 );
 
+// ---- llms.txt -> static/llms.txt (served at <site>/docs/llms.txt) ----
+// An agent pointed at this file (llmstxt.org format: H1, blockquote summary, H2 sections of
+// `- [Title](url): note` lines) finds the pages that answer "how do I connect, and is it safe?"
+// without guessing. Every URL is absolute and public; titles come from each page's front matter.
+// static/llms.txt is gitignored — this script is its source.
+// TODO: align with the shared approach stump.wtf/harness#475 picks for all three sites.
+const SITE_URL = (process.env.DOCS_URL || 'https://switchboard.stump.wtf').replace(/\/+$/, '');
+const DOCS_ROOT = `${SITE_URL}/docs`;
+function pageTitle(srcPath) {
+  const { fm, body } = splitFrontmatter(readFileSync(srcPath, 'utf8'));
+  const h1 = body.match(/^#\s+(.+)$/m);
+  return fmValue(fm, 'title') || (h1 ? h1[1].trim() : srcPath);
+}
+function llmsEntry(dir, file, route, note) {
+  return `- [${pageTitle(join(dir, file))}](${DOCS_ROOT}${route}): ${note}`;
+}
+const llms = [
+  '# Switchboard',
+  '',
+  '> Switchboard verifies inbound webhooks and turns them into a durable todo queue that AI agents',
+  '> drain over MCP (Streamable HTTP). Agents claim a todo, do the work, and complete or fail it; a',
+  '> push "doorbell" is only a hint, and the queue is the record.',
+  '',
+  'The hosted service is at https://switchboard.stump.wtf. Start with the connect page: it says',
+  'exactly what to configure for Claude Code, Crush, or any other MCP client, and how to prove the',
+  'connection works.',
+  '',
+  '## Start here',
+  '',
+  llmsEntry(START_SRC, '03-connect-an-agent.md', '/getting-started/connect-an-agent',
+    'wire an agent to an endpoint (URL + bearer credential or OAuth), turn on push for Claude Code or Crush, or poll with claim_next'),
+  '',
+  '## Guides',
+  '',
+  llmsEntry(GUIDES_SRC, '12-security-model.md', '/guides/security-model',
+    'what switchboard protects, what it cannot, and what is on the operator; read before giving an agent a credential'),
+  llmsEntry(GUIDES_SRC, '14-self-hosting.md', '/guides/self-hosting',
+    'run your own instance: one Go binary plus PostgreSQL'),
+  llmsEntry(GUIDES_SRC, '06-operator-cli.md', '/guides/operator-cli',
+    'log in, then vend, list, and revoke endpoints with the switchboard CLI or the /api/v1 operator API (the hosted web board does the same)'),
+  llmsEntry(GUIDES_SRC, '07-routing-rules.md', '/guides/routing-rules',
+    'per-webhook jq rules, first match wins, that pick which queue and endpoints a delivery lands on, or drop it'),
+  llmsEntry(GUIDES_SRC, '10-routing-cookbook.md', '/guides/routing-cookbook',
+    'tested routing-rule recipes'),
+  '',
+  '## Optional',
+  '',
+  '- [How Harness, Switchboard and Cairn fit together](https://stump-wtf.github.io/harness/guides/harness-switchboard-cairn/): the canonical page for the whole stack',
+  '',
+].join('\n');
+// The docs are public; a private host in llms.txt is a dead link at best and a leak at worst.
+// Fail the build rather than publish one. Public hosts: switchboard.stump.wtf, cairn.stump.wtf,
+// stump-wtf.github.io, github.com. Everything under stump.rocks is private.
+const privateHost = llms.match(/(?:[a-z0-9-]+\.)*stump\.rocks\b/i);
+if (privateHost) {
+  throw new Error(`build-docs: llms.txt would publish a private host (${privateHost[0]}); fix the entry or DOCS_URL`);
+}
+writeFileSync(join(SITE, 'static', 'llms.txt'), llms);
+
 console.log(`build-docs: ${adrFiles.length} ADRs + ${capDirs.length} specs + ${refFiles.length} reference contracts -> docs-generated/`);
