@@ -164,6 +164,10 @@ type Handler struct {
 	// uses (New installs it; tests swap in routing.InProcess). Governing: ADR-0024, SPEC-0020.
 	router atomic.Pointer[routing.Router]
 
+	// notifyHooks carries the SPEC-0024 notify-hook verbs' store, SSRF validator and ceiling
+	// (SetNotifyHooks). Nil until wired: a granted notify-hook verb then answers unavailable.
+	notifyHooks atomic.Pointer[NotifyHookConfig]
+
 	idleTimeout time.Duration
 
 	// mu guards sessions and closed. sessions is the live Streamable HTTP session registry, keyed
@@ -423,6 +427,8 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	// the same allowlist-filtered registration (webhook_routes.go).
 	h.registerWebhookRouteTools(srv, ep)
 	h.registerWebhookRuleTools(srv, ep)
+	// The SPEC-0024 notify-hook verbs (notify_hooks.go): granted separately, never by default.
+	h.registerNotifyHookTools(srv, ep)
 	h.registerEventResources(srv, ep)
 	// The #102 A2UI resource surface (a2ui.go): queue and todo detail rendered as
 	// application/a2ui+json for A2UI-capable hosts.

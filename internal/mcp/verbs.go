@@ -44,8 +44,18 @@ func EventVerbs() []string {
 	return []string{"list_webhook_events", "get_webhook_event", "replay_webhook_event"}
 }
 
-// AllVerbs returns the full verb set a vend can grant: every drain, webhook, and event verb
-// concatenated in display order. Call sites that need the composed grant (the vend wizard's
+// NotifyHookVerbs returns the SPEC-0024 notify-hook surface in display order. These verbs make
+// Switchboard dial tenant-chosen URLs, so they are grantable per endpoint but deliberately NOT part
+// of AllVerbs or any default grant: the grant surfaces list them as their own "outbound HTTP calls"
+// group, off by default, and an endpoint holds them only when its human ticks them.
+// Governing: SPEC-0024 REQ-2 "Management Verbs", ADR-0029.
+func NotifyHookVerbs() []string {
+	return []string{"create_notify_hook", "list_notify_hooks", "rotate_notify_hook", "delete_notify_hook"}
+}
+
+// AllVerbs returns the default-grantable verb set: every drain, webhook, and event verb
+// concatenated in display order. The notify-hook verbs are grantable too but never by default, so
+// they are listed separately (NotifyHookVerbs) and never folded in here. Call sites that need the composed grant (the vend wizard's
 // endpoint API, the OAuth consent screen) enumerate this instead of concatenating the three
 // families by hand, so the composition cannot drift between them. Governing: SPEC-0006 REQ
 // "Todo Drain Verbs", REQ "Webhook Self-Management"; SPEC-0014 REQ "Agent Tool Surface over MCP".
