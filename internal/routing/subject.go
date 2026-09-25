@@ -121,7 +121,12 @@ type WorkOrder struct {
 	Verified     bool          `json:"verified"`
 	AuthorizedBy WorkOrderRule `json:"authorized_by"`
 	Subject      *Subject      `json:"subject,omitempty"`
-	Authority    string        `json:"authority"`
+	// AuthorTrusted is the trust gate's author verdict (SPEC-0026 REQ-10). false means the work is
+	// about something an untrusted author wrote, even though a trusted sender moved it here. It is
+	// absent when there is no per-actor verdict: the source has no actor projection, or the webhook
+	// trusts everyone (allow_all). A worker treats absent as not trusted.
+	AuthorTrusted *bool  `json:"author_trusted,omitempty"`
+	Authority     string `json:"authority"`
 }
 
 // WorkOrderRule names the routing decision that produced the work order.
@@ -134,12 +139,16 @@ type WorkOrderRule struct {
 // BuildWorkOrder assembles a work order from a decision, the envelope input it was made on, and the
 // delivery's subject (which may be nil).
 func BuildWorkOrder(d Decision, in EnvelopeInput, s *Subject) WorkOrder {
-	return WorkOrder{
+	wo := WorkOrder{
 		Version: WorkOrderVersion, Lane: d.Queue, Source: in.Source, WebhookID: in.WebhookID,
 		TrustMode: in.TrustMode, Verified: in.Verified,
 		AuthorizedBy: WorkOrderRule{Stage: d.Trace.Stage, RuleID: d.Trace.RuleID, RuleName: d.Trace.RuleName},
 		Subject:      s, Authority: WorkOrderAuthority,
 	}
+	if in.Actor != nil {
+		wo.AuthorTrusted = in.Actor.AuthorTrusted
+	}
+	return wo
 }
 
 func headerValue(h map[string]string, name string) string {

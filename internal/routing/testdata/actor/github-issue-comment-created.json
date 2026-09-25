@@ -1,0 +1,22 @@
+{
+  "source": "github",
+  "headers": {"Content-Type": "application/json", "X-Github-Event": "issue_comment", "X-Github-Delivery": "7a1e0c40-9a11-11f0-8e1c-1f2a3b4c5d6e"},
+  "body": {
+    "action": "created",
+    "issue": {
+      "number": 41,
+      "title": "Skill fails on empty input",
+      "html_url": "https://github.com/joestump/claude-skills/issues/41",
+      "state": "open",
+      "user": {"login": "outsider-one", "id": 9100001, "type": "User"},
+      "labels": []
+    },
+    "comment": {
+      "id": 3310000001,
+      "body": "Any update on this?",
+      "user": {"login": "Outsider-Two", "id": 9100002, "type": "User"}
+    },
+    "repository": {"full_name": "joestump/claude-skills"},
+    "sender": {"login": "Outsider-Two", "id": 9100002, "type": "User"}
+  }
+}

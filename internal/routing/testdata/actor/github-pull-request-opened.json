@@ -1,0 +1,19 @@
+{
+  "source": "github",
+  "headers": {"Content-Type": "application/json", "X-Github-Event": "pull_request", "X-Github-Delivery": "8b2f1d50-9a11-11f0-8e1c-1f2a3b4c5d6e"},
+  "body": {
+    "action": "opened",
+    "number": 42,
+    "pull_request": {
+      "number": 42,
+      "title": "fix: handle empty input",
+      "html_url": "https://github.com/joestump/claude-skills/pull/42",
+      "state": "open",
+      "user": {"login": "outsider-one", "id": 9100001, "type": "User"},
+      "head": {"ref": "fix/empty-input"},
+      "base": {"ref": "main"}
+    },
+    "repository": {"full_name": "joestump/claude-skills"},
+    "sender": {"login": "outsider-one", "id": 9100001, "type": "User"}
+  }
+}
