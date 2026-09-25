@@ -24,6 +24,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/auth"
 	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/notifyhook"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -100,6 +101,38 @@ type endpointCard struct {
 	// machine-readable data (data-sb-expires-at); nil = valid until revoked. Governing: SPEC-0016
 	// REQ "Credential Lifetime".
 	ExpiresAt *time.Time
+	// Hooks are the endpoint's SPEC-0024 notify hooks with their health, shown to the owning human
+	// only (the card list is already owner-scoped). Governing: SPEC-0024 REQ-10.
+	Hooks []hookRow
+}
+
+// hookRow is one notify hook on an endpoint card. URL is redacted server-side (scheme, host and
+// path; the query becomes "?redacted"), because a receiver's query string is where tokens live and
+// the card is HTML a browser may cache. No secret is ever part of this model.
+type hookRow struct {
+	ID                  string
+	URL                 string
+	Queues              []string
+	Enabled             bool
+	DisabledReason      string
+	LastStatus          *int
+	LastAttemptAt       *time.Time
+	ConsecutiveFailures int
+}
+
+func hookRows(hooks []store.NotifyHook) []hookRow {
+	rows := make([]hookRow, 0, len(hooks))
+	for _, h := range hooks {
+		r := hookRow{
+			ID: h.ID, URL: notifyhook.RedactURL(h.URL), Queues: h.Queues, Enabled: h.Enabled,
+			LastStatus: h.LastStatus, LastAttemptAt: h.LastAttemptAt, ConsecutiveFailures: h.ConsecutiveFailures,
+		}
+		if h.DisabledReason != nil {
+			r.DisabledReason = *h.DisabledReason
+		}
+		rows = append(rows, r)
+	}
+	return rows
 }
 
 // cardInitials derives the endpoint card's two-letter avatar tile from the agent name: the first
@@ -219,11 +252,71 @@ func (h *Handler) endpointCards(r *http.Request, human *store.Human) []endpointC
 		h.log.Warn("endpoints list", "err", err)
 		return nil
 	}
+	// Hooks are a second owner-scoped read. A failure degrades to cards without hooks rather than
+	// no page, like the card list itself.
+	hooks, err := h.store.ListNotifyHooksForHuman(r.Context(), human.ID)
+	if err != nil {
+		h.log.Warn("endpoints notify hooks", "err", err)
+	}
 	cards := make([]endpointCard, 0, len(eps))
 	for _, ep := range eps {
-		cards = append(cards, h.cardFromStore(ep, human.DisplayName))
+		card := h.cardFromStore(ep, human.DisplayName)
+		card.Hooks = hookRows(hooks[ep.ID])
+		cards = append(cards, card)
 	}
 	return cards
+}
+
+// SetNotifyHookDisabledCounter installs the counter an operator disable increments
+// (switchboard_notify_hooks_disabled_total{reason="operator"}, SPEC-0024 REQ-11). Optional.
+func (h *Handler) SetNotifyHookDisabledCounter(fn func()) { h.hookDisabled = fn }
+
+// DisableNotifyHook, EnableNotifyHook and DeleteNotifyHook are the endpoint card's hook controls:
+// POSTs carrying the CSRF token (the route group's RequireCSRF), scoped in the store to a hook on
+// that endpoint that the signed-in human owns. Anything else is a plain 404 and changes nothing.
+// On success they return to the card on the Endpoints view, never to a caller-chosen URL.
+// Governing: SPEC-0024 REQ-10 "Operator Web UI", Security Requirements (CSRF, redirect validation).
+func (h *Handler) DisableNotifyHook(w http.ResponseWriter, r *http.Request) {
+	h.setNotifyHookEnabled(w, r, false)
+}
+
+// EnableNotifyHook re-enables a hook the human disabled, or one auto-disabled by failures.
+func (h *Handler) EnableNotifyHook(w http.ResponseWriter, r *http.Request) {
+	h.setNotifyHookEnabled(w, r, true)
+}
+
+func (h *Handler) setNotifyHookEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
+	human, _ := auth.FromContext(r.Context())
+	epID, hookID := chi.URLParam(r, "id"), chi.URLParam(r, "hookID")
+	changed, err := h.store.SetNotifyHookEnabledForHuman(r.Context(), hookID, epID, human.ID, enabled)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if changed && !enabled && h.hookDisabled != nil {
+		h.hookDisabled()
+	}
+	http.Redirect(w, r, "/endpoints#sb-ep-"+epID, http.StatusSeeOther)
+}
+
+// DeleteNotifyHook deletes a hook and its secrets from the card.
+func (h *Handler) DeleteNotifyHook(w http.ResponseWriter, r *http.Request) {
+	human, _ := auth.FromContext(r.Context())
+	epID, hookID := chi.URLParam(r, "id"), chi.URLParam(r, "hookID")
+	err := h.store.DeleteNotifyHookForHuman(r.Context(), hookID, epID, human.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/endpoints#sb-ep-"+epID, http.StatusSeeOther)
 }
 
 // Endpoints renders the Endpoints view: the vended-endpoint cards plus the "+ Vend endpoint"

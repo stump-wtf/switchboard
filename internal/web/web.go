@@ -45,10 +45,12 @@ const operatorLeaseTTL = 5 * time.Minute
 // Handler serves the web UI.
 type Handler struct {
 	store *store.Store
-	cfg   config.Config
-	log   *slog.Logger
-	pages map[string]*template.Template
-	frags *template.Template // per-view live fragments (templates/fragments/*.html), standalone-renderable
+	// hookDisabled counts an operator disable of a notify hook (SetNotifyHookDisabledCounter).
+	hookDisabled func()
+	cfg          config.Config
+	log          *slog.Logger
+	pages        map[string]*template.Template
+	frags        *template.Template // per-view live fragments (templates/fragments/*.html), standalone-renderable
 
 	// personasEnabled gates the Personas view AND the persona chip on endpoint cards + the persona
 	// select on the vend wizard's persona step. The server sets it by feature detection (personas

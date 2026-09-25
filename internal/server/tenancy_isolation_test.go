@@ -405,6 +405,9 @@ func tenancyCovered() map[string]bool {
 		// Endpoint direct-id — deep (revoke/delete scoped; pinned so they cannot regress).
 		"GET /endpoints/{id}/revoke",
 		"POST /endpoints/{id}/revoke", "POST /endpoints/{id}/delete",
+		// Notify-hook card controls — deep (owner-scoped through the endpoint's agent).
+		"POST /endpoints/{id}/hooks/{hookID}/disable", "POST /endpoints/{id}/hooks/{hookID}/enable",
+		"POST /endpoints/{id}/hooks/{hookID}/delete",
 	} {
 		m[k] = true
 	}

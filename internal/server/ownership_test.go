@@ -25,6 +25,7 @@ import (
 
 	"github.com/stump-wtf/switchboard/internal/auth"
 	"github.com/stump-wtf/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/ingest"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
@@ -75,7 +76,13 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 		`TRUNCATE humans, agents, endpoints, todos, events, sessions, oauth_clients RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	st := store.New(pool)
+	// A fixed test key, so store paths that refuse to hold a secret in plaintext (notify hooks,
+	// SPEC-0024) are reachable from these suites exactly as in a keyed deployment.
+	box, err := cred.NewSecretBox([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("secret box: %v", err)
+	}
+	st := store.New(pool, store.WithSecretCipher(box))
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// The DB-backed suites exercise the personas + A2A advanced surfaces, so they opt into the
 	// ADR-0023 capability flags explicitly (the production default is off).
