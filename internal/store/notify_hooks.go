@@ -306,3 +306,31 @@ func (s *Store) DestroyExpiredNotifyHookSecrets(ctx context.Context) (int64, err
 	}
 	return ct.RowsAffected(), nil
 }
+
+// NotifyEndpoint is what the dispatcher needs about a hook's endpoint at fire time: its slug (the
+// notification's "endpoint" field) and its CURRENT queue scope, which bounds every hook's queue
+// filter (SPEC-0024 REQ-1 "Scope shrink stops a hook without editing it").
+type NotifyEndpoint struct {
+	Slug        string
+	ScopeQueues []string
+}
+
+// NotifyEndpointForDispatch returns the fire-time facts for a live endpoint, or ErrNotFound for an
+// unknown, revoked or expired one, whose hooks must not fire.
+func (s *Store) NotifyEndpointForDispatch(ctx context.Context, endpointID string) (NotifyEndpoint, error) {
+	if !isUUID(endpointID) {
+		return NotifyEndpoint{}, ErrNotFound
+	}
+	var e NotifyEndpoint
+	err := s.pool.QueryRow(ctx, `
+		SELECT slug, scope_queues FROM endpoints
+		 WHERE id = $1 AND state = 'active' AND (expires_at IS NULL OR expires_at > now())`,
+		endpointID).Scan(&e.Slug, &e.ScopeQueues)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return NotifyEndpoint{}, ErrNotFound
+	}
+	if err != nil {
+		return NotifyEndpoint{}, fmt.Errorf("store: notify endpoint %s: %w", endpointID, err)
+	}
+	return e, nil
+}
