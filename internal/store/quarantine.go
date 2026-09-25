@@ -163,6 +163,7 @@ func (s *Store) ApplyQuarantineRelease(ctx context.Context, plan ReleasePlan) ([
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("store: release: commit: %w", err)
 	}
+	s.metricsOrNop().QuarantineResolved("released", plan.By) // Governing: SPEC-0026 REQ-11
 	for i, ct := range out {
 		if !ct.New {
 			continue
@@ -198,6 +199,7 @@ func (s *Store) DiscardQuarantined(ctx context.Context, ownerHumanID, id, by, re
 		return Todo{}, fmt.Errorf("store: discard quarantined: %w", err)
 	}
 	s.fireTodoHook("done", t)
+	s.metricsOrNop().QuarantineResolved("discarded", by) // Governing: SPEC-0026 REQ-11
 	return t, nil
 }
 
@@ -232,6 +234,7 @@ func (s *Store) ExpireQuarantine(ctx context.Context) (int64, error) {
 	}
 	for _, t := range expired {
 		s.fireTodoHook("done", t)
+		s.metricsOrNop().QuarantineResolved("expired", "system") // Governing: SPEC-0026 REQ-11
 	}
 	return int64(len(expired)), nil
 }

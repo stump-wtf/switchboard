@@ -428,6 +428,7 @@ func (s *Store) CreateIntakeEventTodos(ctx context.Context, e EventInput, target
 			// wakeup, a doorbell or a notify hook: nothing tool-bearing is told it exists.
 			s.fireTodoHook("created", t)
 			s.metricsOrNop().TodoCreated(t.Queue, todoMetricSource(p))
+			s.metricsOrNop().QuarantineHeld(p.QuarantineReason) // Governing: SPEC-0026 REQ-11
 		}
 		return ev.ID, []CreatedTodo{{Todo: t, New: wasNew}}, disp, nil
 	}
