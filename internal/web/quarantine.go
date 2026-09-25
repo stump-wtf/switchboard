@@ -253,7 +253,8 @@ func (h *Handler) Quarantine(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	csrf := auth.CSRFFromContext(r.Context())
 	sh, _ := h.buildShell(r.Context(), "quarantine", &human)
-	panel := quarantinePanelView{CSRF: csrf, Notice: noticeFor(r.URL.Query().Get("n"))}
+	// With the database down the list is unknown, not empty: say so rather than "nothing held".
+	panel := quarantinePanelView{CSRF: csrf, Notice: noticeFor(r.URL.Query().Get("n")), Error: !sh.DBConnected}
 	if sh.DBConnected {
 		panel = h.quarantinePanel(r.Context(), &human, csrf, panel.Notice)
 	}

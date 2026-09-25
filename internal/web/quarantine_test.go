@@ -59,6 +59,11 @@ func TestQuarantineViewEmptyState(t *testing.T) {
 	if strings.Count(body, `id="sb-quarantine-panel"`) != 1 {
 		t.Error("the panel swap target must appear exactly once")
 	}
+	// An unreadable list is reported as such, never as the empty state.
+	body = renderQuarantine(t, quarantinePanelView{CSRF: "tok", Error: true}, 0)
+	if !strings.Contains(body, "could not be read") || strings.Contains(body, "data-sb-quarantine-empty") {
+		t.Error("a failed read renders as an empty quarantine")
+	}
 }
 
 // Each reason renders its label and detail, and trust-this-actor is offered only for untrusted_actor.
