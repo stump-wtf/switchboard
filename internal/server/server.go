@@ -188,6 +188,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// ceiling at 0 nothing subscribes, so existing hooks receive nothing (the REQ-1 kill switch).
 	// It is started after mtr exists so it counts into the process registry (REQ-11).
 	startNotifyDispatcher(ctx, st, hookValidator, cfg.NotifyHookMax, mtr, log)
+	if cfg.NotifyHookMax > 0 {
+		webh.SetNotifyHookDisabledCounter(func() { mtr.NotifyHookDisabled(metrics.NotifyDisabledByOp) })
+	}
 
 	r := newRouter(routerDeps{
 		st:    st,
@@ -495,6 +498,11 @@ func newRouter(d routerDeps) chi.Router {
 		// Endpoints"). Store constrains to state='revoked' + ownership; active endpoints must be revoked
 		// first. CSRF arrives via the layout hx-headers / hidden field; the group's RequireCSRF validates.
 		pr.Post("/endpoints/{id}/delete", d.webh.DeleteEndpoint)
+		// The endpoint card's notify-hook controls (SPEC-0024 REQ-10): owner-scoped in the store,
+		// CSRF-checked by the group, and 404 for anything the signed-in human does not own.
+		pr.Post("/endpoints/{id}/hooks/{hookID}/disable", d.webh.DisableNotifyHook)
+		pr.Post("/endpoints/{id}/hooks/{hookID}/enable", d.webh.EnableNotifyHook)
+		pr.Post("/endpoints/{id}/hooks/{hookID}/delete", d.webh.DeleteNotifyHook)
 		// Friends view + approval flow (SPEC-0015 REQ "Friends View And Approval Flow"; SPEC-0010
 		// approval-is-vend). The handlers 404 until the friending capability is enabled (capability
 		// gating lives in the handler, so the routes stay classified session-gated for the route-table

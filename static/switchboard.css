@@ -2308,6 +2308,52 @@ pre code {
   display: flex;
   gap: 8px;
 }
+/* Notify hooks on the endpoint card (SPEC-0024 REQ-10): one row per hook — redacted URL, queue
+   filter, state chip, last-delivery health, and the disable / re-enable / delete forms. */
+.sb-epcard__hooks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--sb-divider);
+  padding-top: 8px;
+}
+.sb-hooklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sb-hook {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 12px;
+}
+.sb-hook--disabled .sb-hook__url {
+  opacity: 0.65;
+}
+.sb-hook__url {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sb-hook__acts {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.sb-chip--hook-on {
+  color: var(--sb-status-done);
+  background: var(--sb-status-done-bg);
+  border-color: transparent;
+}
+.sb-chip--hook-off {
+  color: var(--sb-status-failed);
+  background: var(--sb-status-failed-bg);
+  border-color: transparent;
+}
 .sb-epcard__revoke,
 .sb-epcard__delete {
   margin: 0;

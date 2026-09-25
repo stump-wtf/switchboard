@@ -126,6 +126,10 @@ var sessionRoutes = map[string]bool{
 	"GET /endpoints/{id}/revoke":  true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
 	"POST /endpoints/{id}/revoke": true,
 	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)
+	// The endpoint card's notify-hook controls (SPEC-0024 REQ-10), owner-scoped in the store.
+	"POST /endpoints/{id}/hooks/{hookID}/disable": true,
+	"POST /endpoints/{id}/hooks/{hookID}/enable":  true,
+	"POST /endpoints/{id}/hooks/{hookID}/delete":  true,
 	// Friends view + approval flow (SPEC-0015). All session-gated; the handlers 404 when the friending
 	// capability is disabled, but auth (RequireHuman) still runs first, so anonymous → /login here too.
 	// Approve/revoke GETs are the full confirm pages (irreversible steps confirm; approving is the vend).
