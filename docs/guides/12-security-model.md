@@ -81,15 +81,16 @@ Whoever owns a webhook decides where its deliveries land, within limits switchbo
 
 ## Secrets at rest
 
-Switchboard stores two kinds of secret it mints, and protects them differently:
+Switchboard stores three kinds of secret it mints, and protects them differently:
 
 | Secret | At rest |
 |---|---|
 | Endpoint credentials (`sbk_…`) | **Hashed.** They can't be recovered from the database, only revoked. |
 | Webhook signing secrets (`whsec_…`) | Switchboard must recompute the HMAC on every delivery, so it keeps the secret recoverable: **AES-256-GCM encrypted** under `SWITCHBOARD_SECRET_ENCRYPTION_KEY` when that key is set, and **plaintext** when it's empty. |
+| Notify hook signing secrets (`whsec_…`) | Switchboard signs every outbound notification with them, so they're recoverable too, but **always AES-256-GCM encrypted**. There is no plaintext fallback: with no `SWITCHBOARD_SECRET_ENCRYPTION_KEY`, no notify hook can be created, and a stored hook secret that isn't ciphertext is refused rather than used. |
 
-**An empty `SWITCHBOARD_SECRET_ENCRYPTION_KEY` is allowed, and it stores every signing secret in
-plaintext.** Anyone who can read the database, or a backup of it, can then forge signed
+**An empty `SWITCHBOARD_SECRET_ENCRYPTION_KEY` is allowed, and it stores every inbound webhook
+signing secret in plaintext.** (Notify hooks fail closed instead, as above.) Anyone who can read the database, or a backup of it, can then forge signed
 deliveries to your webhooks. Switchboard warns rather than refusing to start, in two places:
 
 - **At startup**, if signed webhooks already exist:

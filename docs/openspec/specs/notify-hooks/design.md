@@ -286,7 +286,7 @@ CREATE TABLE notify_hooks (
     id                     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     endpoint_id            uuid NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
     url                    text NOT NULL CHECK (length(url) <= 2048),
-    secret                 text NOT NULL,          -- internal/cred envelope, never plaintext when a key is set
+    secret                 text NOT NULL,          -- internal/cred envelope, always; no key = no hook (fail closed)
     prev_secret            text,                   -- dual-sign grace after rotation
     prev_secret_expires_at timestamptz,
     queues                 text[] NOT NULL DEFAULT '{}',
@@ -301,8 +301,14 @@ CREATE TABLE notify_hooks (
     created_at             timestamptz NOT NULL DEFAULT now(),
     rotated_at             timestamptz
 );
-CREATE INDEX idx_notify_hooks_endpoint ON notify_hooks (endpoint_id) WHERE enabled;
+CREATE INDEX idx_notify_hooks_endpoint ON notify_hooks (endpoint_id);
 ```
+
+Unlike the inbound webhook secret, a hook secret has no plaintext fallback: the store refuses to
+create or rotate a hook without `SWITCHBOARD_SECRET_ENCRYPTION_KEY`, and refuses to sign with a
+stored value that is not envelope ciphertext. The index is not partial, because Postgres does not
+index a foreign key's referencing column and the list, the ceiling count and the endpoint cascade
+all filter on `endpoint_id` alone.
 
 The migration is additive. Rolling it back means dropping the table, which loses only hook
 registrations.
