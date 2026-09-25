@@ -31,7 +31,7 @@ var eventVerbNames = []string{
 
 // --- fakeStore event-history methods (the struct lives in mcp_test.go) ---
 
-func (f *fakeStore) ListEventHistory(_ context.Context, ownerHumanID string, flt store.EventHistoryFilter) ([]store.EventHistoryItem, error) {
+func (f *fakeStore) ListEventHistory(_ context.Context, caller store.AuthEndpoint, flt store.EventHistoryFilter) ([]store.EventHistoryItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
@@ -55,7 +55,7 @@ func (f *fakeStore) ListEventHistory(_ context.Context, ownerHumanID string, flt
 	var out []store.EventHistoryItem
 	for _, e := range f.events {
 		it := e.EventHistoryItem
-		if f.eventOwners[it.ID] != ownerHumanID {
+		if f.eventOwners[it.ID] != caller.OwnerHumanID {
 			continue
 		}
 		if flt.Provider != "" && it.Provider != flt.Provider {
@@ -87,14 +87,14 @@ func (f *fakeStore) ListEventHistory(_ context.Context, ownerHumanID string, flt
 	return out, nil
 }
 
-func (f *fakeStore) EventHistoryByID(_ context.Context, ownerHumanID string, id int64) (store.EventHistoryDetail, error) {
+func (f *fakeStore) EventHistoryByID(_ context.Context, caller store.AuthEndpoint, id int64) (store.EventHistoryDetail, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return store.EventHistoryDetail{}, f.failErr
 	}
 	e, ok := f.events[id]
-	if !ok || f.eventOwners[id] != ownerHumanID {
+	if !ok || f.eventOwners[id] != caller.OwnerHumanID {
 		return store.EventHistoryDetail{}, store.ErrNotFound
 	}
 	return e, nil

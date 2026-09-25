@@ -39,12 +39,14 @@ func tenants(t *testing.T, s *Store, ctx contextT) (string, string, string, stri
 	return ownerOf(t, s, ctx, epA), epA, ownerOf(t, s, ctx, epB), epB
 }
 
-// seedOwnedTodo creates one event-backed todo on an endpoint and returns it.
+// seedOwnedTodo creates one event-backed todo on an endpoint and returns it. The event is owned by
+// the same endpoint, the way an operator push records it.
 func seedOwnedTodo(t *testing.T, s *Store, ctx contextT, ep, key, title string) Todo {
 	t.Helper()
 	_, td, _, err := s.CreateEventTodo(ctx,
 		EventInput{Source: "github", Family: "webhook", EventType: "push",
-			ExternalID: key, TrustMode: "signed", Verified: true, Payload: []byte(`{"secret":"a-payload-only-A-may-read"}`)},
+			ExternalID: key, TrustMode: "signed", Verified: true, Payload: []byte(`{"secret":"a-payload-only-A-may-read"}`),
+			EndpointID: ep},
 		CreateTodoParams{EndpointID: ep, Queue: "q", Source: "github", Kind: "push",
 			Title: title, IdempotencyKey: key})
 	if err != nil {
@@ -234,17 +236,15 @@ func TestTenancyUnownedTodoIsVisibleToNobody(t *testing.T) {
 // Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads".
 func TestTenancyEventHistoryIsScoped(t *testing.T) {
 	s, ctx := testStore(t)
-	humanA, epA, humanB, _ := tenants(t, s, ctx)
+	humanA, epA, humanB, epB := tenants(t, s, ctx)
+	callerA := AuthEndpoint{ID: epA, OwnerHumanID: humanA}
+	callerB := AuthEndpoint{ID: epB, OwnerHumanID: humanB}
 	a := seedOwnedTodo(t, s, ctx, epA, "iso-history", "A")
 	if a.EventID == nil {
 		t.Fatal("fixture: seeded todo has no event")
 	}
-	// seedOwnedTodo records no webhook, so give the event its owner the way the operator push does.
-	if _, err := s.pool.Exec(ctx, `UPDATE events SET endpoint_id = $1 WHERE id = $2`, epA, *a.EventID); err != nil {
-		t.Fatalf("own event: %v", err)
-	}
 
-	items, err := s.ListEventHistory(ctx, humanB, EventHistoryFilter{Limit: 200})
+	items, err := s.ListEventHistory(ctx, callerB, EventHistoryFilter{Limit: 200})
 	if err != nil {
 		t.Fatalf("B lists: %v", err)
 	}
@@ -253,20 +253,24 @@ func TestTenancyEventHistoryIsScoped(t *testing.T) {
 			t.Fatalf("B's history carries A's event %d", it.ID)
 		}
 	}
-	if _, err := s.EventHistoryByID(ctx, humanB, *a.EventID); !errors.Is(err, ErrNotFound) {
+	if _, err := s.EventHistoryByID(ctx, callerB, *a.EventID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("B reading A's event = %v, want ErrNotFound", err)
 	}
-	if d, err := s.EventHistoryByID(ctx, humanA, *a.EventID); err != nil || d.ID != *a.EventID {
+	if d, err := s.EventHistoryByID(ctx, callerA, *a.EventID); err != nil || d.ID != *a.EventID {
 		t.Fatalf("A reading its own event = %+v, %v", d.EventHistoryItem, err)
 	}
 
-	// An unscoped caller (empty or malformed owner) gets nothing, never an unfiltered scan.
-	for _, owner := range []string{"", "not-a-uuid"} {
-		if items, err := s.ListEventHistory(ctx, owner, EventHistoryFilter{}); err != nil || len(items) != 0 {
-			t.Fatalf("ListEventHistory(%q) = %d rows, %v; want none", owner, len(items), err)
+	// An unscoped caller (empty or malformed owner or endpoint) gets nothing, never an unfiltered
+	// scan; nor does a caller that pairs A as the owner with B's endpoint.
+	for _, c := range []AuthEndpoint{
+		{}, {ID: epA}, {OwnerHumanID: humanA}, {ID: "not-a-uuid", OwnerHumanID: humanA},
+		{ID: epA, OwnerHumanID: "not-a-uuid"}, {ID: epB, OwnerHumanID: humanA},
+	} {
+		if items, err := s.ListEventHistory(ctx, c, EventHistoryFilter{}); err != nil || len(items) != 0 {
+			t.Fatalf("ListEventHistory(%+v) = %d rows, %v; want none", c, len(items), err)
 		}
-		if _, err := s.EventHistoryByID(ctx, owner, *a.EventID); !errors.Is(err, ErrNotFound) {
-			t.Fatalf("EventHistoryByID(%q) = %v, want ErrNotFound", owner, err)
+		if _, err := s.EventHistoryByID(ctx, c, *a.EventID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("EventHistoryByID(%+v) = %v, want ErrNotFound", c, err)
 		}
 	}
 
@@ -274,10 +278,46 @@ func TestTenancyEventHistoryIsScoped(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE events SET endpoint_id = NULL WHERE id = $1`, *a.EventID); err != nil {
 		t.Fatalf("orphan event: %v", err)
 	}
-	for _, human := range []string{humanA, humanB} {
-		if _, err := s.EventHistoryByID(ctx, human, *a.EventID); !errors.Is(err, ErrNotFound) {
-			t.Fatalf("owner-less event visible to %s: %v", human, err)
+	for _, c := range []AuthEndpoint{callerA, callerB} {
+		if _, err := s.EventHistoryByID(ctx, c, *a.EventID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("owner-less event visible to %s: %v", c.OwnerHumanID, err)
 		}
+	}
+}
+
+// A friend approval mints the remote peer's endpoint onto one of the APPROVER's agents, so by
+// owner alone it would read the approver's whole history. A friend request that asked for the
+// event verbs, approved with no narrowing, must still read none of it: not by list, and not by id.
+// The approver's own endpoint on the same agent keeps its reach. Until #420 gives friend endpoints
+// their own authority, their history reach is empty.
+// Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads", REQ "Closing the Audited
+// Surfaces" (F3).
+func TestTenancyFriendEndpointReadsNoHistory(t *testing.T) {
+	s, ctx := testStore(t)
+	humanA, epA, _, _ := tenants(t, s, ctx)
+	var agentA string
+	if err := s.pool.QueryRow(ctx, `SELECT agent_id::text FROM endpoints WHERE id = $1`, epA).Scan(&agentA); err != nil {
+		t.Fatalf("agent of A's endpoint: %v", err)
+	}
+	a := seedOwnedTodo(t, s, ctx, epA, "iso-friend-history", "A")
+	if a.EventID == nil {
+		t.Fatal("fixture: seeded todo has no event")
+	}
+
+	_, friendEP := mustApprovedFriend(t, s, ctx, Human{ID: humanA}, Agent{ID: agentA, Name: "tenant-a"},
+		[]string{"q"}, []string{"create_for", "list_webhook_events", "get_webhook_event", "replay_webhook_event"})
+	friend := AuthEndpoint{ID: friendEP.ID, OwnerHumanID: humanA} // exactly what auth resolves for it
+
+	items, err := s.ListEventHistory(ctx, friend, EventHistoryFilter{Limit: 200})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("friend endpoint listed %d of the approver's events (%v), want none", len(items), err)
+	}
+	if _, err := s.EventHistoryByID(ctx, friend, *a.EventID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("friend endpoint reading the approver's event = %v, want ErrNotFound", err)
+	}
+	// Positive control: the approver's own endpoint still reads it.
+	if d, err := s.EventHistoryByID(ctx, AuthEndpoint{ID: epA, OwnerHumanID: humanA}, *a.EventID); err != nil || d.ID != *a.EventID {
+		t.Fatalf("A's own endpoint lost its event: %+v, %v", d.EventHistoryItem, err)
 	}
 }
 

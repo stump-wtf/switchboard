@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -221,5 +223,81 @@ func TestEventHistorySurvivesWebhookDelete(t *testing.T) {
 	}
 	if b := listedIDs(t, ctx, f.sessB); containsID(b, f.eventA) {
 		t.Fatalf("B gained A's event %d after the webhook was deleted: %v", f.eventA, b)
+	}
+}
+
+// A friend approval mints the remote peer's endpoint onto one of the APPROVER's agents, so the
+// endpoint's owner is the approver. B's peer asks A for the event verbs, and A approves with no
+// narrowing: the friend endpoint is advertised the tools, and every one of them reads nothing of
+// A's. The list and the resource are empty, get and replay are not_found exactly like an unknown
+// id, and the refused replay makes no outbound request. Until #420 (F3) gives friend endpoints
+// their own authority, their history reach is empty.
+// Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads", REQ "Closing the Audited
+// Surfaces" (F3).
+func TestEventHistoryFriendEndpointReadsNothing(t *testing.T) {
+	ctx, f := newHistoryFixture(t)
+	edge, err := f.st.CreateFriendRequest(ctx, store.CreateFriendRequestParams{
+		FromPersona: "peer-b@remote.example", ToPersona: "agent-a1@local", FromHuman: f.humanB, ToHuman: f.humanA,
+		RequestedQueues: []string{"reviews"},
+		RequestedVerbs:  append([]string{"create_for"}, eventVerbNames...),
+	})
+	if err != nil {
+		t.Fatalf("friend request: %v", err)
+	}
+	token, hash, prefix, err := cred.Mint()
+	if err != nil {
+		t.Fatalf("mint credential: %v", err)
+	}
+	slug, err := store.MintSlug("agent-a1")
+	if err != nil {
+		t.Fatalf("mint slug: %v", err)
+	}
+	_, ep, err := f.st.ApproveFriendRequest(ctx, store.ApproveFriendRequestParams{
+		EdgeID: edge.ID, OwnerHumanID: f.humanA, AgentID: f.agentA1,
+		CredentialHash: hash, CredentialPrefix: prefix, Slug: slug,
+	})
+	if err != nil {
+		t.Fatalf("approve friend request: %v", err)
+	}
+	for _, v := range eventVerbNames {
+		if !slices.Contains(ep.ScopeVerbs, v) {
+			t.Fatalf("fixture: friend grant %v lacks %s, so the test would pass on scope alone", ep.ScopeVerbs, v)
+		}
+	}
+	friend := routeSession(t, ctx, f.st, slug, token)
+
+	if ids := listedIDs(t, ctx, friend); len(ids) != 0 {
+		t.Fatalf("friend endpoint listed %v, want none of the approver's events", ids)
+	}
+	res, err := friend.ReadResource(ctx, &sdk.ReadResourceParams{URI: recentEventsURI})
+	if err != nil {
+		t.Fatalf("read %s: %v", recentEventsURI, err)
+	}
+	if len(res.Contents) != 1 || strings.Contains(res.Contents[0].Text, `"id"`) {
+		t.Fatalf("friend endpoint's recent-events resource = %+v, want no events", res.Contents)
+	}
+
+	foreign := callErr(t, ctx, friend, "get_webhook_event", map[string]any{"id": f.eventA}, "not_found")
+	unknown := callErr(t, ctx, friend, "get_webhook_event", map[string]any{"id": f.eventA + 100000}, "not_found")
+	if foreign != unknown || strings.Contains(foreign, "a-payload-only-A-may-read") {
+		t.Fatalf("friend get_webhook_event leaks: foreign %q vs unknown %q", foreign, unknown)
+	}
+
+	var hits atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(target.Close)
+	callErr(t, ctx, friend, "replay_webhook_event", map[string]any{"id": f.eventA, "target_url": target.URL}, "not_found")
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("a refused friend replay still made %d outbound request(s)", n)
+	}
+
+	// Positive control: A's own endpoint on the same agent still reads the event.
+	var d eventDetailOut
+	callOK(t, ctx, f.sessA1, "get_webhook_event", map[string]any{"id": f.eventA}, &d)
+	if d.Payload != secretA {
+		t.Fatalf("A's own endpoint read payload %q, want A's", d.Payload)
 	}
 }

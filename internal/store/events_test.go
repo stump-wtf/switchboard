@@ -38,7 +38,7 @@ func seedEvent(t *testing.T, s *Store, ctx context.Context, ep, source, eventTyp
 func TestListEventHistoryCursorStability(t *testing.T) {
 	s, ctx := testStore(t)
 	ep := seedEndpoint(t, s, ctx, "history", "q")
-	owner := ownerOf(t, s, ctx, ep)
+	caller := callerOf(t, s, ctx, ep)
 
 	base := time.Now().Truncate(time.Millisecond).Add(-time.Hour)
 	// ids come back in insert order; rows 4 and 5 share a timestamp so id DESC breaks the tie, and
@@ -55,7 +55,7 @@ func TestListEventHistoryCursorStability(t *testing.T) {
 	var cursorID int64
 	for page := 0; page < 10; page++ {
 		f := EventHistoryFilter{Limit: 2, CursorTime: cursorT, CursorID: cursorID}
-		items, err := s.ListEventHistory(ctx, owner, f)
+		items, err := s.ListEventHistory(ctx, caller, f)
 		if err != nil {
 			t.Fatalf("page %d: %v", page, err)
 		}
@@ -82,13 +82,13 @@ func TestListEventHistoryCursorStability(t *testing.T) {
 
 	// A page inserted between requests never re-emits or skips: after taking the first page (5,4),
 	// a new newest event does not appear on the continued (older) walk.
-	first, err := s.ListEventHistory(ctx, owner, EventHistoryFilter{Limit: 2})
+	first, err := s.ListEventHistory(ctx, caller, EventHistoryFilter{Limit: 2})
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
 	last := first[len(first)-1]
 	newest := seedEvent(t, s, ctx, ep, "github", "push", "signed", true, base.Add(10*time.Second))
-	rest, err := s.ListEventHistory(ctx, owner, EventHistoryFilter{
+	rest, err := s.ListEventHistory(ctx, caller, EventHistoryFilter{
 		Limit: 100, CursorTime: last.ReceivedAt, CursorID: last.ID})
 	if err != nil {
 		t.Fatalf("continued page: %v", err)
@@ -108,7 +108,7 @@ func TestListEventHistoryCursorStability(t *testing.T) {
 func TestListEventHistoryFiltering(t *testing.T) {
 	s, ctx := testStore(t)
 	ep := seedEndpoint(t, s, ctx, "history", "q")
-	owner := ownerOf(t, s, ctx, ep)
+	caller := callerOf(t, s, ctx, ep)
 
 	base := time.Now().Truncate(time.Millisecond).Add(-time.Hour)
 	seedEvent(t, s, ctx, ep, "github", "push", "signed", true, base.Add(1*time.Second))
@@ -117,7 +117,7 @@ func TestListEventHistoryFiltering(t *testing.T) {
 	id4 := seedEvent(t, s, ctx, ep, "github", "push", "signed", true, base.Add(4*time.Second))
 
 	// provider + event_type
-	got, err := s.ListEventHistory(ctx, owner, EventHistoryFilter{Provider: "github", EventType: "push"})
+	got, err := s.ListEventHistory(ctx, caller, EventHistoryFilter{Provider: "github", EventType: "push"})
 	if err != nil {
 		t.Fatalf("filter: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestListEventHistoryFiltering(t *testing.T) {
 	}
 
 	// since timestamp (inclusive lower bound)
-	got, err = s.ListEventHistory(ctx, owner, EventHistoryFilter{SinceTime: base.Add(3 * time.Second)})
+	got, err = s.ListEventHistory(ctx, caller, EventHistoryFilter{SinceTime: base.Add(3 * time.Second)})
 	if err != nil {
 		t.Fatalf("since-time: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestListEventHistoryFiltering(t *testing.T) {
 	}
 
 	// since id (id >= n)
-	got, err = s.ListEventHistory(ctx, owner, EventHistoryFilter{SinceID: id3})
+	got, err = s.ListEventHistory(ctx, caller, EventHistoryFilter{SinceID: id3})
 	if err != nil {
 		t.Fatalf("since-id: %v", err)
 	}
@@ -149,17 +149,17 @@ func TestListEventHistoryFiltering(t *testing.T) {
 func TestEventHistoryByIDRoundTrip(t *testing.T) {
 	s, ctx := testStore(t)
 	ep := seedEndpoint(t, s, ctx, "history", "q")
-	owner := ownerOf(t, s, ctx, ep)
+	caller := callerOf(t, s, ctx, ep)
 
 	id := seedEvent(t, s, ctx, ep, "github", "push", "signed", true, time.Now())
-	d, err := s.EventHistoryByID(ctx, owner, id)
+	d, err := s.EventHistoryByID(ctx, caller, id)
 	if err != nil {
 		t.Fatalf("by id: %v", err)
 	}
 	if d.ID != id || d.Provider != "github" || d.TrustMode != "signed" || !d.Verified {
 		t.Fatalf("detail = %+v", d)
 	}
-	if _, err := s.EventHistoryByID(ctx, owner, 999999); !errors.Is(err, ErrNotFound) {
+	if _, err := s.EventHistoryByID(ctx, caller, 999999); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown id = %v, want ErrNotFound", err)
 	}
 }

@@ -235,7 +235,7 @@ func (h *Handler) registerEventResources(srv *sdk.Server, ep store.AuthEndpoint)
 // returns summaries, never mutates".
 func (h *Handler) recentEventsResource(ep store.AuthEndpoint) sdk.ResourceHandler {
 	return func(ctx context.Context, _ *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
-		items, err := h.store.ListEventHistory(ctx, ep.OwnerHumanID, store.EventHistoryFilter{Limit: recentEventsLimit})
+		items, err := h.store.ListEventHistory(ctx, ep, store.EventHistoryFilter{Limit: recentEventsLimit})
 		if err != nil {
 			return nil, h.mapEventStoreErr(ep, "resources/read events/recent", err)
 		}
@@ -281,7 +281,7 @@ func (h *Handler) listWebhookEventsTool(ep store.AuthEndpoint) sdk.ToolHandlerFo
 			}
 			filter.CursorTime, filter.CursorID = c.ReceivedAt, c.ID
 		}
-		items, err := h.store.ListEventHistory(ctx, ep.OwnerHumanID, filter)
+		items, err := h.store.ListEventHistory(ctx, ep, filter)
 		if err != nil {
 			return nil, listWebhookEventsOut{}, h.mapEventStoreErr(ep, "list_webhook_events", err)
 		}
@@ -305,7 +305,7 @@ func (h *Handler) getWebhookEventTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[
 		if in.ID <= 0 {
 			return nil, eventDetailOut{}, &toolError{codeInvalidArgument, "id must be a positive event id"}
 		}
-		d, err := h.store.EventHistoryByID(ctx, ep.OwnerHumanID, in.ID)
+		d, err := h.store.EventHistoryByID(ctx, ep, in.ID)
 		if err != nil {
 			return nil, eventDetailOut{}, h.mapEventStoreErr(ep, "get_webhook_event", err)
 		}
@@ -322,7 +322,7 @@ func (h *Handler) replayWebhookEventTool(ep store.AuthEndpoint) sdk.ToolHandlerF
 		// read) before any thought of an outbound request. The read is owner-scoped, so another
 		// owner's event is not_found here, before its payload is loaded and before any request is
 		// made. Governing: SPEC-0033 scenario "Replay of a foreign event".
-		d, err := h.store.EventHistoryByID(ctx, ep.OwnerHumanID, in.ID)
+		d, err := h.store.EventHistoryByID(ctx, ep, in.ID)
 		if err != nil {
 			return nil, replayWebhookEventOut{}, h.mapEventStoreErr(ep, "replay_webhook_event", err)
 		}
