@@ -377,3 +377,94 @@ func (s *Store) RecordNotifyHookDelivery(ctx context.Context, id string, deliver
 	}
 	return !enabled, nil
 }
+
+// --- the owning human's surface (the endpoint card, SPEC-0024 REQ-10) ---
+//
+// These are scoped by the owning HUMAN, through the endpoint's agent, exactly like the endpoint
+// cards and revoke: a hook on an endpoint another human owns is ErrNotFound, and the instance
+// operator role grants nothing here.
+
+// notifyHookOwnedBy constrains a notify_hooks row to one endpoint that the given human owns.
+const notifyHookOwnedBy = `id = $1 AND endpoint_id = $2 AND endpoint_id IN (
+	SELECT e.id FROM endpoints e JOIN agents ag ON ag.id = e.agent_id WHERE ag.owner_human_id = $3)`
+
+// ListNotifyHooksForHuman returns the hooks on every endpoint the human owns, keyed by endpoint id,
+// each list oldest first. No secret is selected.
+func (s *Store) ListNotifyHooksForHuman(ctx context.Context, ownerHumanID string) (map[string][]NotifyHook, error) {
+	out := map[string][]NotifyHook{}
+	if !isUUID(ownerHumanID) {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+notifyHookColumns+` FROM notify_hooks
+		WHERE endpoint_id IN (SELECT e.id FROM endpoints e JOIN agents ag ON ag.id = e.agent_id WHERE ag.owner_human_id = $1)
+		ORDER BY created_at, id`, ownerHumanID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list notify hooks for human: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		h, err := scanNotifyHook(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: list notify hooks for human scan: %w", err)
+		}
+		out[h.EndpointID] = append(out[h.EndpointID], h)
+	}
+	return out, rows.Err()
+}
+
+// SetNotifyHookEnabledForHuman lets the owning human disable or re-enable a hook from the card.
+// Disabling records disabled_reason = 'operator'; re-enabling clears the reason and the failure
+// count (the human is vouching for the receiver). It reports whether the row changed state, so a
+// double submit is harmless and only a real disable is counted. ErrNotFound for a hook the human
+// does not own through that endpoint.
+func (s *Store) SetNotifyHookEnabledForHuman(ctx context.Context, hookID, endpointID, ownerHumanID string, enabled bool) (bool, error) {
+	if !isUUID(hookID) || !isUUID(endpointID) || !isUUID(ownerHumanID) {
+		return false, ErrNotFound
+	}
+	var ct int64
+	if enabled {
+		tag, err := s.pool.Exec(ctx, `UPDATE notify_hooks
+			   SET enabled = true, disabled_reason = NULL, disabled_at = NULL, consecutive_failures = 0
+			 WHERE `+notifyHookOwnedBy+` AND NOT enabled`, hookID, endpointID, ownerHumanID)
+		if err != nil {
+			return false, fmt.Errorf("store: enable notify hook %s: %w", hookID, err)
+		}
+		ct = tag.RowsAffected()
+	} else {
+		tag, err := s.pool.Exec(ctx, `UPDATE notify_hooks
+			   SET enabled = false, disabled_reason = 'operator', disabled_at = now()
+			 WHERE `+notifyHookOwnedBy+` AND enabled`, hookID, endpointID, ownerHumanID)
+		if err != nil {
+			return false, fmt.Errorf("store: disable notify hook %s: %w", hookID, err)
+		}
+		ct = tag.RowsAffected()
+	}
+	if ct > 0 {
+		return true, nil
+	}
+	// Nothing changed: either it was already in that state, or it is not the human's hook.
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM notify_hooks WHERE `+notifyHookOwnedBy+`)`,
+		hookID, endpointID, ownerHumanID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: notify hook %s ownership: %w", hookID, err)
+	}
+	if !exists {
+		return false, ErrNotFound
+	}
+	return false, nil
+}
+
+// DeleteNotifyHookForHuman deletes a hook the human owns through that endpoint, or ErrNotFound.
+func (s *Store) DeleteNotifyHookForHuman(ctx context.Context, hookID, endpointID, ownerHumanID string) error {
+	if !isUUID(hookID) || !isUUID(endpointID) || !isUUID(ownerHumanID) {
+		return ErrNotFound
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM notify_hooks WHERE `+notifyHookOwnedBy, hookID, endpointID, ownerHumanID)
+	if err != nil {
+		return fmt.Errorf("store: delete notify hook %s: %w", hookID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
