@@ -391,7 +391,7 @@ everything. On those, a title prefix plus the actor works instead:
 
 ### Outside intake from the public GitHub mirrors
 
-A public GitHub mirror, such as <https://github.com/stump-wtf/switchboard>, takes issues from
+A public GitHub mirror, such as [stump-wtf/switchboard](https://github.com/stump-wtf/switchboard), takes issues from
 anyone, while the code, the canonical tracker and the fixes live somewhere else. Every word an
 outsider writes there is untrusted input, and some of it will be written to steer an agent. This
 recipe lets outsiders report freely while making sure nothing they write reaches an agent until a
