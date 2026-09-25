@@ -13,6 +13,20 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+### Fixed
+
+- **Switchboard now reports its real version over MCP.** `serverInfo.version` was the
+  hard-coded `0.1.0` on every build; it now carries the build's own version, and every
+  session's instructions open with a `switchboard <version> (built <date>)` line. The
+  version, commit and commit date come from one place, `internal/buildinfo`, which also
+  fills in the version and commit of a `go install …@vX.Y.Z` build that no release
+  pipeline stamped.
+- **Release binaries report the full tag.** `switchboard version` on a release prints
+  `switchboard v0.3.0` rather than `switchboard 0.3.0`, matching a `go install` build, and
+  the CLI's `User-Agent` changes the same way. Release container images report the tag
+  too, and images built from `main` report a `git describe` version instead of a bare
+  commit hash.
+
 ## [0.3.0] - 2026-09-22
 
 The first release since `v0.2.0`, and the first release under
