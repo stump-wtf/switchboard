@@ -13,13 +13,31 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+**Read the [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md#upgrading-to-unreleased)
+before upgrading**: migration `0025_friend_edges_own_authority` narrows existing friend
+endpoints in place, and the verbs it removes cannot be restored.
+
+### Breaking
+
+- **A webhook's rules and routes are managed only from the endpoint that owns it.** The
+  ten rule and route verbs called from any other endpoint, including another endpoint of
+  the same person, now answer `not_found`. Use the owning endpoint's credential. (#420)
+- **Existing friend endpoints are narrowed on upgrade.** Migration
+  `0025_friend_edges_own_authority` removes every verb except `create_for` and the drain
+  verbs from endpoints minted by approving a friend request, and from their recorded
+  grant. It cannot be reversed; back up first. (#420)
+- **A friend request that asks only for verbs a friend can never be granted is refused**
+  with a 400, over A2A and from the Friends page, instead of being stored. (#420)
+
 ### Security
 
 - **Friend endpoints act with their own authority.** A friend endpoint runs on the
   approver's agent, and friend intake accepted any requested tools, so a friend could be
   granted webhook, rule and event-history tools and use them with the approver's authority.
   Friend grants are now limited to `create_for` and the drain verbs, at request and at
-  approval, and existing friend endpoints are narrowed to that set on upgrade. (#420)
+  approval, and existing friend endpoints are narrowed to that set on upgrade. A route a
+  friend endpoint added before the upgrade is left in place and keeps delivering to it;
+  the upgrade note has the query that lists such routes for review. (#420)
 - **A webhook's routes and rules are managed only from its own endpoint.** The rule and
   route verbs used to accept any endpoint of the webhook owner's human. Another endpoint's
   webhook now answers `not_found`. To edit a webhook's rules, use the endpoint that owns it.

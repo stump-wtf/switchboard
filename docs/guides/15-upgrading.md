@@ -11,6 +11,103 @@ published image, check which release you are actually running first.
 To find your version, run `switchboard version`, or read it from `/healthz`. Newer builds
 also report it over MCP as `serverInfo.version`.
 
+## Upgrading to Unreleased
+
+### Read this first
+
+**This release narrows what friend endpoints and sibling endpoints may do, and one migration
+cannot be fully reversed.** After you upgrade:
+
+- a webhook's routes and rules can be managed **only from the endpoint that owns the
+  webhook**. The rule and route verbs called from any other endpoint, including another
+  endpoint of the same person, answer `not_found`;
+- every endpoint minted by approving a friend request is **narrowed in place** to
+  `create_for` and the drain verbs (`list_todos`, `claim`, `claim_next`, `complete`, `fail`,
+  `heartbeat`), and its friendship's recorded grant is narrowed with it;
+- a friend request (over A2A, or from the Friends page) that names only verbs a friend can
+  never be granted is refused with a 400 instead of being stored.
+
+Migration `0025_friend_edges_own_authority` rewrites `endpoints.scope_verbs` and
+`friend_edges.granted_verbs` in place. Its index change can be undone, but the verbs it
+removes cannot be put back from the database. Back up first.
+
+### What breaks, and who is affected
+
+You are affected if any of these is true:
+
+- an agent edits a webhook's rules or routes (`list_webhook_rules`, `set_webhook_rules`,
+  `add_webhook_rule`, `update_webhook_rule`, `move_webhook_rule`, `remove_webhook_rule`,
+  `test_webhook_rules`, `list_webhook_routes`, `add_webhook_route`, `remove_webhook_route`)
+  from an endpoint other than the one that created the webhook; or
+- you approved a friendship that granted webhook, rule, route or event-history verbs. Those
+  verbs are removed from the friend's endpoint, and a friend agent that relied on them now
+  gets `forbidden`; or
+- a client sends friend requests that ask only for such verbs.
+
+You are **not** affected if every webhook is managed from the endpoint that created it and
+no friendship was granted anything beyond `create_for` and the drain verbs.
+
+### Why this changed
+
+A friend endpoint is vended on the approver's agent, so every verb on it acted with the
+approver's authority. A friend granted `set_webhook_rules` or `test_webhook_rules` could
+rewrite the approver's rules or read their payloads. The same check also let any endpoint
+of a person configure all of that person's webhooks, so one leaked credential reached
+every webhook they own. Both now follow the endpoint that owns the webhook
+([SPEC-0033](https://github.com/stump-wtf/switchboard/blob/main/docs/openspec/specs/teams-tenancy/spec.md)
+F3 and F19).
+
+### Before you upgrade: back up
+
+```sh
+pg_dump --format=custom --file=switchboard-pre-friend-authority.dump "$SWITCHBOARD_DATABASE_URL"
+```
+
+Keep that file somewhere other than the database host until you have confirmed the upgrade
+works.
+
+### Steps
+
+1. **Manage each webhook from its own endpoint.** `list_webhooks` on an endpoint lists the
+   webhooks it owns. Point any agent that edits a webhook's rules or routes at that
+   endpoint's credential.
+2. **Review routes that deliver to friend endpoints.** Before this release, a friend
+   endpoint holding `add_webhook_route` could route your webhook's deliveries to itself.
+   The migration removes the verb but leaves any route it made, and such a route looks
+   exactly like one you added. List them:
+
+   ```sql
+   SELECT r.webhook_id, r.target_endpoint_id, r.granted_at, f.from_persona AS friend
+     FROM webhook_routes r
+     JOIN friend_edges f ON f.endpoint_id = r.target_endpoint_id
+    ORDER BY r.granted_at;
+   ```
+
+   For each row you did not add yourself, call `remove_webhook_route` from the webhook's
+   own endpoint, and check that webhook's rules with `list_webhook_rules`.
+
+### Verify
+
+- No friend endpoint carries anything beyond `create_for` and the drain verbs. This should
+  return no rows:
+
+  ```sql
+  SELECT e.id, e.scope_verbs
+    FROM endpoints e
+    JOIN friend_edges f ON f.endpoint_id = e.id
+   WHERE f.state = 'approved'
+     AND NOT e.scope_verbs <@ ARRAY['create_for','list_todos','claim','claim_next','complete','fail','heartbeat'];
+  ```
+
+- From a webhook's own endpoint, `list_webhook_rules` returns its rules; from any other
+  endpoint it returns `not_found`.
+
+### If you need to go back
+
+Restore the dump with `pg_restore --clean --if-exists --dbname "$SWITCHBOARD_DATABASE_URL"
+switchboard-pre-friend-authority.dump`, then run the previous image. Anything written after
+the upgrade is lost.
+
 ## Upgrading to v0.3.0
 
 ### Read this first
