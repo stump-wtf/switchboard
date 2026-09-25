@@ -108,8 +108,10 @@ func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context
 		t.Fatalf("upsert receiver-owner human: %v", err)
 	}
 	ownerEP := seedEndpoint(t, st, ctx, operator.ID, "board-live-receiver", "hash-board", "sbk_board0")
-	if _, err := st.CreateWebhook(ctx, ownerEP.ID, "github", "reviews", "signed",
-		liveWebhookToken, liveGitHubSecret, 3); err != nil {
+	// allow_all, the shape migration 0023 gave pre-existing webhooks: this test is about the board's
+	// live lane, not the SPEC-0026 trust gate, whose empty default would hold the delivery.
+	if _, err := st.CreateWebhookWithTrust(ctx, ownerEP.ID, "github", "reviews", "signed",
+		liveWebhookToken, liveGitHubSecret, 3, []byte(`{"allow_all":true}`)); err != nil {
 		t.Fatalf("create self-managed webhook: %v", err)
 	}
 
