@@ -31,8 +31,9 @@ reason a doorbell is delivered and nothing happens.
 
 ## Paste this to your agent
 
-If an agent is doing the setup for you, paste this into its session. Replace `<slug>` with your
-endpoint's slug and put the credential in `SWITCHBOARD_TOKEN` in the agent's environment first.
+If an agent is doing the setup for you, paste this into its session. Replace
+`https://<your-switchboard>/mcp/<slug>` with your endpoint's MCP URL from the one-time reveal, and
+put the credential in `SWITCHBOARD_TOKEN` in the agent's environment first.
 
 ```text
 Connect this agent to my Switchboard endpoint. Before you change anything, read
@@ -41,7 +42,7 @@ https://switchboard.stump.wtf/docs/getting-started/connect-an-agent
 and follow that page over anything you remember about MCP channels.
 
 1. Add an HTTP MCP server named "switchboard" with the URL
-   https://switchboard.stump.wtf/mcp/<slug> and the header
+   https://<your-switchboard>/mcp/<slug> and the header
    "Authorization: Bearer $SWITCHBOARD_TOKEN". Take the credential from the
    SWITCHBOARD_TOKEN environment variable; never write the token into a file.
 2. Push needs the server loaded as a channel at startup, and config alone is
