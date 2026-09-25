@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -121,7 +122,10 @@ func WithOwnListenAddrs(addrs ...string) Option {
 //     by any listed range that contains them;
 //   - loopback and link-local addresses are exempted only by a range lying WHOLLY inside loopback
 //     (127.0.0.0/8, ::1/128) or link-local (169.254.0.0/16, fe80::/10), such as 127.0.0.1/32, so a
-//     broad entry like 0.0.0.0/0 never opens loopback or a cloud metadata service;
+//     broad entry like 0.0.0.0/0 never opens loopback or a link-local cloud metadata service;
+//   - the cloud metadata services outside link-local (metadataAddrs: Alibaba Cloud's
+//     100.100.100.200 in CGNAT space, AWS's IPv6 fd00:ec2::254 in ULA space) are exempted only by an
+//     entry for exactly that address (a /32 or /128), so no covering range opens them either;
 //   - unspecified and multicast addresses are never exempted;
 //   - an exempted address is still refused when it is switchboard's own listen address and port.
 //
@@ -290,6 +294,16 @@ var (
 	linkLocalRanges = []netip.Prefix{netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("fe80::/10")}
 )
 
+// metadataAddrs are well-known cloud instance-metadata services inside a range that a covering
+// allowlist entry would otherwise exempt (CGNAT, ULA). They hand out instance credentials, so each is
+// exempted only by an entry for exactly that address, never by 100.64.0.0/10, fc00::/7, ::/0 or the
+// like. Link-local metadata services (169.254.169.254 and friends) fall under the link-local rule.
+// Governing: SPEC-0024 REQ-3 "Target Validation (SSRF Guard)".
+var metadataAddrs = []netip.Addr{
+	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud ECS metadata (CGNAT, RFC 6598)
+	netip.MustParseAddr("fd00:ec2::254"),   // AWS EC2 IMDS over IPv6 (ULA, RFC 4193)
+}
+
 // allowlisted reports whether the operator allowlist exempts ip from the range rules (the rules are
 // on WithAllowCIDRs).
 func (v *Validator) allowlisted(ip net.IP) bool {
@@ -309,6 +323,8 @@ func (v *Validator) allowlisted(ip net.IP) bool {
 		within = loopbackRanges
 	case a.IsLinkLocalUnicast():
 		within = linkLocalRanges
+	case slices.Contains(metadataAddrs, a):
+		within = []netip.Prefix{netip.PrefixFrom(a, a.BitLen())}
 	}
 	for _, p := range v.allow {
 		if !p.Contains(a) {

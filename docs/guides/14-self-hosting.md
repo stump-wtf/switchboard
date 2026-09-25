@@ -58,6 +58,11 @@ receiver on the same host, or one LAN host's `/32`.
   `127.0.0.1/32`. A broad entry like `0.0.0.0/0` never opens `127.0.0.1` or `169.254.169.254`.
 - **Exempting link-local (`169.254.0.0/16`, `fe80::/10`) exposes cloud metadata services**, which
   hand out instance credentials. Never list it on a cloud VM.
+- Not every metadata service is link-local. Alibaba Cloud's (`100.100.100.200`) is in the CGNAT
+  range and AWS's IPv6 one (`fd00:ec2::254`) is unique-local. Those two stay refused under any
+  covering entry (`0.0.0.0/0`, `100.64.0.0/10`, `fc00::/7`, `::/0`) and open only when you list the
+  exact address. Any other address a broad entry covers is exposed, so on a cloud VM check what your
+  provider runs inside the ranges you list.
 - Switchboard's own listen address and port stay refused even when listed.
 
 Startup logs a warning while the allowlist is set.

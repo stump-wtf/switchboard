@@ -90,7 +90,9 @@ validator stays the single source of truth for "allowed", as ADR-0021 intended.
 **Choice**: `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` (comma-separated CIDRs) exempts listed ranges
 from the private-address rejection. Loopback and link-local (including cloud metadata addresses) are
 exempted only by an entry lying wholly inside them, such as `127.0.0.1/32` for a Harness listener on
-the same host; a broad entry like `0.0.0.0/0` never opens them. Switchboard's own listen address and
+the same host; a broad entry like `0.0.0.0/0` never opens them. The metadata services that sit in
+CGNAT or ULA space (`100.100.100.200`, `fd00:ec2::254`) are held to the same bar: only an entry for
+exactly that address opens one. Switchboard's own listen address and
 port stay rejected even when listed, compared as address plus port. Today `WithOwnListenAddrs` in
 `internal/push/ssrf.go` records IPs only and leaves loopback binds to the loopback rule, so the story
 extends it to ports.

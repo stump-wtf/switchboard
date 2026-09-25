@@ -78,6 +78,34 @@ func TestAllowlistBroadEntryKeepsLoopbackAndLinkLocalClosed(t *testing.T) {
 	}
 }
 
+// Cloud metadata services that sit in CGNAT or ULA space are not opened by a range that merely
+// covers them (0.0.0.0/0, 100.64.0.0/10, ::/0, fc00::/7); only an entry for exactly that address
+// exempts one. Scenario "A broad entry does not open loopback or metadata".
+func TestAllowlistBroadEntryKeepsMetadataClosed(t *testing.T) {
+	ctx := context.Background()
+	for _, list := range []string{"0.0.0.0/0, ::/0", "100.64.0.0/10, fc00::/7", "100.100.100.0/24, fd00:ec2::/64"} {
+		v := New(WithAllowHTTP(true), WithAllowCIDRs(mustCIDRs(t, list)...))
+		for _, u := range []string{"http://100.100.100.200/latest/meta-data/", "http://[fd00:ec2::254]/latest/meta-data/"} {
+			if err := v.Validate(ctx, u); !errors.Is(err, ErrValidation) {
+				t.Errorf("allow %q, %s: a covering entry must not open a metadata service, got %v", list, u, err)
+			}
+		}
+		// The rest of the covered range is still exempted.
+		for _, u := range []string{"http://100.100.100.201/", "http://[fd00:ec2::253]/"} {
+			if err := v.Validate(ctx, u); err != nil {
+				t.Errorf("allow %q, %s: a covering entry must exempt it: %v", list, u, err)
+			}
+		}
+	}
+	// An entry for exactly the address is the operator's explicit, narrow opt-in.
+	v := New(WithAllowHTTP(true), WithAllowCIDRs(mustCIDRs(t, "100.100.100.200/32, fd00:ec2::254")...))
+	for _, u := range []string{"http://100.100.100.200/", "http://[fd00:ec2::254]/", "http://[::ffff:100.100.100.200]/"} {
+		if err := v.Validate(ctx, u); err != nil {
+			t.Errorf("%s: an exact entry must exempt it: %v", u, err)
+		}
+	}
+}
+
 func TestAllowlistNarrowEntries(t *testing.T) {
 	ctx := context.Background()
 	v := New(WithAllowCIDRs(mustCIDRs(t, "192.168.1.0/24, 169.254.10.0/24")...))
