@@ -13,6 +13,19 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+### Security
+
+- **Friend endpoints act with their own authority.** A friend endpoint runs on the
+  approver's agent, and friend intake accepted any requested tools, so a friend could be
+  granted webhook, rule and event-history tools and use them with the approver's authority.
+  Friend grants are now limited to `create_for` and the drain verbs, at request and at
+  approval, and existing friend endpoints are narrowed to that set on upgrade. (#420)
+- **A webhook's routes and rules are managed only from its own endpoint.** The rule and
+  route verbs used to accept any endpoint of the webhook owner's human. Another endpoint's
+  webhook now answers `not_found`. To edit a webhook's rules, use the endpoint that owns it.
+  (#420)
+- Friend requests from two different users' same-named personas no longer collide. (#420)
+
 ## [0.3.0] - 2026-09-22
 
 The first release since `v0.2.0`, and the first release under

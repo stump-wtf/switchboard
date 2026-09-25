@@ -16,8 +16,13 @@ a credential and leave it running.
   To it, that todo doesn't exist (`not_found`). That holds for your own endpoints too.
 - **Scope is enforced on every call.** A tool the endpoint wasn't granted, or a queue outside its
   scope, is refused. Scope never changes after vend; to change it, vend a new endpoint.
-- **Webhooks, routes, and rules belong to you.** Any of your endpoints with the right tools may
-  manage your webhooks' routes and rules. No one else's endpoint can.
+- **A webhook's routes and rules belong to its endpoint.** Only the endpoint that owns a webhook,
+  with the right tools, may manage its routes and rules. Your other endpoints can't, and neither can
+  anyone else's: to them the webhook doesn't exist (`not_found`).
+- **A friend endpoint carries only hand-off and drain tools.** Approving a friend request grants at
+  most `create_for` and the drain verbs (`list_todos`, `claim`, `claim_next`, `complete`, `fail`,
+  `heartbeat`), whatever was requested. A friend endpoint runs on your agent, so webhook, rule, and
+  event-history tools on it would act with your authority; switchboard never grants them to a friend.
 - **The instance operator can see everything.** Payloads are stored in the service's database. Don't
   route anything through a webhook that you wouldn't show the person running the service.
 
