@@ -104,6 +104,10 @@ type endpointCard struct {
 	// Hooks are the endpoint's SPEC-0024 notify hooks with their health, shown to the owning human
 	// only (the card list is already owner-scoped). Governing: SPEC-0024 REQ-10.
 	Hooks []hookRow
+	// HooksUnavailable is set when the hooks read failed, so the card says the list could not load
+	// rather than showing the empty state: "no hooks" would tell the owner there is nothing to act
+	// on while an auto-disabled hook may be waiting for a re-enable.
+	HooksUnavailable bool
 }
 
 // hookRow is one notify hook on an endpoint card. URL is redacted server-side (scheme, host and
@@ -252,8 +256,8 @@ func (h *Handler) endpointCards(r *http.Request, human *store.Human) []endpointC
 		h.log.Warn("endpoints list", "err", err)
 		return nil
 	}
-	// Hooks are a second owner-scoped read. A failure degrades to cards without hooks rather than
-	// no page, like the card list itself.
+	// Hooks are a second owner-scoped read. A failure degrades to cards that say the hooks could
+	// not load (never the empty state) rather than no page, like the card list itself.
 	hooks, err := h.store.ListNotifyHooksForHuman(r.Context(), human.ID)
 	if err != nil {
 		h.log.Warn("endpoints notify hooks", "err", err)
@@ -261,7 +265,7 @@ func (h *Handler) endpointCards(r *http.Request, human *store.Human) []endpointC
 	cards := make([]endpointCard, 0, len(eps))
 	for _, ep := range eps {
 		card := h.cardFromStore(ep, human.DisplayName)
-		card.Hooks = hookRows(hooks[ep.ID])
+		card.Hooks, card.HooksUnavailable = hookRows(hooks[ep.ID]), err != nil
 		cards = append(cards, card)
 	}
 	return cards
@@ -300,10 +304,93 @@ func (h *Handler) setNotifyHookEnabled(w http.ResponseWriter, r *http.Request, e
 	if changed && !enabled && h.hookDisabled != nil {
 		h.hookDisabled()
 	}
-	http.Redirect(w, r, "/endpoints#sb-ep-"+epID, http.StatusSeeOther)
+	if !isHTMX(r) {
+		http.Redirect(w, r, "/endpoints#sb-ep-"+epID, http.StatusSeeOther)
+		return
+	}
+	h.respondHookSection(w, r, human.ID, epID, hookID, enabled)
 }
 
-// DeleteNotifyHook deletes a hook and its secrets from the card.
+// respondHookSection is the htmx answer to a disable or re-enable: the card's re-rendered hook
+// section (the form's swap target), plus a toast into the layout's #sb-toasts region, which is
+// aria-live and present from page load, so a screen reader announces the new state. The plain
+// form POST still gets the redirect above; this only upgrades it.
+// Governing: SPEC-0024 REQ-10 "Operator Web UI" (a status change announces via aria-live).
+func (h *Handler) respondHookSection(w http.ResponseWriter, r *http.Request, humanID, epID, hookID string, enabled bool) {
+	hooks, err := h.store.ListNotifyHooksForHuman(r.Context(), humanID)
+	if err != nil {
+		h.log.Warn("endpoints notify hooks", "err", err)
+	}
+	card := endpointCard{ID: epID, Hooks: hookRows(hooks[epID]), HooksUnavailable: err != nil}
+	frag, err := h.renderFragment("endpoint_hooks", map[string]any{"C": card, "CSRF": auth.CSRFFromContext(r.Context())})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	text := "notify hook re-enabled"
+	if !enabled {
+		text = "notify hook disabled"
+	}
+	for _, row := range card.Hooks {
+		if row.ID == hookID {
+			text += " · " + row.URL
+		}
+	}
+	if t, err := h.renderFragment("toast", toastMsg{Kind: "completed", Text: text}); err == nil {
+		frag += t
+	} else {
+		h.log.Error("render notify hook toast", "err", err)
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(frag))
+}
+
+// hookDeleteView feeds the notify-hook delete confirm page: the hook as the card shows it, and
+// the endpoint it belongs to.
+type hookDeleteView struct {
+	EndpointID string
+	AgentName  string
+	Hook       hookRow
+}
+
+// DeleteNotifyHookConfirm renders the full-page confirmation for deleting a notify hook. Deleting
+// is irreversible: the hook and its sealed secrets are gone, and the receiver must be reconfigured
+// with a new secret once an agent re-creates it. So the card's delete lands here first and the
+// POST fires only from this page's explicit confirm, like revoke. A hook the human does not own
+// through that endpoint is a plain 404. Governing: SPEC-0015 REQ "Wizard Interaction Pattern"
+// (destructive and irreversible steps confirm), SPEC-0024 REQ-10.
+func (h *Handler) DeleteNotifyHookConfirm(w http.ResponseWriter, r *http.Request) {
+	human, _ := auth.FromContext(r.Context())
+	epID, hookID := chi.URLParam(r, "id"), chi.URLParam(r, "hookID")
+	hooks, err := h.store.ListNotifyHooksForHuman(r.Context(), human.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	for _, row := range hookRows(hooks[epID]) {
+		if row.ID != hookID {
+			continue
+		}
+		dv := &hookDeleteView{EndpointID: epID, Hook: row}
+		if eps, err := h.store.ListEndpointCards(r.Context(), human.ID); err == nil {
+			for _, ep := range eps {
+				if ep.ID == epID {
+					dv.AgentName = ep.AgentName
+				}
+			}
+		}
+		sh, _ := h.buildShell(r.Context(), "endpoints", &human)
+		h.render(w, "hook_delete", view{
+			Title: "Delete notify hook", Human: &human, CSRF: auth.CSRFFromContext(r.Context()),
+			Shell: sh, PersonasEnabled: h.personasEnabled, HookDelete: dv,
+		})
+		return
+	}
+	http.NotFound(w, r)
+}
+
+// DeleteNotifyHook deletes a hook and its secrets. The card reaches it only through the confirm
+// page (DeleteNotifyHookConfirm).
 func (h *Handler) DeleteNotifyHook(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
 	epID, hookID := chi.URLParam(r, "id"), chi.URLParam(r, "hookID")

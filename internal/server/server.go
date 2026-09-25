@@ -189,7 +189,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// It is started after mtr exists so it counts into the process registry (REQ-11).
 	startNotifyDispatcher(ctx, st, hookValidator, cfg.NotifyHookMax, mtr, log)
 	if cfg.NotifyHookMax > 0 {
-		webh.SetNotifyHookDisabledCounter(func() { mtr.NotifyHookDisabled(metrics.NotifyDisabledByOp) })
+		wireNotifyHookMetrics(webh, mtr)
 	}
 
 	r := newRouter(routerDeps{
@@ -257,6 +257,15 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 // routerDeps carries the wired components newRouter assembles into the HTTP surface. Extracted from
 // Run so tests can build the REAL route table (auth grouping included) without a database.
+// wireNotifyHookMetrics initialises the notify-hook series at zero from the first scrape and
+// counts an operator disable from the endpoint card as
+// switchboard_notify_hooks_disabled_total{reason="operator"}. A function of its own so the server
+// suite drives exactly the wiring Run installs. Governing: SPEC-0024 REQ-11.
+func wireNotifyHookMetrics(webh *web.Handler, mtr *metrics.Metrics) {
+	mtr.InitNotifyHookSeries()
+	webh.SetNotifyHookDisabledCounter(func() { mtr.NotifyHookDisabled(metrics.NotifyDisabledByOp) })
+}
+
 type routerDeps struct {
 	st      *store.Store
 	cfg     config.Config // capability gates (ADR-0023): personas / A2A / A2UI / API token
@@ -502,6 +511,9 @@ func newRouter(d routerDeps) chi.Router {
 		// CSRF-checked by the group, and 404 for anything the signed-in human does not own.
 		pr.Post("/endpoints/{id}/hooks/{hookID}/disable", d.webh.DisableNotifyHook)
 		pr.Post("/endpoints/{id}/hooks/{hookID}/enable", d.webh.EnableNotifyHook)
+		// Delete is irreversible, so the card links to a confirm page and only its form POSTs
+		// (SPEC-0015 REQ "Wizard Interaction Pattern"), like revoke.
+		pr.Get("/endpoints/{id}/hooks/{hookID}/delete", d.webh.DeleteNotifyHookConfirm)
 		pr.Post("/endpoints/{id}/hooks/{hookID}/delete", d.webh.DeleteNotifyHook)
 		// Friends view + approval flow (SPEC-0015 REQ "Friends View And Approval Flow"; SPEC-0010
 		// approval-is-vend). The handlers 404 until the friending capability is enabled (capability

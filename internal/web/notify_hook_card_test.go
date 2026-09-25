@@ -35,10 +35,15 @@ func TestEndpointCardRendersHooks(t *testing.T) {
 		"every scoped queue",
 		`action="/endpoints/ep-1/hooks/hook-on/disable"`,
 		`action="/endpoints/ep-1/hooks/hook-off/enable"`,
-		`action="/endpoints/ep-1/hooks/hook-off/delete"`,
+		// htmx upgrade of the plain form: swap the section in place; the toggle keeps one id.
+		`hx-post="/endpoints/ep-1/hooks/hook-on/disable" hx-target="#sb-ep-hooks-ep-1" hx-swap="outerHTML"`,
+		`id="sb-hook-toggle-hook-on"`,
+		// Delete links to its confirm page (SPEC-0015 REQ "Wizard Interaction Pattern").
+		`href="/endpoints/ep-1/hooks/hook-off/delete"`,
 		`name="csrf_token" value="tok"`,
 		`aria-label="Disable notify hook https://dispatch.example.com/sb?redacted"`,
-		`aria-live="polite"`,
+		`aria-label="Delete notify hook https://dispatch.example.com/sb?redacted"`,
+		`<div class="sb-hook__acts">`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("card missing %q", want)
@@ -48,6 +53,49 @@ func TestEndpointCardRendersHooks(t *testing.T) {
 		if strings.Contains(body, leak) {
 			t.Errorf("card renders %q unescaped or unredacted", leak)
 		}
+	}
+	// Delete never POSTs straight from the card.
+	if strings.Contains(body, `action="/endpoints/ep-1/hooks/hook-off/delete"`) {
+		t.Error("the card carries a one-click delete form")
+	}
+}
+
+// A failed hooks read must not read as "no hooks": the owner would be told there is nothing to act
+// on while an auto-disabled hook may be waiting for a re-enable.
+func TestEndpointCardHooksUnavailable(t *testing.T) {
+	h := newTestHandler(t)
+	c := cardWithHooks("active")
+	c.HooksUnavailable = true
+	body := renderFrag(t, h, "endpoint_card", map[string]any{"CSRF": "tok", "PersonasEnabled": false, "C": c})
+	if !strings.Contains(body, "data-sb-hooks-unavailable") {
+		t.Error("a failed hooks read does not render the unavailable state")
+	}
+	if strings.Contains(body, "data-sb-hooks-empty") {
+		t.Error("a failed hooks read renders the empty state")
+	}
+}
+
+func TestHookDeleteConfirmPage(t *testing.T) {
+	h := newTestHandler(t)
+	row := hookRows([]store.NotifyHook{{ID: "hook-1", URL: "https://dispatch.example.com/sb?token=s3cr3t"}})[0]
+	var buf strings.Builder
+	if err := h.pages["hook_delete"].ExecuteTemplate(&buf, "layout", view{
+		Title: "Delete notify hook", Human: &store.Human{DisplayName: "Op"}, CSRF: "tok",
+		HookDelete: &hookDeleteView{EndpointID: "ep-1", AgentName: "hook-bot", Hook: row},
+	}); err != nil {
+		t.Fatalf("render hook_delete: %v", err)
+	}
+	body := buf.String()
+	for _, want := range []string{
+		"data-sb-hook-delete-confirm", "hook-bot", "https://dispatch.example.com/sb?redacted",
+		`action="/endpoints/ep-1/hooks/hook-1/delete"`, `name="csrf_token" value="tok"`, `href="/endpoints#sb-ep-ep-1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("confirm page missing %q", want)
+		}
+	}
+	if strings.Contains(body, "s3cr3t") {
+		t.Error("confirm page leaks the hook's query string")
 	}
 }
 

@@ -407,7 +407,7 @@ func tenancyCovered() map[string]bool {
 		"POST /endpoints/{id}/revoke", "POST /endpoints/{id}/delete",
 		// Notify-hook card controls — deep (owner-scoped through the endpoint's agent).
 		"POST /endpoints/{id}/hooks/{hookID}/disable", "POST /endpoints/{id}/hooks/{hookID}/enable",
-		"POST /endpoints/{id}/hooks/{hookID}/delete",
+		"GET /endpoints/{id}/hooks/{hookID}/delete", "POST /endpoints/{id}/hooks/{hookID}/delete",
 	} {
 		m[k] = true
 	}

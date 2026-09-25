@@ -36,7 +36,7 @@ var tmplFS embed.FS
 // Startup parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
 // "Application Shell And Navigation" (providers joins the IA).
-var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "quickvend", "revoke", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "authorize"}
+var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "quickvend", "revoke", "hook_delete", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "authorize"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -194,6 +194,7 @@ type view struct {
 	Vend            *vendStepView      // the active vend-wizard step page (templates/vend.html)
 	Quick           *quickVendView     // the one-step quick-vend page (templates/quickvend.html; ADR-0023)
 	RevokeConfirm   *revokeConfirmView // the revoke confirm page (templates/revoke.html)
+	HookDelete      *hookDeleteView    // the notify-hook delete confirm page (templates/hook_delete.html)
 
 	// Personas view + wizard (SPEC-0015 REQ "Personas View And Wizard"): cards, and the active
 	// create/edit wizard step page (templates/personawiz.html) with its live A2A card preview.

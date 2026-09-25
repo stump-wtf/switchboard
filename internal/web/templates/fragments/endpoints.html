@@ -107,21 +107,25 @@
 {{/* endpoint_hooks — the endpoint's outbound notify hooks and their health, with disable, re-enable
      and delete (SPEC-0024 REQ-10). Args via dict: C web.endpointCard, CSRF string. The URL arrives
      already redacted server-side (query → ?redacted) and is escaped here like every other string;
-     no secret is in the model. Controls are plain POST forms carrying the CSRF token, so they work
-     without JS and with the keyboard; each button names its hook in aria-label. The list is
-     aria-live so an in-place refresh announces a state change. */}}
+     no secret is in the model. Disable and re-enable are plain POST forms carrying the CSRF token,
+     so they work without JS and with the keyboard, upgraded with hx-post to swap this section in
+     place; the htmx response also drops a toast into the layout's aria-live #sb-toasts region, and
+     that toast is what announces the state change (the toggle keeps one id, so htmx restores focus
+     to it). Delete is irreversible, so it links to its confirm page (SPEC-0015 REQ "Wizard
+     Interaction Pattern"). Each control names its hook in aria-label. A failed hooks read renders
+     "unavailable", never the empty state. */}}
 {{define "endpoint_hooks"}}{{$c := .C}}{{$csrf := .CSRF}}<section id="sb-ep-hooks-{{$c.ID}}" class="sb-epcard__hooks" aria-labelledby="sb-ep-hooks-label-{{$c.ID}}" data-sb-ep-hooks>
   <span class="sb-microlabel" id="sb-ep-hooks-label-{{$c.ID}}">Notify hooks</span>
-  {{if $c.Hooks}}<ul class="sb-hooklist" aria-live="polite">
+  {{if $c.HooksUnavailable}}<p class="sb-muted" data-sb-hooks-unavailable>notify hooks unavailable · reload to try again</p>{{else if $c.Hooks}}<ul class="sb-hooklist">
     {{range $c.Hooks}}<li class="sb-hook{{if not .Enabled}} sb-hook--disabled{{end}}" data-sb-hook="{{.ID}}">
       <code class="sb-code sb-hook__url">{{.URL}}</code>
       <span class="sb-hook__queues">{{range .Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span> {{else}}<span class="sb-muted">every scoped queue</span>{{end}}</span>
       {{if .Enabled}}<span class="sb-chip sb-chip--hook-on" data-sb-hook-state="enabled">enabled</span>{{else}}<span class="sb-chip sb-chip--hook-off" data-sb-hook-state="disabled">disabled{{if .DisabledReason}} · {{if eq .DisabledReason "consecutive_failures"}}too many failures{{else}}by you{{end}}{{end}}</span>{{end}}
       <span class="sb-muted sb-hook__health">{{if .LastAttemptAt}}last {{if .LastStatus}}{{.LastStatus}}{{else}}no response{{end}} · {{reltime .LastAttemptAt.UTC}}{{else}}never called{{end}}{{if .ConsecutiveFailures}} · {{.ConsecutiveFailures}} failed in a row{{end}}</span>
-      <span class="sb-hook__acts">
-        {{if .Enabled}}<form method="post" action="/endpoints/{{$c.ID}}/hooks/{{.ID}}/disable"><input type="hidden" name="csrf_token" value="{{$csrf}}"><button type="submit" class="sb-btn sb-btn--secondary sb-btn--mono" aria-label="Disable notify hook {{.URL}}">disable</button></form>{{else}}<form method="post" action="/endpoints/{{$c.ID}}/hooks/{{.ID}}/enable"><input type="hidden" name="csrf_token" value="{{$csrf}}"><button type="submit" class="sb-btn sb-btn--secondary sb-btn--mono" aria-label="Re-enable notify hook {{.URL}}">re-enable</button></form>{{end}}
-        <form method="post" action="/endpoints/{{$c.ID}}/hooks/{{.ID}}/delete"><input type="hidden" name="csrf_token" value="{{$csrf}}"><button type="submit" class="sb-btn sb-btn--danger sb-btn--mono" aria-label="Delete notify hook {{.URL}}">delete</button></form>
-      </span>
+      <div class="sb-hook__acts">
+        {{if .Enabled}}<form method="post" action="/endpoints/{{$c.ID}}/hooks/{{.ID}}/disable" hx-post="/endpoints/{{$c.ID}}/hooks/{{.ID}}/disable" hx-target="#sb-ep-hooks-{{$c.ID}}" hx-swap="outerHTML"><input type="hidden" name="csrf_token" value="{{$csrf}}"><button type="submit" id="sb-hook-toggle-{{.ID}}" class="sb-btn sb-btn--secondary sb-btn--mono" aria-label="Disable notify hook {{.URL}}">disable</button></form>{{else}}<form method="post" action="/endpoints/{{$c.ID}}/hooks/{{.ID}}/enable" hx-post="/endpoints/{{$c.ID}}/hooks/{{.ID}}/enable" hx-target="#sb-ep-hooks-{{$c.ID}}" hx-swap="outerHTML"><input type="hidden" name="csrf_token" value="{{$csrf}}"><button type="submit" id="sb-hook-toggle-{{.ID}}" class="sb-btn sb-btn--secondary sb-btn--mono" aria-label="Re-enable notify hook {{.URL}}">re-enable</button></form>{{end}}
+        <a class="sb-btn sb-btn--danger sb-btn--mono" href="/endpoints/{{$c.ID}}/hooks/{{.ID}}/delete" aria-label="Delete notify hook {{.URL}}" data-sb-hook-delete>delete</a>
+      </div>
     </li>{{end}}
   </ul>{{else}}<p class="sb-muted" data-sb-hooks-empty>no notify hooks · an agent granted create_notify_hook registers them</p>{{end}}
 </section>{{end}}

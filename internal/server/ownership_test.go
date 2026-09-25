@@ -43,6 +43,14 @@ const sessionCookieName = "sb_session"
 // carving out a separate database keeps these end-to-end tests (and theirs) deterministic.
 func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 	t.Helper()
+	r, st, ctx, _ := newDBRouterWeb(t)
+	return r, st, ctx
+}
+
+// newDBRouterWeb is newDBRouter that also returns the router's web handler, for suites that
+// install the seams Run wires onto it (the notify-hook disable counter).
+func newDBRouterWeb(t *testing.T) (chi.Router, *store.Store, context.Context, *web.Handler) {
+	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set SWITCHBOARD_TEST_DATABASE_URL to run ownership-scoping tests")
@@ -111,7 +119,7 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 		ping:  pool.Ping,
 		log:   log,
 	})
-	return r, st, ctx
+	return r, st, ctx, webh
 }
 
 // mintSession creates a human plus a live server-side session and returns the plaintext cookie
