@@ -23,6 +23,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The CHANGELOG and upgrade-note rules (SPEC-0027 REQ-9, REQ-10), run by scripts/check-changelog.sh
+  # — the same script `make changelog-check` runs locally. Two separately named jobs, so each check
+  # has its own status. The PR title and labels are read HERE, in the calling workflow, and passed
+  # down as environment (a reusable Gitea workflow loses the event payload), never interpolated into
+  # the shell.
+  #
+  # ADVISORY until the repository variable CHANGELOG_ENFORCE is 'true': a failing rule prints a
+  # warning and the job still passes, so PRs opened before the rules existed are not turned red.
+  # Turning enforcement on is a human decision, made together with adding both contexts to main's
+  # required checks: `ci / changelog (pull_request)` and `ci / upgrade-note (pull_request)`.
+  changelog:
+    if: ${{ gitea.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    env:
+      PR_TITLE: ${{ gitea.event.pull_request.title }}
+      PR_LABELS: ${{ join(gitea.event.pull_request.labels.*.name, ',') }}
+      BASE_REF: origin/${{ gitea.base_ref }}
+      ENFORCE: ${{ vars.CHANGELOG_ENFORCE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: check-changelog.sh changelog
+        run: |
+          git fetch --no-tags origin "${BASE_REF#origin/}"
+          if scripts/check-changelog.sh changelog; then exit 0; fi
+          if [ "$ENFORCE" = true ]; then exit 1; fi
+          echo "::warning::changelog check failed (advisory until CHANGELOG_ENFORCE=true)"
+
+  upgrade-note:
+    if: ${{ gitea.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    env:
+      PR_TITLE: ${{ gitea.event.pull_request.title }}
+      PR_LABELS: ${{ join(gitea.event.pull_request.labels.*.name, ',') }}
+      BASE_REF: origin/${{ gitea.base_ref }}
+      ENFORCE: ${{ vars.CHANGELOG_ENFORCE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: check-changelog.sh upgrade-note
+        run: |
+          git fetch --no-tags origin "${BASE_REF#origin/}"
+          if scripts/check-changelog.sh upgrade-note; then exit 0; fi
+          if [ "$ENFORCE" = true ]; then exit 1; fi
+          echo "::warning::upgrade-note check failed (advisory until CHANGELOG_ENFORCE=true)"
+
   lint:
     # golangci-lint via `make lint`, the same target run locally. The version is PINNED so a
     # new golangci-lint release cannot turn main red on its own, and so local and CI agree —
