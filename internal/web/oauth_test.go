@@ -75,6 +75,15 @@ func TestScopeBulletsNeverAdvertiseBeyondScope(t *testing.T) {
 		t.Fatalf("list_todos+get_todo bullets = %q, want one read line", got)
 	}
 
+	// release is a drain verb the consent screen names on the lease line, and only when granted
+	// (SPEC-0034 REQ-9).
+	if got := scopeBullets([]string{"ci"}, []string{"claim", "release"}); len(got) != 1 || got[0] != "claim & release under a lease" {
+		t.Fatalf("claim+release bullets = %q, want the lease line naming release", got)
+	}
+	if got := strings.Join(scopeBullets([]string{"ci"}, []string{"claim", "complete", "fail", "heartbeat"}), "\n"); strings.Contains(got, "release") {
+		t.Fatalf("bullets %q name release, which is not granted", got)
+	}
+
 	// A verb outside every known family renders verbatim, never embellished.
 	odd := scopeBullets([]string{"q"}, []string{"future_verb"})
 	if len(odd) != 1 || odd[0] != "future_verb" {
