@@ -140,7 +140,8 @@ What's on you:
   artifact controls them. They can choose a queue among deliveries you already trust, never decide
   that a delivery is trusted. Cairn's `on_behalf_of` is the sharing client's self-reported name.
 - **Routing fails closed.** A rule that errors, times out, or runs out of budget stops
-  evaluation, and the delivery is recorded as `faulted` and routed nowhere. A mistyped allowlist
+  evaluation, and the delivery is recorded as `faulted` and held in quarantine, where no
+  tool-bearing agent is ever handed it. A mistyped allowlist
   in a "drop the untrusted" rule therefore admits no one rather than everyone. `params` are
   type-checked, and a save whose rules fault on the webhook's recent deliveries is refused. A
   sandbox that cannot run at all refuses deliveries with `503` instead of routing them by

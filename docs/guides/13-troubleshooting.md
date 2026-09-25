@@ -72,8 +72,8 @@ anything.
   - **An earlier rule matched.** First match wins; check `rule_id` on the trace.
 - **`stage: fault` (disposition `faulted`).** The rule at `rule_id` errored (`error`), ran too
   long (`timeout`, `budget_exhausted`), or no longer compiles (`compile_error`). Evaluation stopped
-  there and the delivery was recorded with no todo, so it did not fall through to later rules or
-  the default. A jq error usually means indexing into a missing value; use `//` defaults
+  there and the delivery was held in the owner's quarantine (`rule_fault`), so it did not fall
+  through to later rules or the default. Fix the rule, then release the held item. A jq error usually means indexing into a missing value; use `//` defaults
   (`.payload.issue.title // ""`) and `[]?` for lists. `list_webhook_events {"disposition":
   "faulted"}` lists every one, and `test_webhook_rules {"event_id": …}` reproduces it.
 - **A rule save is refused, naming events.** The rules fault on some of the webhook's 50 most

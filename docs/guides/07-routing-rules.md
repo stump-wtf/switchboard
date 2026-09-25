@@ -22,7 +22,7 @@ verify → idempotency key → resolve targets → TRUST GATE → ROUTE (rules �
 On `github`, `gitea` and `cairn` webhooks, a **trust gate** runs before any rule. It checks the
 delivery's actor against the webhook's `trusted_actors`, which Switchboard parses in Go from the
 **verified** body. A delivery from anyone not on the list never reaches your rules: it is recorded
-and routed nowhere. (It lands in the owner's quarantine once that ships; see SPEC-0026.) Trust
+and held in the owner's **quarantine** (below). Trust
 lives on the webhook, not in the rules, so a rule edit can never remove it.
 
 | Source | `trusted_actors` | Compared |
@@ -54,6 +54,7 @@ lives on the webhook, not in the rules, so a rule edit can never remove it.
 | `{"queue": "forge"}` | Create the todo in `forge` on **every** delivery target (owner + routes). |
 | `{"queue": "handoff", "endpoints": ["<id>"]}` | Create it only on those targets — a subset of the webhook's existing delivery targets. |
 | `{"drop": true}` | Record the event (visible in history, dedup slot spent) but create no todo and ring no doorbell. |
+| `{"quarantine": true}` | Hold the delivery in the webhook owner's quarantine for a human (or classifier) to release or discard. No agent is handed it. |
 | `{"queue": "lane-s", "exclusive": true}` | Create it on exactly **one** target: the first (owner first, then routes by grant time) whose endpoint scope includes the queue. |
 | `{"queue": "lane-s", "once": true}` | At most once per subject (issue or cairn artifact) per queue: later deliveries about it are recorded with `"once": "repeat"` and answer `{"repeat": true}`. |
 | `{"queue": "lane-s", "work_order": true}` | Attach a switchboard-authored, semi-trusted `work_order` (lane, verified provenance, authorizing rule, subject, authority) to each todo. |
@@ -69,7 +70,31 @@ shrinks after you saved a rule, a matching delivery takes the default instead (a
 `rule_not_granted`).
 
 A dropped delivery **stays dropped**: if the producer redelivers it after you changed the rules, it
-is not re-processed into work.
+is not re-processed into work. A held delivery likewise collapses onto its quarantine item.
+
+## Quarantine
+
+Three things hold a delivery instead of routing it: the trust gate finds its actor untrusted
+(`untrusted_actor`), a rule faults (`rule_fault`), or a rule's action is `{"quarantine": true}`
+(`rule_action`). A held delivery becomes exactly **one** todo on the webhook's **owner** endpoint,
+whatever the fan-out, on the reserved queue `quarantine`, with the reason and its detail (the actor
+verdict, or the fault):
+
+- **No agent is handed it.** `list_todos`, `claim`, `claim_next` and every other agent verb act as
+  if it did not exist. No doorbell rings, no wakeup fires, and no notify hook sends. The store
+  enforces this for every read and lifecycle path.
+- **It leaves only three ways.** A **release** routes it again through the webhook's current rules.
+  The trust gate counts as satisfied, `.actor` keeps the original verdict, and `.release` is set.
+  The todo keeps its id, and extra fan-out targets get their own. A release may instead name a
+  queue within the webhook's allowed queues, which skips the rules. If the rules send it back to
+  quarantine, fault, or drop it, the release is refused and the item stays held. A **discard**
+  completes it with the reason. Otherwise it **expires** after 30 days (or sooner under the
+  operator's retention bound). Each outcome is recorded on the todo with who, when and what.
+- **`quarantine` is reserved.** It is refused as a webhook target queue, an endpoint scope or
+  ceiling queue, and a rule's `queue`.
+
+`list_webhooks` shows each webhook's open quarantine count. The owner's Quarantine view, which
+releases and discards held items, is described in SPEC-0026 REQ-9.
 
 ## What a rule sees
 
@@ -91,6 +116,7 @@ and `.headers`.
 | `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id` (authenticated), `on_behalf_of` (client-reported `name/version`), `expires_at`, `tags` (cairn's string list), `metadata` (`null`: cairn sends none) |
 | `.issue` | Gitea/GitHub `issues` events only (`null` otherwise, pull requests included): `provider`, `action`, `event_type`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels` (names), `label` (GitHub's changed label), `body_size`, `label_event`, `key` |
 | `.actor` | `{sender, author, sender_trusted, author_trusted, trusted}`: who acted, parsed from the verified body, and the trust gate's verdict. Names are `null` when the body has none (a push has no author). Every flag is `null` on sources with no trust gate (`generic`, `stripe`, `slack`), and the two per-actor flags are `null` under `allow_all`. A payload's own `actor` key stays under `.payload` and cannot reach `.actor`. |
+| `.release` | `{by, at}` on a delivery released from quarantine (`by` is `human:<id>` or `classifier:<slug>`), `null` otherwise. Rules can treat a classifier's release more cautiously than a human's. |
 
 `.issue` reads the same on both forges: Gitea's label change (`issue_label`, action `label_updated`)
 and GitHub's (`labeled`) both set `.issue.label_event`, with the current labels in `.issue.labels`.
@@ -116,8 +142,8 @@ memory-capped process. Limits: 32 rules, 4096-byte expressions.
 
 **Routing fails closed.** A rule that errors, times out, runs out of budget, or no longer compiles
 **stops evaluation**. No later rule runs, and the default does not apply. The delivery is recorded
-with `disposition: "faulted"` and its trace, and it creates no todo. It spends its dedup slot as a
-drop does, so a redelivery stays faulted. Every faulted delivery increments
+with `disposition: "faulted"` and its trace, and is held in the owner's quarantine as `rule_fault`
+(see Quarantine). A redelivery collapses onto that held item. Every faulted delivery increments
 `switchboard_routing_faults_total{cause}` and logs one warning. Find them with
 `list_webhook_events {"disposition": "faulted"}`. If the evaluator itself cannot run (the sandbox
 failed to start, is saturated, or died), a webhook with rules answers `503 routing unavailable`,
