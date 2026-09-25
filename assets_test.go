@@ -20,6 +20,7 @@ func TestStaticAssetsEmbedded(t *testing.T) {
 		"static/js/sb-vend.js",
 		"static/js/sb-theme.js",
 		"static/js/sb-keys.js",
+		"static/js/sb-disclosure.js", // payload disclosure aria-expanded (SPEC-0026 REQ-9)
 		// The charm-web woff2 files are documented here until vendored (fonts_test.go skips loudly).
 		"static/fonts/README.md",
 	} {
