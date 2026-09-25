@@ -119,10 +119,10 @@ type Action struct {
 	Queue      string   `json:"queue,omitempty"`
 	Drop       bool     `json:"drop,omitempty"`
 	Quarantine bool     `json:"quarantine,omitempty"`
-	Endpoints []string `json:"endpoints,omitempty"`
-	Exclusive bool     `json:"exclusive,omitempty"`
-	Once      bool     `json:"once,omitempty"`
-	WorkOrder bool     `json:"work_order,omitempty"`
+	Endpoints  []string `json:"endpoints,omitempty"`
+	Exclusive  bool     `json:"exclusive,omitempty"`
+	Once       bool     `json:"once,omitempty"`
+	WorkOrder  bool     `json:"work_order,omitempty"`
 }
 
 // Rule is one ordered routing rule. Expr is a jq filter whose FIRST output decides the match with
