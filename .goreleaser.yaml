@@ -52,13 +52,21 @@ builds:
       # GOFLAGS change cannot quietly send the release build to the module proxy.
       - -mod=vendor
       - -trimpath
+      # No embedded VCS info. Since Go 1.24 a build from a tagged checkout
+      # stamps the tag into the module version, and internal/buildinfo falls
+      # back to that when the -X stamp is missing — so a wrong -X path below
+      # would STILL report the tag and release.yaml's assertion could not catch
+      # it. Without VCS info a missed stamp reports "dev", which the assertion
+      # rejects. Commit and Date are stamped explicitly, so nothing is lost.
+      - -buildvcs=false
     ldflags:
       # The three internal/buildinfo stamps (SPEC-0027 REQ-1). {{.Tag}}, not
       # {{.Version}}: the latter strips the leading "v", and REQ-1 says a v0.3.0
       # release reports "v0.3.0" — the same string a `go install …@v0.3.0`
       # build reports from its module version. A wrong -X path injects NOTHING
-      # and still exits 0, leaving every release binary reporting "dev", so
-      # release.yaml asserts the built binary reports the full tag.
+      # and still exits 0, leaving every release binary reporting "dev" (given
+      # -buildvcs=false above), so release.yaml asserts the built binary reports
+      # exactly the full tag.
       - -s -w
       - -X github.com/stump-wtf/switchboard/internal/buildinfo.Version={{.Tag}}
       - -X github.com/stump-wtf/switchboard/internal/buildinfo.Commit={{.FullCommit}}

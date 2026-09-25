@@ -110,16 +110,18 @@ jobs:
 
           # The full tag, "v" included: goreleaser stamps {{.Tag}} into
           # internal/buildinfo.Version (SPEC-0027 REQ-1), so a v0.3.0 release
-          # reports "v0.3.0". Matching the tag without its "v" would also pass
-          # a build still stamped with {{.Version}}.
+          # reports exactly "switchboard v0.3.0". Exact equality, not a
+          # substring: a substring match on the tag without its "v" would pass
+          # a build still stamped with {{.Version}}, and one on the tag would
+          # pass "v0.3.0+dirty". goreleaser builds with -buildvcs=false, so a
+          # missed stamp reports "dev" here instead of the VCS tag.
           want="switchboard ${GITEA_REF_NAME}"
-          case "$got" in
-            *"$want"*) echo "stamped version contains the tag ($want)" ;;
-            *)
-              echo "::error::binary reports '$got', expected it to contain '$want'." \
-                   "A wrong -X path injects nothing and still exits 0."
-              exit 1
-              ;;
-          esac
+          if [ "$got" = "$want" ]; then
+            echo "stamped version is the tag ($want)"
+          else
+            echo "::error::binary reports '$got', expected exactly '$want'." \
+                 "A wrong -X path injects nothing and still exits 0."
+            exit 1
+          fi
         env:
           GITEA_REF_NAME: ${{ gitea.ref_name }}
