@@ -511,6 +511,11 @@ func (a *apiHandler) fail(w http.ResponseWriter, what string, err error) {
 		http.Error(w, "not found", http.StatusBadRequest)
 		return
 	}
+	if errors.Is(err, store.ErrReservedQueue) {
+		// SPEC-0026 REQ-6: the quarantine queue is not a queue to vend or push onto.
+		http.Error(w, `the queue name "quarantine" is reserved`, http.StatusBadRequest)
+		return
+	}
 	a.log.Error("api "+what, "err", err)
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }

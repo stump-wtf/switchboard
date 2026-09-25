@@ -1,7 +1,8 @@
 package ingest
 
 // Routing fails closed at the receiver (ADR-0031, SPEC-0026). A delivery whose rules fault is
-// recorded with its trace and disposition=faulted, mints no todo, rings nothing, spends its dedup
+// recorded with its trace and disposition=faulted, and held: one quarantine todo on the owner
+// endpoint (reason rule_fault) that rings nothing and that no agent can claim. It spends its dedup
 // slot, is counted once in switchboard_routing_faults_total, and is logged with exactly one warning
 // naming the webhook, rule, index and cause. A webhook with rules whose evaluator cannot run at all
 // answers 503 with nothing persisted, so the producer retries. A webhook without rules never needs
@@ -92,16 +93,16 @@ func TestSelfManagedFaultedDeliveryIsRecordedNotRouted(t *testing.T) {
 
 	body := cairnBody("evt-fault", time.Now(), "from mallory")
 	resp := postSelfManaged(ing, "cairn-fault", body, cairnHeaders(body, "evt-fault"))
-	if resp.Code != http.StatusAccepted || !strings.Contains(resp.Body.String(), `"faulted":true`) ||
-		!strings.Contains(resp.Body.String(), `"created":0`) {
-		t.Fatalf("faulted delivery = %d %s, want 202 faulted with nothing created", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusAccepted || !strings.Contains(resp.Body.String(), `"quarantined":true`) ||
+		!strings.Contains(resp.Body.String(), `"created":1`) {
+		t.Fatalf("faulted delivery = %d %s, want 202 quarantined", resp.Code, resp.Body.String())
 	}
 	if b := resp.Body.String(); strings.Contains(b, `"trust"`) || strings.Contains(b, "rule") {
 		t.Fatalf("response %s names the owner's rule; the fault is not the producer's business", resp.Body.String())
 	}
-	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 0 {
-		t.Fatalf("todos = %d, want none: a faulted delivery routes nowhere", n)
-	}
+	// Since #386 the faulted delivery is held: one quarantine todo on the owner, reason rule_fault,
+	// with the fault as its detail, and nothing on inbox (SPEC-0026 REQ-1 after REQ-6).
+	assertHeld(t, ctx, pool, owner.ID, routing.QuarantineRuleFault, `"cause": "error"`)
 	var disp string
 	if err := pool.QueryRow(ctx, `SELECT disposition FROM events WHERE webhook_id = $1`, wh.ID).Scan(&disp); err != nil || disp != store.DispositionFaulted {
 		t.Fatalf("event disposition = %q (%v), want faulted", disp, err)
@@ -130,11 +131,28 @@ func TestSelfManagedFaultedDeliveryIsRecordedNotRouted(t *testing.T) {
 		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
 	}})
 	again := postSelfManaged(ing, "cairn-fault", body, cairnHeaders(body, "evt-fault"))
-	if again.Code != http.StatusAccepted || !strings.Contains(again.Body.String(), `"faulted":true`) {
-		t.Fatalf("redelivery = %d %s, want it still faulted", again.Code, again.Body.String())
+	if again.Code != http.StatusAccepted || !strings.Contains(again.Body.String(), `"quarantined":true`) ||
+		!strings.Contains(again.Body.String(), `"created":0`) {
+		t.Fatalf("redelivery = %d %s, want it collapsed onto the held item", again.Code, again.Body.String())
 	}
-	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 0 {
-		t.Fatalf("todos after redelivery = %d, want none", n)
+	assertHeld(t, ctx, pool, owner.ID, routing.QuarantineRuleFault, "")
+}
+
+// assertHeld checks that endpoint holds exactly one todo, pending on the quarantine queue with the
+// reason (and, when non-empty, a detail containing wantDetail), and nothing anywhere else.
+func assertHeld(t *testing.T, ctx context.Context, pool *pgxpool.Pool, endpointID, reason, wantDetail string) {
+	t.Helper()
+	var queue, state, gotReason, detail string
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) OVER (), queue, state, COALESCE(quarantine_reason,''), COALESCE(quarantine_detail::text,'')
+		FROM todos WHERE endpoint_id = $1`, endpointID).Scan(&n, &queue, &state, &gotReason, &detail); err != nil {
+		t.Fatalf("read held todo: %v", err)
+	}
+	if n != 1 || queue != store.QueueQuarantine || state != "pending" || gotReason != reason {
+		t.Fatalf("todos = %d (%s/%s/%s), want exactly one pending %s item", n, queue, state, gotReason, reason)
+	}
+	if wantDetail != "" && !strings.Contains(detail, wantDetail) {
+		t.Fatalf("quarantine detail = %s, want it to contain %s", detail, wantDetail)
 	}
 }
 
@@ -151,12 +169,11 @@ func TestSelfManagedFaultingDropRuleSkipsDefault(t *testing.T) {
 	})
 	body := cairnBody("evt-fault-drop", time.Now(), "big")
 	resp := postSelfManaged(ing, "cairn-fault-drop", body, cairnHeaders(body, "evt-fault-drop"))
-	if resp.Code != http.StatusAccepted || !strings.Contains(resp.Body.String(), `"faulted":true`) {
-		t.Fatalf("delivery = %d %s, want 202 faulted", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusAccepted || !strings.Contains(resp.Body.String(), `"quarantined":true`) {
+		t.Fatalf("delivery = %d %s, want 202 quarantined", resp.Code, resp.Body.String())
 	}
-	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 0 {
-		t.Fatalf("todos = %d, want none: the default must not apply after a fault", n)
-	}
+	// The default (inbox) must not apply after a fault: the only todo is the held one.
+	assertHeld(t, ctx, pool, owner.ID, routing.QuarantineRuleFault, `"cause": "timeout"`)
 }
 
 // SPEC-0026 REQ-2 scenario "Sandbox down": a webhook with rules on an instance with no evaluator

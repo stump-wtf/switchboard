@@ -57,6 +57,10 @@ func (f *fakeStore) SetWebhookTrustedActors(_ context.Context, id, endpointID st
 	return w, nil
 }
 
+func (f *fakeStore) QuarantineCounts(context.Context, string) (map[string]int, error) {
+	return map[string]int{}, nil
+}
+
 var trustVerbs = []string{"create_webhook", "list_webhooks", "set_trusted_actors", "clear_trusted_actors"}
 
 func TestTrustedActorVerbs(t *testing.T) {
@@ -82,6 +86,11 @@ func TestTrustedActorVerbs(t *testing.T) {
 		"trusted_actors": map[string]any{"logins": []string{"joestump"}, "match": "both"}}, &listed)
 	if listed.TrustedActors == nil || len(listed.TrustedActors.Logins) != 1 || listed.TrustedActors.Match != "both" || listed.Warning != "" {
 		t.Fatalf("create with a list = %+v", listed)
+	}
+	// SPEC-0026 REQ-6 scenario "Reserved name refused".
+	if msg := callErr(t, ctx, cs, "create_webhook", map[string]any{"source_type": "github", "target_queue": "quarantine"},
+		codeInvalidArgument); !strings.Contains(msg, "reserved") {
+		t.Fatalf("reserved target refusal %q does not say why", msg)
 	}
 	// REQ-5 scenario "Token-trust webhook refused", on create and on set.
 	if msg := callErr(t, ctx, cs, "create_webhook", map[string]any{"source_type": "generic", "target_queue": "reviews",

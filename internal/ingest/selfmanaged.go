@@ -55,10 +55,28 @@ import (
 // Intake stages named on every receiver error log, with the webhook id, so one grep follows a
 // delivery through the gate. Governing: SPEC-0026 REQ-13 "Error Handling".
 const (
-	stageVerify    = "verify"
-	stageTrustGate = "trust gate"
-	stageRoute     = "route"
+	stageVerify     = "verify"
+	stageTrustGate  = "trust gate"
+	stageRoute      = "route"
+	stageQuarantine = "quarantine"
+	stageRelease    = "release"
 )
+
+// quarantineDetail is todos.quarantine_detail: the structured why of a held delivery. Actor is the
+// trust gate's verdict, which a release carries unchanged (.actor), Fault is the rule fault for
+// rule_fault, and RuleID is the quarantining rule for rule_action. Governing: SPEC-0026 REQ-6, REQ-7.
+type quarantineDetail struct {
+	Actor  *routing.ActorTrust `json:"actor,omitempty"`
+	Fault  *routing.RuleFault  `json:"fault,omitempty"`
+	RuleID string              `json:"rule_id,omitempty"`
+}
+
+func quarantineRuleID(d routing.Decision) string {
+	if d.Quarantine {
+		return d.Trace.RuleID
+	}
+	return ""
+}
 
 // trustGate evaluates the webhook's trusted_actors for a delivery. It returns nil for a source with
 // no actor projection, which has no gate. A missing or unreadable stored list is reported as an
@@ -225,8 +243,8 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// Trust gate (ADR-0031, SPEC-0026 REQ-5): after verification and target resolution, before any
 	// rule. It runs on every github, gitea and cairn webhook, from the verified body only. A missing
 	// or unreadable trust list trusts no one, and so does an unverified body, whose actor anyone
-	// could write. An untrusted delivery never reaches the rules. Until the quarantine queue lands
-	// (#386) it takes the fail-closed faulted path: recorded, and routed nowhere.
+	// could write. An untrusted delivery never reaches the rules: it is quarantined on the owner
+	// endpoint as untrusted_actor.
 	actor, err := i.trustGate(wh, verified, body)
 	if err != nil {
 		i.log.Error("self-managed webhook trust gate", "webhook", wh.ID, "stage", stageTrustGate,
@@ -241,7 +259,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		envIn = routing.EnvelopeInput{Source: wh.SourceType, Kind: kind, WebhookID: wh.ID, TrustMode: wh.TrustMode,
 			Verified: verified, Body: body, Actor: actor}
 		_ = json.Unmarshal(headers, &envIn.Headers)
-		i.log.Warn("delivery from an untrusted actor; recorded and not routed",
+		i.log.Warn("delivery from an untrusted actor; quarantined",
 			"webhook", wh.ID, "stage", stageTrustGate, "sender", derefOr(actor.Sender), "author", derefOr(actor.Author))
 	} else {
 		decision, envIn, err = i.routeDelivery(r.Context(), wh, targets, kind, verified, headers, r.Header.Get("Content-Type"), body, actor)
@@ -252,16 +270,21 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Routing fails closed (ADR-0031, SPEC-0026). Two outcomes route nowhere:
+	// Routing fails closed (ADR-0031, SPEC-0026). These outcomes route nowhere:
 	//
 	//   - Unavailable: the evaluator could not run at all (no sandbox, no free slot, a dead child).
 	//     That is a server fault, not a property of the delivery, so nothing is persisted and the
 	//     producer gets a 503 and retries once the instance is healthy. It is never routed by default
 	//     (REQ-2).
 	//   - Faulted: a rule errored, timed out, no longer compiles, or found the budget spent.
-	//     Evaluation stopped there, so no later rule and no default ran. The delivery is recorded
-	//     with its trace and no todo, spending its dedup slot as a drop does, and is counted and
-	//     logged once so the owner can find it (REQ-1).
+	//     Evaluation stopped there, so no later rule and no default ran. The delivery is quarantined
+	//     as rule_fault (its event keeps the faulted disposition), and is counted and logged once so
+	//     the owner can find it (REQ-1).
+	//   - Untrusted, or a rule's {"quarantine": true}: quarantined as untrusted_actor or rule_action.
+	//
+	// A quarantined delivery is exactly ONE todo on the webhook's owner endpoint, whatever the
+	// fan-out, on the reserved quarantine queue: no wakeup, no doorbell, no hook, and not claimable
+	// by any agent (REQ-6).
 	if decision.Unavailable {
 		f := decision.Fault
 		i.log.Error("routing unavailable; delivery refused for the producer to retry",
@@ -272,7 +295,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	}
 	if decision.Faulted && decision.Fault != nil {
 		f := decision.Fault
-		i.log.Warn("routing rule faulted; delivery recorded and not routed",
+		i.log.Warn("routing rule faulted; delivery quarantined",
 			"webhook", wh.ID, "rule_id", f.RuleID, "rule_index", f.RuleIndex,
 			"cause", f.Cause, "detail", f.Detail)
 	}
@@ -299,6 +322,16 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	targetsFor, reason := decision.Endpoints, decision.QuarantineReason()
+	var detail []byte
+	if reason != "" {
+		targetsFor = []string{wh.EndpointID} // the owner holds it, never a fan-out target (REQ-6)
+		if detail, err = json.Marshal(quarantineDetail{Actor: envIn.Actor, Fault: decision.Fault, RuleID: quarantineRuleID(decision)}); err != nil {
+			i.log.Error("self-managed webhook quarantine detail", "webhook", wh.ID, "stage", stageQuarantine, "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
 
 	// Governing: SPEC-0002/0004 REQ atomic ingestion, generalized to N targets (ADR-0022) — the
 	// event and ALL of its per-target todos commit in one transaction, so a fan-out is never
@@ -315,16 +348,21 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			ContentType: r.Header.Get("Content-Type"), Headers: headers,
 			Payload: body, SourceIP: clientIP(r),
 			WebhookID: wh.ID, RoutingTrace: trace, Disposition: decision.Disposition(),
-		}, decision.Endpoints,
+		}, targetsFor,
 		store.CreateTodoParams{
 			Queue: decision.Queue, Source: wh.SourceType, Kind: "webhook",
 			Title:   summarizeSelfManagedTitle(wh.SourceType, selfManagedEvent(r), body),
 			Payload: body, IdempotencyKey: key, RoutingTrace: trace,
 			OnceKey: onceKey, WorkOrder: workOrder,
+			QuarantineReason: reason, QuarantineDetail: detail,
 		})
 	if err != nil {
-		i.log.Error("ingest self-managed delivery", "webhook", wh.ID, "stage", stageRoute,
-			"err", fmt.Errorf("webhook %s: %s: persist: %w", wh.ID, stageRoute, err))
+		stage := stageRoute
+		if reason != "" {
+			stage = stageQuarantine
+		}
+		i.log.Error("ingest self-managed delivery", "webhook", wh.ID, "stage", stage,
+			"err", fmt.Errorf("webhook %s: %s: persist: %w", wh.ID, stage, err))
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -339,21 +377,33 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// verdict is accepted: it verified and persisted, and SPEC-0023's "dropped" means a drop action.
 	// Governing: SPEC-0026 REQ-1.
 	switch {
-	case decision.Untrusted:
-		// Held by the trust gate: no rule ran and no rule faulted, so it is neither a routing
-		// decision nor a routing fault. SPEC-0026 REQ-11 counts it as a quarantine item once #386
-		// lands.
+	case decision.Untrusted, decision.Quarantine:
+		// Held before or by a rule with no fault: neither a queue-or-drop routing decision nor a
+		// routing fault. SPEC-0026 REQ-11's quarantine counter is #392's.
 	case decision.Faulted:
 		m.RoutingFault(decision.Fault.Cause)
 	default:
 		countRoutingDecision(m, wh.ID, decision)
 	}
 	count.verdict = verdictAccepted
-	if disposition == store.DispositionFaulted {
-		// Recorded, not work, exactly like a drop below. It is either faulted now or a redelivery of
-		// a delivery that faulted, and the dedup slot is spent either way. The fault is not described
-		// to the producer: the owner's rules are the owner's business, and the owner finds the event
-		// through list_webhook_events (disposition "faulted"). Governing: SPEC-0026 REQ-1.
+	if len(todos) == 1 && todos[0].Todo.Queue == store.QueueQuarantine {
+		// Held: quarantined now, or a redelivery collapsing onto the item it already is. Nothing is
+		// published, rung or woken. The reason is not described to the producer: the owner's trust
+		// list and rules are the owner's business. Governing: SPEC-0026 REQ-6.
+		created := 0
+		if todos[0].New {
+			created = 1
+		}
+		i.observeDeduped(wh.SourceType, "webhook", wh.TrustMode, key)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"todos": []map[string]any{}, "created": created, "quarantined": true,
+			"verified": verified, "trust_mode": wh.TrustMode,
+		})
+		return
+	}
+	if disposition == store.DispositionFaulted && len(todos) == 0 {
+		// A redelivery of a delivery that faulted before quarantine existed: recorded, not work, and
+		// its dedup slot stays spent. Governing: SPEC-0026 REQ-1.
 		i.observeDeduped(wh.SourceType, "webhook", wh.TrustMode, key)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"todos": []map[string]any{}, "created": 0, "faulted": true,

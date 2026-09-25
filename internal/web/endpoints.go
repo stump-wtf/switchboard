@@ -341,6 +341,11 @@ func (h *Handler) executeVendOn(w http.ResponseWriter, r *http.Request, human *s
 			http.Error(w, "unknown persona", http.StatusBadRequest)
 			return false
 		}
+		if errors.Is(err, store.ErrReservedQueue) {
+			// SPEC-0026 REQ-6: quarantine is not a queue an endpoint may be scoped to.
+			http.Error(w, `the queue name "quarantine" is reserved`, http.StatusBadRequest)
+			return false
+		}
 		h.fail(w, err)
 		return false
 	}

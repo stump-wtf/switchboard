@@ -139,6 +139,7 @@ type webhookMetaOut struct {
 	// Governing: SPEC-0026 REQ-5 (list_webhooks echoes the field and flags allow_all).
 	TrustedActors *routing.TrustedActors `json:"trusted_actors,omitempty" jsonschema:"github/gitea/cairn only: who may start work through this webhook"`
 	AllowAll      bool                   `json:"allow_all" jsonschema:"true when this webhook trusts every verified sender (flagged: prefer a list)"`
+	Quarantined   int                    `json:"quarantined" jsonschema:"open quarantine items this webhook's deliveries are waiting in (SPEC-0026)"`
 }
 
 // ceilingOut is the endpoint's vended webhook ceiling plus current usage, so an agent can see how
@@ -217,6 +218,11 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 		if targetQueue == "" {
 			return nil, webhookOut{}, &toolError{codeInvalidArgument, "target_queue is required"}
 		}
+		// SPEC-0026 REQ-6 scenario "Reserved name refused": held deliveries land on quarantine by
+		// switchboard's decision, never by being routed there.
+		if store.CheckQueueNames(targetQueue) != nil {
+			return nil, webhookOut{}, &toolError{codeInvalidArgument, `target_queue "quarantine" is reserved for held deliveries`}
+		}
 		// Source type must be within the vended ceiling. A type the ceiling does not allow is refused
 		// with the distinct forbidden_source_type code, never the generic forbidden.
 		if !hasScope(ep.WebhookSourceTypes, sourceType) {
@@ -287,6 +293,10 @@ func (h *Handler) listWebhooksTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[lis
 		if err != nil {
 			return nil, listWebhooksOut{}, h.mapWebhookErr(ep, "list_webhooks", err)
 		}
+		held, err := h.store.QuarantineCounts(ctx, ep.ID)
+		if err != nil {
+			return nil, listWebhooksOut{}, h.mapWebhookErr(ep, "list_webhooks", err)
+		}
 		out := listWebhooksOut{
 			Webhooks: make([]webhookMetaOut, 0, len(ws)),
 			Ceiling: ceilingOut{
@@ -302,6 +312,7 @@ func (h *Handler) listWebhooksTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[lis
 				SourceType: w.SourceType, TargetQueue: w.TargetQueue, TrustMode: w.TrustMode,
 				CreatedAt:     w.CreatedAt.UTC().Format(time.RFC3339),
 				TrustedActors: trustedActorsView(w),
+				Quarantined:   held[w.ID],
 			}
 			row.AllowAll = row.TrustedActors != nil && row.TrustedActors.AllowAll
 			if w.RotatedAt != nil {
@@ -378,6 +389,8 @@ func (h *Handler) mapWebhookErr(ep store.AuthEndpoint, tool string, err error) e
 		return &toolError{codeCeilingExceeded, "webhook ceiling reached for this endpoint"}
 	case errors.Is(err, store.ErrNotFound):
 		return &toolError{codeNotFound, "webhook not found"}
+	case errors.Is(err, store.ErrReservedQueue):
+		return &toolError{codeInvalidArgument, `the queue name "quarantine" is reserved`}
 	default:
 		h.log.Error("mcp webhook store failure", "slug", ep.Slug, "tool", tool,
 			"err", fmt.Errorf("tools/call %s: %w", tool, err))

@@ -74,7 +74,7 @@ func TestTrustGateHoldsUntrustedAndPromotesOnMaintainerLabel(t *testing.T) {
 	if code := postGitHubIssue(ing, "tok-trust-gate", secret, "d-new", githubIssueBody("opened", "joestump", "joestump")); code != 202 {
 		t.Fatalf("new-webhook delivery = %d, want 202", code)
 	}
-	if disp, tr := eventRow(t, ctx, pool, "d-new"); disp != store.DispositionFaulted || tr.Stage != routing.StageTrustGate ||
+	if disp, tr := eventRow(t, ctx, pool, "d-new"); disp != store.DispositionQuarantined || tr.Stage != routing.StageTrustGate ||
 		tr.Cause != routing.CauseUntrustedActor || tr.Actor == nil || tr.Actor.IsTrusted() {
 		t.Fatalf("new-webhook event = %s %+v, want held at the trust gate", disp, tr)
 	}
@@ -86,7 +86,7 @@ func TestTrustGateHoldsUntrustedAndPromotesOnMaintainerLabel(t *testing.T) {
 		t.Fatalf("outsider delivery = %d, want 202", code)
 	}
 	disp, tr := eventRow(t, ctx, pool, "d-open")
-	if disp != store.DispositionFaulted || tr.Stage != routing.StageTrustGate || tr.RuleID != "" ||
+	if disp != store.DispositionQuarantined || tr.Stage != routing.StageTrustGate || tr.RuleID != "" ||
 		*tr.Actor.Sender != "mallory" || *tr.Actor.SenderTrusted {
 		t.Fatalf("outsider event = %s %+v, want held with mallory untrusted", disp, tr)
 	}
@@ -103,15 +103,20 @@ func TestTrustGateHoldsUntrustedAndPromotesOnMaintainerLabel(t *testing.T) {
 		t.Fatalf("maintainer event = %s %+v, want routed by outsider-text", disp, tr)
 	}
 	var wo []byte
-	if err := pool.QueryRow(ctx, `SELECT work_order FROM todos WHERE endpoint_id = $1`, owner.ID).Scan(&wo); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT work_order FROM todos WHERE endpoint_id = $1 AND queue <> 'quarantine'`, owner.ID).Scan(&wo); err != nil {
 		t.Fatalf("read todo: %v", err)
 	}
 	var order routing.WorkOrder
 	if err := json.Unmarshal(wo, &order); err != nil || order.AuthorTrusted == nil || *order.AuthorTrusted {
 		t.Fatalf("work order = %s (%v), want author_trusted false", wo, err)
 	}
-	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 1 {
+	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1 AND queue <> 'quarantine'`, owner.ID); n != 1 {
 		t.Fatalf("todos = %d, want only the promoted one", n)
+	}
+	// Both held deliveries wait in the owner's quarantine as untrusted_actor, with the actor verdict.
+	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1 AND queue = 'quarantine'
+		AND quarantine_reason = 'untrusted_actor' AND quarantine_detail->'actor' IS NOT NULL`, owner.ID); n != 2 {
+		t.Fatalf("quarantine items = %d, want the two untrusted deliveries", n)
 	}
 }
 
@@ -131,7 +136,7 @@ func TestTrustGateCairnAndCorruptList(t *testing.T) {
 	if code := postSelfManaged(ing, "tok-trust-cairn", body, cairnHeaders(body, "evt-obo")).Code; code != 202 {
 		t.Fatalf("cairn delivery = %d, want 202", code)
 	}
-	if disp, tr := eventRow(t, ctx, pool, "evt-obo"); disp != store.DispositionFaulted || tr.Stage != routing.StageTrustGate {
+	if disp, tr := eventRow(t, ctx, pool, "evt-obo"); disp != store.DispositionQuarantined || tr.Stage != routing.StageTrustGate {
 		t.Fatalf("on_behalf_of delivery = %s %+v, want held", disp, tr)
 	}
 
@@ -144,13 +149,13 @@ func TestTrustGateCairnAndCorruptList(t *testing.T) {
 	if code := postSelfManaged(ing, "tok-trust-cairn", body2, cairnHeaders(body2, "evt-corrupt")).Code; code != 202 {
 		t.Fatalf("corrupt-list delivery = %d, want 202", code)
 	}
-	if disp, _ := eventRow(t, ctx, pool, "evt-corrupt"); disp != store.DispositionFaulted {
+	if disp, _ := eventRow(t, ctx, pool, "evt-corrupt"); disp != store.DispositionQuarantined {
 		t.Fatalf("corrupt-list delivery disposition = %s, want held", disp)
 	}
 	if out := logs.String(); !strings.Contains(out, "stage=\"trust gate\"") || !strings.Contains(out, "trusting no one") {
 		t.Fatalf("log = %q, want the trust-gate error", out)
 	}
-	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 0 {
+	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1 AND queue <> 'quarantine'`, owner.ID); n != 0 {
 		t.Fatalf("todos = %d, want none", n)
 	}
 }
