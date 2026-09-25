@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -68,14 +69,31 @@ func TestRuleAndRouteVerbsStayOnTheirOwnWebhook(t *testing.T) {
 	ctx, f, open := ruleSessions(t)
 	csE1, _ := open("A") // epA1, the owner of webhookA
 	w2 := mustWebhook(t, ctx, f.st, f.epA2, "tok-a2-own")
+	// W2 carries a real rule and a real route, so a verb that skipped the ownership check would
+	// succeed on them (and change them) rather than answer not_found.
+	seed := routing.Rule{ID: "r-seed", Expr: "true", Action: routing.Action{Drop: true}}
+	if _, err := f.st.UpdateWebhookRouting(ctx, w2, f.epA2, func(store.WebhookRouting) (routing.Config, error) {
+		return routing.Config{Rules: []routing.Rule{seed}}, nil
+	}); err != nil {
+		t.Fatalf("seed W2 rule: %v", err)
+	}
+	if err := f.st.AddWebhookRoute(ctx, w2, f.epA1, f.humanA); err != nil {
+		t.Fatalf("seed W2 route: %v", err)
+	}
 
+	// Every rule and route verb: SPEC-0020 REQ "Rule Management Tools", SPEC-0006 REQ "Webhook Route
+	// Fan-Out Under Ownership and Friendship".
 	for tool, args := range map[string]map[string]any{
-		"list_webhook_rules":  {},
-		"set_webhook_rules":   {"rules": []any{}},
-		"add_webhook_rule":    {"expr": "true", "action": map[string]any{"drop": true}},
-		"test_webhook_rules":  {"payload": map[string]any{}},
-		"list_webhook_routes": {},
-		"add_webhook_route":   {"target_endpoint_id": f.epA1},
+		"list_webhook_rules":   {},
+		"set_webhook_rules":    {"rules": []any{}},
+		"add_webhook_rule":     {"expr": "true", "action": map[string]any{"drop": true}},
+		"update_webhook_rule":  {"rule_id": seed.ID, "expr": "false"},
+		"move_webhook_rule":    {"rule_id": seed.ID, "position": 0},
+		"remove_webhook_rule":  {"rule_id": seed.ID},
+		"test_webhook_rules":   {"payload": map[string]any{}},
+		"list_webhook_routes":  {},
+		"add_webhook_route":    {"target_endpoint_id": f.epA1},
+		"remove_webhook_route": {"target_endpoint_id": f.epA1},
 	} {
 		args["webhook_id"] = w2
 		sibling := callErr(t, ctx, csE1, tool, args, codeNotFound)
@@ -86,11 +104,11 @@ func TestRuleAndRouteVerbsStayOnTheirOwnWebhook(t *testing.T) {
 		}
 	}
 	wr, err := f.st.WebhookRoutingByID(ctx, w2)
-	if err != nil || len(wr.Config.Rules) != 0 {
-		t.Fatalf("W2 after E1's calls = %+v (%v), want untouched", wr.Config, err)
+	if err != nil || len(wr.Config.Rules) != 1 || wr.Config.Rules[0].ID != seed.ID || wr.Config.Rules[0].Expr != seed.Expr {
+		t.Fatalf("W2 after E1's calls = %+v (%v), want only the seeded rule", wr.Config, err)
 	}
-	if routes, err := f.st.ListWebhookRoutes(ctx, w2); err != nil || len(routes) != 0 {
-		t.Fatalf("W2 routes after E1's calls = %v (%v), want none", routes, err)
+	if routes, err := f.st.ListWebhookRoutes(ctx, w2); err != nil || len(routes) != 1 || routes[0].TargetEndpointID != f.epA1 {
+		t.Fatalf("W2 routes after E1's calls = %+v (%v), want only the seeded route", routes, err)
 	}
 
 	// E1 still drives its own webhook: the positive control.
