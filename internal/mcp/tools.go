@@ -32,6 +32,11 @@ const (
 	codeNotFound  = "not_found"
 	codeConflict  = "conflict"
 	codeInternal  = "internal"
+	// codeUnavailable is an operator condition, not a caller error: the capability is not enabled or
+	// not configured on this instance. The notify-hook verbs answer it when no NotifyHookConfig is
+	// installed or SWITCHBOARD_SECRET_ENCRYPTION_KEY is unset (a hook secret is never stored in
+	// plaintext), with a message naming the fix.
+	codeUnavailable = "unavailable"
 )
 
 // agentVerbs is the full SPEC-0006 drain-verb surface (verbs.go DrainVerbs). A tools/call naming

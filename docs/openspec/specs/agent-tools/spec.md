@@ -318,8 +318,10 @@ Every verb MUST accept a declared input shape and return structured output. Erro
 machine `code` plus a human `message` that MUST NOT contain secret material. The defined codes are:
 `unauthenticated` (missing/invalid credential), `forbidden` (verb not in allowlist, or queue/target
 outside grant), `conflict` (lost claim race / wrong state), `not_found` (unknown todo/webhook id),
-`invalid_argument` (bad input), `ceiling_exceeded` / `forbidden_source_type` (webhook ceiling), and
-`internal` (unexpected server-side failure).
+`invalid_argument` (bad input), `ceiling_exceeded` / `forbidden_source_type` (webhook ceiling),
+`unavailable` (an operator condition: the capability is not enabled or not configured on this
+instance, such as notify hooks without `SWITCHBOARD_SECRET_ENCRYPTION_KEY`; the message names the
+fix), and `internal` (unexpected server-side failure).
 
 #### Scenario: Unknown todo id raises not_found
 
