@@ -146,6 +146,88 @@ func TestHealthStoreOutageDoesNotStallDelivery(t *testing.T) {
 	}
 }
 
+// A notification stopped between attempts still finishes as failed once anything was sent: a 503 on
+// attempt 1 followed by a store error on the attempt-2 reload is counted once, with its attempt, and
+// the 503 reaches the hook's consecutive failures (REQ-8, REQ-11, REQ-12).
+func TestStoreErrorBetweenAttemptsFinishesAsFailed(t *testing.T) {
+	var logs bytes.Buffer
+	var logMu sync.Mutex
+	rcv := newReceiver(t, http.StatusServiceUnavailable)
+	st := newMemStore()
+	st.addHook(t, testEndpoint, "h1", rcv.hookURL("/"))
+	gets := 0
+	st.onGet = func(string) {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if gets++; gets == 2 {
+			st.getErr = errors.New("database unavailable")
+		}
+	}
+	met := newCountingMetrics()
+	h := newHarness(t, st, rcv, func(o *Options) { o.Metrics = met; o.Log = newLockedLogger(&logs, &logMu) })
+
+	h.d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
+	dl := h.wait(t)
+	if dl.Delivered || dl.Attempts != 1 || dl.Result != Result5xx || dl.Status == nil || *dl.Status != http.StatusServiceUnavailable {
+		t.Fatalf("delivery = %+v, want failed after 1 attempt with 503", dl)
+	}
+	if n := len(rcv.got()); n != 1 {
+		t.Fatalf("receiver got %d requests, want 1", n)
+	}
+	st.mu.Lock()
+	st.getErr = nil
+	st.mu.Unlock()
+	if hk := st.hook("h1"); hk.ConsecutiveFailures != 1 || hk.LastError == nil || *hk.LastError != "server_error" ||
+		hk.LastStatus == nil || *hk.LastStatus != http.StatusServiceUnavailable {
+		t.Fatalf("hook health = %+v, want the 503 recorded as one failure", hk)
+	}
+	if notes, attempts, _ := met.snapshot(); notes["todo.ready/failed"] != 1 || attempts["5xx"] != 1 {
+		t.Fatalf("metrics: notifications %v attempts %v", notes, attempts)
+	}
+	logMu.Lock()
+	out := logs.String()
+	logMu.Unlock()
+	if !strings.Contains(out, "notify hook delivery failed") || !strings.Contains(out, `stopped="hook reload failed"`) {
+		t.Fatalf("early stop not logged with its reason:\n%s", out)
+	}
+}
+
+// A hook disabled between attempts is not called again. The notification is still counted as
+// failed (its attempt was counted), and the health write leaves the disabled row alone.
+func TestDisableBetweenAttemptsFinishesAsFailed(t *testing.T) {
+	rcv := newReceiver(t, http.StatusServiceUnavailable)
+	st := newMemStore()
+	st.addHook(t, testEndpoint, "h1", rcv.hookURL("/"))
+	gets := 0
+	st.onGet = func(id string) {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if gets++; gets == 2 {
+			hk := st.hooks[id]
+			reason := store.NotifyHookDisabledOperator
+			hk.Enabled, hk.DisabledReason = false, &reason
+			st.hooks[id] = hk
+		}
+	}
+	met := newCountingMetrics()
+	h := newHarness(t, st, rcv, func(o *Options) { o.Metrics = met })
+
+	h.d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
+	if dl := h.wait(t); dl.Delivered || dl.Attempts != 1 {
+		t.Fatalf("delivery = %+v, want failed after 1 attempt", dl)
+	}
+	h.quiet(t)
+	if n := len(rcv.got()); n != 1 {
+		t.Fatalf("a hook disabled mid-notification was called again: %d requests", n)
+	}
+	if hk := st.hook("h1"); hk.Enabled || hk.ConsecutiveFailures != 0 || hk.LastStatus != nil {
+		t.Fatalf("hook = %+v, want the disabled row untouched", hk)
+	}
+	if notes, attempts, _ := met.snapshot(); notes["todo.ready/failed"] != 1 || attempts["5xx"] != 1 {
+		t.Fatalf("metrics: notifications %v attempts %v", notes, attempts)
+	}
+}
+
 // REQ-11 "Secret never logged", across a rotation: neither secret, no signature and no query.
 func TestSecretsNeverLoggedAcrossRotation(t *testing.T) {
 	var logs bytes.Buffer

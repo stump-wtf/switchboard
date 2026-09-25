@@ -46,6 +46,8 @@ type memStore struct {
 	secrets   map[string]store.NotifyHookSecrets
 	// onGet runs inside GetNotifyHook, before the answer, so a test can delete or disable mid-flight.
 	onGet func(id string)
+	// getErr, when set, fails GetNotifyHook (a store outage on the pre-attempt reload).
+	getErr error
 	// healthErr, when set, fails every health update (a store outage).
 	healthErr error
 }
@@ -106,6 +108,9 @@ func (m *memStore) GetNotifyHook(_ context.Context, id, endpointID string) (stor
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.getErr != nil {
+		return store.NotifyHook{}, m.getErr
+	}
 	h, ok := m.hooks[id]
 	if !ok || h.EndpointID != endpointID {
 		return store.NotifyHook{}, store.ErrNotFound

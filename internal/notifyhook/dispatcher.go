@@ -308,6 +308,15 @@ func (d *Dispatcher) deliver(ctx context.Context, ep store.NotifyEndpoint, h sto
 		return
 	}
 	out := Delivery{HookID: h.ID, EndpointID: h.EndpointID, NotificationID: msgID}
+	// stopped says why the loop ended before a retry it would otherwise have made. Once an attempt
+	// has been sent, stopping early still finishes the notification as failed with the last attempt's
+	// result: its attempts are already counted, so it gets exactly one outcome too, and a real
+	// receiver failure (a 503 on attempt 1, then a store error reloading for attempt 2) still reaches
+	// consecutive_failures (REQ-8, REQ-11, REQ-12). Before any attempt there is nothing to count or
+	// record, so the notification just ends (logged). Shutdown is the exception: it abandons
+	// in-flight notifications outright (REQ-7, nothing is persisted), and a health write on a
+	// cancelled context could not land anyway.
+	var stopped string
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		if attempt > 1 && !sleepCtx(ctx, jitter(d.opts.Backoff[min(attempt-2, len(d.opts.Backoff)-1)])) {
 			return // shutting down: abandon, the todo is still pending
@@ -316,16 +325,20 @@ func (d *Dispatcher) deliver(ctx context.Context, ep store.NotifyEndpoint, h sto
 		// the secrets so a rotation mid-notification signs with the current pair.
 		cur, err := d.opts.Store.GetNotifyHook(ctx, h.ID, h.EndpointID)
 		if errors.Is(err, store.ErrNotFound) || (err == nil && !cur.Enabled) {
-			return
+			// No further attempt; the health write below is a no-op on a deleted or disabled row.
+			stopped = "hook deleted or disabled"
+			break
 		}
 		if err != nil {
 			d.log.Warn("notify hook: reload", "hook", h.ID, "notification", msgID, "err", fmt.Errorf("hook %s reload: %w", h.ID, err))
-			return
+			stopped = "hook reload failed"
+			break
 		}
 		secrets, err := d.opts.Store.NotifyHookSigningSecrets(ctx, h.ID, h.EndpointID)
 		if err != nil {
 			d.log.Warn("notify hook: secrets", "hook", h.ID, "notification", msgID, "err", fmt.Errorf("hook %s secrets: %w", h.ID, err))
-			return
+			stopped = "hook secrets load failed"
+			break
 		}
 		start := time.Now()
 		status, result, aerr := d.attempt(ctx, cur.URL, msgID, body, secrets)
@@ -344,12 +357,18 @@ func (d *Dispatcher) deliver(ctx context.Context, ep store.NotifyEndpoint, h sto
 			return
 		}
 	}
+	if out.Attempts == 0 {
+		return // stopped before anything was sent: no attempt, so no outcome and no health
+	}
 	if out.Delivered {
 		d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "delivered")
 	} else {
 		d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "failed")
-		d.log.Warn("notify hook delivery failed", "hook", h.ID, "notification", msgID, "attempts", out.Attempts,
-			"result", out.Result, "err", fmt.Errorf("hook %s: %w", h.ID, out.Err))
+		attrs := []any{"hook", h.ID, "notification", msgID, "attempts", out.Attempts, "result", out.Result}
+		if stopped != "" {
+			attrs = append(attrs, "stopped", stopped)
+		}
+		d.log.Warn("notify hook delivery failed", append(attrs, "err", fmt.Errorf("hook %s: %w", h.ID, out.Err))...)
 	}
 	d.recordHealth(ctx, out)
 	if d.opts.OnDelivery != nil {
