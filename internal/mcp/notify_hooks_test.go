@@ -28,12 +28,11 @@ import (
 
 // fakeHookStore is an in-memory NotifyHookStore with the real store's ownership and ceiling rules.
 type fakeHookStore struct {
-	mu        sync.Mutex
-	hooks     map[string]store.NotifyHook
-	secrets   map[string]string
-	n         int
-	noCipher  bool
-	createErr error
+	mu       sync.Mutex
+	hooks    map[string]store.NotifyHook
+	secrets  map[string]string
+	n        int
+	noCipher bool
 }
 
 func newFakeHookStore() *fakeHookStore {
