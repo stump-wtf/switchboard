@@ -70,8 +70,9 @@ The first output of your filter decides the match with jq truthiness: anything e
 Rules can also read **`$params`**, an object you save alongside the rules (`set_webhook_rules`'s
 `params`, up to 16 KiB). Keep allowlists there instead of splicing names into every expression:
 `.issue.author as $a | any($params.trusted_humans[]; . == $a)`. Only the webhook owner's verbs
-change params — a delivery cannot. `set_webhook_rules` replaces params with the rules; omitting
-them clears them.
+change params — a delivery cannot. `set_webhook_rules` replaces params when you send them; omitting
+`params` keeps the saved ones, and only an explicit `"params": {}` clears them. Every rules verb
+echoes the params in force.
 
 Rules are sandboxed. `env`/`$ENV`, `input`/`inputs`, `input_filename`, `debug`, `stderr`, `halt`,
 `halt_error`, `now`, `localtime`, `strflocaltime`, and `import`/`include` are refused at save time.
@@ -87,7 +88,7 @@ the webhook (any endpoint of the same human may manage it).
 | Tool | Does |
 |---|---|
 | `list_webhook_rules` | the rules in order, the default, and the queues/endpoints actions may reach (`grant`) |
-| `set_webhook_rules` | replace the whole list (and default) atomically |
+| `set_webhook_rules` | replace the whole list (and default) atomically; `params` only when sent |
 | `add_webhook_rule` | insert one rule at a `position` (default: last) |
 | `update_webhook_rule` | change a rule's name, expression, or action |
 | `move_webhook_rule` | reorder — order is precedence |

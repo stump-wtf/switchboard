@@ -276,10 +276,11 @@ empty list rather than an error:
 {"id": "untrusted", "expr": "(($params.trusted | arrays) // []) as $t | ((.payload.sender.login // \"\") as $who | any($t[]; . == $who) | not)", "action": {"drop": true}}
 ```
 
-**Saving rules without `params` clears them.** `set_webhook_rules` replaces rules, default action
-and parameters together. Omit `params` and your allowlists are gone — combined with the above, a
-trust rule then matches nobody or everybody depending on how it is written. Always send `params`
-with the rules, and read them back with `list_webhook_rules`.
+**Only an explicit `"params": {}` clears parameters.** `set_webhook_rules` replaces rules and the
+default action; it replaces `params` only when the field is present, so omitting it keeps your
+allowlists. Sending `{}`, or a params object that leaves a list out, empties them — combined with
+the above, a trust rule then matches nobody or everybody depending on how it is written. Every
+rules verb echoes the params in force, so read them back from the response or `list_webhook_rules`.
 
 The [routing cookbook](/guides/routing-cookbook) has tested recipes that already follow both rules.
 

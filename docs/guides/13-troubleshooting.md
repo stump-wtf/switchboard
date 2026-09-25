@@ -84,11 +84,11 @@ anything.
 - **The save fails with `forbidden`.** The queue isn't one of the endpoint's webhook queues, or an
   `endpoints` entry isn't a delivery target yet (`add_webhook_route` first). An `exclusive` rule
   also fails to save when no delivery target is scoped to its queue.
-- **Everything drops after a rules change.** `set_webhook_rules` replaces rules, default, and
-  `params` together, and leaving `params` out clears them. An allowlist written to fail closed
-  (as the [cookbook's](/guides/routing-cookbook#only-act-on-trusted-people) are) then trusts no
-  one, and so does a list saved as a string by mistake. `list_webhook_rules` shows the params in
-  force.
+- **Everything drops after a rules change.** Check whether the save sent `"params": {}` (which
+  clears them; leaving `params` out keeps the saved ones) or a params object missing a list. An
+  allowlist written to fail closed (as the
+  [cookbook's](/guides/routing-cookbook#only-act-on-trusted-people) are) then trusts no one, and so
+  does a list saved as a string by mistake. `list_webhook_rules` shows the params in force.
 - **The delivery answers `{"repeat": true}` and no todo appears.** A `once` rule already created a
   todo about the same issue or artifact for that queue. That is the point of `once`. Re-sizing to
   a different queue routes again.

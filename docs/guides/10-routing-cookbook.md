@@ -232,9 +232,9 @@ route it:
 `sender` is whoever caused *this* delivery (the labeler, the commenter); the issue or pull request
 `user` is its author. Checking both stops a stranger from steering work by labeling a trusted
 issue, and stops a trusted labeler from promoting a stranger's issue into work. To trust someone
-new, save the same rules with a longer `trusted` list. `set_webhook_rules` replaces rules, default,
-and params together, and omitting `params` clears them, which (by design) makes this rule drop
-everyone.
+new, save the same rules with a longer `trusted` list. `set_webhook_rules` replaces rules and
+default, and replaces params only when you send them: omitting `params` keeps the saved list, and
+an explicit `"params": {}` clears it, which (by design) makes this rule drop everyone.
 
 This is provenance switchboard can check: the sender and author come from a delivery whose
 signature verified. The issue *text* is a different matter: it is still whatever the author typed.
