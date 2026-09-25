@@ -355,13 +355,25 @@ func (d *Dispatcher) deliver(ctx context.Context, dj delivery) {
 	}
 	var body []byte
 	out := Delivery{HookID: hookID, EndpointID: n.endpointID, NotificationID: msgID}
+	// stopped says why the loop ended before a retry it would otherwise have made. Once an attempt
+	// has been sent, stopping early still finishes the notification as failed with the last attempt's
+	// result: its attempts are already counted, so it gets exactly one outcome too, and a real
+	// receiver failure (a 503 on attempt 1, then a store error reloading for attempt 2) still reaches
+	// consecutive_failures (REQ-8, REQ-11, REQ-12). Before any attempt there is nothing to count or
+	// record, so the notification just ends (logged). Shutdown is the exception: it abandons
+	// in-flight notifications outright (REQ-7, nothing is persisted), and a health write on a
+	// cancelled context could not land anyway.
+	var stopped string
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		if attempt > 1 && !sleepCtx(ctx, jitter(d.opts.Backoff[min(attempt-2, len(d.opts.Backoff)-1)])) {
 			return // shutting down: abandon, the todo is still pending
 		}
-		cur, slug, secrets, ok := d.reload(ctx, n, hookID, msgID)
-		if !ok {
-			return
+		cur, slug, secrets, stop := d.reload(ctx, n, hookID, msgID)
+		if stop != "" {
+			// No further attempt. The failure the last attempt saw is still recorded below; that
+			// write is a no-op on a deleted or disabled row.
+			stopped = stop
+			break
 		}
 		if body == nil {
 			if body, err = buildReadyBody(n, slug, now); err != nil {
@@ -386,12 +398,18 @@ func (d *Dispatcher) deliver(ctx context.Context, dj delivery) {
 			return
 		}
 	}
+	if out.Attempts == 0 {
+		return // stopped before anything was sent: no attempt, so no outcome and no health
+	}
 	if out.Delivered {
 		d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "delivered")
 	} else {
 		d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "failed")
-		d.log.Warn("notify hook delivery failed", "hook", hookID, "notification", msgID, "attempts", out.Attempts,
-			"result", out.Result, "err", fmt.Errorf("hook %s: %w", hookID, out.Err))
+		attrs := []any{"hook", hookID, "notification", msgID, "attempts", out.Attempts, "result", out.Result}
+		if stopped != "" {
+			attrs = append(attrs, "stopped", stopped)
+		}
+		d.log.Warn("notify hook delivery failed", append(attrs, "err", fmt.Errorf("hook %s: %w", hookID, out.Err))...)
 	}
 	d.recordHealth(ctx, out)
 	if d.opts.OnDelivery != nil {
@@ -402,34 +420,38 @@ func (d *Dispatcher) deliver(ctx context.Context, dj delivery) {
 // reload re-reads, before every attempt, everything that decides whether the attempt may run: the
 // endpoint (a revoke stops the next attempt), its scope (a queue removed from it stops the next
 // attempt), the hook (a delete, a disable or a narrowed filter stops the next attempt) and its
-// secrets (a rotation mid-notification signs with the current pair). ok is false when the attempt
-// must not run; a lookup failure other than not-found is logged.
-func (d *Dispatcher) reload(ctx context.Context, n notice, hookID, msgID string) (hook store.NotifyHook, slug string, secrets store.NotifyHookSecrets, ok bool) {
+// secrets (a rotation mid-notification signs with the current pair). stop is empty when the attempt
+// may run, and otherwise names why it must not; a lookup failure other than not-found is logged.
+func (d *Dispatcher) reload(ctx context.Context, n notice, hookID, msgID string) (hook store.NotifyHook, slug string, secrets store.NotifyHookSecrets, stop string) {
 	ep, err := d.opts.Store.NotifyEndpointForDispatch(ctx, n.endpointID)
 	if errors.Is(err, store.ErrNotFound) {
-		return hook, "", secrets, false
+		return hook, "", secrets, "endpoint revoked"
 	}
 	if err != nil {
 		d.log.Warn("notify hook: endpoint reload", "hook", hookID, "notification", msgID, "err", fmt.Errorf("hook %s endpoint reload: %w", hookID, err))
-		return hook, "", secrets, false
+		return hook, "", secrets, "endpoint reload failed"
 	}
 	if !slices.Contains(ep.ScopeQueues, n.queue) {
-		return hook, "", secrets, false
+		return hook, "", secrets, "queue left the endpoint scope"
 	}
 	hook, err = d.opts.Store.GetNotifyHook(ctx, hookID, n.endpointID)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && (!hook.Enabled || !hookWants(hook, n.queue))) {
-		return hook, "", secrets, false
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return hook, "", secrets, "hook deleted"
+	case err != nil:
 		d.log.Warn("notify hook: reload", "hook", hookID, "notification", msgID, "err", fmt.Errorf("hook %s reload: %w", hookID, err))
-		return hook, "", secrets, false
+		return hook, "", secrets, "hook reload failed"
+	case !hook.Enabled:
+		return hook, "", secrets, "hook disabled"
+	case !hookWants(hook, n.queue):
+		return hook, "", secrets, "queue left the hook filter"
 	}
 	secrets, err = d.opts.Store.NotifyHookSigningSecrets(ctx, hookID, n.endpointID)
 	if err != nil {
 		d.log.Warn("notify hook: secrets", "hook", hookID, "notification", msgID, "err", fmt.Errorf("hook %s secrets: %w", hookID, err))
-		return hook, "", secrets, false
+		return hook, "", secrets, "hook secrets load failed"
 	}
-	return hook, ep.Slug, secrets, true
+	return hook, ep.Slug, secrets, ""
 }
 
 // recordHealth writes the delivery's outcome on the hook row. A store failure is logged with the
