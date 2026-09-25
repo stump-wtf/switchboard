@@ -388,6 +388,28 @@ func mirrorSample(t *testing.T, file string, edit func(body map[string]any)) rec
 	return s
 }
 
+var absoluteURL = regexp.MustCompile(`https?://[^\s)>"'` + "`" + `]+`)
+
+// recipeURLs returns every absolute URL in the cookbook section under the ### heading.
+func recipeURLs(t *testing.T, heading string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.FromSlash(cookbookPath))
+	if err != nil {
+		t.Fatalf("read cookbook: %v", err)
+	}
+	_, section, ok := strings.Cut(string(raw), "\n### "+heading+"\n")
+	if !ok {
+		t.Fatalf("no %q section in the cookbook", heading)
+	}
+	if end := strings.Index(section, "\n## "); end >= 0 {
+		section = section[:end]
+	}
+	if end := strings.Index(section, "\n### "); end >= 0 {
+		section = section[:end]
+	}
+	return absoluteURL.FindAllString(section, -1)
+}
+
 // mirrorGrant: the lane worker (epB) is scoped to the lanes, the owner only to its inbox.
 func mirrorGrant() Grant {
 	return Grant{
@@ -431,6 +453,13 @@ func TestPublicMirrorRecipe(t *testing.T) {
 	}
 	if cfg.Default == nil || !cfg.Default.Quarantine {
 		t.Fatalf("default_action = %+v, want {\"quarantine\": true}: everything unanticipated waits for a human", cfg.Default)
+	}
+	// The page is read by outsiders: it links only public hosts (the github.com mirrors), never a
+	// private forge.
+	for _, u := range recipeURLs(t, "Outside intake from the public GitHub mirrors") {
+		if !strings.HasPrefix(u, "https://github.com/") && !strings.HasPrefix(u, "https://api.github.com/") {
+			t.Errorf("recipe links %s; it may link only public github.com hosts", u)
+		}
 	}
 
 	setLabels := func(label string, names ...string) func(map[string]any) {
