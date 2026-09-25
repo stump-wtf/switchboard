@@ -14,11 +14,14 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/stump-wtf/switchboard/internal/routing"
 )
 
 // ErrCeilingExceeded is returned by CreateWebhook when creating another webhook would exceed the
@@ -41,6 +44,10 @@ type Webhook struct {
 	IngestToken string // non-secret URL routing token
 	CreatedAt   time.Time
 	RotatedAt   *time.Time // nil until the first rotate
+	// TrustedActors is the stored trust list (JSON; routing.DecodeTrustedActors reads it). It is
+	// always present on github, gitea and cairn webhooks (the trusted_actors_required CHECK) and nil
+	// elsewhere. Governing: SPEC-0026 REQ-5.
+	TrustedActors []byte
 }
 
 // CreateWebhook inserts a webhook for an endpoint, enforcing the max-count ceiling under a
@@ -54,6 +61,22 @@ type Webhook struct {
 // secret is the minted HMAC signing secret switchboard holds so it can verify signed deliveries; it
 // is stored in plaintext (an empty string persists NULL, for token/open webhooks that need none).
 func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int) (Webhook, error) {
+	return s.CreateWebhookWithTrust(ctx, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret, max, nil)
+}
+
+// CreateWebhookWithTrust is CreateWebhook with the webhook's trust list. A nil trustedActors stores
+// the source's empty list on github, gitea and cairn (which trusts no one: new webhooks fail closed)
+// and NULL on other sources. Governing: SPEC-0026 REQ-5 ("omitting it MUST store an empty list").
+func (s *Store) CreateWebhookWithTrust(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int, trustedActors []byte) (Webhook, error) {
+	if trustedActors == nil {
+		if empty, ok := routing.DefaultTrustedActors(sourceType); ok {
+			raw, err := json.Marshal(empty)
+			if err != nil {
+				return Webhook{}, fmt.Errorf("store: create webhook trust list: %w", err)
+			}
+			trustedActors = raw
+		}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Webhook{}, fmt.Errorf("store: create webhook begin: %w", err)
@@ -89,11 +112,11 @@ func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targe
 	// authenticated by its unguessable ingest URL and its secret column stays NULL.
 	var w Webhook
 	err = tx.QueryRow(ctx, `
-		INSERT INTO endpoint_webhooks (endpoint_id, source_type, target_queue, trust_mode, ingest_token, signing_secret)
-		VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'signed' THEN NULLIF($6, '') ELSE NULL END)
-		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at`,
-		endpointID, sourceType, targetQueue, trustMode, ingestToken, storedSecret,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt)
+		INSERT INTO endpoint_webhooks (endpoint_id, source_type, target_queue, trust_mode, ingest_token, signing_secret, trusted_actors)
+		VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'signed' THEN NULLIF($6, '') ELSE NULL END, $7::jsonb)
+		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors`,
+		endpointID, sourceType, targetQueue, trustMode, ingestToken, storedSecret, trustedActors,
+	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
 	if err != nil {
 		return Webhook{}, fmt.Errorf("store: create webhook insert: %w", err)
 	}
@@ -122,7 +145,7 @@ func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targe
 // Ceiling" (list returns metadata plus the ceiling, no secret values).
 func (s *Store) ListWebhooks(ctx context.Context, endpointID string) ([]Webhook, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at
+		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors
 		FROM endpoint_webhooks WHERE endpoint_id = $1 ORDER BY created_at DESC`, endpointID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list webhooks: %w", err)
@@ -131,7 +154,7 @@ func (s *Store) ListWebhooks(ctx context.Context, endpointID string) ([]Webhook,
 	var out []Webhook
 	for rows.Next() {
 		var w Webhook
-		if err := rows.Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors); err != nil {
 			return nil, fmt.Errorf("store: list webhooks scan: %w", err)
 		}
 		out = append(out, w)
@@ -148,9 +171,9 @@ func (s *Store) ListWebhooks(ctx context.Context, endpointID string) ([]Webhook,
 func (s *Store) GetWebhookByToken(ctx context.Context, ingestToken string) (Webhook, error) {
 	var w Webhook
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at
+		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors
 		FROM endpoint_webhooks WHERE ingest_token = $1`, ingestToken,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt)
+	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, ErrNotFound
 	}
@@ -170,9 +193,9 @@ func (s *Store) GetWebhookSecretByToken(ctx context.Context, ingestToken string)
 	var w Webhook
 	var secret *string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, signing_secret
+		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors, signing_secret
 		FROM endpoint_webhooks WHERE ingest_token = $1`, ingestToken,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &secret)
+	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors, &secret)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, "", ErrNotFound
 	}
@@ -259,9 +282,9 @@ func (s *Store) RotateWebhookSecret(ctx context.Context, id, endpointID, newSecr
 		SET signing_secret = CASE WHEN trust_mode = 'signed' THEN NULLIF($3, '') ELSE NULL END,
 			ingest_token = $4, rotated_at = now()
 		WHERE id = $1 AND endpoint_id = $2
-		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at`,
+		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors`,
 		id, endpointID, storedSecret, newIngestToken,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt)
+	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, ErrNotFound
 	}
@@ -271,6 +294,51 @@ func (s *Store) RotateWebhookSecret(ctx context.Context, id, endpointID, newSecr
 	// Rotate mints a secret for every webhook but the CASE above stores one only for a signed
 	// webhook, so the trust mode comes from the row we just wrote, not from the caller.
 	s.warnPlaintextSigningSecret(w.TrustMode, newSecret, w.ID, w.EndpointID)
+	return w, nil
+}
+
+// SetWebhookTrustedActors replaces the trust list of a webhook the given endpoint owns. The
+// endpoint_id guard is the ownership check: another endpoint's, an unknown, or a malformed id is
+// ErrNotFound. The caller has validated trustedActors against the webhook's source
+// (routing.ParseTrustedActors), which is why it reads the source first with WebhookForEndpoint.
+// Governing: SPEC-0026 REQ-5 (set_trusted_actors, clear_trusted_actors; foreign ids are not_found).
+func (s *Store) SetWebhookTrustedActors(ctx context.Context, id, endpointID string, trustedActors []byte) (Webhook, error) {
+	if !isUUID(id) || !isUUID(endpointID) || len(trustedActors) == 0 {
+		return Webhook{}, ErrNotFound
+	}
+	var w Webhook
+	err := s.pool.QueryRow(ctx, `
+		UPDATE endpoint_webhooks SET trusted_actors = $3::jsonb
+		WHERE id = $1 AND endpoint_id = $2
+		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors`,
+		id, endpointID, trustedActors,
+	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Webhook{}, ErrNotFound
+	}
+	if err != nil {
+		return Webhook{}, fmt.Errorf("store: set webhook trusted actors: %w", err)
+	}
+	return w, nil
+}
+
+// WebhookForEndpoint returns one webhook the given endpoint owns, or ErrNotFound for another
+// endpoint's, an unknown, or a malformed id.
+func (s *Store) WebhookForEndpoint(ctx context.Context, id, endpointID string) (Webhook, error) {
+	if !isUUID(id) || !isUUID(endpointID) {
+		return Webhook{}, ErrNotFound
+	}
+	var w Webhook
+	err := s.pool.QueryRow(ctx, `
+		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors
+		FROM endpoint_webhooks WHERE id = $1 AND endpoint_id = $2`, id, endpointID,
+	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Webhook{}, ErrNotFound
+	}
+	if err != nil {
+		return Webhook{}, fmt.Errorf("store: webhook for endpoint: %w", err)
+	}
 	return w, nil
 }
 
