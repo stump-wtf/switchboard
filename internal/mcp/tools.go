@@ -11,6 +11,9 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,36 +94,51 @@ type listTodosOut struct {
 	Todos []todoOut `json:"todos" jsonschema:"todo rows in the endpoint's granted queues, newest first"`
 }
 
+// The lease-token fence fields (SPEC-0034 REQ-6): claim and claim_next take require_fence and
+// return lease_token once; heartbeat, complete and fail take lease_token back.
 type claimIn struct {
 	ID              string `json:"id" jsonschema:"the todo id to claim"`
 	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default 300)"`
+	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete and fail on this attempt must then present it"`
+}
+
+// claimOut is claim's response: the todo row with every todoOut field at the top level, plus the
+// lease token of a fenced claim.
+type claimOut struct {
+	todoOut
+	LeaseToken string `json:"lease_token,omitempty" jsonschema:"present only when require_fence was true: the opaque token heartbeat, complete and fail on this attempt must present; returned only here, never again"`
 }
 
 type completeIn struct {
-	ID     string `json:"id" jsonschema:"the claimed todo id to complete"`
-	Result any    `json:"result,omitempty" jsonschema:"optional JSON result recorded on the todo"`
+	ID         string `json:"id" jsonschema:"the claimed todo id to complete"`
+	Result     any    `json:"result,omitempty" jsonschema:"optional JSON result recorded on the todo"`
+	LeaseToken string `json:"lease_token,omitempty" jsonschema:"the lease_token from a claim made with require_fence; required for a fenced attempt, omitted for an unfenced one (a mismatch is conflict)"`
 }
 
 type failIn struct {
-	ID     string `json:"id" jsonschema:"the claimed todo id to fail (retries until attempts are exhausted, then dead-letters)"`
-	Result any    `json:"result,omitempty" jsonschema:"optional JSON failure detail recorded on the todo"`
+	ID         string `json:"id" jsonschema:"the claimed todo id to fail (retries until attempts are exhausted, then dead-letters)"`
+	Result     any    `json:"result,omitempty" jsonschema:"optional JSON failure detail recorded on the todo"`
+	LeaseToken string `json:"lease_token,omitempty" jsonschema:"the lease_token from a claim made with require_fence; required for a fenced attempt, omitted for an unfenced one (a mismatch is conflict)"`
 }
 
 type claimNextIn struct {
 	Queue           string `json:"queue,omitempty" jsonschema:"restrict the scan to one granted queue (default: all granted queues)"`
 	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default 300)"`
+	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete and fail on this attempt must then present it"`
 }
 
 // claimNextOut carries the claimed todo, or Empty when the queues held no available work. Both
 // fields are always present in the schema so a caller can branch without inspecting for absence.
 type claimNextOut struct {
-	Todo  *todoOut `json:"todo,omitempty" jsonschema:"the claimed todo; absent when empty is true"`
-	Empty bool     `json:"empty" jsonschema:"true when no work was available - the normal idle answer, not an error"`
+	Todo       *todoOut `json:"todo,omitempty" jsonschema:"the claimed todo; absent when empty is true"`
+	Empty      bool     `json:"empty" jsonschema:"true when no work was available - the normal idle answer, not an error"`
+	LeaseToken string   `json:"lease_token,omitempty" jsonschema:"present only when require_fence was true: the opaque token heartbeat, complete and fail on this attempt must present; returned only here, never again"`
 }
 
 type heartbeatIn struct {
 	ID              string `json:"id" jsonschema:"the claimed todo id whose lease to extend"`
 	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"new lease TTL in seconds from now (default 300)"`
+	LeaseToken      string `json:"lease_token,omitempty" jsonschema:"the lease_token from a claim made with require_fence; required for a fenced attempt, omitted for an unfenced one (a mismatch is conflict)"`
 }
 
 // registerTools installs the endpoint's allowlisted SPEC-0006 verbs on the per-session server.
@@ -214,16 +232,21 @@ func (h *Handler) listTodosTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[listTo
 	}
 }
 
-func (h *Handler) claimTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimIn, todoOut] {
-	return func(ctx context.Context, _ *sdk.CallToolRequest, in claimIn) (*sdk.CallToolResult, todoOut, error) {
+func (h *Handler) claimTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimIn, claimOut] {
+	return func(ctx context.Context, _ *sdk.CallToolRequest, in claimIn) (*sdk.CallToolResult, claimOut, error) {
 		if err := h.guardQueue(ctx, ep, "claim", in.ID); err != nil {
-			return nil, todoOut{}, err
+			return nil, claimOut{}, err
 		}
-		t, err := h.store.ClaimTodo(ctx, ep.ID, in.ID, owner(ep), leaseTTL(in.LeaseTTLSeconds))
+		token, hash, err := h.fenceFor(ep, "claim", in.RequireFence)
 		if err != nil {
-			return nil, todoOut{}, h.mapStoreErr(ep, "claim", err)
+			return nil, claimOut{}, err
 		}
-		return nil, toOut(t), nil
+		t, _, err := h.store.ClaimTodoWith(ctx, ep.ID, in.ID, owner(ep),
+			store.ClaimOpts{TTL: leaseTTL(in.LeaseTTLSeconds), TokenHash: hash})
+		if err != nil {
+			return nil, claimOut{}, h.mapStoreErr(ep, "claim", err)
+		}
+		return nil, claimOut{todoOut: toOut(t), LeaseToken: token}, nil
 	}
 }
 
@@ -244,7 +267,12 @@ func (h *Handler) claimNextTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimN
 			}
 			queues = []string{in.Queue}
 		}
-		t, err := h.store.ClaimNext(ctx, ep.ID, queues, owner(ep), leaseTTL(in.LeaseTTLSeconds))
+		token, hash, err := h.fenceFor(ep, "claim_next", in.RequireFence)
+		if err != nil {
+			return nil, claimNextOut{}, err
+		}
+		t, _, err := h.store.ClaimNextWith(ctx, ep.ID, queues, owner(ep),
+			store.ClaimOpts{TTL: leaseTTL(in.LeaseTTLSeconds), TokenHash: hash})
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, claimNextOut{Empty: true}, nil
 		}
@@ -252,7 +280,7 @@ func (h *Handler) claimNextTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimN
 			return nil, claimNextOut{}, h.mapStoreErr(ep, "claim_next", err)
 		}
 		out := toOut(t)
-		return nil, claimNextOut{Todo: &out}, nil
+		return nil, claimNextOut{Todo: &out, LeaseToken: token}, nil
 	}
 }
 
@@ -261,7 +289,8 @@ func (h *Handler) completeTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[complet
 		if err := h.guardQueue(ctx, ep, "complete", in.ID); err != nil {
 			return nil, todoOut{}, err
 		}
-		t, err := h.store.CompleteTodo(ctx, ep.ID, in.ID, owner(ep), rawJSON(in.Result))
+		t, err := h.store.CompleteTodoWith(ctx, ep.ID, in.ID, owner(ep),
+			store.Report{Result: rawJSON(in.Result), TokenHash: leaseTokenHash(in.LeaseToken)})
 		if err != nil {
 			return nil, todoOut{}, h.mapStoreErr(ep, "complete", err)
 		}
@@ -274,7 +303,8 @@ func (h *Handler) failTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[failIn, tod
 		if err := h.guardQueue(ctx, ep, "fail", in.ID); err != nil {
 			return nil, todoOut{}, err
 		}
-		t, err := h.store.FailTodo(ctx, ep.ID, in.ID, owner(ep), rawJSON(in.Result))
+		t, err := h.store.FailTodoWith(ctx, ep.ID, in.ID, owner(ep),
+			store.Report{Result: rawJSON(in.Result), TokenHash: leaseTokenHash(in.LeaseToken)})
 		if err != nil {
 			return nil, todoOut{}, h.mapStoreErr(ep, "fail", err)
 		}
@@ -287,7 +317,8 @@ func (h *Handler) heartbeatTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[heartb
 		if err := h.guardQueue(ctx, ep, "heartbeat", in.ID); err != nil {
 			return nil, todoOut{}, err
 		}
-		t, err := h.store.HeartbeatTodo(ctx, ep.ID, in.ID, owner(ep), leaseTTL(in.LeaseTTLSeconds))
+		t, err := h.store.HeartbeatTodoWith(ctx, ep.ID, in.ID, owner(ep), leaseTTL(in.LeaseTTLSeconds),
+			leaseTokenHash(in.LeaseToken))
 		if err != nil {
 			return nil, todoOut{}, h.mapStoreErr(ep, "heartbeat", err)
 		}
@@ -366,6 +397,38 @@ func decodeTrace(raw []byte) any {
 		return nil
 	}
 	return v
+}
+
+// leaseTokenBytes is the lease token's entropy: 128 random bits (SPEC-0034 REQ-6).
+const leaseTokenBytes = 16
+
+// fenceFor mints the lease token for a claim that asked for a fence: 16 bytes from crypto/rand,
+// base64url without padding, and the SHA-256 the store keeps in its place. Without require_fence it
+// returns "" and a nil hash, which is a claim exactly as before. The token goes only into this
+// claim's response; nothing logs it, and the failure path logs only that minting failed.
+// Governing: SPEC-0034 REQ-6 "Lease Token Fence"; design.md "The fence is a hash on the open attempt".
+func (h *Handler) fenceFor(ep store.AuthEndpoint, tool string, require bool) (string, []byte, error) {
+	if !require {
+		return "", nil, nil
+	}
+	b := make([]byte, leaseTokenBytes)
+	if _, err := rand.Read(b); err != nil {
+		h.log.Error("mcp lease token mint failed", "slug", ep.Slug, "tool", tool,
+			"err", fmt.Errorf("tools/call %s: %w", tool, err))
+		return "", nil, &toolError{codeInternal, "internal error"}
+	}
+	token := base64.RawURLEncoding.EncodeToString(b)
+	return token, leaseTokenHash(token), nil
+}
+
+// leaseTokenHash is the SHA-256 of a presented lease token, or nil when none was presented, which
+// the store reads as "no token" (SPEC-0034 REQ-6).
+func leaseTokenHash(token string) []byte {
+	if token == "" {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(token))
+	return sum[:]
 }
 
 // owner is the acting identity recorded on claimed/completed todos (SPEC-0006: agent:<agent_id>).
