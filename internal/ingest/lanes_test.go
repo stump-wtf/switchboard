@@ -61,7 +61,7 @@ func newLanesWorld(t *testing.T) *lanesWorld {
 	for _, spec := range []struct{ source, token, secret string }{
 		{"gitea", "lanes-gitea", giteaLanesSecret}, {"cairn", "lanes-cairn", cairnSecret},
 	} {
-		wh, err := st.CreateWebhook(ctx, router.ID, spec.source, "triage", "signed", spec.token, spec.secret, 5)
+		wh, err := st.CreateWebhookWithTrust(ctx, router.ID, spec.source, "triage", "signed", spec.token, spec.secret, 5, allowAllFor(spec.source))
 		if err != nil {
 			t.Fatalf("create %s webhook: %v", spec.source, err)
 		}

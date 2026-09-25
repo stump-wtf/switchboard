@@ -479,6 +479,7 @@ type Decision struct {
 	Once        bool       // the action asked for at-most-once per (subject, queue)
 	WorkOrder   bool       // the action asked for a work order on each todo
 	Faulted     bool       // evaluation stopped at a rule fault; nothing is routed (SPEC-0026 REQ-1)
+	Untrusted   bool       // the trust gate held it before any rule ran; also Faulted until quarantine (REQ-5)
 	Unavailable bool       // the evaluator could not run at all for this delivery (SPEC-0026 REQ-2)
 	Fault       *RuleFault // the fault that stopped evaluation, when Faulted or Unavailable
 	Trace       Trace
@@ -511,6 +512,9 @@ type Trace struct {
 	// OnceKey is the (subject, queue) key a Once action claimed, set by the receiver; "once":"repeat"
 	// is merged into the stored event trace when the key had already been claimed.
 	OnceKey string `json:"once_key,omitempty"`
+	// Actor is the trust gate's verdict, recorded when the gate held the delivery (stage
+	// trust_gate). Governing: SPEC-0026 REQ-5.
+	Actor *ActorTrust `json:"actor,omitempty"`
 }
 
 // RuleFault records a rule that could not be evaluated. Evaluation stops at the first one, so a

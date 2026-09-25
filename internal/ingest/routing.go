@@ -42,8 +42,11 @@ func (i *Ingest) SetRouter(r routing.Router) { i.router = r }
 // fan-out set (ResolveWebhookTargets); the grant — including each target's scope queues, which
 // exclusive delivery selects on — is built from switchboard state only. It also returns the envelope
 // input the decision was made on, for the work order.
+//
+// actor is the trust gate's verdict (nil for a source with no gate). It rides into the envelope as
+// .actor and onto work orders as author_trusted (SPEC-0026 REQ-10).
 func (i *Ingest) routeDelivery(ctx context.Context, wh store.Webhook, targets []string, kind string,
-	verified bool, headers []byte, contentType string, body []byte) (routing.Decision, routing.EnvelopeInput, error) {
+	verified bool, headers []byte, contentType string, body []byte, actor *routing.ActorTrust) (routing.Decision, routing.EnvelopeInput, error) {
 	rt, err := i.store.WebhookRoutingByID(ctx, wh.ID)
 	if err != nil {
 		return routing.Decision{}, routing.EnvelopeInput{}, err
@@ -60,7 +63,7 @@ func (i *Ingest) routeDelivery(ctx context.Context, wh store.Webhook, targets []
 	}
 	in := routing.EnvelopeInput{
 		Source: wh.SourceType, Kind: kind, WebhookID: wh.ID, TrustMode: wh.TrustMode,
-		Verified: verified, ContentType: contentType, Headers: hdr, Body: body,
+		Verified: verified, ContentType: contentType, Headers: hdr, Body: body, Actor: actor,
 	}
 	g := routing.Grant{TargetQueue: wh.TargetQueue, Queues: rt.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
 	return router.Route(ctx, rt.Config, g, in), in, nil

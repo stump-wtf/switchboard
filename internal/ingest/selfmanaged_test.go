@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -73,11 +74,22 @@ func TestSelfManagedRejectsOversizedBody(t *testing.T) {
 func seedWebhook(t *testing.T, st *store.Store, ctx context.Context, sourceType, trustMode, queue, token, secret string) (store.Human, store.Endpoint, store.Webhook) {
 	t.Helper()
 	h, ep := seedEndpoint(t, st, ctx, "hook-"+token, []string{queue})
-	wh, err := st.CreateWebhook(ctx, ep.ID, sourceType, queue, trustMode, token, secret, 3)
+	wh, err := st.CreateWebhookWithTrust(ctx, ep.ID, sourceType, queue, trustMode, token, secret, 3, allowAllFor(sourceType))
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
 	return h, ep, wh
+}
+
+// allowAllFor is the trust list the receiver tests seed: {"allow_all": true} on a source with a
+// trust gate, which is exactly what migration 0023 gave every webhook that existed before the gate.
+// These tests exercise verification, dedup and routing, not trust, so they run past the gate. The
+// gate itself is tested in trust_gate_test.go, starting from the fail-closed empty list.
+func allowAllFor(sourceType string) []byte {
+	if routing.HasActorProjection(sourceType) {
+		return []byte(`{"allow_all":true}`)
+	}
+	return nil
 }
 
 // The signed happy path: switchboard holds the minted secret, so a delivery signed with that secret

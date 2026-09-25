@@ -55,9 +55,37 @@ import (
 // Intake stages named on every receiver error log, with the webhook id, so one grep follows a
 // delivery through the gate. Governing: SPEC-0026 REQ-13 "Error Handling".
 const (
-	stageVerify = "verify"
-	stageRoute  = "route"
+	stageVerify    = "verify"
+	stageTrustGate = "trust gate"
+	stageRoute     = "route"
 )
+
+// trustGate evaluates the webhook's trusted_actors for a delivery. It returns nil for a source with
+// no actor projection, which has no gate. A missing or unreadable stored list is reported as an
+// error for the log, and evaluated as the empty list, so the delivery is untrusted: the gate never
+// fails open. An unverified body is untrusted whatever it claims.
+// Governing: ADR-0031, SPEC-0026 REQ-5 "Evaluation", REQ-13.
+func (i *Ingest) trustGate(wh store.Webhook, verified bool, body []byte) (*routing.ActorTrust, error) {
+	if !routing.HasActorProjection(wh.SourceType) {
+		return nil, nil
+	}
+	ta, ok := routing.DecodeTrustedActors(wh.SourceType, wh.TrustedActors)
+	var err error
+	if !ok {
+		err = errors.New("stored trusted_actors is missing or unreadable; trusting no one")
+	}
+	if !verified {
+		ta, _ = routing.DefaultTrustedActors(wh.SourceType)
+	}
+	return routing.EvaluateTrust(wh.SourceType, ta, body), err
+}
+
+func derefOr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
 
 // SelfManaged is the receiver for agent self-managed webhooks: POST /webhooks/w/{token}.
 func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
@@ -193,12 +221,36 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// written with the event and every todo so each one can explain why it exists.
 	kind := routing.EventKind(wh.SourceType, r.Header.Get, body)
 	headers := sanitizeHeaders(r.Header)
-	decision, envIn, err := i.routeDelivery(r.Context(), wh, targets, kind, verified, headers, r.Header.Get("Content-Type"), body)
+
+	// Trust gate (ADR-0031, SPEC-0026 REQ-5): after verification and target resolution, before any
+	// rule. It runs on every github, gitea and cairn webhook, from the verified body only. A missing
+	// or unreadable trust list trusts no one, and so does an unverified body, whose actor anyone
+	// could write. An untrusted delivery never reaches the rules. Until the quarantine queue lands
+	// (#386) it takes the fail-closed faulted path: recorded, and routed nowhere.
+	actor, err := i.trustGate(wh, verified, body)
 	if err != nil {
-		i.log.Error("self-managed webhook routing", "webhook", wh.ID, "stage", stageRoute,
-			"err", fmt.Errorf("webhook %s: %s: %w", wh.ID, stageRoute, err))
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
+		i.log.Error("self-managed webhook trust gate", "webhook", wh.ID, "stage", stageTrustGate,
+			"err", fmt.Errorf("webhook %s: %s: %w", wh.ID, stageTrustGate, err))
+	}
+	var (
+		decision routing.Decision
+		envIn    routing.EnvelopeInput
+	)
+	if actor != nil && !actor.IsTrusted() {
+		decision = routing.UntrustedDecision(actor)
+		envIn = routing.EnvelopeInput{Source: wh.SourceType, Kind: kind, WebhookID: wh.ID, TrustMode: wh.TrustMode,
+			Verified: verified, Body: body, Actor: actor}
+		_ = json.Unmarshal(headers, &envIn.Headers)
+		i.log.Warn("delivery from an untrusted actor; recorded and not routed",
+			"webhook", wh.ID, "stage", stageTrustGate, "sender", derefOr(actor.Sender), "author", derefOr(actor.Author))
+	} else {
+		decision, envIn, err = i.routeDelivery(r.Context(), wh, targets, kind, verified, headers, r.Header.Get("Content-Type"), body, actor)
+		if err != nil {
+			i.log.Error("self-managed webhook routing", "webhook", wh.ID, "stage", stageRoute,
+				"err", fmt.Errorf("webhook %s: %s: %w", wh.ID, stageRoute, err))
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	// Routing fails closed (ADR-0031, SPEC-0026). Two outcomes route nowhere:
 	//
@@ -218,7 +270,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "routing unavailable")
 		return
 	}
-	if decision.Faulted {
+	if decision.Faulted && decision.Fault != nil {
 		f := decision.Fault
 		i.log.Warn("routing rule faulted; delivery recorded and not routed",
 			"webhook", wh.ID, "rule_id", f.RuleID, "rule_index", f.RuleIndex,
@@ -286,9 +338,14 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// A faulted delivery made no routing decision, so it is counted as a routing fault instead. Its
 	// verdict is accepted: it verified and persisted, and SPEC-0023's "dropped" means a drop action.
 	// Governing: SPEC-0026 REQ-1.
-	if decision.Faulted {
+	switch {
+	case decision.Untrusted:
+		// Held by the trust gate: no rule ran and no rule faulted, so it is neither a routing
+		// decision nor a routing fault. SPEC-0026 REQ-11 counts it as a quarantine item once #386
+		// lands.
+	case decision.Faulted:
 		m.RoutingFault(decision.Fault.Cause)
-	} else {
+	default:
 		countRoutingDecision(m, wh.ID, decision)
 	}
 	count.verdict = verdictAccepted
