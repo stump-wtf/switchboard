@@ -99,3 +99,20 @@ func TestNotifyHookMax(t *testing.T) {
 		}
 	}
 }
+
+// TestNotifyHookAllowCIDRs: SPEC-0024 REQ-3's allowlist is empty by default, accepts a CIDR list,
+// and a malformed entry fails startup naming it.
+func TestNotifyHookAllowCIDRs(t *testing.T) {
+	t.Setenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS", "")
+	if cfg := FromEnv(); cfg.NotifyHookAllowCIDRs != "" || cfg.Validate() != nil {
+		t.Fatalf("default allowlist = %q, %v", cfg.NotifyHookAllowCIDRs, cfg.Validate())
+	}
+	t.Setenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS", " 127.0.0.1/32, 192.168.1.0/24 ")
+	if err := FromEnv().Validate(); err != nil {
+		t.Fatalf("valid allowlist: %v", err)
+	}
+	t.Setenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS", "10.0.0.0/8, lan")
+	if err := FromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "lan") {
+		t.Fatalf("malformed allowlist: %v", err)
+	}
+}
