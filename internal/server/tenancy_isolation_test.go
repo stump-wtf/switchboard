@@ -405,6 +405,9 @@ func tenancyCovered() map[string]bool {
 		// Endpoint direct-id — deep (revoke/delete scoped; pinned so they cannot regress).
 		"GET /endpoints/{id}/revoke",
 		"POST /endpoints/{id}/revoke", "POST /endpoints/{id}/delete",
+		// Quarantine view + actions — deep in quarantine_view_test.go (TestQuarantineViewIsOwnerScoped).
+		"GET /quarantine", "POST /quarantine/{id}/release", "POST /quarantine/{id}/discard",
+		"POST /quarantine/{id}/trust",
 	} {
 		m[k] = true
 	}

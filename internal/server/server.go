@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -240,6 +241,12 @@ type routerDeps struct {
 // Governing: SPEC-0012 REQ "Screen Set and Routes", REQ "Authentication Boundary";
 // SPEC-0013 REQ "Information Architecture and Navigation".
 func newRouter(d routerDeps) chi.Router {
+	// The Quarantine view's actions release and discard through the same intake service that holds
+	// deliveries, so reroutes use the receiver's own router and grant (SPEC-0026 REQ-7, REQ-9).
+	// Without one (route-table tests build the router bare) the actions answer "unavailable".
+	if d.webh != nil && d.ing != nil {
+		d.webh.SetQuarantineService(d.ing)
+	}
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	// Governing: SPEC-0001/0005/0006/0007/0008/0012 REQ "Security headers on all responses". Applied
@@ -497,6 +504,24 @@ func newRouter(d routerDeps) chi.Router {
 		pr.Post("/personas/{id}", d.webh.UpdatePersona)
 		pr.Post("/personas/{id}/delete", d.webh.DeletePersona)
 		pr.Post("/logout", d.authr.Logout)
+		// Quarantine view (SPEC-0026 REQ-9): the owner's held deliveries. The GET lives here; the
+		// action POSTs are in their own group below with a tighter body cap.
+		pr.Get("/quarantine", d.webh.Quarantine)
+	})
+
+	// Quarantine actions (SPEC-0026 REQ-9, REQ-7): release, discard, and trust-this-actor-and-release.
+	// The same session, rate-limit and CSRF gates as the operator group, but the form body is capped
+	// at 16 KiB and parsed up front, BEFORE RequireCSRF reads the token: an oversized form is refused
+	// with 413, never half-parsed into an empty form that would release without the fields it sent.
+	// Governing: SPEC-0026 "CSRF Protection", "Request Body Size Limits", #387 security checklist.
+	r.Group(func(qr chi.Router) {
+		qr.Use(formLimit(16 << 10))
+		qr.Use(d.authr.RequireHuman)
+		qr.Use(humanRL.postMiddleware)
+		qr.Use(d.authr.RequireCSRF)
+		qr.Post("/quarantine/{id}/release", d.webh.ReleaseQuarantined)
+		qr.Post("/quarantine/{id}/discard", d.webh.DiscardQuarantined)
+		qr.Post("/quarantine/{id}/trust", d.webh.TrustQuarantinedActor)
 	})
 
 	return r
@@ -546,6 +571,33 @@ func maxBytes(n int64) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Body != nil {
 				r.Body = http.MaxBytesReader(w, r.Body, n)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// formLimit caps a form POST's body at n bytes and parses it before anything downstream reads it,
+// answering 413 when the body is over the cap and 400 when it is malformed. Parsing here, not in the
+// handler, matters: net/http records a failed parse as an EMPTY form and does not report the error
+// again, so a later FormValue (RequireCSRF's) would silently see nothing. Other methods pass
+// through untouched.
+func formLimit(n int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost || r.Body == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, n)
+			if err := r.ParseForm(); err != nil {
+				var tooLarge *http.MaxBytesError
+				if errors.As(err, &tooLarge) {
+					http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+					return
+				}
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
 			}
 			next.ServeHTTP(w, r)
 		})

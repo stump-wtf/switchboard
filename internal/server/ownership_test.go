@@ -42,6 +42,14 @@ const sessionCookieName = "sb_session"
 // carving out a separate database keeps these end-to-end tests (and theirs) deterministic.
 func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 	t.Helper()
+	r, st, ctx, _ := newDBRouterWithIngest(t)
+	return r, st, ctx
+}
+
+// newDBRouterWithIngest is newDBRouter that also hands back the router's intake service, so a test
+// can swap its rule router (the Quarantine view's release reroutes through it).
+func newDBRouterWithIngest(t *testing.T) (chi.Router, *store.Store, context.Context, *ingest.Ingest) {
+	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set SWITCHBOARD_TEST_DATABASE_URL to run ownership-scoping tests")
@@ -92,6 +100,7 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 	// enables it exactly as Run does — the Personas view and its routes are live for these tests.
 	webh.SetPersonasEnabled(true)
 	hub := ingest.NewHub()
+	ing := ingest.New(st, hub, log, ingest.Config{})
 	r := newRouter(routerDeps{
 		cfg:   cfg,
 		st:    st,
@@ -100,11 +109,11 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 		// The AS surface (token endpoint included) is part of the real route table: the operator
 		// grant tests exchange codes and rotate refresh tokens through it.
 		oauth: oauthsrv.New(st, cfg.BaseURL, log),
-		ing:   ingest.New(st, hub, log, ingest.Config{}),
+		ing:   ing,
 		ping:  pool.Ping,
 		log:   log,
 	})
-	return r, st, ctx
+	return r, st, ctx, ing
 }
 
 // mintSession creates a human plus a live server-side session and returns the plaintext cookie

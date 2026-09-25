@@ -118,6 +118,12 @@ var sessionRoutes = map[string]bool{
 	"POST /todos/{id}/retry":    true, // operator retry a dead-lettered todo (SPEC-0013)
 	"POST /todos/{id}/extend":   true, // operator extend lease / heartbeat (SPEC-0013)
 	"POST /todos/{id}/release":  true, // operator release lease back to pending (SPEC-0013)
+	// Quarantine view + actions (SPEC-0026 REQ-9): the owner's held deliveries; release, discard and
+	// trust-this-actor-and-release are CSRF-gated POSTs with a 16 KiB form cap.
+	"GET /quarantine":               true,
+	"POST /quarantine/{id}/release": true,
+	"POST /quarantine/{id}/discard": true,
+	"POST /quarantine/{id}/trust":   true,
 	// OAuth consent (SPEC-0016 "Authorization Code Flow With Consent"): the authorize endpoint IS
 	// the flow's human gate, so both the screen and the decision POST are session-gated — an
 	// anonymous authorize request must land on /login (scenario "Human absent").
