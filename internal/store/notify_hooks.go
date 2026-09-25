@@ -334,3 +334,46 @@ func (s *Store) NotifyEndpointForDispatch(ctx context.Context, endpointID string
 	}
 	return e, nil
 }
+
+// RecordNotifyHookDelivery records one finished delivery on the hook row in a single statement, and
+// reports whether THIS statement disabled the hook (SPEC-0024 REQ-8, REQ-13).
+//
+// A delivered notification resets consecutive_failures to 0. A failed one increments it and, in the
+// same UPDATE, disables the hook once it reaches disableAfter, so two instances failing the same
+// hook at once serialize on the row and cannot both miss the threshold. A hook that is already
+// disabled, or was deleted, is left alone (no row; false, nil). lastError is a short classified
+// reason (timeout, tls, rejected_ssrf, redirect, ...), never response text; status is nil for a
+// network-level failure. Not endpoint-scoped: only the dispatcher calls it, with a hook id it read
+// under the hook's endpoint.
+func (s *Store) RecordNotifyHookDelivery(ctx context.Context, id string, delivered bool, status *int, lastError string, disableAfter int) (bool, error) {
+	if !isUUID(id) {
+		return false, nil
+	}
+	if delivered {
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE notify_hooks
+			   SET consecutive_failures = 0, last_attempt_at = now(), last_status = $2, last_error = NULL
+			 WHERE id = $1`, id, status); err != nil {
+			return false, fmt.Errorf("store: record notify hook %s delivery: %w", id, err)
+		}
+		return false, nil
+	}
+	var enabled bool
+	err := s.pool.QueryRow(ctx, `
+		UPDATE notify_hooks
+		   SET consecutive_failures = consecutive_failures + 1,
+		       last_attempt_at = now(), last_status = $2, last_error = NULLIF($3, ''),
+		       enabled = CASE WHEN consecutive_failures + 1 >= $4 THEN false ELSE enabled END,
+		       disabled_reason = CASE WHEN consecutive_failures + 1 >= $4
+		                              THEN 'consecutive_failures' ELSE disabled_reason END,
+		       disabled_at = CASE WHEN consecutive_failures + 1 >= $4 THEN now() ELSE disabled_at END
+		 WHERE id = $1 AND enabled
+		RETURNING enabled`, id, status, lastError, disableAfter).Scan(&enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: record notify hook %s failure: %w", id, err)
+	}
+	return !enabled, nil
+}
