@@ -159,8 +159,13 @@ func TestNotifyHookCeiling(t *testing.T) {
 			t.Fatalf("create %d: %v", i+1, err)
 		}
 	}
-	if _, err := s.CreateNotifyHook(ctx, ep, testHookURL+"/6", nil, false, "whsec_sixth", 5); !errors.Is(err, ErrCeilingExceeded) {
+	_, err := s.CreateNotifyHook(ctx, ep, testHookURL+"/6", nil, false, "whsec_sixth", 5)
+	if !errors.Is(err, ErrCeilingExceeded) {
 		t.Fatalf("6th create = %v, want ErrCeilingExceeded", err)
+	}
+	// The shared sentinel says "webhook"; the wrapped text must name the resource that hit the cap.
+	if msg := err.Error(); !strings.Contains(msg, "notify hook ceiling (5)") {
+		t.Fatalf("ceiling error text = %q, want it to name the notify hook ceiling", msg)
 	}
 	if n := countHooks(t, s, ctx, ep); n != 5 {
 		t.Fatalf("hooks after refused create = %d, want 5", n)
