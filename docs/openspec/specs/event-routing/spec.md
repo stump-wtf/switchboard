@@ -156,7 +156,7 @@ The agent surface MUST expose `list_webhook_rules`, `set_webhook_rules`, `add_we
 **Authorization and error codes.**
 
 - Every verb is gated by the endpoint's verb allowlist.
-- Every verb requires the calling endpoint's **human** to own the webhook. Unknown, malformed, and another human's webhook ids MUST all return `not_found`, and the three MUST be indistinguishable.
+- Every verb requires the calling **endpoint** to own the webhook: only the webhook's own endpoint may call it, not another endpoint of the same human ([SPEC-0033](../teams-tenancy/spec.md) F3, F19). Unknown, malformed, and any other endpoint's webhook ids MUST all return `not_found`, and the three MUST be indistinguishable.
 - Validation failures MUST surface routing's code verbatim (`invalid_expression`, `forbidden_function`, `invalid_rule`, `too_many_rules`, `invalid_params`), except `not_granted`, which MUST surface as `forbidden`.
 - `update_webhook_rule` and `move_webhook_rule` on an unknown rule id MUST return `rule_not_found`. `remove_webhook_rule` on an absent rule MUST succeed.
 

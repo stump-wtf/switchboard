@@ -170,10 +170,12 @@ that target set. Routing MUST name an explicit target **endpoint id** — never 
 tenants sharing a queue string can never acquire visibility into each other's work.
 
 All three verbs MUST require that the caller **owns the webhook**: the webhook's owning endpoint MUST
-belong to the calling endpoint's human (`agents.owner_human_id`). A webhook id that is unknown,
-malformed, or owned by another human MUST be refused with `not_found`, and the refusals MUST be
-indistinguishable from one another, so a routing verb cannot confirm the existence of another human's
-webhook.
+be the calling endpoint itself (`endpoint_webhooks.endpoint_id`). Another endpoint of the same human
+does not own it: a friend endpoint is vended on its approver's agent, and one endpoint's credential
+must not reach every webhook its human owns ([SPEC-0033](../teams-tenancy/spec.md) REQ "Closing the
+Audited Surfaces", F3 and F19). A webhook id that is unknown, malformed, or owned by any other
+endpoint MUST be refused with `not_found`, and the refusals MUST be indistinguishable from one
+another, so a routing verb cannot confirm the existence of a webhook the caller does not own.
 
 `add_webhook_route` MUST additionally authorize the **target**:
 
@@ -203,8 +205,8 @@ whose friendship was later revoked remains visible and removable by the webhook'
 
 #### Scenario: Agent routes its own webhook to its own second endpoint
 
-- **WHEN** an agent calls `add_webhook_route` naming a webhook its human owns and a target endpoint
-  the same human owns
+- **WHEN** an agent calls `add_webhook_route` from the endpoint that owns the webhook, naming a
+  target endpoint the same human owns
 - **THEN** the route MUST be recorded with no friend edge required, `list_webhook_routes` MUST report
   it alongside the owning endpoint, and a subsequent delivery MUST mint one todo per target, each
   pinned to its own endpoint
@@ -225,8 +227,8 @@ whose friendship was later revoked remains visible and removable by the webhook'
 
 #### Scenario: Routing a webhook the caller does not own leaks nothing
 
-- **WHEN** an agent calls any routing verb naming a webhook owned by another human, and separately
-  names a webhook id that does not exist
+- **WHEN** an agent calls any routing verb naming a webhook owned by another endpoint (of another
+  human or of its own), and separately names a webhook id that does not exist
 - **THEN** both MUST be refused with an identical `not_found` response, and no route MUST be recorded
 
 #### Scenario: Adding the same route twice is idempotent
@@ -248,9 +250,10 @@ the vend and consent screens with the rest of that family:
 - `remove_webhook_rule`
 - `test_webhook_rules`
 
-Each verb MUST be gated by the endpoint's verb allowlist (`forbidden` outside it) and by **human**
-ownership of the webhook. The ownership check follows the route verbs: unknown, malformed, and
-another human's webhook ids MUST all return an identical `not_found`.
+Each verb MUST be gated by the endpoint's verb allowlist (`forbidden` outside it) and by **endpoint**
+ownership of the webhook: only the webhook's own endpoint may call them. The ownership check follows
+the route verbs: unknown, malformed, and any other endpoint's webhook ids (including a sibling
+endpoint of the same human) MUST all return an identical `not_found`.
 
 Saving rules MUST validate the whole list against the webhook's grant: its target queue, its owner's
 allowed webhook queues (as defined in [SPEC-0020](../event-routing/spec.md) REQ "Rule Validation at

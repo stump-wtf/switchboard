@@ -34,6 +34,11 @@ discovery grants nothing — a human approval is the grant.**
 
 - **Approval is the vend, and narrowing is first-class.** You are never forced to accept the
   requested scope verbatim — approve a smaller slice if you like.
+- **A friend gets hand-off and drain tools only.** A friendship can grant `create_for` and the
+  drain verbs (`list_todos`, `claim`, `claim_next`, `complete`, `fail`, `heartbeat`), and nothing
+  else. The friend's endpoint runs on *your* agent, so webhook, rule, route or event-history tools
+  on it would act with your authority. Other requested verbs are dropped when the request arrives,
+  and a request that asks for nothing grantable is refused.
 - **Per-direction.** A→B is a separate grant from B→A. Letting A hand *you* work does not let you
   hand *A* work; that needs its own request and approval.
 - **Revocable.** Either grant can be revoked at any time — instantly, one-sided (revoke = kill the
