@@ -42,6 +42,9 @@ type WebhookRouting struct {
 	// OwnerHumanID is the human who owns the webhook (through its endpoint's agent). The routing
 	// sandbox shares its evaluation slots fairly across owners (ADR-0038 F5).
 	OwnerHumanID string
+	// TrustedActors is the webhook's stored trust list, so a dry-run sees the same .actor verdict
+	// the receiver would. Governing: SPEC-0026 REQ-5, REQ-10.
+	TrustedActors []byte
 }
 
 // webhookRoutingSelect projects a webhook's routing row and computes the owner's allowed webhook
@@ -65,7 +68,7 @@ const webhookRoutingSelect = `
 		       ) granted
 		       WHERE q IS NOT NULL
 	       ), '{}'),
-	       w.routing_rules, w.default_action, w.routing_params, a.owner_human_id::text
+	       w.routing_rules, w.default_action, w.routing_params, a.owner_human_id::text, w.trusted_actors
 	FROM endpoint_webhooks w
 	JOIN endpoints e ON e.id = w.endpoint_id
 	JOIN agents a ON a.id = e.agent_id`
@@ -74,7 +77,7 @@ func scanWebhookRouting(row pgx.Row) (WebhookRouting, error) {
 	var wr WebhookRouting
 	var rules, def, params []byte
 	err := row.Scan(&wr.WebhookID, &wr.EndpointID, &wr.SourceType, &wr.TrustMode, &wr.TargetQueue,
-		&wr.WebhookQueues, &rules, &def, &params, &wr.OwnerHumanID)
+		&wr.WebhookQueues, &rules, &def, &params, &wr.OwnerHumanID, &wr.TrustedActors)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WebhookRouting{}, ErrNotFound
 	}

@@ -313,6 +313,21 @@ func EvaluateTrust(source string, t TrustedActors, body []byte) *ActorTrust {
 	return out
 }
 
+// Trust-gate trace stage and cause.
+const (
+	StageTrustGate      = "trust_gate"
+	CauseUntrustedActor = "untrusted_actor"
+)
+
+// UntrustedDecision is the outcome for a delivery the trust gate held: no rule ran, nothing is
+// routed, and the trace records the actor verdict. Until the quarantine queue lands (#386), it takes
+// the fail-closed faulted path: the event is recorded, and no todo is created.
+// Governing: SPEC-0026 REQ-5 "Evaluation" (an untrusted delivery is not evaluated by rules).
+func UntrustedDecision(a *ActorTrust) Decision {
+	return Decision{Faulted: true, Untrusted: true,
+		Trace: Trace{Stage: StageTrustGate, Cause: CauseUntrustedActor, Actor: a}}
+}
+
 // actorEnvelope renders .actor. A delivery the gate never saw (a source with no projection, or a
 // dry-run with no trust input) still gets the names when they can be parsed, with null flags.
 func actorEnvelope(in EnvelopeInput) map[string]any {
