@@ -72,3 +72,45 @@ func TestMigrate0022BackfillsDisposition(t *testing.T) {
 		t.Fatal("the disposition check accepted an unknown value")
 	}
 }
+
+// 0023 backfills {"allow_all": true} onto every existing github, gitea and cairn webhook, so each
+// keeps routing as before (visibly), leaves other sources NULL, and from then on refuses a github,
+// gitea or cairn webhook without a trust list. Governing: SPEC-0026 REQ-5 scenario "Existing webhook
+// after the upgrade".
+func TestMigrate0023BackfillsTrustedActors(t *testing.T) {
+	pool, ctx := migrateTestPool(t)
+	if err := applyMigrations(ctx, pool, migrationsBefore(t, "0023_webhook_trusted_actors.sql"), "migrations"); err != nil {
+		t.Fatalf("apply chain before 0023: %v", err)
+	}
+	var ep string
+	if err := pool.QueryRow(ctx, `
+		WITH h AS (INSERT INTO humans (oidc_subject) VALUES ('sub-0023') RETURNING id),
+		     a AS (INSERT INTO agents (owner_human_id, name) SELECT id, 'bot-0023' FROM h RETURNING id)
+		INSERT INTO endpoints (agent_id, credential_hash, credential_prefix, slug)
+		SELECT id, 'hash-0023', 'sbk_0023', 'bot-0023-aaaa' FROM a RETURNING id::text`).Scan(&ep); err != nil {
+		t.Fatalf("seed endpoint: %v", err)
+	}
+	for _, src := range []string{"github", "gitea", "cairn", "generic", "stripe"} {
+		if _, err := pool.Exec(ctx, `INSERT INTO endpoint_webhooks (endpoint_id, source_type, target_queue, trust_mode, ingest_token)
+			VALUES ($1, $2, 'inbox', 'signed', 'tok-0023-' || $2)`, ep, src); err != nil {
+			t.Fatalf("seed %s webhook: %v", src, err)
+		}
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for src, want := range map[string]string{"github": `{"allow_all": true}`, "gitea": `{"allow_all": true}`,
+		"cairn": `{"allow_all": true}`, "generic": "", "stripe": ""} {
+		var got *string
+		if err := pool.QueryRow(ctx, `SELECT trusted_actors::text FROM endpoint_webhooks WHERE source_type = $1`, src).Scan(&got); err != nil {
+			t.Fatalf("read %s: %v", src, err)
+		}
+		if (got == nil && want != "") || (got != nil && *got != want) {
+			t.Errorf("%s trusted_actors = %v, want %q", src, got, want)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO endpoint_webhooks (endpoint_id, source_type, target_queue, trust_mode, ingest_token)
+		VALUES ($1, 'github', 'inbox', 'signed', 'tok-0023-new')`, ep); err == nil {
+		t.Fatal("a github webhook without trusted_actors was accepted")
+	}
+}
