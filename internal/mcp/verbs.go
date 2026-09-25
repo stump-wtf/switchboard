@@ -33,6 +33,7 @@ func DrainVerbs() []string {
 func WebhookVerbs() []string {
 	return []string{
 		"create_webhook", "list_webhooks", "rotate_webhook", "delete_webhook",
+		"set_trusted_actors", "clear_trusted_actors",
 		"add_webhook_route", "list_webhook_routes", "remove_webhook_route",
 		"list_webhook_rules", "set_webhook_rules", "add_webhook_rule", "update_webhook_rule",
 		"move_webhook_rule", "remove_webhook_rule", "test_webhook_rules",

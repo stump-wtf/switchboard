@@ -169,6 +169,9 @@ type testWebhookRulesOut struct {
 	OnceKey   string             `json:"once_key,omitempty" jsonschema:"the at-most-once key a once action would claim (whether it is already claimed is only known at delivery)"`
 	WorkOrder *routing.WorkOrder `json:"work_order,omitempty" jsonschema:"the work order a work_order action would attach"`
 	Envelope  map[string]any     `json:"envelope,omitempty" jsonschema:"the JSON document the rules evaluated (write expressions against these paths)"`
+	// Governing: SPEC-0026 REQ-5, REQ-10.
+	Actor *routing.ActorTrust `json:"actor,omitempty" jsonschema:"github/gitea/cairn: who acted and the trust gate's verdict against the webhook's trusted_actors (.actor)"`
+	Held  bool                `json:"held,omitempty" jsonschema:"true when the trust gate would hold this delivery before any rule ran; the decision shows what the rules would do with it"`
 }
 
 // registerWebhookRuleTools installs the endpoint's allowlisted rule verbs.
@@ -369,6 +372,7 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 				return ""
 			}
 			env.Kind = routing.EventKind(wr.SourceType, header, body)
+			env.Actor = dryRunActor(wr, env.Verified, body)
 		}
 
 		d := h.rulesRouter().Route(ctx, cfg, g, env)
@@ -376,6 +380,7 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 			Decision: decisionOut{Drop: d.Drop, Queue: d.Queue, Endpoints: d.Endpoints,
 				Disposition: d.Disposition(), Faulted: d.Faulted, Unavailable: d.Unavailable, Fault: d.Fault},
 			Trace: d.Trace,
+			Actor: env.Actor, Held: env.Actor != nil && !env.Actor.IsTrusted(),
 		}
 		if d.Unavailable {
 			// A dry-run that could not run says nothing about the rules. It is reported, but no
@@ -533,9 +538,24 @@ func (h *Handler) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg r
 // receiver saw it: the sanitized headers, the body, the kind and the verification result.
 func storedEnvelope(wr store.WebhookRouting, ev store.EventHistoryDetail) routing.EnvelopeInput {
 	env := routing.EnvelopeInput{Source: wr.SourceType, WebhookID: wr.WebhookID, TrustMode: wr.TrustMode,
-		Body: ev.Payload, Kind: ev.EventType, Verified: ev.Verified, ContentType: ev.ContentType}
+		Body: ev.Payload, Kind: ev.EventType, Verified: ev.Verified, ContentType: ev.ContentType,
+		Actor: dryRunActor(wr, ev.Verified, ev.Payload)}
 	_ = json.Unmarshal(ev.Headers, &env.Headers)
 	return env
+}
+
+// dryRunActor is the trust gate's verdict exactly as the receiver would compute it (ingest
+// trustGate), so a dry-run's .actor matches live traffic: a missing or unreadable list, or an
+// unverified body, trusts no one. nil for a source with no gate. Governing: SPEC-0026 REQ-5, REQ-10.
+func dryRunActor(wr store.WebhookRouting, verified bool, body []byte) *routing.ActorTrust {
+	if !routing.HasActorProjection(wr.SourceType) {
+		return nil
+	}
+	ta, _ := routing.DecodeTrustedActors(wr.SourceType, wr.TrustedActors)
+	if !verified {
+		ta, _ = routing.DefaultTrustedActors(wr.SourceType)
+	}
+	return routing.EvaluateTrust(wr.SourceType, ta, body)
 }
 
 // routingGrant builds a webhook's grant from switchboard state: its target queue, its OWNER's
