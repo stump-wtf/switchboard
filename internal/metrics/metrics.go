@@ -39,7 +39,19 @@ const (
 	// RuleDefault is the rule_id a routing decision carries when no rule matched and the webhook's
 	// default target applied.
 	RuleDefault = "default"
+
+	// SPEC-0024 REQ-11 notify-hook label values.
+	NotifyTypeReady      = "todo.ready"
+	NotifyTypeBacklog    = "todos.backlog"
+	NotifyDelivered      = "delivered"
+	NotifyFailed         = "failed"
+	NotifyDropped        = "dropped"
+	NotifyDisabledFailed = "consecutive_failures"
+	NotifyDisabledByOp   = "operator"
 )
+
+// notifyAttemptResults is the bounded result label of switchboard_notify_hook_attempts_total.
+var notifyAttemptResults = []string{"2xx", "3xx", "4xx", "5xx", "timeout", "network", "tls", "rejected_ssrf"}
 
 var (
 	// tokenLabel is the last-resort bound on free-ish label values (source, provider, trust_mode,
@@ -85,6 +97,11 @@ type Metrics struct {
 
 	// REQ-6: a collector that could not compute its families says so here.
 	collectionErrors *prometheus.CounterVec
+
+	// SPEC-0024 REQ-11 notify-hook counters. No hook, endpoint, URL or host label, ever.
+	notifyNotifications *prometheus.CounterVec
+	notifyAttempts      *prometheus.CounterVec
+	notifyDisabled      *prometheus.CounterVec
 }
 
 // New builds the metric surface on a dedicated registry — never the global default, so a stray
@@ -137,6 +154,19 @@ func New(opts Options) *Metrics {
 			Name: "switchboard_metrics_collection_errors_total",
 			Help: "Scrape-time collectors that failed and omitted their families, by collector.",
 		}, []string{"collector"}),
+
+		notifyNotifications: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_notify_hook_notifications_total",
+			Help: "Outbound notify-hook notifications, by type (todo.ready|todos.backlog) and outcome (delivered|failed|dropped).",
+		}, []string{"type", "outcome"}),
+		notifyAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_notify_hook_attempts_total",
+			Help: "Outbound notify-hook HTTP attempts, by result (2xx|3xx|4xx|5xx|timeout|network|tls|rejected_ssrf).",
+		}, []string{"result"}),
+		notifyDisabled: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_notify_hooks_disabled_total",
+			Help: "Notify hooks disabled, by reason (consecutive_failures|operator).",
+		}, []string{"reason"}),
 	}
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
@@ -144,8 +174,56 @@ func New(opts Options) *Metrics {
 		m.todosCreated, m.todosClaimed, m.todosCompleted, m.leasesExpired, m.todoAttempts,
 		m.deliveries, m.routingDecisions, m.verifyFailures,
 		m.collectionErrors,
+		m.notifyNotifications, m.notifyAttempts, m.notifyDisabled,
 	)
 	return m
+}
+
+// InitNotifyHookSeries pre-creates every notify-hook series at zero. The label sets are small fixed
+// enums, so a dashboard or an increase() alert has a baseline from the first scrape instead of a
+// family that appears only after the first failure (#362). Call it once where the dispatcher is
+// wired; a registry with no dispatcher stays honestly empty.
+func (m *Metrics) InitNotifyHookSeries() {
+	if m == nil {
+		return
+	}
+	for _, typ := range []string{NotifyTypeReady, NotifyTypeBacklog} {
+		for _, outcome := range []string{NotifyDelivered, NotifyFailed, NotifyDropped} {
+			m.notifyNotifications.WithLabelValues(typ, outcome)
+		}
+	}
+	for _, r := range notifyAttemptResults {
+		m.notifyAttempts.WithLabelValues(r)
+	}
+	for _, reason := range []string{NotifyDisabledFailed, NotifyDisabledByOp} {
+		m.notifyDisabled.WithLabelValues(reason)
+	}
+}
+
+// NotifyHookNotification counts one notification's final outcome: NotifyDelivered, NotifyFailed
+// (after its attempts), or NotifyDropped (queue full or over the per-hook rate limit).
+func (m *Metrics) NotifyHookNotification(typ, outcome string) {
+	if m == nil {
+		return
+	}
+	m.notifyNotifications.WithLabelValues(oneOf(typ, NotifyTypeReady, NotifyTypeBacklog),
+		oneOf(outcome, NotifyDelivered, NotifyFailed, NotifyDropped)).Inc()
+}
+
+// NotifyHookAttempt counts one outbound attempt by its bounded result.
+func (m *Metrics) NotifyHookAttempt(result string) {
+	if m == nil {
+		return
+	}
+	m.notifyAttempts.WithLabelValues(oneOf(result, notifyAttemptResults...)).Inc()
+}
+
+// NotifyHookDisabled counts one hook being disabled, automatically or by its owning human.
+func (m *Metrics) NotifyHookDisabled(reason string) {
+	if m == nil {
+		return
+	}
+	m.notifyDisabled.WithLabelValues(oneOf(reason, NotifyDisabledFailed, NotifyDisabledByOp)).Inc()
 }
 
 // Registry is the dedicated registry the handler serves. Scrape-time collectors (the queue
