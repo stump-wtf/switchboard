@@ -34,11 +34,6 @@ import (
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
-// codeUnavailable answers a notify-hook verb on an instance that cannot hold hooks: no
-// NotifyHookConfig was installed, or no SWITCHBOARD_SECRET_ENCRYPTION_KEY is set, since a hook
-// secret is never stored in plaintext. It is an operator condition, not a caller error.
-const codeUnavailable = "unavailable"
-
 // notifyHookVerbs is the SPEC-0024 surface; scopeGuard answers an ungranted one with forbidden.
 var notifyHookVerbs = verbSet(NotifyHookVerbs())
 
