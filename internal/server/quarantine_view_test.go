@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -301,8 +302,8 @@ func TestQuarantineReleaseRaceHasOneOutcome(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	got := strings.Join(notices, " ")
-	if !((notices[0] == "200:released" && notices[1] == "200:conflict") || (notices[0] == "200:conflict" && notices[1] == "200:released")) {
+	slices.Sort(notices)
+	if got := strings.Join(notices, " "); got != "200:conflict 200:released" {
 		t.Fatalf("race outcomes = %s, want one released and one conflict", got)
 	}
 	items, err := f.st.ListTodoItems(f.ctx, f.alice.ID, "", "", 200)
