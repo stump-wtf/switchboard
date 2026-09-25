@@ -201,10 +201,12 @@ func (h *Handler) validateReplayTarget(ctx context.Context, raw string) (*url.UR
 		return nil, &toolError{codeInvalidArgument, "target_url must be an absolute https URL"}
 	}
 	if err := h.replayGuard.validator.Validate(ctx, raw); err != nil {
-		// The validator's detail names the scheme or address class of the caller's own input, so it
-		// is safe to return and tells them what to fix.
-		return nil, &toolError{codeInvalidArgument, "target_url refused by the SSRF guard: " +
-			strings.TrimPrefix(err.Error(), push.ErrValidation.Error()+": ")}
+		// The caller gets the refusal's class only. The validator's detail can name the address a
+		// host resolved to, or the resolver's own error: the server's view of its network, not the
+		// caller's input, so it goes to the log alone. Governing: SPEC-0033 REQ "Owned Replay
+		// Targets".
+		h.log.Info("mcp replay target refused", "target_host", u.Host, "err", err)
+		return nil, &toolError{codeInvalidArgument, "target_url " + push.PublicReason(err)}
 	}
 	return u, nil
 }

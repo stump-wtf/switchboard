@@ -26,7 +26,8 @@ const (
 
 // normalizeReplayTargets trims, drops blanks, de-duplicates (keeping first-seen order, since the
 // first is the default) and validates every target with v. The error text describes the caller's
-// own input and is safe to return to them.
+// own input and the refusal's class (push.PublicReason), never a resolved address, so it is safe to
+// return to them.
 func normalizeReplayTargets(ctx context.Context, v *push.Validator, in []string) ([]string, error) {
 	out := make([]string, 0, len(in))
 	seen := map[string]bool{}
@@ -48,8 +49,9 @@ func normalizeReplayTargets(ctx context.Context, v *push.Validator, in []string)
 			return nil, fmt.Errorf("replay target %q must be an absolute https URL", t)
 		}
 		if err := v.Validate(ctx, t); err != nil {
-			return nil, fmt.Errorf("replay target %q refused by the SSRF guard: %s", t,
-				strings.TrimPrefix(err.Error(), push.ErrValidation.Error()+": "))
+			// The class only: the validator's detail can name the address the host resolved to, the
+			// server's view of its network rather than the caller's input.
+			return nil, fmt.Errorf("replay target %q %s", t, push.PublicReason(err))
 		}
 		out = append(out, t)
 	}

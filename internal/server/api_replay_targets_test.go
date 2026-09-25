@@ -57,6 +57,39 @@ func TestNormalizeReplayTargets(t *testing.T) {
 	}
 }
 
+// internalResolver answers one internal name with a private address and fails every other lookup
+// with an error that names a resolver address, as a Linux resolver error does.
+type internalResolver struct{}
+
+func (internalResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	if host == "db.corp.internal" {
+		return []net.IPAddr{{IP: net.ParseIP("10.20.30.40")}}, nil
+	}
+	return nil, errors.New("lookup " + host + " on 10.0.0.2:53: no such host")
+}
+
+// A refused target is reported by class, never by the address its host resolved to or the
+// resolver's error: that is the server's view of its network. Governing: SPEC-0033 REQ "Owned Replay
+// Targets" (audit F9).
+func TestNormalizeReplayTargetsNamesNoResolvedAddress(t *testing.T) {
+	v := push.New(push.WithResolver(internalResolver{}))
+	for target, want := range map[string]string{
+		"https://db.corp.internal/":      `replay target "https://db.corp.internal/" resolves to a disallowed address`,
+		"https://nowhere.corp.internal/": `replay target "https://nowhere.corp.internal/" host could not be resolved`,
+		"http://203.0.113.10/":           `replay target "http://203.0.113.10/" must use https`,
+	} {
+		_, err := normalizeReplayTargets(context.Background(), v, []string{target})
+		if err == nil || err.Error() != want {
+			t.Fatalf("%s: error = %v, want %q", target, err, want)
+		}
+		for _, leak := range []string{"10.20.30.40", "10.0.0.2", "no such host"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Fatalf("%s: error %q leaks %q", target, err, leak)
+			}
+		}
+	}
+}
+
 func TestAPIVendOwnsReplayTargetsAndOnlyItsOwnerSeesThem(t *testing.T) {
 	r, st, ctx := newDBRouter(t)
 	ownerA, _ := mintSession(t, st, ctx, "test|replay-a", "Owner A", "a@example.com")

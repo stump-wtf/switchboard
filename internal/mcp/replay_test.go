@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -225,14 +226,51 @@ func TestReplaySSRFRejectionTable(t *testing.T) {
 	}
 }
 
+// A refused target tells the caller the refusal's class and nothing about the server's network: a
+// name that resolves to an internal address never echoes that address, and a failed lookup never
+// echoes the resolver's error. Owned targets take the same path.
+// Governing: SPEC-0033 REQ "Owned Replay Targets" (audit F9).
+func TestReplayRefusalNamesNoResolvedAddress(t *testing.T) {
+	ctx := testCtx(t)
+	res := newScriptedResolver(map[string][][]string{
+		"db.corp.internal": {{"10.20.30.40"}},
+		"v6.corp.internal": {{"fd12:3456::7"}},
+	})
+	cases := []struct{ target, want string }{
+		{"https://db.corp.internal/", "target_url resolves to a disallowed address"},
+		{"https://v6.corp.internal/", "target_url resolves to a disallowed address"},
+		{"https://nowhere.corp.internal/", "target_url host could not be resolved"},
+	}
+	for _, tc := range cases {
+		f := newFakeStore()
+		seedEvent(f, 1, `{}`, nil)
+		rig := newReplayRig(t, ctx, f, defaultTestSlug, res, "")
+		for _, args := range []map[string]any{{"id": 1, "target_url": tc.target}, {"id": 1}} {
+			f.replayTargets[endpointIDFor(defaultTestSlug)] = []string{tc.target}
+			msg := callErr(t, ctx, rig.cs, "replay_webhook_event", args, codeInvalidArgument)
+			if msg != codeInvalidArgument+": "+tc.want {
+				t.Fatalf("%s: message = %q, want %q", tc.target, msg, codeInvalidArgument+": "+tc.want)
+			}
+			for _, leak := range []string{"10.20.30.40", "fd12", "no such host", "SSRF"} {
+				if strings.Contains(msg, leak) {
+					t.Fatalf("%s: message %q leaks %q", tc.target, msg, leak)
+				}
+			}
+		}
+	}
+}
+
 // The production guard is https-only: a public plain-http target is refused.
 func TestReplayProductionGuardRequiresHTTPS(t *testing.T) {
 	ctx := testCtx(t)
 	f := newFakeStore()
 	seedEvent(f, 1, `{}`, nil)
 	cs := session(t, ctx, f, []string{"reviews"}, eventVerbNames)
-	callErr(t, ctx, cs, "replay_webhook_event",
+	msg := callErr(t, ctx, cs, "replay_webhook_event",
 		map[string]any{"id": 1, "target_url": "http://" + publicIP + "/hook"}, codeInvalidArgument)
+	if want := codeInvalidArgument + ": target_url must use https"; msg != want {
+		t.Fatalf("message = %q, want %q", msg, want)
+	}
 }
 
 // The endpoint's first owned target is the default: the stored payload is delivered, the response
