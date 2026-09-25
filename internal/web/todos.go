@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -65,6 +66,111 @@ type drawerView struct {
 	ClaimedAt      *time.Time
 	CompletedAt    *time.Time
 	CSRF           string
+	Attempts       attemptList // the todo's attempt history, newest first (SPEC-0034 REQ-13)
+}
+
+// drawerAttemptLimit is how many attempts the drawer lists: get_todo's default page (SPEC-0034
+// REQ-8). Older ones are counted, not listed.
+const drawerAttemptLimit = 20
+
+// attemptList feeds the drawer's attempt section and the live "attempts_oob" swap that refreshes
+// it. TodoID keys the aria-live region the swap targets. Governing: SPEC-0034 REQ-13 "Operator
+// Surfaces", Accessibility Requirements.
+type attemptList struct {
+	TodoID      string
+	Rows        []attemptRow
+	Total       int  // attempts_total, including pruned and unlisted ones
+	Hidden      int  // attempts the drawer does not list: older than the page, or pruned
+	Unavailable bool // the history read failed; the section says so rather than claiming "none"
+}
+
+// attemptRow is one attempt as the drawer shows it. It is built from store.Attempt, which has no
+// session, claimer-endpoint or lease-token field, so the drawer cannot render one (SPEC-0034
+// REQ-13). Summary, Who and Artifact are data an agent wrote: they reach the page only through
+// html/template escaping, and ArtifactURL is set only for an absolute https URL.
+type attemptRow struct {
+	Seq              int
+	Who              string // the claimant label, or who claimed when no label was given
+	Outcome          string // "" while the attempt is open
+	Disposition      string
+	Died             bool
+	ClaimedAt        stamp
+	EndedAt          *stamp
+	LastHeartbeatAt  *stamp
+	Summary          string
+	SummaryTruncated bool
+	Artifact         string
+	ArtifactURL      string // Artifact when it is an https URL, else "" (rendered as text)
+}
+
+// stamp is a time rendered twice: machine-readable for <time datetime> and relative for reading.
+type stamp struct {
+	ISO string
+	Rel string
+}
+
+func stampOf(t time.Time) stamp {
+	return stamp{ISO: t.UTC().Format(time.RFC3339), Rel: relTime(t)}
+}
+
+func stampPtr(t *time.Time) *stamp {
+	if t == nil {
+		return nil
+	}
+	s := stampOf(*t)
+	return &s
+}
+
+// httpsArtifact returns an artifact as a link target only when it is an absolute https URL with a
+// host. An mcp://cairn handle, or anything else, stays text: the drawer never links a scheme a
+// browser might act on (SPEC-0034 Security "Redirect Validation").
+func httpsArtifact(a string) string {
+	u, err := url.Parse(a)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return ""
+	}
+	return u.String()
+}
+
+// attemptRows converts a newest-first store history into drawer rows, keeping its order.
+func attemptRows(as []store.Attempt) []attemptRow {
+	rows := make([]attemptRow, 0, len(as))
+	for _, a := range as {
+		who := a.Claimant
+		if who == "" {
+			who = "agent"
+			if a.ClaimerKind == "owner" {
+				who = "owner · Board"
+			}
+		}
+		rows = append(rows, attemptRow{
+			Seq: a.Seq, Who: who, Outcome: a.Outcome, Disposition: a.Disposition, Died: a.Died,
+			ClaimedAt: stampOf(a.ClaimedAt), EndedAt: stampPtr(a.EndedAt),
+			LastHeartbeatAt: stampPtr(a.LastHeartbeatAt),
+			Summary:         a.Summary, SummaryTruncated: a.SummaryTruncated,
+			Artifact: a.Artifact, ArtifactURL: httpsArtifact(a.Artifact),
+		})
+	}
+	return rows
+}
+
+// loadAttempts reads a todo's history for the drawer under the owning-human predicate. A failed
+// read renders as "unavailable", never as an empty history. The scope is enforced in SQL, not
+// here. Governing: SPEC-0034 REQ-10 (Board reads use the owning-human predicate), REQ-13.
+func (h *Handler) loadAttempts(ctx context.Context, ownerHumanID, todoID string) attemptList {
+	al := attemptList{TodoID: todoID}
+	if h.store == nil {
+		return al
+	}
+	as, total, _, err := h.store.TodoAttemptsOperatorOwned(ctx, ownerHumanID, todoID, drawerAttemptLimit)
+	if err != nil {
+		h.log.Warn("drawer attempts", "todo", todoID, "err", err)
+		al.Unavailable = true
+		return al
+	}
+	al.Rows, al.Total = attemptRows(as), total
+	al.Hidden = max(total-len(as), 0)
+	return al
 }
 
 // panelView feeds the "todos_panel" fragment (filter pills + table) returned on HTMX filter/search
@@ -355,7 +461,7 @@ func (h *Handler) todoRowFromItem(ctx context.Context, it store.TodoItem, oob, f
 }
 
 // buildDrawer assembles the detail-drawer render model: the header row, pretty-printed (and inert)
-// payload, and the lifecycle timeline stamps.
+// payload, the lifecycle timeline stamps, and the attempt history.
 func (h *Handler) buildDrawer(ctx context.Context, it store.TodoItem, csrf string) drawerView {
 	row := h.todoRowFromItem(ctx, it, false, false)
 	dv := drawerView{
@@ -368,9 +474,10 @@ func (h *Handler) buildDrawer(ctx context.Context, it store.TodoItem, csrf strin
 		CompletedAt:    it.CompletedAt,
 		CSRF:           csrf,
 	}
+	human, _ := auth.FromContext(ctx)
+	dv.Attempts = h.loadAttempts(ctx, human.ID, it.ID)
 	// The originating event's received-at anchors the timeline's first step ("received/verified").
 	if it.EventID != nil {
-		human, _ := auth.FromContext(ctx)
 		if e, err := h.store.EventByID(ctx, human.ID, *it.EventID); err == nil {
 			dv.ReceivedAt = e.ReceivedAt
 		} else {

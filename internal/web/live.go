@@ -322,6 +322,19 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 			} else {
 				h.log.Warn("live todo_row lookup", "todo", t.ID, "err", err)
 			}
+			// An open drawer's attempt history follows the same transition: a claim opens an
+			// attempt and every lease-ending verb closes one. The swap lands in the drawer's
+			// aria-live region and no-ops when no drawer for this todo is open. The read carries
+			// the owner the frame is routed to, so it can hold nothing that owner could not open.
+			// A failed read skips the swap; the drawer keeps its last render until reopened.
+			// Governing: SPEC-0034 REQ-13, Accessibility Requirements "Dynamic Content Regions".
+			if al := h.loadAttempts(ctx, owner, t.ID); !al.Unavailable {
+				if frag, err := h.renderFragment("attempts_oob", al); err == nil {
+					payload.WriteString(frag)
+				} else {
+					h.log.Error("render attempts_oob fragment", "todo", t.ID, "err", err)
+				}
+			}
 		}
 		// Background transitions surface as transient toasts announced with the todo id.
 		if msg := h.toastFor(ctx, name, t); msg != nil {
