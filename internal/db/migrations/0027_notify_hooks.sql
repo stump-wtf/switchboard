@@ -40,6 +40,10 @@ CREATE TABLE notify_hooks (
     rotated_at             timestamptz
 );
 
--- The dispatcher's fire-time lookup is "enabled hooks of this endpoint"; the verbs and the card list
--- every hook of an endpoint, which the FK's own scan covers at a ceiling of 5.
-CREATE INDEX idx_notify_hooks_endpoint ON notify_hooks (endpoint_id) WHERE enabled;
+-- Postgres does not index a foreign key's referencing column, so this is the only index on
+-- endpoint_id. It is deliberately NOT partial: the dispatcher's fire-time lookup ("enabled hooks of
+-- this endpoint") uses it with a cheap filter over at most the ceiling's rows, and the predicates
+-- that name only endpoint_id (the verbs' list, CreateNotifyHook's ceiling count, and the ON DELETE
+-- CASCADE when an endpoint is deleted) also need it; a WHERE enabled index would leave those as
+-- sequential scans of the whole table.
+CREATE INDEX idx_notify_hooks_endpoint ON notify_hooks (endpoint_id);
