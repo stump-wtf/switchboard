@@ -117,6 +117,28 @@ func TestAllowlistWildcardBindPort(t *testing.T) {
 	}
 }
 
+// A listen address whose host is a name, not an IP literal, names no address to compare, so its port
+// is refused on every allowlisted address rather than on none (fail closed, SPEC-0024 REQ-3).
+func TestAllowlistHostnameListenAddrFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	for _, listen := range []string{"localhost:8080", "switchboard.internal:8080"} {
+		v := New(
+			WithAllowHTTP(true),
+			WithAllowCIDRs(mustCIDRs(t, "127.0.0.1/32, 192.168.1.0/24")...),
+			WithOwnListenAddrs(listen),
+		)
+		for _, u := range []string{"http://127.0.0.1:8080/", "https://192.168.1.5:8080/"} {
+			err := v.Validate(ctx, u)
+			if !errors.Is(err, ErrValidation) || !strings.Contains(err.Error(), "own listening address") {
+				t.Errorf("listen %s, %s: switchboard's own port must stay refused, got %v", listen, u, err)
+			}
+		}
+		if err := v.Validate(ctx, "http://127.0.0.1:9443/"); err != nil {
+			t.Errorf("listen %s: an allowlisted address on another port must pass: %v", listen, err)
+		}
+	}
+}
+
 func TestParseCIDRList(t *testing.T) {
 	got := mustCIDRs(t, " 10.0.0.0/8 ,,127.0.0.1, fd00::/8 ")
 	want := []string{"10.0.0.0/8", "127.0.0.1/32", "fd00::/8"}
