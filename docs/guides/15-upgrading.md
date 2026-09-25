@@ -11,6 +11,66 @@ published image, check which release you are actually running first.
 To find your version, run `switchboard version`, or read it from `/healthz`. Newer builds
 also report it over MCP as `serverInfo.version`.
 
+## Upgrading to Unreleased
+
+### Replay targets are owned by the endpoint
+
+**What breaks.** The instance settings `replay_default_target` and `replay_allowed_targets`
+are removed. Migration `0026_owned_replay_targets` deletes both rows from `settings`; after
+the upgrade nothing reads them and nothing warns about them at startup. Their targets were
+exempt from the SSRF checks for every tenant's replay, which is why they are gone rather
+than kept for compatibility.
+
+`replay_webhook_event` now:
+
+- replays to the `target_url` the call names, or else to the calling endpoint's first
+  **owned** replay target;
+- fails with the new error code `replay_target_required` when it has neither;
+- sends every target, owned or not, through the shared SSRF guard, both when the call is
+  made and again when it connects: the target must be `https` and every address its host
+  resolves to must be public. Loopback, private (RFC 1918 and IPv6 unique-local),
+  link-local and cloud-metadata, and shared (100.64.0.0/10) addresses are refused, and so
+  is plain `http`.
+
+**Who is affected.** Anyone who set either setting, or who replays to a consumer on
+localhost, a private network, or plain `http`. An agent that called `replay_webhook_event`
+without `target_url` now gets `replay_target_required` until its endpoint owns a target.
+
+**What to do.**
+
+1. Back up first. The migration deletes the two rows and cannot put them back:
+
+   ```sh
+   pg_dump --format=custom --file=switchboard-pre-replay-targets.dump "$SWITCHBOARD_DATABASE_URL"
+   ```
+
+2. For each endpoint that should replay by default, vend a replacement that owns its
+   targets. Replay targets are part of an endpoint's scope, which is fixed at vend time:
+
+   ```sh
+   curl -sS -X POST "$SWITCHBOARD_URL/api/v1/endpoints" \
+     -H "Authorization: Bearer $OPERATOR_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"name":"my-agent","replay_targets":["https://consumer.example.com/hook"]}'
+   ```
+
+   A target the guard refuses fails the vend with `400` and mints nothing. Otherwise, pass
+   `target_url` on each replay call.
+
+3. Move any replay consumer that lived on localhost or a private network to a public
+   `https` URL, or stop replaying to it. There is no allowlist for internal hosts.
+
+**Verify.**
+
+- `GET /api/v1/endpoints` lists `replay_targets` for each of your endpoints.
+- `replay_webhook_event` with no `target_url` on an endpoint without targets returns
+  `replay_target_required`.
+- Nothing is left in `settings`. This should print `0`:
+
+  ```sh
+  psql "$SWITCHBOARD_DATABASE_URL" -Atc \
+    "SELECT count(*) FROM settings WHERE key IN ('replay_default_target','replay_allowed_targets')"
+  ```
+
 ## Upgrading to v0.3.0
 
 ### Read this first

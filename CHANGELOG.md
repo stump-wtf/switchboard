@@ -13,6 +13,19 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+### Breaking
+
+- **Replay targets belong to the endpoint, and every replay passes the SSRF guard.** The
+  instance settings `replay_default_target` and `replay_allowed_targets` are gone: the
+  migration deletes both rows and nothing reads or warns about them. They used to exempt
+  their targets from the SSRF checks for every tenant's replay. An endpoint now owns its
+  replay targets, named at vend time (`replay_targets` on `POST /api/v1/endpoints`) and
+  checked by the shared SSRF guard; the first is the default when `replay_webhook_event`
+  names no `target_url`. With neither, the call fails with the new code
+  `replay_target_required`. Every target, owned or not, must be `https` on a public
+  address, checked when the call is made and again when it connects, so replaying to
+  localhost, a private network or plain `http` no longer works. See the upgrade note. (#421)
+
 ### Security
 
 - **Event history is scoped to its owner.** `list_webhook_events`, `get_webhook_event`,

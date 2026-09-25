@@ -311,7 +311,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/VendEndpointOut' }
         '400':
-          description: Invalid body or missing name.
+          description: Invalid body, missing name, or a replay target the SSRF guard refuses.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -542,10 +542,6 @@ components:
         retention_max_age_days: { type: integer, minimum: 0, default: 30 }
         retention_max_rows: { type: integer, minimum: 0, default: 50000 }
         sse_retry_ms: { type: integer, minimum: 250, default: 3000 }
-        replay_default_target:
-          type: [string, "null"]
-          format: uri
-          description: Default target for MCP `replay_webhook_event` when no target_url is given.
 
     Health:
       type: object
@@ -579,6 +575,16 @@ components:
           default: inbox
           description: The single scoped queue the endpoint drains and the webhook routes to.
           example: inbox
+        replay_targets:
+          type: array
+          maxItems: 10
+          items: { type: string, format: uri }
+          description: >-
+            Replay destinations the endpoint owns (SPEC-0033 REQ "Owned Replay Targets"). The first
+            is the default for a `replay_webhook_event` that names no `target_url`. Each must be
+            https on a public address; a target the SSRF guard refuses fails the vend with 400 and
+            mints nothing.
+          example: ['https://consumer.example.com/hook']
 
     VendEndpointOut:
       type: object
@@ -595,6 +601,10 @@ components:
           type: array
           items: { type: string }
           description: The endpoint's verb allowlist (drain + webhook + event verbs).
+        replay_targets:
+          type: array
+          items: { type: string, format: uri }
+          description: The replay targets the endpoint owns, trimmed and de-duplicated, in order.
         webhook: { $ref: '#/components/schemas/VendWebhookOut' }
         mcp_json:
           type: object
@@ -676,6 +686,10 @@ components:
         state: { type: string, enum: [active, revoked], example: active }
         queues: { type: array, items: { type: string } }
         verbs: { type: array, items: { type: string } }
+        replay_targets:
+          type: array
+          items: { type: string, format: uri }
+          description: The endpoint's owned replay targets, returned only to its owner.
         expires_at: { type: [string, "null"], format: date-time }
 
   securitySchemes:

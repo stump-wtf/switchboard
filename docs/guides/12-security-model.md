@@ -41,7 +41,11 @@ The event history keeps it for later inspection and replay. So treat a payload a
   webhook was already deleted, have no provable owner, so no one can read them, and they age out
   through retention.
 - **`replay_webhook_event` sends a stored payload back out** to a target, so treat it as a
-  data-forwarding tool, not just a debugging one.
+  data-forwarding tool, not just a debugging one. The target is the one the call names or one
+  the calling endpoint owns (`replay_targets`, set when it is vended); there is no instance-wide
+  default. Every target must be `https` on a public address, checked when the call is made and
+  again when it connects, so a replay cannot reach localhost, a private network or a cloud
+  metadata service.
 
 ## Where a delivery can go
 
