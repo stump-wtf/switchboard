@@ -29,8 +29,10 @@ type quickVendView struct {
 	LifetimePresets []lifetimePreset
 	ExtraQueues     string
 	VerbOptions     []vendVerbOption
-	LifetimePreset  string
-	LifetimeCustom  string
+	// OutboundVerbOptions is the separately grouped, default-off notify-hook verb chips (SPEC-0024).
+	OutboundVerbOptions []vendVerbOption
+	LifetimePreset      string
+	LifetimeCustom      string
 }
 
 // QuickVendStart renders the one-step vend page. Requires human (the router's RequireHuman group).
@@ -68,6 +70,7 @@ func (h *Handler) QuickVendSubmit(w http.ResponseWriter, r *http.Request) {
 		v.QueueOptions = append(v.QueueOptions, vendChipOption{Name: q, Checked: slices.Contains(queues, q)})
 	}
 	v.VerbOptions = vendVerbOptions()
+	v.OutboundVerbOptions = vendOutboundVerbOptions(verbs)
 	if chosen := multiValues(r, "verbs"); len(chosen) > 0 {
 		for i := range v.VerbOptions {
 			v.VerbOptions[i].Checked = slices.Contains(chosen, v.VerbOptions[i].Name)
@@ -118,6 +121,9 @@ func (h *Handler) renderQuickVend(w http.ResponseWriter, r *http.Request, human 
 	v.LifetimePresets = lifetimePresets
 	if v.VerbOptions == nil {
 		v.VerbOptions = vendVerbOptions()
+	}
+	if v.OutboundVerbOptions == nil {
+		v.OutboundVerbOptions = vendOutboundVerbOptions(nil)
 	}
 	if v.QueueOptions == nil {
 		for _, q := range h.vendQueueOptions(r) {
