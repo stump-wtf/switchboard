@@ -176,7 +176,7 @@ type getWebhookEventIn struct {
 
 type replayWebhookEventIn struct {
 	ID        int64  `json:"id" jsonschema:"the stored event id to replay"`
-	TargetURL string `json:"target_url,omitempty" jsonschema:"replay target URL (http/https only); defaults to the configured replay target"`
+	TargetURL string `json:"target_url,omitempty" jsonschema:"replay target URL (https, public address); defaults to this endpoint's first owned replay target"`
 }
 
 type replayWebhookEventOut struct {
@@ -326,12 +326,12 @@ func (h *Handler) replayWebhookEventTool(ep store.AuthEndpoint) sdk.ToolHandlerF
 		if err != nil {
 			return nil, replayWebhookEventOut{}, h.mapEventStoreErr(ep, "replay_webhook_event", err)
 		}
-		// Replay delivery — rate limit, target resolution against the configured default,
-		// SSRF-hardened scheme + resolved-IP validation, the outbound POST, and mandatory logging —
-		// lives in replay.go. The stored raw payload and a replay-safe header subset are replayed;
-		// the target is always the explicit arg or the configured default, so the tool never replays
-		// back to the originating provider (there is no back-to-provider option in the contract).
-		// Governing: SPEC-0005 REQ "Replay Safety".
+		// Replay delivery — rate limit, target resolution against the endpoint's OWN replay targets,
+		// the shared SSRF guard at call and dial time, the outbound POST, and mandatory logging — lives
+		// in replay.go. The stored raw payload and a replay-safe header subset are replayed; the target
+		// is always the explicit arg or an owned target, so the tool never replays back to the
+		// originating provider (there is no back-to-provider option in the contract).
+		// Governing: SPEC-0005 REQ "Replay Safety", SPEC-0033 REQ "Owned Replay Targets".
 		out, err := h.replay(ctx, ep.Slug, ep.ID, in.ID, toEventDetailOut(d), in.TargetURL)
 		if err != nil {
 			return nil, replayWebhookEventOut{}, err

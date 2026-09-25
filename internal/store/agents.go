@@ -208,6 +208,11 @@ type VendParams struct {
 	WebhookMax         int
 	WebhookSourceTypes []string
 	WebhookQueues      []string
+	// ReplayTargets are the replay destinations the endpoint owns, fixed at vend time like the rest
+	// of its scope; the first is the default when a replay names no target. The caller validates
+	// each against the SSRF guard before vending: ownership never exempts a target from it.
+	// Governing: ADR-0038, SPEC-0033 REQ "Owned Replay Targets".
+	ReplayTargets []string
 }
 
 // VendResult is what VendAgentEndpoint returns: the backing agent's name (for the one-time reveal)
@@ -272,6 +277,12 @@ func (s *Store) VendAgentEndpoint(ctx context.Context, p VendParams) (VendResult
 	if err != nil {
 		return VendResult{}, fmt.Errorf("store: vend create endpoint: %w", err)
 	}
+	if len(p.ReplayTargets) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE endpoints SET replay_targets = $2 WHERE id = $1`,
+			ep.ID, p.ReplayTargets); err != nil {
+			return VendResult{}, fmt.Errorf("store: vend replay targets: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return VendResult{}, fmt.Errorf("store: vend commit: %w", err)
 	}
@@ -319,6 +330,9 @@ type EndpointCard struct {
 	// ExpiresAt is the optional vend-time credential lifetime the card's countdown renders from;
 	// nil = valid until revoked. Governing: SPEC-0016 REQ "Credential Lifetime".
 	ExpiresAt *time.Time
+	// ReplayTargets are the endpoint's owned replay destinations (SPEC-0033 REQ "Owned Replay
+	// Targets"), shown only to the owning human.
+	ReplayTargets []string
 }
 
 // ListEndpointCards returns every endpoint owned by a human (via its agents), enriched with the
@@ -330,7 +344,7 @@ func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]E
 	rows, err := s.pool.Query(ctx, `
 		SELECT e.id::text, e.agent_id::text, ag.name, COALESCE(p.id::text, ''), COALESCE(p.name, ''),
 		       e.slug, e.credential_prefix, e.scope_queues, e.scope_verbs,
-		       e.state, e.created_at, e.revoked_at, e.last_seen_at, e.expires_at
+		       e.state, e.created_at, e.revoked_at, e.last_seen_at, e.expires_at, e.replay_targets
 		FROM endpoints e
 		JOIN agents ag ON ag.id = e.agent_id
 		LEFT JOIN personas p ON p.id = e.persona_id
@@ -345,12 +359,30 @@ func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]E
 		var c EndpointCard
 		if err := rows.Scan(&c.ID, &c.AgentID, &c.AgentName, &c.PersonaID, &c.PersonaName, &c.Slug,
 			&c.CredentialPrefix, &c.ScopeQueues, &c.ScopeVerbs, &c.State, &c.CreatedAt,
-			&c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt); err != nil {
+			&c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt, &c.ReplayTargets); err != nil {
 			return nil, fmt.Errorf("store: scan endpoint card: %w", err)
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// EndpointReplayTargets returns the replay targets an active endpoint owns, in vend order. It is
+// keyed by the endpoint id alone because its one caller passes the AUTHENTICATED endpoint's own id:
+// an endpoint can only ever read its own list. An unknown or inactive endpoint is ErrNotFound.
+// Governing: ADR-0038, SPEC-0033 REQ "Owned Replay Targets".
+func (s *Store) EndpointReplayTargets(ctx context.Context, endpointID string) ([]string, error) {
+	var targets []string
+	err := s.pool.QueryRow(ctx,
+		`SELECT replay_targets FROM endpoints WHERE id = $1 AND state = 'active'`, endpointID,
+	).Scan(&targets)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: endpoint replay targets: %w", err)
+	}
+	return targets, nil
 }
 
 // RevokeEndpoint marks an endpoint revoked, but only if it belongs to the given human (via its agent).

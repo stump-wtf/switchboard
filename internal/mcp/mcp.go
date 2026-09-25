@@ -132,9 +132,10 @@ type ToolStore interface {
 	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
 	// EndpointScopeQueues feeds the grant's per-target scopes for exclusive delivery (ADR-0025).
 	EndpointScopeQueues(ctx context.Context, endpointIDs []string) (map[string][]string, error)
-	// SettingString backs replay target resolution (SPEC-0005 REQ "Replay Safety"): the
-	// `replay_default_target` fallback and the `replay_allowed_targets` allowlist both read here.
-	SettingString(ctx context.Context, key, def string) (string, error)
+	// EndpointReplayTargets backs replay target resolution: the calling endpoint's OWN replay
+	// targets, the first of which is the default when a replay names none. Always called with the
+	// authenticated endpoint's id. Governing: SPEC-0033 REQ "Owned Replay Targets".
+	EndpointReplayTargets(ctx context.Context, endpointID string) ([]string, error)
 }
 
 // Handler mounts the per-endpoint Streamable HTTP MCP sessions, their scope-filtered tool
@@ -152,6 +153,9 @@ type Handler struct {
 	preRL    *rateLimiter
 	rl       *rateLimiter
 	replayRL *rateLimiter
+	// replayGuard is the shared SSRF guard every replay is validated and dialed through (replay.go).
+	// Governing: SPEC-0033 REQ "Owned Replay Targets".
+	replayGuard *replayGuard
 
 	// baseURL is the externally-reachable origin used to build the ingest_url returned by
 	// create_webhook/rotate_webhook (SPEC-0006). Installed at wiring time via SetBaseURL; read
@@ -201,6 +205,7 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 		// Replay is bounded well under the read budget (5 rps / 20 burst vs. 20 / 40): enough for
 		// interactive local-consumer testing, far too little for amplification or SSRF sweeps.
 		replayRL:    newRateLimiter(5, 20),
+		replayGuard: newReplayGuard(nil),
 		idleTimeout: sessionIdleTimeout,
 		sessions:    map[string]*mcpSession{},
 		doorbellRR:  map[string]uint64{},

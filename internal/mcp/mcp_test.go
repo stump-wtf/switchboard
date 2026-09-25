@@ -42,7 +42,7 @@ type fakeStore struct {
 	webhooks       map[string]store.Webhook           // SPEC-0006 self-managed webhooks (webhooks_test.go)
 	webhookSecrets map[string]string                  // minted signing secret held server-side, by webhook id (never surfaced)
 	webhookN       int                                // monotonic id source for created webhooks
-	settings       map[string]string                  // SPEC-0005 replay knobs (replay_test.go)
+	replayTargets  map[string][]string                // owned replay targets, by endpoint id (replay_test.go)
 	failErr        error
 	// attachRings is what the next RingOnAttach returns — handed out once, the way the store's
 	// cooldown makes a row ring once per attach — and attachCalls records every call's scope.
@@ -70,19 +70,16 @@ func newFakeStore() *fakeStore {
 		eventOwners:    map[int64]string{},
 		webhooks:       map[string]store.Webhook{},
 		webhookSecrets: map[string]string{},
-		settings:       map[string]string{},
+		replayTargets:  map[string][]string{},
 	}
 }
 
-// SettingString mirrors store.Store.SettingString: a configured key returns its value, an absent
-// key returns the supplied default. Backs replay target resolution in the tests.
-func (f *fakeStore) SettingString(_ context.Context, key, def string) (string, error) {
+// EndpointReplayTargets mirrors store.Store.EndpointReplayTargets: the endpoint's own list, keyed by
+// its id. Backs replay target resolution in the tests.
+func (f *fakeStore) EndpointReplayTargets(_ context.Context, endpointID string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if v, ok := f.settings[key]; ok {
-		return v, nil
-	}
-	return def, nil
+	return append([]string(nil), f.replayTargets[endpointID]...), nil
 }
 
 func (f *fakeStore) EndpointByCredHash(_ context.Context, hash string) (store.AuthEndpoint, error) {

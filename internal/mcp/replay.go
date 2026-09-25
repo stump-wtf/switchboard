@@ -1,15 +1,20 @@
 package mcp
 
 // This file is the SPEC-0005 `replay_webhook_event` delivery path — the one side-effecting tool on
-// the MCP surface. It resolves the outbound target (explicit arg or the configured
-// `replay_default_target`, hard error if neither), SSRF-hardens it (scheme + resolved-IP checks,
-// with a DNS-rebinding guard at dial time), performs the bounded outbound POST replaying the stored
+// the MCP surface. It resolves the outbound target (the explicit arg, else the calling endpoint's
+// first OWNED replay target; neither is replay_target_required), validates it with the shared SSRF
+// guard (internal/push.Validator) at call time, dials only addresses that same guard approves at
+// dial time (resolved once, then pinned), performs the bounded outbound POST replaying the stored
 // raw payload and a replay-safe subset of headers, and reports what happened. Every attempt is
 // logged with structured context and never any payload/secret material.
 //
-// Governing: ADR-0005 (replay is the single, SSRF-conscious side-effecting verb; optional target
-// with a configured default and a hard error if neither is set), SPEC-0005 REQ "Replay Safety",
-// SPEC-0005 "Redirect Validation" + "Rate Limiting" security requirements.
+// There is no trusted target: an owned target is a default, never an exemption, and no replay
+// reaches the network without the guard. The instance settings that used to exempt targets for
+// every tenant are gone (migration 0026).
+//
+// Governing: ADR-0005 (replay is the single, SSRF-conscious side-effecting verb), ADR-0038 and
+// SPEC-0033 REQ "Owned Replay Targets" (audit F9), ADR-0029 (the shared SSRF guard), SPEC-0005 REQ
+// "Replay Safety", SPEC-0005 "Redirect Validation" + "Rate Limiting" security requirements.
 
 import (
 	"bytes"
@@ -23,12 +28,14 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/stump-wtf/switchboard/internal/push"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 const (
-	// replayTimeout bounds the whole outbound replay (dial + request + response headers). Replay is
-	// meant for a local/trusted consumer, so a short ceiling is generous while capping how long an
-	// abusive target can tie up a caller's replay budget.
+	// replayTimeout bounds the whole outbound replay (dial + request + response headers), capping
+	// how long an abusive target can tie up a caller's replay budget.
 	replayTimeout = 10 * time.Second
 	// maxReplayResponseBytes caps how much of the downstream response body we drain before closing.
 	// We report only the status code, so the body is read solely to allow connection reuse; bounding
@@ -38,14 +45,10 @@ const (
 	// (internal/ingest). A header still carrying it is a redacted secret and MUST NOT be replayed.
 	redactionMarker = "«redacted»"
 
-	settingReplayDefaultTarget  = "replay_default_target"
-	settingReplayAllowedTargets = "replay_allowed_targets"
+	// codeReplayTargetRequired: the call named no target_url and the endpoint owns no replay target.
+	// Governing: SPEC-0033 scenario "Instance trusted target is gone (F9)".
+	codeReplayTargetRequired = "replay_target_required"
 )
-
-// errBlockedTarget is the sentinel for a target that resolves into a blocked (private/loopback/
-// link-local/metadata) address. Surfaced to the client as invalid_argument at pre-flight and as a
-// refused dial (→ replay_failed) if a DNS rebind slips a blocked address past pre-flight.
-var errBlockedTarget = errors.New("mcp: replay target resolves to a blocked address")
 
 // replayDropHeaders is the set of stored headers never forwarded on a replay: hop-by-hop headers
 // (rewritten per-connection), Host/Content-Length (set by the HTTP client for the new request), and
@@ -68,119 +71,142 @@ var replayDropHeaders = map[string]bool{
 	"set-cookie":          true,
 }
 
-// isBlockedIP reports whether an address is one a replay MUST NOT reach by default: loopback
-// (127.0.0.0/8, ::1), RFC 1918 private + IPv6 ULA fc00::/7 (IsPrivate), link-local incl. the cloud
-// metadata address 169.254.169.254 (IsLinkLocal*), and the unspecified/multicast ranges. This is
-// the SSRF blocklist; explicitly trusted targets (the configured default, or an operator allowlist)
-// bypass it. Governing: SPEC-0005 "Redirect Validation".
-func isBlockedIP(ip net.IP) bool {
-	if ip == nil {
-		return true
-	}
-	return ip.IsLoopback() || // 127.0.0.0/8, ::1
-		ip.IsPrivate() || // 10/8, 172.16/12, 192.168/16, fc00::/7
-		ip.IsLinkLocalUnicast() || // 169.254.0.0/16 (incl. 169.254.169.254 metadata), fe80::/10
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified() || // 0.0.0.0, ::
-		ip.IsMulticast() ||
-		ip.IsInterfaceLocalMulticast()
+// replayGuard is the SSRF guard every replay goes through: the shared validator for the target URL
+// at call time, the resolver the dialer resolves with, and the connect step that opens a socket to
+// one already-checked "ip:port". Governing: SPEC-0033 REQ "Owned Replay Targets".
+type replayGuard struct {
+	validator *push.Validator
+	resolver  push.Resolver
+	// connect opens the TCP connection to one address dialContext has already approved. In
+	// production it is a net.Dialer whose Control hook checks the address again as the socket
+	// connects. Tests replace ONLY this step, to reach a local listener after the guard has approved
+	// a public address; resolution and every check stay the production code.
+	connect func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
-// replayTarget is a resolved, validated replay destination.
-type replayTarget struct {
-	url     *url.URL
-	trusted bool // configured default or allowlisted → exempt from the SSRF blocklist
+// newReplayGuard builds the guard over resolver r (nil = the process resolver). With no options the
+// validator is the shared default: https only, public addresses only.
+func newReplayGuard(r push.Resolver, opts ...push.Option) *replayGuard {
+	if r == nil {
+		r = push.DefaultResolver
+	}
+	g := &replayGuard{
+		validator: push.New(append([]push.Option{push.WithResolver(r)}, opts...)...),
+		resolver:  r,
+	}
+	d := &net.Dialer{
+		Timeout: replayTimeout,
+		Control: func(_, address string, _ syscall.RawConn) error { return g.validator.CheckDialAddress(address) },
+	}
+	g.connect = d.DialContext
+	return g
+}
+
+// dialContext resolves the host ONCE, refuses the whole dial if any answer is an address the guard
+// refuses (the dialer could pick any of them), and then connects only to those checked addresses, so
+// a DNS answer that changed after call-time validation cannot reach a refused range.
+func (g *replayGuard) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("%w: dial address %q: %v", push.ErrValidation, addr, err)
+	}
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		answers, err := g.resolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("%w: resolve %q: %v", push.ErrValidation, host, err)
+		}
+		for _, a := range answers {
+			ips = append(ips, a.IP)
+		}
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("%w: host %q resolved to no addresses", push.ErrValidation, host)
+	}
+	checked := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		a := net.JoinHostPort(ip.String(), port)
+		if err := g.validator.CheckDialAddress(a); err != nil {
+			return nil, err
+		}
+		checked = append(checked, a)
+	}
+	var lastErr error
+	for _, a := range checked {
+		conn, err := g.connect(ctx, network, a)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// client builds a single-use HTTP client for one replay: bounded dial/response timeout, no redirect
+// following (a 3xx to a fresh, unvalidated target is an SSRF re-entry the tool refuses), no proxy
+// (a proxy would dial on our behalf, past the guard), and the guarded dialer. TLS still verifies the
+// target URL's host name; only the TCP connection is pinned.
+func (g *replayGuard) client() *http.Client {
+	return &http.Client{
+		Timeout: replayTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse // do not follow; report the redirect status as delivered
+		},
+		Transport: &http.Transport{
+			Proxy:                 nil,
+			DialContext:           g.dialContext,
+			TLSHandshakeTimeout:   replayTimeout,
+			ResponseHeaderTimeout: replayTimeout,
+			DisableKeepAlives:     true,
+		},
+	}
 }
 
 // resolveReplayTarget resolves the effective target string: the explicit arg when present, else the
-// configured replay_default_target. Neither present is a hard error (never a guessed target).
-// Governing: SPEC-0005 scenario "No target and no default is an error, not a guess".
-func (h *Handler) resolveReplayTarget(ctx context.Context, arg string) (string, error) {
-	raw := strings.TrimSpace(arg)
-	if raw != "" {
+// calling endpoint's first owned replay target. "" means neither exists, which the caller turns into
+// replay_target_required (never a guessed target). The list read is keyed by the authenticated
+// endpoint's own id, so one endpoint can never resolve another's targets.
+// Governing: SPEC-0033 REQ "Owned Replay Targets", SPEC-0005 scenario "No target and no default is
+// an error, not a guess".
+func (h *Handler) resolveReplayTarget(ctx context.Context, endpointID, arg string) (string, error) {
+	if raw := strings.TrimSpace(arg); raw != "" {
 		return raw, nil
 	}
-	def, err := h.store.SettingString(ctx, settingReplayDefaultTarget, "")
-	if err != nil {
-		// A settings read failure is a server-side fault, not caller input; surface it up so the
-		// caller maps it to the generic internal code (never the raw error).
-		return "", fmt.Errorf("read %s: %w", settingReplayDefaultTarget, err)
+	owned, err := h.store.EndpointReplayTargets(ctx, endpointID)
+	if errors.Is(err, store.ErrNotFound) {
+		return "", nil
 	}
-	return strings.TrimSpace(def), nil
+	if err != nil {
+		// A store failure is a server-side fault, not caller input; the caller maps it to the
+		// generic internal code (never the raw error).
+		return "", fmt.Errorf("read owned replay targets: %w", err)
+	}
+	for _, t := range owned {
+		if t = strings.TrimSpace(t); t != "" {
+			return t, nil
+		}
+	}
+	return "", nil
 }
 
-// validateReplayTarget parses and SSRF-hardens the resolved target. Scheme MUST be http/https
-// (rejected before any request otherwise). A target equal to the configured default or matching the
-// operator allowlist is trusted and skips the address blocklist — this is how the documented
-// localhost/trusted-network dev consumer is permitted without opening the tool up as a general SSRF
-// primitive. Any other target has every resolved address checked against isBlockedIP.
-// Governing: SPEC-0005 scenario "Non-http scheme is rejected before any request", "Redirect Validation".
-func (h *Handler) validateReplayTarget(ctx context.Context, raw string) (replayTarget, error) {
+// validateReplayTarget parses the resolved target and runs it through the shared SSRF validator at
+// call time: scheme, host, and every address the host resolves to right now. Owned or not, every
+// target takes this path; there is no trusted target. Governing: SPEC-0033 REQ "Owned Replay
+// Targets", SPEC-0005 scenario "Non-http scheme is rejected before any request".
+func (h *Handler) validateReplayTarget(ctx context.Context, raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || !u.IsAbs() || u.Host == "" {
-		return replayTarget{}, &toolError{codeInvalidArgument, "target_url must be an absolute http(s) URL"}
+		return nil, &toolError{codeInvalidArgument, "target_url must be an absolute https URL"}
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return replayTarget{}, &toolError{codeInvalidArgument, "target_url scheme must be http or https"}
+	if err := h.replayGuard.validator.Validate(ctx, raw); err != nil {
+		// The validator's detail names the scheme or address class of the caller's own input, so it
+		// is safe to return and tells them what to fix.
+		return nil, &toolError{codeInvalidArgument, "target_url refused by the SSRF guard: " +
+			strings.TrimPrefix(err.Error(), push.ErrValidation.Error()+": ")}
 	}
-
-	trusted, err := h.targetTrusted(ctx, raw, u)
-	if err != nil {
-		return replayTarget{}, err // internal (settings read failure)
-	}
-	if trusted {
-		return replayTarget{url: u, trusted: true}, nil
-	}
-
-	// Untrusted target: every address the host resolves to must be outside the blocklist. An IP
-	// literal is checked directly; a hostname is resolved once here (pre-flight) and re-checked at
-	// dial time by the guarded dialer (DNS-rebinding defence).
-	host := u.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if isBlockedIP(ip) {
-			return replayTarget{}, &toolError{codeInvalidArgument, "target_url resolves to a disallowed address"}
-		}
-		return replayTarget{url: u, trusted: false}, nil
-	}
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return replayTarget{}, &toolError{codeInvalidArgument, "target_url host could not be resolved"}
-	}
-	if len(ips) == 0 {
-		return replayTarget{}, &toolError{codeInvalidArgument, "target_url host has no addresses"}
-	}
-	for _, ipa := range ips {
-		if isBlockedIP(ipa.IP) {
-			return replayTarget{}, &toolError{codeInvalidArgument, "target_url resolves to a disallowed address"}
-		}
-	}
-	return replayTarget{url: u, trusted: false}, nil
-}
-
-// targetTrusted reports whether the target is the configured default or on the operator allowlist.
-func (h *Handler) targetTrusted(ctx context.Context, raw string, u *url.URL) (bool, error) {
-	def, err := h.store.SettingString(ctx, settingReplayDefaultTarget, "")
-	if err != nil {
-		return false, fmt.Errorf("read %s: %w", settingReplayDefaultTarget, err)
-	}
-	if def != "" && strings.TrimSpace(def) == raw {
-		return true, nil
-	}
-	allowed, err := h.store.SettingString(ctx, settingReplayAllowedTargets, "")
-	if err != nil {
-		return false, fmt.Errorf("read %s: %w", settingReplayAllowedTargets, err)
-	}
-	host, hostPort := u.Hostname(), u.Host
-	for _, entry := range strings.Split(allowed, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if entry == hostPort || entry == host {
-			return true, nil
-		}
-	}
-	return false, nil
+	return u, nil
 }
 
 // replaySafeHeaders projects the stored sanitized headers onto the subset safe to replay: hop-by-hop
@@ -200,56 +226,16 @@ func replaySafeHeaders(stored map[string]string) http.Header {
 	return out
 }
 
-// guardedDialContext builds a dialer whose Control hook re-checks the concrete resolved address
-// immediately before the socket connects — the DNS-rebinding defence, since it runs after the name
-// has been resolved to an IP and refuses the dial if that IP is blocked. Trusted targets use a plain
-// dialer (blocklist bypassed) but keep the timeout.
-func guardedDialContext(trusted bool) func(context.Context, string, string) (net.Conn, error) {
-	d := &net.Dialer{Timeout: replayTimeout}
-	if trusted {
-		return d.DialContext
-	}
-	d.Control = func(_, address string, _ syscall.RawConn) error {
-		host, _, err := net.SplitHostPort(address)
-		if err != nil {
-			return errBlockedTarget
-		}
-		ip := net.ParseIP(host)
-		if ip == nil || isBlockedIP(ip) {
-			return errBlockedTarget
-		}
-		return nil
-	}
-	return d.DialContext
-}
-
-// replayClient builds a single-use HTTP client for one replay: bounded dial/response timeout, no
-// redirect following (a 3xx to a fresh, unvalidated target is an SSRF re-entry the tool refuses),
-// and the SSRF-guarded dialer for untrusted targets.
-func replayClient(trusted bool) *http.Client {
-	return &http.Client{
-		Timeout: replayTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse // do not follow; report the redirect status as delivered
-		},
-		Transport: &http.Transport{
-			DialContext:           guardedDialContext(trusted),
-			TLSHandshakeTimeout:   replayTimeout,
-			ResponseHeaderTimeout: replayTimeout,
-			DisableKeepAlives:     true,
-		},
-	}
-}
-
 // doReplay performs the bounded outbound POST and reports the outcome. A transport/connection
-// failure returns (delivered=false, status=nil, err) — the caller maps err to replay_failed. Any
-// completed exchange, including a non-2xx downstream status, returns delivered=true with that status
-// and a nil error. Governing: SPEC-0005 scenario "Downstream non-2xx is reported, not raised".
-func doReplay(ctx context.Context, tgt replayTarget, payload []byte, headers http.Header) (delivered bool, status *int, elapsed time.Duration, err error) {
+// failure (including a dial the guard refused) returns (delivered=false, status=nil, err) — the
+// caller maps err to replay_failed. Any completed exchange, including a non-2xx downstream status,
+// returns delivered=true with that status and a nil error. Governing: SPEC-0005 scenario "Downstream
+// non-2xx is reported, not raised".
+func doReplay(ctx context.Context, client *http.Client, target *url.URL, payload []byte, headers http.Header) (delivered bool, status *int, elapsed time.Duration, err error) {
 	reqCtx, cancel := context.WithTimeout(ctx, replayTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, tgt.url.String(), bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target.String(), bytes.NewReader(payload))
 	if err != nil {
 		return false, nil, 0, fmt.Errorf("build replay request: %w", err)
 	}
@@ -260,7 +246,7 @@ func doReplay(ctx context.Context, tgt replayTarget, payload []byte, headers htt
 	}
 
 	start := time.Now()
-	resp, err := replayClient(tgt.trusted).Do(req)
+	resp, err := client.Do(req)
 	elapsed = time.Since(start)
 	if err != nil {
 		return false, nil, elapsed, fmt.Errorf("replay POST: %w", err)
@@ -281,37 +267,31 @@ func (h *Handler) replay(ctx context.Context, slug, endpointID string, id int64,
 		return replayWebhookEventOut{}, &toolError{codeRateLimited, "replay rate limit exceeded; slow down"}
 	}
 
-	raw, err := h.resolveReplayTarget(ctx, argTarget)
+	raw, err := h.resolveReplayTarget(ctx, endpointID, argTarget)
 	if err != nil {
 		h.log.Error("mcp replay target resolution failed", "slug", slug, "event_id", id,
 			"err", fmt.Errorf("replay_webhook_event: %w", err))
 		return replayWebhookEventOut{}, &toolError{codeInternal, "internal error"}
 	}
 	if raw == "" {
-		return replayWebhookEventOut{}, &toolError{codeInvalidArgument,
-			"no target_url provided and no replay_default_target configured"}
+		return replayWebhookEventOut{}, &toolError{codeReplayTargetRequired,
+			"no target_url given and this endpoint owns no replay target"}
 	}
 
-	tgt, err := h.validateReplayTarget(ctx, raw)
+	target, err := h.validateReplayTarget(ctx, raw)
 	if err != nil {
-		var te *toolError
-		if errors.As(err, &te) {
-			return replayWebhookEventOut{}, te
-		}
-		h.log.Error("mcp replay target validation failed", "slug", slug, "event_id", id,
-			"err", fmt.Errorf("replay_webhook_event: %w", err))
-		return replayWebhookEventOut{}, &toolError{codeInternal, "internal error"}
+		return replayWebhookEventOut{}, err
 	}
 
 	headers := replaySafeHeaders(detail.Headers)
-	delivered, status, elapsed, err := doReplay(ctx, tgt, []byte(detail.Payload), headers)
+	delivered, status, elapsed, err := doReplay(ctx, h.replayGuard.client(), target, []byte(detail.Payload), headers)
 	ms := elapsed.Milliseconds()
 
 	// Every replay attempt is logged with structured context — endpoint, event, target host, and
 	// outcome — and never the payload or a secret. Governing: SPEC-0005 REQ "Replay Safety".
 	logAttrs := []any{
-		"slug", slug, "event_id", id, "target_host", tgt.url.Host,
-		"trusted", tgt.trusted, "delivered", delivered, "response_ms", ms,
+		"slug", slug, "event_id", id, "target_host", target.Host,
+		"delivered", delivered, "response_ms", ms,
 	}
 	if status != nil {
 		logAttrs = append(logAttrs, "response_status", *status)
@@ -324,7 +304,7 @@ func (h *Handler) replay(ctx context.Context, slug, endpointID string, id int64,
 
 	return replayWebhookEventOut{
 		ID:             id,
-		TargetURL:      tgt.url.String(),
+		TargetURL:      target.String(),
 		Delivered:      delivered,
 		ResponseStatus: status,
 		ResponseMs:     ms,
