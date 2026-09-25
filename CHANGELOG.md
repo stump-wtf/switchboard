@@ -23,6 +23,12 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   history, newest first (`attempts_limit`, default 20, maximum 50). `list_todos` implies it, so
   existing endpoints get it without a re-vend. A foreign todo, or one outside the granted queues,
   answers `not_found` exactly as an unknown id does. (#326)
+- **`release`.** Hands a held todo back to `pending` without a verdict (shutdown, operator stop,
+  usage limit): no backoff, attempt counter unchanged, and the attempt closes `released` with an
+  optional `summary` (cut to 2048 bytes, `summary_truncated`) and `artifact` (an `mcp://cairn/`
+  handle or an absolute `https` URL; anything else is `invalid` and changes nothing). It honours the
+  lease-token fence. It is its own grant, listed by the vend wizard and the consent screen, and no
+  other verb implies it. (#328)
 
 ## [0.3.0] - 2026-09-22
 
