@@ -30,19 +30,43 @@ import (
 // items expire after 30 days, and a flood is fixed at the source (a trust list or a rule).
 const QuarantineListCap = 200
 
+// QuarantinePayloadPreview bounds the payload bytes one listed item carries. A listing holds up to
+// QuarantineListCap items and an inbound body may be 5 MiB, so the list reads a preview of each body,
+// never the whole of it. The full body stays readable through get_webhook_event.
+const QuarantinePayloadPreview = 16 << 10
+
+// quarantineListEventSelect is eventDetailSelect with the payload cut to the preview in SQL, so the
+// database never ships a whole body for a listing.
+var quarantineListEventSelect = mustReplaceOnce(eventDetailSelect, "COALESCE(payload, ''::bytea)",
+	fmt.Sprintf("substring(COALESCE(payload, ''::bytea) from 1 for %d)", QuarantinePayloadPreview))
+
+// quarantineListTodoCols is todoCols with an oversized todo payload left out. The view shows the
+// event's (previewed) body, and falls back to the todo's payload only when the event has none.
+var quarantineListTodoCols = mustReplaceOnce(todoCols, "title, payload,",
+	fmt.Sprintf("title, CASE WHEN octet_length(payload::text) <= %d THEN payload END,", QuarantinePayloadPreview))
+
+// mustReplaceOnce derives a list projection from a shared one, and fails at start-up (and in every
+// test) if the shared projection changes shape under it.
+func mustReplaceOnce(s, old, repl string) string {
+	if strings.Count(s, old) != 1 {
+		panic("store: the shared projection changed; update the quarantine list projection for " + old)
+	}
+	return strings.Replace(s, old, repl, 1)
+}
+
 // ErrTrustListRefused is returned by AddWebhookTrustedActors when the grown list would be invalid
 // (over the 256-entry limit, or an entry over 128 bytes). The wrapped message is safe to show.
 var ErrTrustListRefused = errors.New("store: the trust list refused the actor")
 
 // ListQuarantinedForHuman returns the open quarantine items (queue quarantine, state pending) on the
-// human's endpoints, newest first, each with the event it holds and its webhook's trust
-// configuration. limit is clamped to
+// human's endpoints, newest first, each with the event it holds (its payload cut to
+// QuarantinePayloadPreview bytes) and its webhook's trust configuration. limit is clamped to
 // [1, QuarantineListCap]. Governing: SPEC-0026 REQ-9 (the owner scope's items only).
 func (s *Store) ListQuarantinedForHuman(ctx context.Context, ownerHumanID string, limit int) ([]QuarantinedItem, error) {
 	if limit <= 0 || limit > QuarantineListCap {
 		limit = QuarantineListCap
 	}
-	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
+	rows, err := s.pool.Query(ctx, `SELECT `+quarantineListTodoCols+` FROM todos
 		WHERE queue = 'quarantine' AND state = 'pending'`+operatorOwns+`$1)
 		ORDER BY created_at DESC, id DESC LIMIT $2`, ownerHumanID, limit)
 	if err != nil {
@@ -67,7 +91,7 @@ func (s *Store) ListQuarantinedForHuman(ctx context.Context, ownerHumanID string
 	}
 	events := map[int64]EventHistoryDetail{}
 	if len(eventIDs) > 0 {
-		erows, err := s.pool.Query(ctx, eventDetailSelect+` WHERE id = ANY($1)`, eventIDs)
+		erows, err := s.pool.Query(ctx, quarantineListEventSelect+` WHERE id = ANY($1)`, eventIDs)
 		if err != nil {
 			return nil, fmt.Errorf("store: list quarantined events: %w", err)
 		}
@@ -94,6 +118,7 @@ func (s *Store) ListQuarantinedForHuman(ctx context.Context, ownerHumanID string
 		if t.EventID != nil {
 			it.Event = events[*t.EventID]
 		}
+		it.PayloadTruncated = len(it.Event.Payload) >= QuarantinePayloadPreview && it.Event.PayloadSize > len(it.Event.Payload)
 		// Only the webhook the held todo's endpoint owns counts, as WebhookForEndpoint reads it for
 		// the trust action itself.
 		if w, ok := trust[it.Event.WebhookID]; ok && w.endpointID == t.EndpointID {

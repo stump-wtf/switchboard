@@ -102,6 +102,46 @@ func TestQuarantineViewReadsAreOwnerScoped(t *testing.T) {
 	}
 }
 
+// The listing carries a bounded preview of each body, never the whole of it: an oversized event
+// payload is cut to QuarantinePayloadPreview bytes in SQL and flagged, and an oversized todo payload
+// is left out. A small body is listed whole and unflagged (TestQuarantineViewReadsAreOwnerScoped).
+func TestQuarantineListPreviewsLargePayloads(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "view-big", "q")
+	human := ownerOf(t, s, ctx, ep)
+	wh, err := s.CreateWebhook(ctx, ep, "github", "q", "signed", fmt.Sprintf("tok-view-big-%d", heldSeq.Add(1)), "whsec_b", 5)
+	if err != nil {
+		t.Fatalf("webhook: %v", err)
+	}
+	big := []byte(`{"body":"` + strings.Repeat("x", 3*QuarantinePayloadPreview) + `"}`)
+	key := fmt.Sprintf("view-big-%d", heldSeq.Add(1))
+	if _, _, _, err := s.CreateIntakeEventTodos(ctx, EventInput{
+		Source: "github", Family: "webhook", EventType: "issues", ExternalID: key, TrustMode: "signed",
+		Verified: true, Payload: big, WebhookID: wh.ID, Disposition: DispositionQuarantined,
+	}, []string{ep}, CreateTodoParams{Source: "github", Kind: "issues", Title: "big", Payload: big,
+		IdempotencyKey: key, QuarantineReason: "untrusted_actor", QuarantineDetail: []byte(`{"actor":{"sender":"mallory"}}`)}); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	items, err := s.ListQuarantinedForHuman(ctx, human, 0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("list = %d items (%v), want 1", len(items), err)
+	}
+	it := items[0]
+	if len(it.Event.Payload) != QuarantinePayloadPreview || !it.PayloadTruncated || it.Event.PayloadSize != len(big) ||
+		string(it.Event.Payload) != string(big[:QuarantinePayloadPreview]) {
+		t.Fatalf("event payload = %d bytes (truncated %v, size %d), want the first %d of %d",
+			len(it.Event.Payload), it.PayloadTruncated, it.Event.PayloadSize, QuarantinePayloadPreview, len(big))
+	}
+	if it.Todo.Payload != nil {
+		t.Fatalf("todo payload = %d bytes, want it left out of the listing", len(it.Todo.Payload))
+	}
+	// The single-item read the actions use still carries the whole body.
+	one, err := s.QuarantinedForHuman(ctx, human, it.Todo.ID)
+	if err != nil || len(one.Event.Payload) != len(big) {
+		t.Fatalf("single read = %d bytes (%v), want the whole %d", len(one.Event.Payload), err, len(big))
+	}
+}
+
 func TestAddWebhookTrustedActors(t *testing.T) {
 	s, ctx := testStore(t)
 	ep := seedEndpoint(t, s, ctx, "trust-add", "q")

@@ -189,6 +189,29 @@ func TestQuarantinePayloadIsNeverMarkup(t *testing.T) {
 	}
 }
 
+// A previewed (byte-cut) payload renders raw, whole runes only, with a truncation marker; a whole
+// payload renders pretty-printed with none.
+func TestQuarantinePayloadPreviewIsMarked(t *testing.T) {
+	cut := `{"body":"<b>héé` + "\xc3" // a preview that ends mid-rune, inside a string
+	it := heldItem(routing.QuarantineUntrustedActor, `{}`, cut)
+	it.PayloadTruncated, it.Event.PayloadSize = true, 5<<20
+	v := quarantineItemFrom(it, nil)
+	if v.Payload != `{"body":"<b>héé` || !v.PayloadTruncated {
+		t.Fatalf("preview payload = %q (truncated %v), want the raw whole-rune prefix", v.Payload, v.PayloadTruncated)
+	}
+	body := renderQuarantine(t, quarantinePanelView{CSRF: "tok", Items: []quarantineItemView{v}}, 1)
+	for _, want := range []string{"payload (preview)</summary>", "data-sb-quar-payload-truncated", "of 5242880 bytes", `&lt;b&gt;héé`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("preview: missing %q", want)
+		}
+	}
+	whole := quarantineItemFrom(heldItem(routing.QuarantineUntrustedActor, `{}`, `{"a":1}`), nil)
+	body = renderQuarantine(t, quarantinePanelView{CSRF: "tok", Items: []quarantineItemView{whole}}, 1)
+	if whole.PayloadTruncated || strings.Contains(body, "data-sb-quar-payload-truncated") || !strings.Contains(body, "&#34;a&#34;: 1") {
+		t.Error("a whole payload is marked truncated or not pretty-printed")
+	}
+}
+
 func TestQuarantineNoticesAndRedirect(t *testing.T) {
 	for code := range quarantineNotices {
 		if got := quarantineRedirect(code); got != "/quarantine?n="+code {

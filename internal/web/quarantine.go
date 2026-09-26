@@ -132,9 +132,13 @@ type quarantineItemView struct {
 	FaultDetail string
 	RuleID      string
 
-	Payload    string   // pretty-printed, rendered as escaped text only
-	CanTrust   bool     // trust-this-actor is offered: untrusted_actor, and the action would add someone
-	TrustNames []string // exactly who the trust action adds under the webhook's match mode
+	Payload string // pretty-printed, rendered as escaped text only
+	// PayloadTruncated: Payload is the first store.QuarantinePayloadPreview bytes of a PayloadSize
+	// body. A full listing never carries whole bodies (up to 200 items of up to 5 MiB each).
+	PayloadTruncated bool
+	PayloadSize      int
+	CanTrust         bool     // trust-this-actor is offered: untrusted_actor, and the action would add someone
+	TrustNames       []string // exactly who the trust action adds under the webhook's match mode
 }
 
 // TrustFor is who the trust action adds, for its visible text and accessible label.
@@ -221,6 +225,12 @@ func quarantineItemFrom(it store.QuarantinedItem, agents map[string]string) quar
 	payload := it.Event.Payload
 	if len(payload) == 0 {
 		payload = t.Payload
+	}
+	if it.PayloadTruncated {
+		// A byte-cut preview is not valid JSON and may end mid-rune: show it raw, whole runes only.
+		v.Payload = strings.ToValidUTF8(string(payload), "")
+		v.PayloadTruncated, v.PayloadSize = true, it.Event.PayloadSize
+		return v
 	}
 	v.Payload = prettyJSON(payload)
 	return v

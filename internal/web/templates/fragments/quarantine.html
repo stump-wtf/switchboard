@@ -38,8 +38,9 @@
   {{/* The payload, collapsed by default. A text node inside <pre>: markup and Markdown in it stay
        inert text. sb-disclosure.js mirrors the open state onto the summary's aria-expanded. */}}
   <details class="sb-quar__payload" data-sb-disclosure>
-    <summary class="sb-quar__payload-summary" aria-expanded="false" aria-controls="sb-quar-payload-{{$i.ID}}">payload</summary>
+    <summary class="sb-quar__payload-summary" aria-expanded="false" aria-controls="sb-quar-payload-{{$i.ID}}">payload{{if $i.PayloadTruncated}} (preview){{end}}</summary>
     <pre class="sb-pre" id="sb-quar-payload-{{$i.ID}}" data-sb-quar-payload>{{$i.Payload}}</pre>
+    {{if $i.PayloadTruncated}}<p class="sb-muted" data-sb-quar-payload-truncated>truncated · the first 16 KiB of {{$i.PayloadSize}} bytes. The full body is in the webhook's event history (<code class="sb-code">get_webhook_event</code>).</p>{{end}}
   </details>
   <div class="sb-quar__acts">
     <form method="post" action="/quarantine/{{$i.ID}}/release" class="sb-quar__form" hx-post="/quarantine/{{$i.ID}}/release" hx-target="#sb-quarantine-panel" hx-swap="outerHTML">

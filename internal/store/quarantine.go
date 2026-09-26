@@ -65,6 +65,9 @@ type QuarantinedItem struct {
 	// "trust this actor" would add under the list's match mode. ListQuarantinedForHuman sets it; it
 	// is nil when the webhook is gone or no longer belongs to the held todo's endpoint.
 	Trust *WebhookTrust
+	// PayloadTruncated reports that Event.Payload is only the first QuarantinePayloadPreview bytes of
+	// a larger body; Event.PayloadSize is the full size. ListQuarantinedForHuman sets it.
+	PayloadTruncated bool
 }
 
 // WebhookTrust is the part of a webhook that decides who trusting an actor adds: its source type and
