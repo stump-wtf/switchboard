@@ -94,6 +94,31 @@ window. The todo owner MUST be recorded as the acting agent
 identity (`agent:<agent_id>`). A todo returned or transitioned MUST carry at minimum `id`, `queue`,
 `state`, and `attempt`.
 
+The payload ships once, at claim. A **compact row** MUST NOT carry the todo's `payload` or its
+`routing` trace: both are sized by the upstream producer rather than by Switchboard (a forge
+webhook body runs to ~15–20 KB), so a listing of full rows grows with whatever the producer sent,
+and one outage's backlog of them overflows a working model's context window. A compact row MUST
+carry `payload_size`, the stored payload's length in bytes, so a worker can see what a claim will
+cost, and MUST keep `work_order`, which Switchboard authors and bounds. `list_todos`, `complete`,
+`fail` and `heartbeat` MUST return compact rows: a lister is choosing, not working, and a caller
+acking a todo already holds its payload from the claim. `claim` and `claim_next` MUST return the
+**full todo** — the compact row plus `payload` and `routing` — because a claim is the point the
+worker takes the task on.
+
+#### Scenario: A backlog listing fits a small context
+
+- **WHEN** a queue holds 57 pending todos whose payloads are ~18 KB each, and a worker with a
+  196K-token context calls `list_todos` with `state = pending` and `limit = 200`
+- **THEN** every row MUST omit `payload` and `routing` and carry `payload_size`, so the response
+  size depends on the row count and not on what the producer sent
+
+#### Scenario: Claim delivers the payload; acks do not echo it
+
+- **WHEN** a worker claims a todo with `claim` or `claim_next`, then calls `heartbeat` and
+  `complete` on it
+- **THEN** the claim MUST return the todo's `payload` and `routing`, and the `heartbeat` and
+  `complete` responses MUST be compact rows without them
+
 #### Scenario: Claim races resolve to one winner
 
 - **WHEN** two endpoints call `claim` on the same `pending` todo concurrently

@@ -68,6 +68,24 @@ becomes claimable again without human intervention (SQS-style visibility).
 **Alternatives considered**:
 - No lease (claim = own forever): a crashed agent strands the todo permanently.
 
+### The payload ships once, at claim
+
+**Choice**: `list_todos`, `complete`, `fail` and `heartbeat` return compact rows (`payload_size`
+in place of `payload`, no `routing` trace); only `claim` and `claim_next` return the full todo.
+
+**Rationale**: The payload is the one field whose size Switchboard does not control. A forge
+webhook body is ~15–20 KB, so a 200-row listing could be several megabytes, and every ack echoed
+the payload the worker already held. On 2026-09-25 two Qwen3.8-27B workers (196,608-token window)
+came back from a five-hour model outage to 57 pending todos; a house-rule `list_todos` call
+(`state = pending`, `limit = 200`) returned 1.07 MB, and both sessions stuck on
+`ContextWindowExceededError`, because every retry resent the same oversized history. Filtering
+harder on the client cannot fix that: the rule already asked for pending rows in one queue. This
+mirrors the event-history surface ([SPEC-0005](../mcp-tools/spec.md)), whose `list_webhook_events`
+returns `payload_size` and whose `get_webhook_event` returns the body.
+
+**Alternatives rejected**: an opt-in `include_payload` flag on `list_todos` puts the overflow back
+within one argument's reach; truncating payloads in rows gives a worker a body it cannot trust.
+
 ### Lossy doorbell stream, durable queue as ledger
 
 **Choice**: `Hub.Publish` never blocks; a full subscriber buffer drops the notification. The todo
