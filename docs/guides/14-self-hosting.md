@@ -39,7 +39,7 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_GITHUB_CLIENT_ID` | — | Optional second login provider (GitHub OAuth, ADR-0026). When set with its secret, the login page gains "Log in with GitHub". |
 | `SWITCHBOARD_GITHUB_CLIENT_SECRET` | — | |
 | `SWITCHBOARD_GITHUB_REDIRECT_URL` | `<base>/auth/callback` | Override only if your proxy rewrites paths. |
-| `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | — | Recommended. Encrypts webhook signing secrets at rest. 32 bytes, base64 or hex. |
+| `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | — | Recommended. Encrypts webhook signing secrets at rest. 32 bytes, base64 or hex. **Empty stores them in plaintext**; see [Secrets at rest](/guides/security-model#secrets-at-rest). |
 | `SWITCHBOARD_DEV_LOGIN` | off | Unauthenticated local login. Never in production. |
 | `SWITCHBOARD_METRICS_TOKEN` | — | Scrape token for `GET /metrics`. Unset, the endpoint answers `401` to everything. At least 32 bytes. See [Metrics](#metrics). |
 | `SWITCHBOARD_FRIENDING`, `SWITCHBOARD_PERSONAS`, `SWITCHBOARD_A2A`, `SWITCHBOARD_A2UI` | off | Advanced capabilities, hidden until switched on. |
