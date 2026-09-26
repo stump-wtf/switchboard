@@ -50,7 +50,8 @@ func TestActorOfRecordedPayloads(t *testing.T) {
 		{"fleet/samples/gitea-issue-opened.json", "joestump", "joestump", "joestump"},
 		{"fleet/samples/gitea-issue-label-updated.json", "joestump-agent", "joestump", "joestump"},
 		{"fleet/samples/gitea-pull-request-comment.json", "joestump-agent", "joestump-agent", "joestump"},
-		{"fleet/samples/gitea-pull-request-approved.json", "gitea-actions", "joestump", "joestump"},
+		// Gitea's review object ({type, content}) names no user: the review's text is the sender's.
+		{"fleet/samples/gitea-pull-request-approved.json", "gitea-actions", "gitea-actions", "joestump"},
 		{"fleet/samples/gitea-pull-request-review-requested.json", "joestump", "joestump", "joestump"},
 		{"actor/gitea-push.json", "joestump", "", ""},
 		{"fleet/samples/cairn-artifact-created.json", "joestump-agent", "joestump-agent", ""},
@@ -177,6 +178,13 @@ func TestEvaluateTrust(t *testing.T) {
 	duplicate := []byte(`{"sender":{"login":"joestump"},"sender":{"login":"mallory"}}`)
 	kelvin := []byte(`{"sender":{"login":"Kelvin"}}`)
 	malformed := []byte(`{"comment":{"user":{"login":7}},"issue":{"user":{"login":"joestump"}},"sender":{"login":"joestump"}}`)
+	// Gitea's review payload is {type, content}, with no user: the sender wrote the review.
+	giteaOutsiderReview := []byte(`{"action":"reviewed","review":{"type":"pull_request_review_approved","content":"LGTM"},` +
+		`"pull_request":{"number":2,"user":{"login":"joestump"}},"sender":{"login":"mallory"}}`)
+	giteaOwnReview := []byte(`{"action":"reviewed","review":{"type":"pull_request_review_comment","content":"note"},` +
+		`"pull_request":{"number":2,"user":{"login":"joestump"}},"sender":{"login":"joestump"}}`)
+	giteaReviewRequested := []byte(`{"action":"review_requested","review":null,` +
+		`"pull_request":{"number":2,"user":{"login":"joestump"}},"sender":{"login":"mallory"}}`)
 	cases := []struct {
 		name, source, trust string
 		body                []byte
@@ -210,6 +218,13 @@ func TestEvaluateTrust(t *testing.T) {
 		{"unicode fold", "github", `{"logins":["kelvin"]}`, kelvin, "false", "false", "false"},
 		// A body whose actor fields have the wrong type names no one.
 		{"malformed login", "github", `{"logins":["joestump"]}`, malformed, "false", "false", "false"},
+		// A gitea review names no reviewer, so its author is the sender. An outsider's review on a
+		// maintainer's pull request is the outsider's text: author_trusted is false, and match
+		// "author" holds it.
+		{"gitea outsider review, match author", "gitea", `{"logins":["joestump"],"match":"author"}`, giteaOutsiderReview, "false", "false", "false"},
+		{"gitea own review, match author", "gitea", `{"logins":["joestump"],"match":"author"}`, giteaOwnReview, "true", "true", "true"},
+		// A null review (review_requested) is no review: the author is the pull request's.
+		{"gitea review requested, match author", "gitea", `{"logins":["joestump"],"match":"author"}`, giteaReviewRequested, "false", "true", "true"},
 	}
 
 	// .actor and .payload agree about who acted, whatever the key casing.

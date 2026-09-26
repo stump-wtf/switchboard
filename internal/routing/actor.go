@@ -16,6 +16,8 @@ package routing
 // Governing: ADR-0031, SPEC-0026 REQ-5 "Trusted Actors", REQ-10 "Envelope and Work Order Additions".
 //
 // @joestump-agent 09/25/2026 - Added for #385.
+//
+// @joestump 09/27/2026 - A gitea review names no reviewer, so its author is the sender (#502 review).
 
 import (
 	"encoding/json"
@@ -251,6 +253,25 @@ func exactString(body []byte, path []string) (s string, ok bool) {
 	return s, true
 }
 
+// isObject reports whether the top-level key holds a JSON object, reading keys exactly as
+// exactString does. A missing or null key is not an object: (false, true). ok is false when the body
+// or the key's value is present with the wrong type.
+func isObject(body []byte, key string) (is bool, ok bool) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(body, &obj) != nil {
+		return false, false
+	}
+	v, present := obj[key]
+	if !present {
+		return false, true
+	}
+	var inner map[string]json.RawMessage
+	if json.Unmarshal(v, &inner) != nil {
+		return false, false
+	}
+	return inner != nil, true // JSON null decodes to a nil map
+}
+
 // firstString is the first non-empty exactString over paths. ok is false if any path probed on the
 // way has the wrong type, so a malformed body trusts no one rather than falling through to a later
 // path.
@@ -270,7 +291,8 @@ func firstString(body []byte, paths [][]string) (string, bool) {
 // ActorOf projects a verified body onto its actor. For github and gitea:
 //   - sender is sender.login;
 //   - author is the first present of comment.user.login, review.user.login, pull_request.user.login,
-//     issue.user.login and discussion.user.login;
+//     issue.user.login and discussion.user.login, except on a gitea review, whose review object
+//     names no user: its author is the sender, who wrote the review;
 //   - thread is the first present of the last three.
 //
 // For cairn, sender and author are both the signed data.actor_id. on_behalf_of is the sharing
@@ -285,6 +307,19 @@ func ActorOf(source string, body []byte) *Actor {
 		thread, ok3 := firstString(body, threadPaths)
 		if !ok1 || !ok2 || !ok3 {
 			return &Actor{}
+		}
+		if source == "gitea" {
+			// Gitea's review object is {type, content} and names no reviewer: the review's text is
+			// the sender's. Without this, an outsider's review on a maintainer's pull request would
+			// take the pull request author as its author and read as trusted text.
+			reviewer, ok4 := firstString(body, authorPaths[:2]) // comment.user, review.user
+			review, ok5 := isObject(body, "review")
+			if !ok4 || !ok5 {
+				return &Actor{}
+			}
+			if reviewer == "" && review {
+				author = sender
+			}
 		}
 		return &Actor{Sender: sender, Author: author, Thread: thread}
 	case SourceCairn:

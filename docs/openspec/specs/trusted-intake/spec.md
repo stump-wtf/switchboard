@@ -199,7 +199,9 @@ on a source with no actor projection (`stripe`, `slack`). The error MUST say why
   `comment.user.login`, `review.user.login`, `pull_request.user.login`, `issue.user.login` and
   `discussion.user.login`, or null. The **thread author** is the first present of the last three,
   or null. On a comment or review it can differ from `author`, and the delivery still carries the
-  thread's text.
+  thread's text. A gitea review's `review` object is `{type, content}` and names no user, so when a
+  gitea body carries a non-null `review` and neither `comment.user.login` nor `review.user.login`,
+  `author` MUST be `sender`, who wrote the review.
 * **cairn**: `sender` and `author` are both the signed `actor_id`. `on_behalf_of` MUST NOT be used.
 
 The projection MUST read keys exactly, as `.payload` reads them: no case-insensitive key matching,
