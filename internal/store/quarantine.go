@@ -174,6 +174,9 @@ func (s *Store) ApplyQuarantineRelease(ctx context.Context, plan ReleasePlan) ([
 		s.fireTodoHook(verb, ct.Todo)
 		s.metricsOrNop().TodoCreated(ct.Todo.Queue, todoMetricSource(CreateTodoParams{Source: ct.Todo.Source}))
 		s.notifyTodoReady(ctx, ct.Todo.EndpointID, ct.Todo.Queue)
+		// Every after-commit "work is ready" signal a freshly routed todo gets, under the same
+		// sender gate: when the SPEC-0024 ready hook (fireReady, #358) lands, it fires here too,
+		// and TestReadyHookFollowsTheDoorbellAndRefusesQuarantine fails until it does.
 		if plan.Verified || plan.TrustMode == "token" {
 			s.fireDoorbell(ct.Todo)
 		}
