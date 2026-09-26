@@ -39,11 +39,17 @@ import (
 // `canceled` todo into a success, and any other non-cancelable state into the appropriate error.
 // Returns ErrConflict if the todo exists but is terminal/not cancelable, ErrNotFound if absent.
 func (s *Store) CancelTodo(ctx context.Context, id string, result []byte) (Todo, error) {
+	// A claimed or interrupted todo's open attempt closes canceled/canceled in the same statement
+	// (SPEC-0034 REQ-3); a pending todo has none.
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state='canceled', owner=NULL, lease_expires_at=NULL,
-			next_retry_at=NULL, result=$2, completed_at=now(), updated_at=now()
-		WHERE id=$1 AND state IN ('pending', 'claimed', 'input-required', 'auth-required')
-		RETURNING `+todoCols, id, result)
+		WITH upd AS (
+			UPDATE todos SET state='canceled', owner=NULL, lease_expires_at=NULL,
+				next_retry_at=NULL, result=$2, completed_at=now(), updated_at=now()
+			WHERE id=$1 AND state IN ('pending', 'claimed', 'input-required', 'auth-required')
+			RETURNING todos.*
+		),
+		`+closedArmUnreported("canceled", "'canceled'")+`
+		SELECT `+todoCols+` FROM upd`, id, result)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, "", id)
