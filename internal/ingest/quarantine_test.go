@@ -170,3 +170,42 @@ func TestDiscardThroughTheService(t *testing.T) {
 		t.Fatalf("release of an item with no event = %v, want ErrReleaseConflict", err)
 	}
 }
+
+// grantRecorder is a router that records the grant each evaluation ran under.
+type grantRecorder struct {
+	routing.Router
+	grants []routing.Grant
+}
+
+func (r *grantRecorder) Route(ctx context.Context, cfg routing.Config, g routing.Grant, in routing.EnvelopeInput) routing.Decision {
+	r.grants = append(r.grants, g)
+	return r.Router.Route(ctx, cfg, g, in)
+}
+
+// A release re-runs the owner's rules under the same grant the receiver uses, including the tenant
+// the sandbox shares its evaluation slots by (ADR-0038 F5), so releases cannot jump the owner's
+// fair share. Governing: SPEC-0026 REQ-7.
+func TestReleaseRoutesAsTheOwnersTenant(t *testing.T) {
+	ing, pool, ctx, _ := ingestWithLogCapture(t, Config{})
+	rec := &grantRecorder{Router: routing.InProcess{}}
+	ing.SetRouter(rec)
+	st := store.New(pool)
+	const secret = "whsec_q_tenant"
+	h, owner, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "tok-q-tenant", secret)
+	setTrust(t, ctx, st, wh, `{"logins":["joestump"]}`)
+	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Default: &routing.Action{Queue: "reviews"}})
+
+	if code := postGitHubIssue(ing, "tok-q-tenant", secret, "q-tenant-1", githubIssueBody("opened", "mallory", "mallory")); code != 202 {
+		t.Fatalf("delivery = %d", code)
+	}
+	held := heldTodo(t, ctx, pool, st, owner.ID)
+	if len(rec.grants) != 0 {
+		t.Fatalf("the trust gate held the delivery, yet the rules ran %d times", len(rec.grants))
+	}
+	if _, err := ing.ReleaseQuarantined(ctx, h.ID, held.ID, "human:"+h.ID, ""); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(rec.grants) != 1 || rec.grants[0].Tenant != h.ID {
+		t.Fatalf("release grants = %+v, want one evaluation as tenant %s", rec.grants, h.ID)
+	}
+}

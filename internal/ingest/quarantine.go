@@ -94,7 +94,8 @@ func (i *Ingest) ReleaseQuarantined(ctx context.Context, ownerHumanID, todoID, b
 		Release: &routing.Release{By: by, At: i.now().UTC().Format(time.RFC3339)},
 	}
 	_ = json.Unmarshal(ev.Headers, &in.Headers)
-	g := routing.Grant{TargetQueue: rt.TargetQueue, Queues: rt.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
+	g := routing.Grant{TargetQueue: rt.TargetQueue, Queues: rt.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
+		Tenant: rt.OwnerHumanID}
 
 	var d routing.Decision
 	if queue != "" {
