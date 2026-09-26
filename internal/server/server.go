@@ -121,6 +121,8 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// ADR-0023: the A2UI resource surface is an advanced capability — registered on live sessions
 	// only when the flag is on; a default deployment's tools/list and resources/list never show it.
 	mcph.SetA2UIEnabled(cfg.A2UIEnabled)
+	// SPEC-0034 REQ-5: deriving an attempt summary from result is an operator opt-in, off by default.
+	mcph.SetAttemptSummaryFromResult(cfg.AttemptSummaryFromResult)
 	// Same committed-transition publish source as the web SSE hub, one consumer per surface:
 	// the store's doorbell hook fans verified todo creations out to in-scope MCP sessions as
 	// notifications/claude/channel doorbells. Governing: SPEC-0014 REQ "Channels Push over the

@@ -73,3 +73,29 @@ func TestMetricsTokenFromEnvTrimsWhitespace(t *testing.T) {
 		t.Fatal("unset SWITCHBOARD_METRICS_TOKEN should leave MetricsToken empty")
 	}
 }
+
+// TestAttemptSummaryFromResult pins SPEC-0034 REQ-5's operator option: off when unset, on for the
+// documented "true" (and any other strconv.ParseBool truth), and off for anything unparseable, so a
+// typo never turns a risky option on.
+func TestAttemptSummaryFromResult(t *testing.T) {
+	for value, want := range map[string]bool{
+		"":      false,
+		"false": false,
+		"0":     false,
+		"yes":   false,
+		"ture":  false,
+		"true":  true,
+		"TRUE":  true,
+		"1":     true,
+		" true": true,
+	} {
+		t.Setenv("SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT", value)
+		if got := FromEnv().AttemptSummaryFromResult; got != want {
+			t.Errorf("SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT=%q: AttemptSummaryFromResult = %v, want %v", value, got, want)
+		}
+	}
+	_ = os.Unsetenv("SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT")
+	if FromEnv().AttemptSummaryFromResult {
+		t.Fatal("unset SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT turned the option on; it defaults to off")
+	}
+}
