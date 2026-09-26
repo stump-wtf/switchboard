@@ -4,7 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,19 +24,22 @@ import (
 // Governing: ADR-0031, SPEC-0026 REQ-6, REQ-7; SPEC-0024 REQ-6 "Trigger and Sender Gate".
 func TestReadyHookFollowsTheDoorbellAndRefusesQuarantine(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	names, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("parse store: %v", err)
+		t.Fatalf("list store sources: %v", err)
 	}
 	funcs := map[string]*ast.FuncDecl{}
-	for _, p := range pkgs {
-		for _, f := range p.Files {
-			for _, d := range f.Decls {
-				if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil {
-					funcs[fd.Name.Name] = fd
-				}
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, d := range f.Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil {
+				funcs[fd.Name.Name] = fd
 			}
 		}
 	}
