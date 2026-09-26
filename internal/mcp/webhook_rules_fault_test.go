@@ -172,7 +172,15 @@ func TestWebhookRuleSaveDryRunSkipsHeldDeliveries(t *testing.T) {
 	if len(out.Rules) != 1 || out.Rules[0].ID != "on-n" {
 		t.Fatalf("rules = %+v, want on-n saved: it faults only on held deliveries", out.Rules)
 	}
+	// The scan reached the end of history inside its bound, so the report carries no warning.
+	if out.DryRun == nil || out.DryRun.Checked != 1 || out.DryRun.SkippedHeld != len(held) || out.DryRun.Warning != "" {
+		t.Fatalf("dry_run = %+v, want 1 checked, %d held skipped, no warning", out.DryRun, len(held))
+	}
+	out = webhookRulesOut{}
 	callOK(t, ctx, cs, "remove_webhook_rule", map[string]any{"webhook_id": f.webhookA, "rule_id": "on-n"}, &out)
+	if out.DryRun != nil {
+		t.Fatalf("remove_webhook_rule reported a dry-run %+v; it is never dry-run", out.DryRun)
+	}
 
 	msg := callErr(t, ctx, cs, "add_webhook_rule", map[string]any{"webhook_id": f.webhookA, "id": "on-m",
 		"expr": `.payload.m + 1 > 1`, "action": map[string]any{"queue": "reviews"}}, codeInvalidArgument)
@@ -183,5 +191,29 @@ func TestWebhookRuleSaveDryRunSkipsHeldDeliveries(t *testing.T) {
 		if strings.Contains(msg, strconv.FormatInt(id, 10)) {
 			t.Fatalf("refusal %q names held event %d", msg, id)
 		}
+	}
+}
+
+// SPEC-0026 REQ-3: the dry-run's scan is bounded. A flood of held deliveries larger than the bound
+// leaves nothing to check. The save goes through, because an outsider must not be able to block it,
+// but the result says the rules went unchecked.
+func TestWebhookRuleSaveDryRunReportsTheScanBound(t *testing.T) {
+	ctx, f, open := ruleSessions(t)
+	cs, _ := open("A")
+	if _, err := f.st.SetWebhookTrustedActors(ctx, f.webhookA, f.epA1, []byte(`{"logins":["joestump"],"match":"sender"}`)); err != nil {
+		t.Fatalf("set trust: %v", err)
+	}
+	seedStoredEvent(t, f, "trusted", `{"sender":{"login":"joestump"},"m":"x"}`, "")
+	flood := dryRunScanPages * dryRunEvents
+	for i := range flood {
+		seedStoredEvent(t, f, "held-"+strconv.Itoa(i), `{"sender":{"login":"mallory"},"m":1}`, store.DispositionFaulted)
+	}
+
+	var out webhookRulesOut
+	callOK(t, ctx, cs, "add_webhook_rule", map[string]any{"webhook_id": f.webhookA, "id": "on-m",
+		"expr": `.payload.m + 1 > 1`, "action": map[string]any{"queue": "reviews"}}, &out)
+	if out.DryRun == nil || out.DryRun.Checked != 0 || out.DryRun.SkippedHeld != flood ||
+		!strings.Contains(out.DryRun.Warning, "only 0 of the 50") {
+		t.Fatalf("dry_run = %+v, want 0 checked, %d held skipped, and a warning", out.DryRun, flood)
 	}
 }
