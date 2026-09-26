@@ -300,7 +300,7 @@ func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpoi
 
 // CreateRoutedEventTodos is CreateEventTodos with the routing stage's outcome applied (SPEC-0020).
 // When drop is true — or when this delivery is a redelivery of one that was ALREADY dropped — the
-// event row is recorded (with its routing trace, spending its (source, external_id) dedup slot) and
+// event row is recorded (with its routing trace, spending its (endpoint_id, source, external_id) dedup slot) and
 // the transaction commits with no todo, no todo hook, and no doorbell. The stickiness is what keeps
 // the dedup contract routing-independent: a producer redelivering a dropped event after the owner
 // edited the rules does not get it re-processed into work. The returned bool reports that outcome.
