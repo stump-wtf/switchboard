@@ -72,3 +72,13 @@ func TestSleepCtxCancels(t *testing.T) {
 		t.Fatal("sleepCtx ignored cancellation")
 	}
 }
+
+// An empty backoff schedule takes the default rather than panicking a worker on its first retry
+// (deliver indexes Backoff[attempt-2]).
+func TestNewDispatcherEmptyBackoffDefaults(t *testing.T) {
+	for _, b := range [][]time.Duration{nil, {}} {
+		if got := NewDispatcher(Options{Backoff: b}).opts.Backoff; len(got) != len(DefaultBackoff) {
+			t.Errorf("Backoff %#v became %v, want the default %v", b, got, DefaultBackoff)
+		}
+	}
+}

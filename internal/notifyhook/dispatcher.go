@@ -172,7 +172,9 @@ func NewDispatcher(o Options) *Dispatcher {
 	if o.AttemptTTL <= 0 {
 		o.AttemptTTL = DefaultAttemptTTL
 	}
-	if o.Backoff == nil {
+	// An empty (not only nil) schedule takes the default: deliver indexes Backoff for every retry,
+	// so an empty slice would panic a worker on the first retryable failure.
+	if len(o.Backoff) == 0 {
 		o.Backoff = DefaultBackoff
 	}
 	if o.RatePerMinute <= 0 {
