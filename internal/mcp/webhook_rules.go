@@ -162,14 +162,16 @@ type testWebhookRulesIn struct {
 }
 
 type decisionOut struct {
-	Drop        bool               `json:"drop" jsonschema:"true when a drop action would record the delivery without a todo"`
-	Queue       string             `json:"queue,omitempty" jsonschema:"the queue todos would land in"`
-	Endpoints   []string           `json:"endpoints,omitempty" jsonschema:"the endpoints todos would be created on"`
-	Disposition string             `json:"disposition,omitempty" jsonschema:"the intake outcome: routed, dropped, quarantined or faulted"`
-	Faulted     bool               `json:"faulted" jsonschema:"BLOCKING: a rule faulted, so evaluation stopped and the delivery would be held on the owner's quarantine queue as rule_fault instead of routed; a save whose rules fault on recent deliveries is refused"`
-	Quarantine  bool               `json:"quarantine,omitempty" jsonschema:"a rule's {quarantine: true} matched: the delivery would be held on the owner's quarantine queue"`
-	Unavailable bool               `json:"unavailable,omitempty" jsonschema:"the rule evaluator could not run, so this dry-run says nothing about the rules; retry"`
-	Fault       *routing.RuleFault `json:"fault,omitempty" jsonschema:"the fault that stopped evaluation: rule id, index, cause and detail"`
+	Drop        bool     `json:"drop" jsonschema:"true when a drop action would record the delivery without a todo"`
+	Queue       string   `json:"queue,omitempty" jsonschema:"the queue todos would land in"`
+	Endpoints   []string `json:"endpoints,omitempty" jsonschema:"the endpoints todos would be created on"`
+	Disposition string   `json:"disposition,omitempty" jsonschema:"the intake outcome: routed, dropped, quarantined or faulted"`
+	Faulted     bool     `json:"faulted" jsonschema:"BLOCKING: a rule faulted, so evaluation stopped and the delivery would be held on the owner's quarantine queue as rule_fault instead of routed; a save whose rules fault on recent deliveries is refused"`
+	Quarantine  bool     `json:"quarantine,omitempty" jsonschema:"a rule's {quarantine: true} matched: the delivery would be held on the owner's quarantine queue"`
+	// Governing: SPEC-0026 REQ-6 (quarantine triggers).
+	QuarantineReason string             `json:"quarantine_reason,omitempty" jsonschema:"why the delivery would be held on the owner's quarantine queue: untrusted_actor, rule_fault or rule_action; empty when it would not be held"`
+	Unavailable      bool               `json:"unavailable,omitempty" jsonschema:"the rule evaluator could not run, so this dry-run says nothing about the rules; retry"`
+	Fault            *routing.RuleFault `json:"fault,omitempty" jsonschema:"the fault that stopped evaluation: rule id, index, cause and detail"`
 }
 
 type testWebhookRulesOut struct {
@@ -202,7 +204,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "set_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "set_webhook_rules",
-			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. First match wins, and a rule that errors or times out stops evaluation: the delivery is recorded and routed nowhere. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries that its trust gate passes."},
+			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?}, {drop: true} or {quarantine: true}. First match wins, and a rule that errors or times out stops evaluation: the delivery is held on the owner's quarantine queue as rule_fault, never handed to an agent. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries that its trust gate passes."},
 			h.setWebhookRulesTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
@@ -227,7 +229,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "test_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "test_webhook_rules",
-			Description: "Dry-run routing: evaluate the saved rules (or candidate rules) against a sample payload or one of this webhook's stored events, and return the decision, the trace, and the envelope the rules saw. A faulted decision (faulted: true) is blocking: that delivery would be recorded and routed nowhere. On a github, gitea or cairn webhook, a delivery whose actor the trust gate would hold (held: true) reports the gate's decision, exactly as live traffic records it, and rules_would shows what the rules would do if the actor were trusted. Saves nothing."},
+			Description: "Dry-run routing: evaluate the saved rules (or candidate rules) against a sample payload or one of this webhook's stored events, and return the decision, the trace, and the envelope the rules saw. A faulted decision (faulted: true) is blocking: that delivery would be held on the owner's quarantine queue (quarantine_reason rule_fault) instead of routed. On a github, gitea or cairn webhook, a delivery whose actor the trust gate would hold (held: true) reports the gate's decision, exactly as live traffic records it (disposition quarantined, quarantine_reason untrusted_actor), and rules_would shows what the rules would do if the actor were trusted. Saves nothing."},
 			h.testWebhookRulesTool(ep))
 	}
 }
@@ -397,7 +399,8 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 		d := h.rulesRouter().Route(ctx, cfg, g, env)
 		out := testWebhookRulesOut{
 			Decision: decisionOut{Drop: d.Drop, Queue: d.Queue, Endpoints: d.Endpoints,
-				Disposition: d.Disposition(), Faulted: d.Faulted, Quarantine: d.Quarantine, Unavailable: d.Unavailable, Fault: d.Fault},
+				Disposition: d.Disposition(), Faulted: d.Faulted, Quarantine: d.Quarantine, QuarantineReason: d.QuarantineReason(),
+				Unavailable: d.Unavailable, Fault: d.Fault},
 			Trace: d.Trace,
 			Actor: env.Actor, Held: env.Actor != nil && !env.Actor.IsTrusted(),
 		}
@@ -414,7 +417,8 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 			// Governing: SPEC-0026 REQ-5, REQ-13 "trust gate".
 			held := routing.UntrustedDecision(env.Actor)
 			out.RulesWould = &rulesWouldOut{Decision: out.Decision, Trace: out.Trace}
-			out.Decision = decisionOut{Disposition: held.Disposition(), Faulted: held.Faulted, Fault: held.Fault}
+			out.Decision = decisionOut{Disposition: held.Disposition(), QuarantineReason: held.QuarantineReason(),
+				Faulted: held.Faulted, Fault: held.Fault}
 			out.Trace = held.Trace
 		}
 		subject := routing.SubjectOf(wr.SourceType, env.Headers, env.Body)

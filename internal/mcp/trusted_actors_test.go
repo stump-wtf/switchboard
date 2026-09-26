@@ -237,9 +237,10 @@ func TestTestWebhookRulesReportsTheTrustGate(t *testing.T) {
 	}
 	// The decision is what the receiver records for a held delivery, not what the rules would do;
 	// the rules' outcome is reported aside, and a held delivery previews no work order.
-	if d := res.Decision; d.Disposition != routing.DispositionFaulted || !d.Faulted || d.Queue != "" || len(d.Endpoints) != 0 ||
+	if d := res.Decision; d.Disposition != routing.DispositionQuarantined || d.Faulted || d.Queue != "" || len(d.Endpoints) != 0 ||
+		d.QuarantineReason != routing.QuarantineUntrustedActor ||
 		res.Trace.Stage != routing.StageTrustGate || res.Trace.Cause != routing.CauseUntrustedActor || res.WorkOrder != nil {
-		t.Fatalf("outsider decision = %+v, trace %+v, want the trust gate's faulted outcome", d, res.Trace)
+		t.Fatalf("outsider decision = %+v, trace %+v, want the trust gate's quarantined outcome", d, res.Trace)
 	}
 	if res.RulesWould == nil || res.RulesWould.Decision.Queue != "forge" || res.RulesWould.Decision.Disposition != routing.DispositionRouted ||
 		res.RulesWould.Trace.RuleID != "outsider" {
