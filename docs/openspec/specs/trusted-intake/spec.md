@@ -104,7 +104,12 @@ cause. A webhook with no stored events MUST skip the dry-run.
 
 Every `params` value MUST be a string, a number, a boolean, or a list whose elements are all
 strings or all numbers. Any other shape, including nested objects and mixed lists, MUST be refused
-with `invalid_argument` naming the key.
+with `invalid_params` naming the key: routing's own validation code, which SPEC-0020 requires the
+rule verbs to surface verbatim and which the params size limit already uses. The shape check
+applies to a save that sets or changes `params`. A save that carries the stored `params` forward
+unchanged (every verb but a `set_webhook_rules` that passes new `params`) MUST NOT be refused over
+the shape of params stored before this check existed, so an owner can always edit or remove the
+rules that read them.
 
 #### Scenario: A rule that faults on real traffic is refused
 
@@ -116,7 +121,7 @@ with `invalid_argument` naming the key.
 #### Scenario: Nested params refused
 
 - **WHEN** `set_webhook_rules` is called with `params = {"trusted": {"alice": true}}`
-- **THEN** the call fails with `invalid_argument` naming `trusted`
+- **THEN** the call fails with `invalid_params` naming `trusted`
 
 ### REQ-4: Params Are Never Cleared by Omission
 

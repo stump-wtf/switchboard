@@ -55,7 +55,7 @@ Each webhook MUST evaluate its ordered rule list first-match-wins, terminated by
 - **Action.** Exactly one of `{"queue": <name>, "endpoints"?: [<endpoint id>, …], "exclusive"?: bool, "once"?: bool, "work_order"?: bool}` or `{"drop": true}`. The three flags are valid only with `queue`.
 - **Params.** Every expression is evaluated with the webhook's `params` bound as `$params` (see "Rule Parameters").
 - **Determinism.** Evaluation MUST be pure: the same envelope and rule list MUST always produce the same route, unless a rule faults.
-- **Faults.** A rule that errors (`error`), times out (`timeout`), no longer compiles (`compile_error`), or is not reached before the event budget is spent (`budget_exhausted`) MUST be treated as no-match and recorded on the trace. It MUST NOT fail the delivery.
+- **Faults.** A rule that errors (`error`), times out (`timeout`), no longer compiles (`compile_error`), or is not reached before the event budget is spent (`budget_exhausted`) MUST stop evaluation, as [SPEC-0026](../trusted-intake/spec.md) REQ-1 specifies: no later rule runs, the default does not apply, the fault is recorded on the trace, and the delivery's disposition is `faulted` (recorded, routed nowhere). A fault MUST NOT be treated as no-match. *(Amended by SPEC-0026; this bullet previously required no-match, which let a broken drop or trust rule route everything.)*
 - **Budgets.** Each rule MUST be bounded by a 50 ms timeout, and the whole list by a 250 ms per-event budget.
 
 #### Scenario: First match wins
@@ -209,8 +209,8 @@ A webhook's routing configuration MAY carry `params`, a JSON object that MUST be
 
 #### Scenario: Mistyped params fail closed
 
-- **WHEN** an allowlist param is saved with the wrong shape (a string, number, or object instead of a list, or a list with non-string entries) — save-time validation does not type-check param values
-- **THEN** an allowlist rule MUST NOT fault on it, because a faulting rule degrades to no-match and would let every delivery past the check; the shipped packs guard each allowlist with `| arrays` (and `| strings` where entries feed string builtins), so a malformed allowlist admits no one
+- **WHEN** an allowlist param is saved with the wrong shape: an object or a mixed list is refused at save time with `invalid_params` ([SPEC-0026](../trusted-intake/spec.md) REQ-3), while a string or a number where a list was meant is an accepted shape
+- **THEN** a rule that faults on it stops evaluation and the delivery is recorded as `faulted` and routed nowhere (SPEC-0026 REQ-1), so a malformed allowlist admits no one even without guards; the shipped packs still guard each allowlist with `| arrays` (and `| strings` where entries feed string builtins), so they evaluate to "not trusted" rather than faulting
 
 ### Requirement: Issue Envelope Projection
 
@@ -423,9 +423,10 @@ This MUST hold at save time and again at every delivery, including for a rule ro
   - Its stderr is discarded.
   - A watchdog exits it when runtime-mapped memory exceeds its limit (default 128 MiB).
   - The parent MUST kill it at a hard deadline (event budget + 1750 ms, 2 s in all).
-  - At most two children run concurrently. A delivery that cannot get a slot within one second MUST route by default with a `sandbox_busy` fault.
-  - Any child failure MUST route by default with a `sandbox_failure` fault.
-  - The child MUST return only the index of the matching rule and any faults, behind a protocol prefix. The parent MUST apply the action from its own configuration and grant, and MUST ignore an out-of-range index.
+  - At most two children run concurrently, and one tenant (the webhook's owner) MUST NOT hold every slot (ADR-0038 F5). A delivery that cannot get a slot within one second is a `sandbox_busy` fault.
+  - A child killed at its memory limit or deadline while running a rule faults that rule (SPEC-0026 REQ-1 and REQ-2). Any other child failure is a `sandbox_failure` fault.
+  - A `sandbox_busy` or `sandbox_failure` fault MUST NOT route by default: the receiver answers `503` and persists nothing, as [SPEC-0026](../trusted-intake/spec.md) REQ-2 specifies. *(Amended by SPEC-0026; these bullets previously required routing by default.)*
+  - The child MUST return only the index of the matching rule and any faults, behind a protocol prefix. The parent MUST apply the action from its own configuration and grant, and MUST treat an out-of-range index as a `sandbox_failure` (never followed, never the default).
   - A webhook with no rules MUST NOT start a child.
 - **Egress control** *(Phase 2)*: enabling LLM triage is an explicit endpoint-owner decision naming a provider and model; full payload text is off by default and its enablement is recorded on the endpoint.
 - **No privilege escalation.** Routing never changes trust mode, verification results, or ownership. Dropped events keep their audit record. A work order describes a semi-trusted task and grants no permission.

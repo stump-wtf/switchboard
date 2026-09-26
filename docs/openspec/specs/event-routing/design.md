@@ -106,11 +106,12 @@ Evaluation bounds: 50 ms per rule and 250 ms per event. Limits: 32 rules, 4096-b
 **Choice.** `routing.Sandbox` re-executes the switchboard binary as a child for every routed delivery whose webhook has rules. `main` calls `routing.RunChildIfRequested` before anything else. The child protocol and limits:
 - **Environment:** empty.
 - **Input:** `{rules, envelope input}` on stdin.
-- **Work:** the child builds the envelope, runs `routing.Match`, and writes `switchboard-routing-match-v1\n{rule_index?, faults?}`.
+- **Work:** the child builds the envelope, runs `routing.Match`, and writes `switchboard-routing-match-v2\n`, then `@<index>\n` before each rule it starts, then `={rule_index?, faults?}\n`.
 - **Memory:** a watchdog in the child exits it (code 3) when `/memory/classes/total:bytes` exceeds 128 MiB.
 - **Deadline:** the parent kills it at the event budget + 1750 ms (2 s in all).
-- **Concurrency:** at most two children run. A delivery waits up to one second for a slot, then routes by default with `sandbox_busy`.
-- **Failure:** any other failure routes by default with `sandbox_failure`.
+- **Kills mid-rule:** a child killed at its memory limit while running a rule faults that rule (`budget_exhausted`); one killed at the deadline faults it (`timeout`) when the rule had run longer than the event budget. Both are faults of the delivery (SPEC-0026 REQ-1), not an unavailable sandbox.
+- **Concurrency:** at most two children run, and one tenant holds at most one of them (ADR-0038 F5). A delivery waits up to one second for a slot, then is refused with `sandbox_busy`.
+- **Failure:** any other failure is `sandbox_failure`. Both sandbox faults answer `503` with nothing persisted (SPEC-0026 REQ-2); neither routes by default.
 
 The parent then runs `routing.Decide` over its own configuration and grant. Webhooks with no rules never spawn.
 
@@ -165,7 +166,7 @@ When a redelivery finds an existing event whose stored trace is a drop, `CreateR
 
 ### Trace: one JSON value, on the event and on each todo
 
-**Choice.** The trace takes the shape `{"stage": "rule"|"default", "cause"?, "rule_index"?, "rule_id"?, "rule_name"?, "action", "faults"?: [{"rule_index", "rule_id"?, "cause", "detail"?}]}`.
+**Choice.** The trace takes the shape `{"stage": "rule"|"default"|"fault", "cause"?, "rule_index"?, "rule_id"?, "rule_name"?, "action", "faults"?: [{"rule_index", "rule_id"?, "cause", "detail"?}]}`.
 - **Default causes:** `no_match_default`, `rule_not_granted`, `default_not_granted`.
 - **Fault causes:** `timeout`, `error`, `compile_error`, `budget_exhausted`, `sandbox_failure`, `sandbox_busy`.
 - **Sandbox-level faults** carry `rule_index: -1`.
@@ -242,8 +243,8 @@ sequenceDiagram
 ## Risks / Trade-offs
 
 - **Rule-order sensitivity** → first-match-wins is documented, rules carry ids and names, and the trace names the matched index; a future lint can warn about shadowed rules.
-- **Process start per routed delivery** → a few milliseconds at webhook volume. The two-child cap bounds aggregate memory; under a flood, deliveries degrade to their default (`sandbox_busy`) rather than queueing without bound.
-- **Faults degrade to the default, not to drop** → a payload that makes a rule blow up gets default routing. Work is never lost, but noise a rule meant to drop can leak into the default queue. The trace records why.
+- **Process start per routed delivery** → a few milliseconds at webhook volume. The two-child cap bounds aggregate memory; under a flood, deliveries are refused with `503` (`sandbox_busy`) for the producer to retry rather than queueing without bound, and the per-tenant share keeps one tenant's flood from refusing everyone else's.
+- **Faults stop evaluation (SPEC-0026)** → a payload that makes a rule blow up is recorded as `faulted` and routed nowhere. Nothing a broken drop or trust rule should have held back leaks into the default queue; the owner finds the delivery with `list_webhook_events {"disposition":"faulted"}`. *(Superseded the original "faults degrade to the default" trade-off.)*
 - **A runaway rule can starve later rules in the same child** → later rules may record `timeout`/`budget_exhausted` faults; bounded and visible.
 - **Cairn freshness window** → cairn signs no timestamp header, so freshness comes from the signed body's `created_at` (default 300 s). A cairn backlog older than that, e.g. after a long switchboard outage, is refused with 401 and abandoned by cairn.
 - **gojq divergence from real jq** → the save-time compiler is the compatibility contract (if it compiles in the sandbox, it routes).

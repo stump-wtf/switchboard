@@ -62,10 +62,22 @@ guards stay harmless and become belt-and-braces.
 
 **Choice**: when the sandbox is unavailable, the receiver answers `503` and persists nothing.
 
-**Rationale**: a sandbox outage is a server fault, not a property of the delivery. Producers retry
-5xx (GitHub, Gitea and Cairn all do), so the delivery arrives again once the instance is healthy
-and routes normally. Quarantining would bury a transient outage under many items that each need
-releasing by hand.
+**Rationale**: a sandbox outage is a server fault, not a property of the delivery. The delivery can
+arrive again once the instance is healthy and route normally, and quarantining would bury a
+transient outage under many items that each need releasing by hand.
+
+The 503 is confined to real outages (no sandbox, no free slot, a child that never reached a rule,
+untrustworthy output). A child killed at its memory limit, or at its deadline after a rule overran
+the whole event budget, is a property of that rule and that payload: it would fail identically on
+every retry. It is therefore a fault of the rule (REQ-1), recorded and counted, and the save-time
+dry-run names it. Two further limits keep the 503 honest:
+
+- **Not every producer retries.** Gitea and Cairn retry a 5xx, but GitHub does not redeliver a
+  failed delivery on its own; its owner redelivers it from the hook's recent deliveries or the
+  API. A 503 on a GitHub webhook is only as good as that follow-up.
+- **One tenant cannot cause another's 503s.** The sandbox's slots are shared per owner (ADR-0038
+  F5): an owner holds at most all but one, so a slow or flooded owner makes only its own deliveries
+  wait.
 
 ### Save-time dry-run over recorded deliveries
 
