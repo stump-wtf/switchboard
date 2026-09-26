@@ -121,26 +121,104 @@ func TestListTodosScoped(t *testing.T) {
 
 	var out struct {
 		Todos []struct {
-			ID      string         `json:"id"`
-			Queue   string         `json:"queue"`
-			State   string         `json:"state"`
-			Attempt int            `json:"attempt"`
-			Payload map[string]any `json:"payload"`
+			ID          string         `json:"id"`
+			Queue       string         `json:"queue"`
+			State       string         `json:"state"`
+			Attempt     int            `json:"attempt"`
+			PayloadSize int            `json:"payload_size"`
+			Payload     map[string]any `json:"payload"`
 		} `json:"todos"`
 	}
 	callOK(t, ctx, cs, "list_todos", map[string]any{}, &out)
 	if len(out.Todos) != 1 || out.Todos[0].ID != "td_r" {
 		t.Fatalf("list_todos = %+v, want exactly td_r", out.Todos)
 	}
-	// The structured row carries the SPEC-0006 minimum (id, queue, state, attempt) plus payload.
+	// The row is compact: the SPEC-0006 minimum (id, queue, state, attempt) and the payload's size,
+	// never the payload itself — that ships at claim.
 	if out.Todos[0].Queue != "reviews" || out.Todos[0].State != "pending" {
 		t.Fatalf("todo row = %+v, want queue=reviews state=pending", out.Todos[0])
 	}
-	if out.Todos[0].Payload["pr"] != float64(7) {
-		t.Fatalf("payload = %v, want pr=7", out.Todos[0].Payload)
+	if out.Todos[0].Payload != nil || out.Todos[0].PayloadSize != len(`{"pr":7}`) {
+		t.Fatalf("row payload = %v, payload_size = %d; want no payload and size %d",
+			out.Todos[0].Payload, out.Todos[0].PayloadSize, len(`{"pr":7}`))
 	}
 
 	callErr(t, ctx, cs, "list_todos", map[string]any{"queue": "deploys"}, "forbidden")
+}
+
+// TestPayloadShipsOnceAtClaim: only claim and claim_next return the payload and routing trace;
+// list_todos, heartbeat, complete and fail return compact rows. A listing of full rows grew with
+// whatever the producer sent — 57 pending forge todos came to 1.07 MB and wedged two 196K-token
+// workers — and every ack echoed a payload the caller already held.
+// Governing: SPEC-0006 REQ "Todo Drain Verbs" (scenarios "A backlog listing fits a small context",
+// "Claim delivers the payload; acks do not echo it").
+func TestPayloadShipsOnceAtClaim(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	body := `{"pr":7,"diff":"` + strings.Repeat("x", 18_000) + `"}`
+	trace := []byte(`{"rule_id":"prs","queue":"reviews"}`)
+	f := newFakeStore()
+	for _, id := range []string{"td_a", "td_b"} {
+		f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: id, Queue: "reviews", Title: id,
+			State: "pending", MaxAttempts: 3, Payload: []byte(body), RoutingTrace: trace})
+	}
+	cs := session(t, ctx, f, []string{"reviews"},
+		[]string{"list_todos", "claim", "claim_next", "heartbeat", "complete", "fail"})
+
+	full := func(verb string, got map[string]any) {
+		t.Helper()
+		if pl, _ := got["payload"].(map[string]any); pl["pr"] != float64(7) {
+			t.Fatalf("%s: payload = %v, want the todo's body", verb, got["payload"])
+		}
+		if got["routing"] == nil {
+			t.Fatalf("%s: routing trace missing from the full todo", verb)
+		}
+	}
+	compact := func(verb string, got map[string]any) {
+		t.Helper()
+		for _, k := range []string{"payload", "routing"} {
+			if _, has := got[k]; has {
+				t.Fatalf("%s: compact row carries %q", verb, k)
+			}
+		}
+		if got["payload_size"] != float64(len(body)) {
+			t.Fatalf("%s: payload_size = %v, want %d", verb, got["payload_size"], len(body))
+		}
+	}
+
+	var list struct {
+		Todos []map[string]any `json:"todos"`
+	}
+	callOK(t, ctx, cs, "list_todos", map[string]any{"state": "pending", "limit": 200}, &list)
+	if len(list.Todos) != 2 {
+		t.Fatalf("list_todos = %d rows, want 2", len(list.Todos))
+	}
+	for _, row := range list.Todos {
+		compact("list_todos", row)
+	}
+
+	var got map[string]any
+	callOK(t, ctx, cs, "claim", map[string]any{"id": "td_a"}, &got)
+	full("claim", got)
+	got = nil
+	callOK(t, ctx, cs, "heartbeat", map[string]any{"id": "td_a"}, &got)
+	compact("heartbeat", got)
+	got = nil
+	callOK(t, ctx, cs, "complete", map[string]any{"id": "td_a"}, &got)
+	compact("complete", got)
+
+	var next struct {
+		Todo map[string]any `json:"todo"`
+	}
+	callOK(t, ctx, cs, "claim_next", map[string]any{}, &next)
+	if next.Todo == nil || next.Todo["id"] != "td_b" {
+		t.Fatalf("claim_next = %v, want td_b", next.Todo)
+	}
+	full("claim_next", next.Todo)
+	got = nil
+	callOK(t, ctx, cs, "fail", map[string]any{"id": "td_b"}, &got)
+	compact("fail", got)
 }
 
 // TestClaimCompleteLifecycle drives claim → heartbeat → complete over tools/call, checking the
