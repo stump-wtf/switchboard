@@ -59,6 +59,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strconv"
@@ -108,6 +109,15 @@ type webhookRulesOut struct {
 	Rules         []ruleIO       `json:"rules" jsonschema:"the rules, in evaluation order (first match wins)"`
 	Params        map[string]any `json:"params,omitempty" jsonschema:"owner-set values rules read as $params (e.g. trusted-actor allowlists)"`
 	Grant         grantOut       `json:"grant" jsonschema:"what actions may reach right now"`
+	DryRun        *dryRunOut     `json:"dry_run,omitempty" jsonschema:"what the save-time dry-run checked; omitted when no dry-run ran"`
+}
+
+// dryRunOut reports a save-time dry-run's coverage, so an owner can tell when a flood of held
+// deliveries left fewer than dryRunEvents to check (SPEC-0026 REQ-3).
+type dryRunOut struct {
+	Checked     int    `json:"checked" jsonschema:"deliveries the trust gate passes that the new rules were evaluated against"`
+	SkippedHeld int    `json:"skipped_held" jsonschema:"deliveries skipped because the trust gate would hold them"`
+	Warning     string `json:"warning,omitempty" jsonschema:"set when the scan bound stopped the dry-run before it found 50 deliveries to check"`
 }
 
 type webhookIDIn struct {
@@ -200,22 +210,22 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "set_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "set_webhook_rules",
-			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. First match wins, and a rule that errors or times out stops evaluation: the delivery is recorded and routed nowhere. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries that its trust gate passes."},
+			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins. First match wins, and a rule that errors or times out stops evaluation: the delivery is recorded and routed nowhere. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked)."},
 			h.setWebhookRulesTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "add_webhook_rule",
-			Description: "Insert one routing rule into a webhook's rule list at a position (default: last). The expression is compiled and the action checked before saving, and the resulting rules are dry-run against the webhook's 50 most recent deliveries that its trust gate passes: a rule that faults on any of them is refused."},
+			Description: "Insert one routing rule into a webhook's rule list at a position (default: last). The expression is compiled and the action checked before saving, and the resulting rules are dry-run against the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked): a rule that faults on any of them is refused."},
 			h.addWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "update_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "update_webhook_rule",
-			Description: "Change a routing rule's name, expression, or action in place. Refused if the resulting rules fault on any of the webhook's 50 most recent deliveries that its trust gate passes."},
+			Description: "Change a routing rule's name, expression, or action in place. Refused if the resulting rules fault on any of the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked)."},
 			h.updateWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "move_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "move_webhook_rule",
-			Description: "Move a routing rule to a new position. Order is precedence: the first matching rule wins. Refused if the reordered rules fault on any of the webhook's 50 most recent deliveries that its trust gate passes."},
+			Description: "Move a routing rule to a new position. Order is precedence: the first matching rule wins. Refused if the reordered rules fault on any of the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked)."},
 			h.moveWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "remove_webhook_rule") {
@@ -485,8 +495,9 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 	// remove_webhook_rule is not dry-run (SPEC-0026 REQ-3 names the four verbs that add or change
 	// a rule). Removing a rule adds no new expression, and refusing it would block an owner from
 	// deleting the very rule that faults.
+	var report *dryRunOut
 	if tool != "remove_webhook_rule" {
-		if err := h.dryRunSave(ctx, pre, next, g); err != nil {
+		if report, err = h.dryRunSave(ctx, pre, next, g); err != nil {
 			return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 		}
 	}
@@ -505,14 +516,21 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 	if err != nil {
 		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 	}
-	return nil, rulesOut(wr, g), nil
+	out := rulesOut(wr, g)
+	out.DryRun = report
+	return nil, out, nil
 }
 
 // dryRunEvents bounds the save-time dry-run: at most this many of the webhook's latest deliveries
 // that the trust gate would pass, each inside the per-event evaluation budget (SPEC-0026 REQ-3,
 // "Rate Limiting"). dryRunScanPages bounds how far back it reads to find them, a page of
 // dryRunEvents at a time, so an outsider's flood of held deliveries costs at most that many cheap
-// Go trust checks and never a sandbox evaluation.
+// Go trust checks and never a sandbox evaluation. The bound means a flood of more than
+// dryRunScanPages*dryRunEvents held deliveries since the owner's last trusted one leaves fewer than
+// dryRunEvents to check, possibly none. The save still goes through, because refusing it would let
+// an outsider block the owner's edits. Live traffic still fails closed on a fault. The result's
+// dry_run.warning says so, so the owner can test_webhook_rules against a known event before
+// relying on the rules.
 const (
 	dryRunEvents    = 50
 	dryRunScanPages = 10
@@ -534,30 +552,35 @@ const (
 // issue) refuse the owner's saves with a payload built to fault, and a flood of them would push the
 // owner's real traffic out of the window. Held deliveries are skipped and the scan pages further
 // back, up to dryRunScanPages, to find dryRunEvents that pass.
+//
+// On success it reports what it checked: nil when nothing ran (no rules, or no stored events), and
+// a warning when the scan bound stopped it short of dryRunEvents while older deliveries remained.
 // Governing: SPEC-0026 REQ-3 "Save-Time Fault Refusal and Param Typing", REQ-5; ADR-0031.
-func (h *Handler) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg routing.Config, g routing.Grant) error {
+func (h *Handler) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg routing.Config, g routing.Grant) (*dryRunOut, error) {
 	if len(cfg.Rules) == 0 {
-		return nil
+		return nil, nil
 	}
 	router := h.rulesRouter()
 	faults := map[string][]int64{} // "rule_id (cause)" -> event ids, newest first
 	var order []string
-	checked := 0
+	checked, skipped := 0, 0
+	bounded := true                     // cleared when the scan ends for any reason but the page bound
 	var cursor store.EventHistoryDetail // zero: start at the newest
 scan:
 	for page := 0; page < dryRunScanPages; page++ {
 		events, err := h.store.WebhookEventsBefore(ctx, wr.WebhookID, cursor.ReceivedAt, cursor.ID, dryRunEvents)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, ev := range events {
 			env := storedEnvelope(wr, ev)
 			if env.Actor != nil && !env.Actor.IsTrusted() {
+				skipped++
 				continue // held by the trust gate: live traffic never runs the rules on it
 			}
 			d := router.Route(ctx, cfg, g, env)
 			if d.Unavailable {
-				return &toolError{codeUnavailable, "routing is unavailable, so the rules could not be checked against recent deliveries; retry shortly"}
+				return nil, &toolError{codeUnavailable, "routing is unavailable, so the rules could not be checked against recent deliveries; retry shortly"}
 			}
 			if d.Faulted {
 				k := d.Fault.RuleID + " (" + d.Fault.Cause + ")"
@@ -567,16 +590,28 @@ scan:
 				faults[k] = append(faults[k], ev.ID)
 			}
 			if checked++; checked == dryRunEvents {
+				bounded = false
 				break scan
 			}
 		}
 		if len(events) < dryRunEvents {
+			bounded = false
 			break // no older deliveries
 		}
 		cursor = events[len(events)-1]
 	}
 	if len(order) == 0 {
-		return nil
+		if checked == 0 && skipped == 0 {
+			return nil, nil // no stored events: the dry-run is skipped
+		}
+		report := &dryRunOut{Checked: checked, SkippedHeld: skipped}
+		if bounded {
+			report.Warning = fmt.Sprintf("the dry-run read the newest %d deliveries and the trust gate would hold %d of them, "+
+				"so the rules were checked against only %d of the %d it aims for; older trusted deliveries were not checked. "+
+				"Run test_webhook_rules with a known event_id before relying on these rules.",
+				dryRunScanPages*dryRunEvents, skipped, checked, dryRunEvents)
+		}
+		return report, nil
 	}
 	parts := make([]string, 0, len(order))
 	for _, k := range order {
@@ -586,7 +621,7 @@ scan:
 		}
 		parts = append(parts, "rule "+k+" on events "+strings.Join(ids, ", "))
 	}
-	return &toolError{codeInvalidArgument, "refused: the rules fault on recent deliveries, which would record them and route them nowhere: " +
+	return nil, &toolError{codeInvalidArgument, "refused: the rules fault on recent deliveries, which would record them and route them nowhere: " +
 		strings.Join(parts, "; ") + ". Fix the rules (test_webhook_rules with event_id reproduces each one) and save again."}
 }
 
