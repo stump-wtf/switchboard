@@ -21,7 +21,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -76,7 +78,13 @@ type eventSummaryOut struct {
 	ReceivedAt  string `json:"received_at" jsonschema:"RFC 3339 receipt time"`
 	WebhookID   string `json:"webhook_id,omitempty" jsonschema:"the self-managed webhook the delivery arrived on, if any"`
 	Routing     any    `json:"routing,omitempty" jsonschema:"how the delivery was routed (SPEC-0020 trace); a drop shows action.drop=true"`
+	Disposition string `json:"disposition" jsonschema:"the intake outcome: routed, dropped, quarantined, or faulted (a rule faulted, so the delivery was recorded and routed nowhere)"`
 }
+
+// eventDispositions is the closed set the disposition filter accepts (events.disposition).
+// Governing: SPEC-0026 REQ-1.
+var eventDispositions = []string{store.DispositionRouted, store.DispositionDropped,
+	store.DispositionQuarantined, store.DispositionFaulted}
 
 // eventDetailOut is the SPEC-0005 EventDetail shape: every summary field plus the full sanitized
 // record. Headers were sanitized at ingest (signature/secret values redacted) and no signing
@@ -97,14 +105,16 @@ type eventDetailOut struct {
 	Payload      string            `json:"payload" jsonschema:"the stored raw payload body"`
 	WebhookID    string            `json:"webhook_id,omitempty" jsonschema:"the self-managed webhook the delivery arrived on, if any"`
 	Routing      any               `json:"routing,omitempty" jsonschema:"how the delivery was routed (SPEC-0020 trace); a drop shows action.drop=true"`
+	Disposition  string            `json:"disposition" jsonschema:"the intake outcome: routed, dropped, quarantined, or faulted"`
 }
 
 type listWebhookEventsIn struct {
-	Provider  string `json:"provider,omitempty" jsonschema:"restrict to one provider name"`
-	EventType string `json:"event_type,omitempty" jsonschema:"restrict to one event type"`
-	Since     string `json:"since,omitempty" jsonschema:"lower-edge bound (inclusive): an RFC 3339 timestamp or an event id"`
-	Limit     int    `json:"limit,omitempty" jsonschema:"maximum events to return (default 50, minimum 1, maximum 200)"`
-	Cursor    string `json:"cursor,omitempty" jsonschema:"opaque pagination cursor from a previous response's next_cursor"`
+	Provider    string `json:"provider,omitempty" jsonschema:"restrict to one provider name"`
+	EventType   string `json:"event_type,omitempty" jsonschema:"restrict to one event type"`
+	Disposition string `json:"disposition,omitempty" jsonschema:"restrict to one intake outcome: routed, dropped, quarantined, or faulted (faulted lists deliveries a rule fault stopped)"`
+	Since       string `json:"since,omitempty" jsonschema:"lower-edge bound (inclusive): an RFC 3339 timestamp or an event id"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"maximum events to return (default 50, minimum 1, maximum 200)"`
+	Cursor      string `json:"cursor,omitempty" jsonschema:"opaque pagination cursor from a previous response's next_cursor"`
 }
 
 type listWebhookEventsOut struct {
@@ -266,7 +276,12 @@ func (h *Handler) listWebhookEventsTool(ep store.AuthEndpoint) sdk.ToolHandlerFo
 		if limit == 0 {
 			limit = defaultEventListLimit
 		}
-		filter := store.EventHistoryFilter{Provider: in.Provider, EventType: in.EventType, Limit: limit}
+		if in.Disposition != "" && !slices.Contains(eventDispositions, in.Disposition) {
+			return nil, listWebhookEventsOut{}, &toolError{codeInvalidArgument,
+				"disposition must be one of " + strings.Join(eventDispositions, ", ")}
+		}
+		filter := store.EventHistoryFilter{Provider: in.Provider, EventType: in.EventType,
+			Disposition: in.Disposition, Limit: limit}
 		if err := parseSince(in.Since, &filter); err != nil {
 			return nil, listWebhookEventsOut{}, &toolError{codeInvalidArgument, err.Error()}
 		}
@@ -355,7 +370,7 @@ func toEventSummaryOut(e store.EventHistoryItem) eventSummaryOut {
 		ID: e.ID, Provider: e.Provider, EventType: e.EventType, TrustMode: e.TrustMode,
 		Verified: e.Verified, PayloadSize: e.PayloadSize,
 		ReceivedAt: e.ReceivedAt.UTC().Format(time.RFC3339),
-		WebhookID:  e.WebhookID, Routing: decodeTrace(e.RoutingTrace),
+		WebhookID:  e.WebhookID, Routing: decodeTrace(e.RoutingTrace), Disposition: e.Disposition,
 	}
 }
 
@@ -368,7 +383,7 @@ func toEventDetailOut(d store.EventHistoryDetail) eventDetailOut {
 		SourceIP:  d.SourceIP,
 		Headers:   map[string]string{},
 		Payload:   string(d.Payload),
-		WebhookID: d.WebhookID, Routing: decodeTrace(d.RoutingTrace),
+		WebhookID: d.WebhookID, Routing: decodeTrace(d.RoutingTrace), Disposition: d.Disposition,
 	}
 	// Headers were persisted as a sanitized JSON object at ingest; a row that fails to parse
 	// yields an empty object rather than failing the read — the record itself is the contract.
