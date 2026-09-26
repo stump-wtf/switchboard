@@ -533,35 +533,41 @@ func (s *Store) notifyTodoReady(ctx context.Context, endpointID, queue string) {
 // Returns ErrConflict if the todo exists but is not claimable (live claim / wrong assignee /
 // exhausted / backoff pending / wrong tenant), ErrNotFound if absent.
 func (s *Store) ClaimTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (Todo, error) {
+	t, _, err := s.ClaimTodoWith(ctx, endpointID, id, owner, ClaimOpts{TTL: ttl})
+	return t, err
+}
+
+// ClaimTodoWith is ClaimTodo with the attempt inputs (claimant, MCP session, lease-token hash). The
+// claim opens the todo's new attempt in the same statement, closing a lapsed lease's attempt first
+// when it takes one over (SPEC-0034 REQ-2, REQ-3).
+func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string, o ClaimOpts) (Todo, ClaimedAttempt, error) {
 	if err := endpointScope(endpointID); err != nil {
-		return Todo{}, err
+		return Todo{}, ClaimedAttempt{}, err
 	}
 	// The candidate CTE locks the row with a plain FOR UPDATE (waiting, as the bare UPDATE did) so
 	// its prior state can ride into RETURNING — see countClaim.
 	var takeover bool
+	var ca ClaimedAttempt
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
-			SELECT id AS cand_id, state AS prior_state FROM todos
+			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
 			WHERE id=$2 AND endpoint_id=$1 AND (assignee IS NULL OR assignee=$3)
 				AND (state='pending'
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
 						AND attempt < max_attempts))
 			FOR UPDATE
-		)
-		UPDATE todos SET state='claimed', owner=$3, lease_expires_at=now()+$4::interval,
-			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
-		FROM cand WHERE todos.id = cand.cand_id
-		RETURNING `+todoCols+`, cand.prior_state = 'claimed'`, endpointID, id, owner, ttl.String())
-	t, err := scanTodo(row, &takeover)
+		)`+claimTail, append([]any{endpointID, id}, claimArgs(owner, o, "endpoint", endpointID)...)...)
+	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, s.classifyMiss(ctx, endpointID, id)
+		return Todo{}, ClaimedAttempt{}, s.classifyMiss(ctx, endpointID, id)
 	}
-	if err == nil {
-		s.fireTodoHook("claimed", t)
-		s.countClaim(t, takeover)
+	if err != nil {
+		return Todo{}, ClaimedAttempt{}, fmt.Errorf("store: claim %s: %w", id, err)
 	}
-	return t, err
+	s.fireTodoHook("claimed", t)
+	s.countClaim(t, takeover)
+	return t, ca, nil
 }
 
 // countClaim increments the claim counters for a committed claim: one lease expiry first when the
@@ -594,16 +600,23 @@ func (s *Store) countClaim(t Todo, takeover bool) {
 // the tenant scope (ADR-0022): the scan is constrained to rows owned by this endpoint. Returns
 // ErrNotFound when no work is available.
 func (s *Store) ClaimNext(ctx context.Context, endpointID string, queues []string, owner string, ttl time.Duration) (Todo, error) {
+	t, _, err := s.ClaimNextWith(ctx, endpointID, queues, owner, ClaimOpts{TTL: ttl})
+	return t, err
+}
+
+// ClaimNextWith is ClaimNext with the attempt inputs; see ClaimTodoWith.
+func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []string, owner string, o ClaimOpts) (Todo, ClaimedAttempt, error) {
 	if err := endpointScope(endpointID); err != nil {
-		return Todo{}, err
+		return Todo{}, ClaimedAttempt{}, err
 	}
 	// The pick moved from a WHERE sub-select into a CTE so its prior state reaches RETURNING (lease
 	// takeover, see countClaim); predicate, order and SKIP LOCKED are unchanged.
 	var takeover bool
+	var ca ClaimedAttempt
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
-			SELECT id AS cand_id, state AS prior_state FROM todos
-			WHERE endpoint_id=$4 AND queue = ANY($3) AND (assignee IS NULL OR assignee=$1)
+			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
+			WHERE endpoint_id=$1 AND queue = ANY($2) AND (assignee IS NULL OR assignee=$3)
 				AND (state='pending'
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
@@ -611,35 +624,44 @@ func (s *Store) ClaimNext(ctx context.Context, endpointID string, queues []strin
 			ORDER BY created_at
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
-		)
-		UPDATE todos SET state='claimed', owner=$1, lease_expires_at=now()+$2::interval,
-			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
-		FROM cand WHERE todos.id = cand.cand_id
-		RETURNING `+todoCols+`, cand.prior_state = 'claimed'`, owner, ttl.String(), queues, endpointID)
-	t, err := scanTodo(row, &takeover)
+		)`+claimTail, append([]any{endpointID, queues}, claimArgs(owner, o, "endpoint", endpointID)...)...)
+	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Todo{}, ErrNotFound
+		return Todo{}, ClaimedAttempt{}, ErrNotFound
 	}
-	if err == nil {
-		s.fireTodoHook("claimed", t)
-		s.countClaim(t, takeover)
+	if err != nil {
+		return Todo{}, ClaimedAttempt{}, fmt.Errorf("store: claim next: %w", err)
 	}
-	return t, err
+	s.fireTodoHook("claimed", t)
+	s.countClaim(t, takeover)
+	return t, ca, nil
 }
+
+// heartbeatTail stamps the open attempt with the heartbeat and the new lease expiry in the same
+// statement as the todos update in `upd` (SPEC-0034 REQ-4), then returns the todo.
+const heartbeatTail = `,
+		hb AS (
+			UPDATE todo_attempts a SET last_heartbeat_at = now(), lease_expires_at = upd.lease_expires_at
+			FROM upd WHERE a.todo_id = upd.id AND a.ended_at IS NULL
+		)
+		SELECT ` + todoCols + ` FROM upd`
 
 // HeartbeatTodo extends the visibility lease on a claimed todo (SQS ChangeMessageVisibility). Only
 // the current lease owner may heartbeat (guarded by state='claimed' AND owner); it does not consume
 // an attempt or change claimed_at. endpointID is the tenant scope (ADR-0022). Returns ErrConflict if
-// the todo exists but is not a live claim owned by owner, ErrNotFound if absent. Governing:
+// the todo exists but is not a live claim owned by owner, ErrNotFound if absent. The open attempt's
+// last_heartbeat_at and lease_expires_at move in the same statement (SPEC-0034 REQ-4). Governing:
 // SPEC-0003 REQ "Visibility Window, Lease, Heartbeat".
 func (s *Store) HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
 	}
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
-		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$4
-		RETURNING `+todoCols, endpointID, id, ttl.String(), owner)
+		WITH upd AS (
+			UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$4
+			RETURNING todos.*
+		)`+heartbeatTail, endpointID, id, ttl.String(), owner)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
@@ -650,13 +672,24 @@ func (s *Store) HeartbeatTodo(ctx context.Context, endpointID, id, owner string,
 // CompleteTodo acks a claimed todo owned by owner. endpointID is the tenant scope (ADR-0022).
 // ADR-0007 complete.
 func (s *Store) CompleteTodo(ctx context.Context, endpointID, id, owner string, result []byte) (Todo, error) {
+	return s.CompleteTodoWith(ctx, endpointID, id, owner, Report{Result: result})
+}
+
+// CompleteTodoWith is CompleteTodo with the attempt report: the open attempt closes
+// completed/done with the report's summary and artifact (SPEC-0034 REQ-3).
+func (s *Store) CompleteTodoWith(ctx context.Context, endpointID, id, owner string, r Report) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
 	}
+	summary, truncated, artifact := reportArgs(r)
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state='done', result=$4, completed_at=now(), updated_at=now()
-		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
-		RETURNING `+todoCols, endpointID, id, owner, result)
+		WITH upd AS (
+			UPDATE todos SET state='done', result=$4, completed_at=now(), updated_at=now()
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+			RETURNING todos.*
+		),
+		`+closedArm("completed", "'done'", "NULLIF($5::text, '')", "$6::boolean", "NULLIF($7::text, '')")+`
+		SELECT `+todoCols+` FROM upd`, endpointID, id, owner, r.Result, summary, truncated, artifact)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
@@ -676,19 +709,30 @@ func (s *Store) CompleteTodo(ctx context.Context, endpointID, id, owner string, 
 // clears it. endpointID is the tenant scope (ADR-0022). Governing: SPEC-0003 REQ "Bounded Retries
 // via max_attempts" (scheduled backoff); ADR-0007 fail.
 func (s *Store) FailTodo(ctx context.Context, endpointID, id, owner string, result []byte) (Todo, error) {
+	return s.FailTodoWith(ctx, endpointID, id, owner, Report{Result: result})
+}
+
+// FailTodoWith is FailTodo with the attempt report: the open attempt closes failed, with
+// disposition retry_scheduled below the cap and dead_lettered at it (SPEC-0034 REQ-3).
+func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, r Report) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
 	}
+	summary, truncated, artifact := reportArgs(r)
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET
-			state = 'failed',
-			next_retry_at = CASE WHEN attempt >= max_attempts THEN NULL
-				ELSE now() + make_interval(secs =>
-					LEAST($5::float8 * power(2, GREATEST(attempt, 1) - 1), $6::float8)) END,
-			lease_expires_at = NULL, result = $4, updated_at = now()
-		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
-		RETURNING `+todoCols, endpointID, id, owner, result,
-		retryBackoffBase.Seconds(), retryBackoffCap.Seconds())
+		WITH upd AS (
+			UPDATE todos SET
+				state = 'failed',
+				next_retry_at = CASE WHEN attempt >= max_attempts THEN NULL
+					ELSE now() + make_interval(secs =>
+						LEAST($5::float8 * power(2, GREATEST(attempt, 1) - 1), $6::float8)) END,
+				lease_expires_at = NULL, result = $4, updated_at = now()
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+			RETURNING todos.*
+		),
+		`+closedArm("failed", failDisposition, "NULLIF($7::text, '')", "$8::boolean", "NULLIF($9::text, '')")+`
+		SELECT `+todoCols+` FROM upd`, endpointID, id, owner, r.Result,
+		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
@@ -831,13 +875,25 @@ func (s *Store) RetryTodoOperatorOwned(ctx context.Context, ownerHumanID, id str
 // endpoint but is not a live claim owned by owner, ErrNotFound if absent or foreign.
 // Governing: SPEC-0013 REQ "Todo Detail Drawer" (Release), SPEC-0003 lease semantics.
 func (s *Store) ReleaseTodo(ctx context.Context, endpointID, id, owner string) (Todo, error) {
+	return s.ReleaseTodoWith(ctx, endpointID, id, owner, Report{})
+}
+
+// ReleaseTodoWith is ReleaseTodo with the attempt report: the open attempt closes
+// released/requeued with the report's summary and artifact (SPEC-0034 REQ-3, REQ-9). A release
+// has no result, so r.Result is ignored.
+func (s *Store) ReleaseTodoWith(ctx context.Context, endpointID, id, owner string, r Report) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
 	}
+	summary, truncated, artifact := reportArgs(r)
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
-		WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
-		RETURNING `+todoCols, endpointID, id, owner)
+		WITH upd AS (
+			UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+			RETURNING todos.*
+		),
+		`+closedArm("released", "'requeued'", "NULLIF($4::text, '')", "$5::boolean", "NULLIF($6::text, '')")+`
+		SELECT `+todoCols+` FROM upd`, endpointID, id, owner, summary, truncated, artifact)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
@@ -853,9 +909,13 @@ func (s *Store) ReleaseTodo(ctx context.Context, endpointID, id, owner string) (
 // ReleaseTodo. Governing: ADR-0022, SPEC-0013 REQ "Todo Detail Drawer" (Release).
 func (s *Store) ReleaseTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$3)
-		RETURNING `+todoCols, id, owner, ownerHumanID)
+		WITH upd AS (
+			UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
+			WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$3)
+			RETURNING todos.*
+		),
+		`+closedArmUnreported("released", "'requeued'")+`
+		SELECT `+todoCols+` FROM upd`, id, owner, ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
@@ -997,39 +1057,43 @@ func (s *Store) GetTodoOperatorOwned(ctx context.Context, ownerHumanID, id strin
 func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, ttl time.Duration) (Todo, error) {
 	// Same candidate-CTE shape as ClaimTodo, so a Board takeover of a lapsed lease counts too
 	// (countClaim).
+	// The Board's claim opens an attempt with claimer_kind 'owner' and no claimer endpoint: a signed-in
+	// human, not an endpoint credential, holds it (SPEC-0034 REQ-1, REQ-2).
 	var takeover bool
+	var ca ClaimedAttempt
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
-			SELECT id AS cand_id, state AS prior_state FROM todos
-			WHERE id=$1 AND (assignee IS NULL OR assignee=$2)
+			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
+			WHERE id=$2 AND (assignee IS NULL OR assignee=$3)
 				AND (state='pending'
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
-						AND attempt < max_attempts))`+operatorOwns+`$4)
+						AND attempt < max_attempts))`+operatorOwns+`$1)
 			FOR UPDATE
-		)
-		UPDATE todos SET state='claimed', owner=$2, lease_expires_at=now()+$3::interval,
-			attempt=attempt+1, claimed_at=now(), next_retry_at=NULL, updated_at=now()
-		FROM cand WHERE todos.id = cand.cand_id
-		RETURNING `+todoCols+`, cand.prior_state = 'claimed'`, id, owner, ttl.String(), ownerHumanID)
-	t, err := scanTodo(row, &takeover)
+		)`+claimTail, append([]any{ownerHumanID, id}, claimArgs(owner, ClaimOpts{TTL: ttl}, "owner", "")...)...)
+	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
-	if err == nil {
-		s.fireTodoHook("claimed", t)
-		s.countClaim(t, takeover)
+	if err != nil {
+		return Todo{}, fmt.Errorf("store: board claim %s: %w", id, err)
 	}
-	return t, err
+	s.fireTodoHook("claimed", t)
+	s.countClaim(t, takeover)
+	return t, nil
 }
 
 // CompleteTodoOperatorOwned is the OPERATOR-ONLY variant of CompleteTodo. The agent path MUST use
 // CompleteTodo. Governing: ADR-0022, ADR-0007 complete.
 func (s *Store) CompleteTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state='done', result=$3, completed_at=now(), updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$4)
-		RETURNING `+todoCols, id, owner, result, ownerHumanID)
+		WITH upd AS (
+			UPDATE todos SET state='done', result=$3, completed_at=now(), updated_at=now()
+			WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$4)
+			RETURNING todos.*
+		),
+		`+closedArmUnreported("completed", "'done'")+`
+		SELECT `+todoCols+` FROM upd`, id, owner, result, ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
@@ -1045,14 +1109,18 @@ func (s *Store) CompleteTodoOperatorOwned(ctx context.Context, ownerHumanID, id,
 // Governing: ADR-0022, SPEC-0003 fail.
 func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET
-			state = 'failed',
-			next_retry_at = CASE WHEN attempt >= max_attempts THEN NULL
-				ELSE now() + make_interval(secs =>
-					LEAST($4::float8 * power(2, GREATEST(attempt, 1) - 1), $5::float8)) END,
-			lease_expires_at = NULL, result = $3, updated_at = now()
-		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$6)
-		RETURNING `+todoCols, id, owner, result,
+		WITH upd AS (
+			UPDATE todos SET
+				state = 'failed',
+				next_retry_at = CASE WHEN attempt >= max_attempts THEN NULL
+					ELSE now() + make_interval(secs =>
+						LEAST($4::float8 * power(2, GREATEST(attempt, 1) - 1), $5::float8)) END,
+				lease_expires_at = NULL, result = $3, updated_at = now()
+			WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$6)
+			RETURNING todos.*
+		),
+		`+closedArmUnreported("failed", failDisposition)+`
+		SELECT `+todoCols+` FROM upd`, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1069,9 +1137,11 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 // HeartbeatTodo. Governing: ADR-0022, SPEC-0003 heartbeat.
 func (s *Store) HeartbeatTodoOperatorOwned(ctx context.Context, ownerHumanID, id, owner string, ttl time.Duration) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
-		WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$4)
-		RETURNING `+todoCols, id, owner, ttl.String(), ownerHumanID)
+		WITH upd AS (
+			UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
+			WHERE id=$1 AND state='claimed' AND owner=$2`+operatorOwns+`$4)
+			RETURNING todos.*
+		)`+heartbeatTail, id, owner, ttl.String(), ownerHumanID)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
@@ -1091,12 +1161,18 @@ func (s *Store) HeartbeatTodoOperatorOwned(ctx context.Context, ownerHumanID, id
 // outcome (pending = re-surfaced, failed = dead-lettered) so the UI can announce reaper re-surfaces.
 // Governing: SPEC-0013 REQ "Live Updates and Toasts" (reaper re-surface is visible).
 func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
+	// The reaped rows' open attempts close reaped in the same statement: requeued below the cap,
+	// dead_lettered at it (SPEC-0034 REQ-3). The sweep reads no attempt out (REQ-10).
 	rows, err := s.pool.Query(ctx, `
-		UPDATE todos SET
-			state = CASE WHEN attempt >= max_attempts THEN 'failed' ELSE 'pending' END,
-			owner = NULL, lease_expires_at = NULL, updated_at = now()
-		WHERE state='claimed' AND lease_expires_at < now()
-		RETURNING `+todoCols)
+		WITH upd AS (
+			UPDATE todos SET
+				state = CASE WHEN attempt >= max_attempts THEN 'failed' ELSE 'pending' END,
+				owner = NULL, lease_expires_at = NULL, updated_at = now()
+			WHERE state='claimed' AND lease_expires_at < now()
+			RETURNING todos.*
+		),
+		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
+		SELECT `+todoCols+` FROM upd`)
 	if err != nil {
 		return 0, err
 	}
@@ -1497,19 +1573,26 @@ func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []strin
 	if len(endpointIDs) == 0 {
 		return nil
 	}
+	// A claimed or interrupted todo's open attempt closes revoked/dead_lettered in the same
+	// statement (SPEC-0034 REQ-3); a pending todo has none.
 	if _, err := q.Exec(ctx, `
-		UPDATE todos SET
-			state = 'failed',
-			next_retry_at = NULL,
-			lease_expires_at = NULL,
-			owner = NULL,
-			result = jsonb_build_object(
-				'error', 'endpoint_revoked',
-				'detail', 'the endpoint this todo was routed to was revoked; no session can claim it'
-			),
-			updated_at = now(),
-			completed_at = now()
-		WHERE endpoint_id = ANY($1::uuid[]) AND state IN ('pending', 'claimed', 'input-required', 'auth-required')`,
+		WITH upd AS (
+			UPDATE todos SET
+				state = 'failed',
+				next_retry_at = NULL,
+				lease_expires_at = NULL,
+				owner = NULL,
+				result = jsonb_build_object(
+					'error', 'endpoint_revoked',
+					'detail', 'the endpoint this todo was routed to was revoked; no session can claim it'
+				),
+				updated_at = now(),
+				completed_at = now()
+			WHERE endpoint_id = ANY($1::uuid[]) AND state IN ('pending', 'claimed', 'input-required', 'auth-required')
+			RETURNING todos.*
+		),
+		`+closedArmUnreported("revoked", "'dead_lettered'")+`
+		SELECT count(*) FROM upd`,
 		endpointIDs); err != nil {
 		return fmt.Errorf("store: dead-letter endpoint todos: %w", err)
 	}

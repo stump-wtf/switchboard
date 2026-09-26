@@ -20,7 +20,7 @@ import (
 // packages' tests; a dedicated database (switchboard_test_store) isolates them fully. Tests skip
 // cleanly when no test DB is configured, so `go test ./...` stays green without Postgres.
 // Governing: issue #133 (per-package DB isolation for concurrent TRUNCATE).
-func testStore(t *testing.T) (*Store, context.Context) {
+func testStore(t testing.TB) (*Store, context.Context) {
 	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -74,7 +74,7 @@ var seedEndpointCounter atomic.Int64
 // escape hatch. Each call mints a distinct human, agent, and credential, so a test can seed two
 // endpoints and assert that neither can see the other's work even when their queue names collide.
 // Governing: ADR-0022, ADR-0008, SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)".
-func seedEndpoint(t *testing.T, s *Store, ctx context.Context, label string, queues ...string) string {
+func seedEndpoint(t testing.TB, s *Store, ctx context.Context, label string, queues ...string) string {
 	t.Helper()
 	if len(queues) == 0 {
 		queues = []string{"q"}

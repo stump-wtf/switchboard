@@ -59,6 +59,11 @@ func TestConcurrentClaimsAreDistinct(t *testing.T) {
 			t.Fatalf("todo %s claimed %d times (double-claim)", id, c)
 		}
 	}
+	// SPEC-0034 REQ-20: each committed claim opened exactly one attempt, and no todo holds two.
+	if open := count(t, s, ctx, "todo_attempts", "ended_at IS NULL"); open != n {
+		t.Fatalf("%d open attempts after %d claims, want %d", open, n, n)
+	}
+	assertAttemptInvariant(t, s, ctx)
 }
 
 // Governing: SPEC-0003 REQ "Error Handling Standards" — a conditional update that matches no row is
