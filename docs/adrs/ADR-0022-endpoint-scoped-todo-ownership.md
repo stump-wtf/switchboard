@@ -13,7 +13,7 @@ A bug report from a switchboard tester surfaced an **architectural isolation hol
 deliveries to one user's webhook were visible to other users' agents. Investigation
 showed the hole is not local to the push path — it is the todo model itself.
 
-The `todos` table ([0001_init.sql](../../internal/db/migrations/0001_init.sql)) carries a
+The `todos` table ([0001_init.sql](https://github.com/stump-wtf/switchboard/blob/main/internal/db/migrations/0001_init.sql)) carries a
 free-form `queue` text column but **no foreign key to `endpoints`, `agents`, or
 `humans`**. Queue names are global strings (`"reviews"`, `"github"`). Every consumer of
 todos — `ListTodos`, `ClaimTodo`, `GetTodo`, `CompleteTodo`, `FailTodo`, `Heartbeat`, and
