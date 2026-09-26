@@ -156,4 +156,17 @@ func TestDiscardThroughTheService(t *testing.T) {
 	if _, err := ing.DiscardQuarantined(ctx, h.ID, held.ID, "human:"+h.ID, "again"); !errors.Is(err, ErrReleaseConflict) {
 		t.Fatalf("second discard = %v, want ErrReleaseConflict", err)
 	}
+
+	// A held item whose event is gone cannot be routed again: the release is a conflict that says
+	// to discard it, not a generic failure.
+	if code := postGitHubIssue(ing, "tok-q-discard", secret, "q-dis-2", githubIssueBody("opened", "mallory", "mallory")); code != 202 {
+		t.Fatalf("delivery = %d", code)
+	}
+	orphan := heldTodo(t, ctx, pool, st, owner.ID)
+	if _, err := pool.Exec(ctx, `DELETE FROM events WHERE id = $1`, *orphan.EventID); err != nil {
+		t.Fatalf("delete event: %v", err)
+	}
+	if _, err := ing.ReleaseQuarantined(ctx, h.ID, orphan.ID, "human:"+h.ID, ""); !errors.Is(err, ErrReleaseConflict) {
+		t.Fatalf("release of an item with no event = %v, want ErrReleaseConflict", err)
+	}
 }

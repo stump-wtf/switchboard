@@ -100,6 +100,76 @@ func TestWithheldRedeliveryIsNeverQuarantined(t *testing.T) {
 	}
 }
 
+// Retention never deletes the event a pending quarantine item holds, by age or by row cap, so the
+// item stays releasable and counted; once the item is no longer held the event is prunable again.
+// An item whose event is gone anyway (older rows) is ErrHeldEventGone, not a generic failure.
+// Governing: SPEC-0026 REQ-6, REQ-7.
+func TestPruneKeepsTheHeldEvent(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := seedEndpoint(t, s, ctx, "prune-held-owner", "q")
+	human := ownerOf(t, s, ctx, owner)
+	held, _ := holdOn(t, s, ctx, owner)
+	for range 3 {
+		holdOn(t, s, ctx, owner)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE events SET received_at = now() - interval '40 days' WHERE id = $1`, *held.EventID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	setSetting(t, s, ctx, "retention_max_age_days", "30")
+	setSetting(t, s, ctx, "retention_max_rows", "0")
+	if _, err := s.Prune(ctx); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM events`).Scan(&n); err != nil || n != 4 {
+		t.Fatalf("events after prune = %d (%v), want all 4 held events kept", n, err)
+	}
+	if item, err := s.QuarantinedForHuman(ctx, human, held.ID); err != nil || item.Event.ID != *held.EventID {
+		t.Fatalf("held item after prune = %+v (%v), want it with its event", item.Todo, err)
+	}
+	if _, err := s.DiscardQuarantined(ctx, human, held.ID, "human:"+human, "done"); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	if _, err := s.Prune(ctx); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM events`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("events after the discard and a prune = %d (%v), want the discarded item's event gone", n, err)
+	}
+
+	// An item whose event is gone (from before the guard) says so, distinctly.
+	orphan, _ := holdOn(t, s, ctx, owner)
+	if _, err := s.pool.Exec(ctx, `DELETE FROM events WHERE id = $1`, *orphan.EventID); err != nil {
+		t.Fatalf("delete event: %v", err)
+	}
+	if _, err := s.QuarantinedForHuman(ctx, human, orphan.ID); !errors.Is(err, ErrHeldEventGone) || errors.Is(err, ErrNotFound) {
+		t.Fatalf("orphaned item = %v, want ErrHeldEventGone", err)
+	}
+}
+
+// A release whose first target already holds a live todo with the delivery's idempotency key (a
+// routed copy from before the owner tightened trust) is a conflict, and the item stays held.
+// Governing: SPEC-0026 REQ-7, REQ-13.
+func TestReleaseOntoALiveDuplicateConflicts(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := seedEndpoint(t, s, ctx, "dup-owner", "q")
+	friend := seedEndpoint(t, s, ctx, "dup-friend", "q")
+	human := ownerOf(t, s, ctx, owner)
+	held, key := holdOn(t, s, ctx, owner)
+	if _, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: friend, Queue: "q", Source: "github", Kind: "webhook",
+		Title: "routed copy", Payload: []byte(`{"n":1}`), IdempotencyKey: key}); err != nil {
+		t.Fatalf("seed live duplicate: %v", err)
+	}
+	_, err := s.ApplyQuarantineRelease(ctx, ReleasePlan{TodoID: held.ID, OwnerHumanID: human, By: "human:" + human,
+		Queue: "q", Endpoints: []string{friend, owner}, Trace: []byte(`{}`), Verified: true, TrustMode: "signed"})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("release onto a live duplicate = %v, want ErrConflict", err)
+	}
+	if item, err := s.QuarantinedForHuman(ctx, human, held.ID); err != nil || item.Todo.Queue != QueueQuarantine {
+		t.Fatalf("item after the refused release = %+v (%v), want still held", item.Todo, err)
+	}
+}
+
 func TestReleaseMovesInPlaceAndFansOut(t *testing.T) {
 	s, ctx := testStore(t)
 	owner := seedEndpoint(t, s, ctx, "rel-owner", "q", "lane-m")
