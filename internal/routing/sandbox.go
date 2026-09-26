@@ -29,20 +29,23 @@ package routing
 //     persists nothing, so the producer retries once the instance is healthy. It never routes by
 //     default.
 //
+// Slots are shared fairly: one tenant holds at most all but one of them, so a tenant whose rules are
+// slow, or whose deliveries flood in, makes only its OWN deliveries wait (ADR-0038 F5).
+//
 // The parent then applies the action with Decide over its OWN copy of the configuration and grant,
 // so even a child that misbehaved can only ever name a rule, not a destination.
 //
 // Governing: SPEC-0020 Security Requirements "Expression sandboxing" (bounded by node-count and
 // wall-clock limits), REQ "Isolation and Tenant Safety"; ADR-0024; SPEC-0026 REQ-1 "Faults Stop
-// Evaluation", REQ-2 "Unavailable Sandbox Refuses the Delivery"; ADR-0031.
+// Evaluation", REQ-2 "Unavailable Sandbox Refuses the Delivery"; ADR-0031; ADR-0038 F5.
 //
 // @joestump-agent 09/11/2026 - Added after gojq's in-process limits proved unable to bound memory.
 //
 // @joestump-agent 09/23/2026 - A sandbox failure refuses the delivery instead of routing it by
 // default (#212).
 //
-// @joestump-agent 09/26/2026 - A child killed mid-rule faults that rule rather than answering 503
-// (#212 review).
+// @joestump-agent 09/26/2026 - A child killed mid-rule faults that rule rather than answering 503,
+// and slots are shared fairly between tenants (#212 review).
 
 import (
 	"bytes"
@@ -133,6 +136,15 @@ type Sandbox struct {
 	slots     chan struct{}
 	deadline  time.Duration
 	queueWait time.Duration
+
+	mu      sync.Mutex
+	tenants map[string]*tenantSlots // live per-tenant shares, dropped when nobody holds or waits
+}
+
+// tenantSlots is one tenant's share of the sandbox's slots.
+type tenantSlots struct {
+	slots chan struct{}
+	refs  int // holders and waiters; the entry is deleted when this reaches zero
 }
 
 // SandboxOption tunes a Sandbox (tests use these to exercise the limits quickly).
@@ -173,22 +185,74 @@ func (s *Sandbox) Route(ctx context.Context, cfg Config, g Grant, in EnvelopeInp
 	if len(cfg.Rules) == 0 {
 		return Decide(cfg, g, MatchResult{})
 	}
-	return Decide(cfg, g, s.match(ctx, cfg.Rules, cfg.Params, in))
+	tenant := g.Tenant
+	if tenant == "" {
+		tenant = "webhook:" + in.WebhookID // no owner known: the webhook is its own tenant
+	}
+	return Decide(cfg, g, s.match(ctx, tenant, cfg.Rules, cfg.Params, in))
+}
+
+// tenantShare is how many slots one tenant may hold at once: all but one, so every other tenant
+// always has a slot it can get. A one-slot sandbox cannot be shared and gives each tenant the lot.
+func (s *Sandbox) tenantShare() int { return max(cap(s.slots)-1, 1) }
+
+// acquire takes one slot of the tenant's share and then one global slot, waiting until wait is
+// done. It returns the release func, or false when no slot came free in time. The tenant's share is
+// taken first, so a tenant that already holds its share waits on itself without also occupying the
+// global slot another tenant needs.
+// Governing: ADR-0038 F5 (per-owner fair share of slots); SPEC-0026 REQ-2.
+func (s *Sandbox) acquire(wait context.Context, tenant string) (func(), bool) {
+	s.mu.Lock()
+	if s.tenants == nil {
+		s.tenants = map[string]*tenantSlots{}
+	}
+	ts := s.tenants[tenant]
+	if ts == nil {
+		ts = &tenantSlots{slots: make(chan struct{}, s.tenantShare())}
+		s.tenants[tenant] = ts
+	}
+	ts.refs++
+	s.mu.Unlock()
+	unref := func() {
+		s.mu.Lock()
+		if ts.refs--; ts.refs == 0 {
+			delete(s.tenants, tenant)
+		}
+		s.mu.Unlock()
+	}
+
+	select {
+	case ts.slots <- struct{}{}:
+	case <-wait.Done():
+		unref()
+		return nil, false
+	}
+	select {
+	case s.slots <- struct{}{}:
+	case <-wait.Done():
+		<-ts.slots
+		unref()
+		return nil, false
+	}
+	return func() {
+		<-s.slots
+		<-ts.slots
+		unref()
+	}, true
 }
 
 func sandboxFault(cause, detail string) MatchResult {
 	return MatchResult{Faults: []RuleFault{{RuleIndex: -1, Cause: cause, Detail: detail}}}
 }
 
-func (s *Sandbox) match(ctx context.Context, rules []Rule, params map[string]any, in EnvelopeInput) MatchResult {
+func (s *Sandbox) match(ctx context.Context, tenant string, rules []Rule, params map[string]any, in EnvelopeInput) MatchResult {
 	wait, cancelWait := context.WithTimeout(ctx, s.queueWait)
-	defer cancelWait()
-	select {
-	case s.slots <- struct{}{}:
-		defer func() { <-s.slots }()
-	case <-wait.Done():
+	release, ok := s.acquire(wait, tenant)
+	cancelWait()
+	if !ok {
 		return sandboxFault(FaultSandboxBusy, "no evaluation slot free")
 	}
+	defer release()
 
 	req, err := json.Marshal(childRequest{Rules: rules, Params: params, Input: in})
 	if err != nil || len(req) > maxChildRequestBytes {

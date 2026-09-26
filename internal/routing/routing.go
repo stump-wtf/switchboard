@@ -149,6 +149,9 @@ type Grant struct {
 	Queues         []string
 	Endpoints      []string
 	EndpointQueues map[string][]string
+	// Tenant is who the rules belong to (the webhook owner's human id). It never affects a decision:
+	// the sandbox uses it only to share evaluation slots fairly between tenants (ADR-0038 F5).
+	Tenant string
 }
 
 // ValidationError names the offending rule (Index -1 is the default action) so a save failure is

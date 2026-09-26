@@ -445,7 +445,8 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 			next.Rules[i].ID = routing.NewRuleID()
 		}
 	}
-	g := routing.Grant{TargetQueue: pre.TargetQueue, Queues: pre.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
+	g := routing.Grant{TargetQueue: pre.TargetQueue, Queues: pre.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
+		Tenant: pre.OwnerHumanID}
 	if err := routing.Validate(next, g); err != nil {
 		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 	}
@@ -463,7 +464,8 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 			return routing.Config{}, &toolError{codeConflict, "the webhook's rules changed while this edit was being checked; read them again and retry"}
 		}
 		// The queue ceiling still comes from the locked row.
-		g = routing.Grant{TargetQueue: cur.TargetQueue, Queues: cur.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
+		g = routing.Grant{TargetQueue: cur.TargetQueue, Queues: cur.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
+			Tenant: cur.OwnerHumanID}
 		if err := routing.Validate(next, g); err != nil {
 			return routing.Config{}, err
 		}
@@ -550,7 +552,8 @@ func (h *Handler) routingGrant(ctx context.Context, wr store.WebhookRouting) (ro
 	if err != nil {
 		return routing.Grant{}, err
 	}
-	return routing.Grant{TargetQueue: wr.TargetQueue, Queues: wr.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}, nil
+	return routing.Grant{TargetQueue: wr.TargetQueue, Queues: wr.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
+		Tenant: wr.OwnerHumanID}, nil
 }
 
 // rulesRouter is the router dry-runs use: the same sandbox the receiver uses unless a test replaced it.

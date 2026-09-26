@@ -318,3 +318,59 @@ func TestRunChildAnnouncesEachRule(t *testing.T) {
 		t.Fatalf("child output = %q, want %q", out.String(), want)
 	}
 }
+
+// One tenant cannot hold every evaluation slot. With two slots, a tenant whose evaluation is stuck
+// (here: holding a slot directly) and whose next delivery is waiting still leaves the other slot to
+// a second tenant, whose delivery routes. Only the busy tenant's own delivery is refused as busy
+// (ADR-0038 F5, SPEC-0026 REQ-2).
+func TestSandboxBusyTenantDoesNotStarveAnother(t *testing.T) {
+	s := testSandbox(t, WithMaxChildren(2))
+	s.queueWait = 50 * time.Millisecond
+	ctx := context.Background()
+
+	holdA, ok := s.acquire(ctx, "tenant-a")
+	if !ok {
+		t.Fatal("tenant a could not take its first slot")
+	}
+	cfg := Config{Rules: []Rule{rule("ok", `true`, Action{Queue: "forge"})}}
+
+	a := grant()
+	a.Tenant = "tenant-a"
+	if f := onlySandboxFault(t, s.Route(ctx, cfg, a, cairnInput(`{}`))); f.Cause != FaultSandboxBusy {
+		t.Fatalf("tenant a's second delivery fault = %+v, want %s: a tenant holds at most its share", f, FaultSandboxBusy)
+	}
+
+	b := grant()
+	b.Tenant = "tenant-b"
+	if d := s.Route(ctx, cfg, b, cairnInput(`{}`)); d.Unavailable || d.Queue != "forge" {
+		t.Fatalf("tenant b's delivery = %+v, want it routed while tenant a is busy", d)
+	}
+
+	holdA()
+	s.mu.Lock()
+	left := len(s.tenants)
+	s.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d tenant shares left after every slot was released, want 0", left)
+	}
+}
+
+// Without an owner, the webhook is the tenant, so two unowned webhooks still share fairly.
+func TestSandboxTenantDefaultsToTheWebhook(t *testing.T) {
+	s := testSandbox(t, WithMaxChildren(2))
+	s.queueWait = 50 * time.Millisecond
+	hold, ok := s.acquire(context.Background(), "webhook:wh-1")
+	if !ok {
+		t.Fatal("could not take a slot")
+	}
+	defer hold()
+	cfg := Config{Rules: []Rule{rule("ok", `true`, Action{Queue: "forge"})}}
+	if f := onlySandboxFault(t, s.Route(context.Background(), cfg, grant(), cairnInput(`{}`))); f.Cause != FaultSandboxBusy {
+		t.Fatalf("fault = %+v, want %s for the same webhook", f, FaultSandboxBusy)
+	}
+	other := cairnInput(`{}`)
+	other.WebhookID = "wh-2"
+	if d := s.Route(context.Background(), cfg, grant(), other); d.Unavailable {
+		t.Fatalf("another webhook's delivery = %+v, want it routed", d)
+	}
+}

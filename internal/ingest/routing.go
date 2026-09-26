@@ -62,7 +62,8 @@ func (i *Ingest) routeDelivery(ctx context.Context, wh store.Webhook, targets []
 		Source: wh.SourceType, Kind: kind, WebhookID: wh.ID, TrustMode: wh.TrustMode,
 		Verified: verified, ContentType: contentType, Headers: hdr, Body: body,
 	}
-	g := routing.Grant{TargetQueue: wh.TargetQueue, Queues: rt.WebhookQueues, Endpoints: targets, EndpointQueues: scopes}
+	g := routing.Grant{TargetQueue: wh.TargetQueue, Queues: rt.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
+		Tenant: rt.OwnerHumanID}
 	return router.Route(ctx, rt.Config, g, in), in, nil
 }
 

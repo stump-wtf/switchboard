@@ -47,6 +47,10 @@ func TestUpdateWebhookRoutingIsOwnedAndAtomic(t *testing.T) {
 	if len(wr.Config.Rules) != 0 || wr.Config.Default != nil || wr.TargetQueue != "q" || wr.EndpointID != epA || wr.TrustMode != "signed" {
 		t.Fatalf("fresh routing = %+v, want empty config on target queue q owned by %s", wr, epA)
 	}
+	// The owning human is the sandbox's fairness key (ADR-0038 F5).
+	if wr.OwnerHumanID != humanA {
+		t.Fatalf("routing owner = %q, want %q", wr.OwnerHumanID, humanA)
+	}
 
 	cfg := routing.Config{
 		Rules:   []routing.Rule{{ID: "r1", Name: "one", Expr: `.kind == "x"`, Action: routing.Action{Queue: "q", Endpoints: []string{epA}}}},
