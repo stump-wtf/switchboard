@@ -35,25 +35,26 @@ func loadRecorded(t *testing.T, path string) recordedSample {
 
 // The projection against recorded payloads: github and gitea issues, issue_comment, pull_request,
 // pull_request_review, push, and cairn artifact.created (including one whose unsigned-in-spirit
-// on_behalf_of names someone else, which must never count).
+// on_behalf_of names someone else, which must never count). thread is the issue or pull request
+// author whose text a comment or review delivery also carries.
 func TestActorOfRecordedPayloads(t *testing.T) {
 	cases := []struct {
-		file, sender, author string
+		file, sender, author, thread string
 	}{
-		{"fleet/samples/github-issues-opened.json", "joestump", "joestump"},
-		{"fleet/samples/github-issues-labeled.json", "joestump-agent", "joestump"},
-		{"actor/github-issue-comment-created.json", "Outsider-Two", "Outsider-Two"},
-		{"actor/github-pull-request-opened.json", "outsider-one", "outsider-one"},
-		{"actor/github-pull-request-review-submitted.json", "joestump-agent", "joestump-agent"},
-		{"actor/github-push.json", "JoeStump", ""},
-		{"fleet/samples/gitea-issue-opened.json", "joestump", "joestump"},
-		{"fleet/samples/gitea-issue-label-updated.json", "joestump-agent", "joestump"},
-		{"fleet/samples/gitea-pull-request-comment.json", "joestump-agent", "joestump-agent"},
-		{"fleet/samples/gitea-pull-request-approved.json", "gitea-actions", "joestump"},
-		{"fleet/samples/gitea-pull-request-review-requested.json", "joestump", "joestump"},
-		{"actor/gitea-push.json", "joestump", ""},
-		{"fleet/samples/cairn-artifact-created.json", "joestump-agent", "joestump-agent"},
-		{"actor/cairn-artifact-on-behalf-of.json", "acct_other", "acct_other"},
+		{"fleet/samples/github-issues-opened.json", "joestump", "joestump", "joestump"},
+		{"fleet/samples/github-issues-labeled.json", "joestump-agent", "joestump", "joestump"},
+		{"actor/github-issue-comment-created.json", "Outsider-Two", "Outsider-Two", "outsider-one"},
+		{"actor/github-pull-request-opened.json", "outsider-one", "outsider-one", "outsider-one"},
+		{"actor/github-pull-request-review-submitted.json", "joestump-agent", "joestump-agent", "outsider-one"},
+		{"actor/github-push.json", "JoeStump", "", ""},
+		{"fleet/samples/gitea-issue-opened.json", "joestump", "joestump", "joestump"},
+		{"fleet/samples/gitea-issue-label-updated.json", "joestump-agent", "joestump", "joestump"},
+		{"fleet/samples/gitea-pull-request-comment.json", "joestump-agent", "joestump-agent", "joestump"},
+		{"fleet/samples/gitea-pull-request-approved.json", "gitea-actions", "joestump", "joestump"},
+		{"fleet/samples/gitea-pull-request-review-requested.json", "joestump", "joestump", "joestump"},
+		{"actor/gitea-push.json", "joestump", "", ""},
+		{"fleet/samples/cairn-artifact-created.json", "joestump-agent", "joestump-agent", ""},
+		{"actor/cairn-artifact-on-behalf-of.json", "acct_other", "acct_other", ""},
 	}
 	for _, c := range cases {
 		t.Run(filepath.Base(c.file), func(t *testing.T) {
@@ -63,8 +64,8 @@ func TestActorOfRecordedPayloads(t *testing.T) {
 				s.Source = "gitea"
 			}
 			a := ActorOf(s.Source, s.Body)
-			if a == nil || a.Sender != c.sender || a.Author != c.author {
-				t.Fatalf("ActorOf = %+v, want sender %q author %q", a, c.sender, c.author)
+			if a == nil || a.Sender != c.sender || a.Author != c.author || a.Thread != c.thread {
+				t.Fatalf("ActorOf = %+v, want sender %q author %q thread %q", a, c.sender, c.author, c.thread)
 			}
 		})
 	}
@@ -167,6 +168,11 @@ func TestEvaluateTrust(t *testing.T) {
 	outsiderIssue := []byte(`{"action":"opened","issue":{"number":1,"user":{"login":"mallory"}},"sender":{"login":"mallory"}}`)
 	labeled := []byte(`{"action":"labeled","issue":{"number":1,"user":{"login":"mallory"}},"sender":{"login":"joestump"}}`)
 	push := []byte(`{"ref":"refs/heads/main","sender":{"login":"joestump"}}`)
+	maintainerComment := []byte(`{"action":"created","comment":{"user":{"login":"joestump"}},` +
+		`"issue":{"number":1,"user":{"login":"mallory"}},"sender":{"login":"joestump"}}`)
+	maintainerReview := []byte(`{"action":"reviewed","review":{"user":{"login":"joestump"}},` +
+		`"pull_request":{"number":2,"user":{"login":"mallory"}},"sender":{"login":"joestump"}}`)
+	discussionLabeled := []byte(`{"action":"labeled","discussion":{"number":3,"user":{"login":"mallory"}},"sender":{"login":"joestump"}}`)
 	caseVariant := []byte(`{"sender":{"login":"mallory"},"SENDER":{"login":"joestump"}}`)
 	duplicate := []byte(`{"sender":{"login":"joestump"},"sender":{"login":"mallory"}}`)
 	kelvin := []byte(`{"sender":{"login":"Kelvin"}}`)
@@ -189,6 +195,13 @@ func TestEvaluateTrust(t *testing.T) {
 		{"empty list", "github", `{"logins":[]}`, labeled, "false", "false", "false"},
 		// REQ-5 scenario "Allow-all is explicit and flagged": trusted, per-actor flags null.
 		{"allow all", "gitea", `{"allow_all":true}`, outsiderIssue, "null", "null", "true"},
+		// A trusted maintainer's comment or review on an outsider's thread still carries the
+		// outsider's text, so author_trusted is false. Under match "author" that holds the delivery.
+		{"maintainer comment on outsider issue", "github", `{"logins":["joestump"],"match":"sender"}`, maintainerComment, "true", "false", "true"},
+		{"maintainer comment, match author", "github", `{"logins":["joestump"],"match":"author"}`, maintainerComment, "true", "false", "false"},
+		{"maintainer review on outsider PR", "gitea", `{"logins":["joestump"],"match":"sender"}`, maintainerReview, "true", "false", "true"},
+		{"maintainer comment, thread trusted too", "github", `{"logins":["joestump","mallory"],"match":"author"}`, maintainerComment, "true", "true", "true"},
+		{"maintainer labels outsider discussion", "github", `{"logins":["joestump"],"match":"sender"}`, discussionLabeled, "true", "false", "true"},
 		// Keys match exactly, as .payload does: a case-variant duplicate cannot name another sender.
 		{"case-variant key", "github", `{"logins":["joestump"]}`, caseVariant, "false", "false", "false"},
 		// A duplicate key resolves last-wins, exactly as .payload does.
