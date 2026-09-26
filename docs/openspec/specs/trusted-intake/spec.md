@@ -54,7 +54,7 @@ todo, spending its dedup slot exactly as a drop does. After REQ-6, it MUST be qu
 Each faulted delivery MUST increment `switchboard_routing_faults_total{cause}`, and MUST log one
 warning with the webhook id, rule id, rule index and cause. The owner MUST be able to see faulted
 deliveries through `list_webhook_events` (filterable by `disposition`) and as a warning on the
-webhook's board card.
+webhook's row on its endpoint card (REQ-9).
 
 #### Scenario: A mistyped trust rule no longer admits everyone
 
@@ -149,7 +149,7 @@ Management:
 * `clear_trusted_actors {webhook_id}` MUST reset the field to an empty list.
 * `{"allow_all": true}` MUST trust every verified sender. It MUST be exclusive with `logins`,
   `actor_ids` and `match`, MUST be off unless set explicitly, and MUST be flagged by
-  `list_webhooks` (`allow_all: true`) and by a warning on the webhook card.
+  `list_webhooks` (`allow_all: true`) and by a warning on the webhook's row on its endpoint card.
 * `list_webhooks` MUST echo the field, and a `quarantined` count of the webhook's open quarantine
   items.
 
@@ -370,8 +370,9 @@ The view MUST offer **release** (optionally to a named queue), **discard** (with
 **trust this actor and release**. The last action adds the actor's login or actor id to the
 webhook's `trusted_actors` and releases the item. It MUST be refused for `rule_fault` items.
 
-The board's webhook card MUST show the webhook's open quarantine count and its fault count over the
-last 24 hours.
+Each webhook's row on its endpoint card MUST show the webhook's open quarantine count and its fault
+count over the last 24 hours. The endpoint card is the web UI's per-webhook surface: the Board has no
+per-webhook cards, so a webhook's owner signals live where the webhook is configured.
 
 #### Scenario: Trust this actor
 

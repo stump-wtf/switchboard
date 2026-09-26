@@ -191,8 +191,9 @@ type WebhookSignal struct {
 
 // WebhookSignalsForHuman returns the signals of every webhook on the human's endpoints, newest
 // webhook first. The fault count reads the partial idx_events_faulted index (migration 0022).
-// Governing: SPEC-0026 REQ-9 ("the webhook card MUST show the webhook's open quarantine count and
-// its fault count over the last 24 hours"), REQ-1 (the board warning), REQ-5 (the allow_all warning).
+// Governing: SPEC-0026 REQ-9 ("each webhook's row on its endpoint card MUST show the webhook's open
+// quarantine count and its fault count over the last 24 hours"), REQ-1 (the fault warning), REQ-5
+// (the allow_all warning).
 func (s *Store) WebhookSignalsForHuman(ctx context.Context, ownerHumanID string) ([]WebhookSignal, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT w.id::text, w.endpoint_id::text, w.source_type, w.target_queue,
