@@ -150,13 +150,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// behind the doorbellGate below: that gate suppresses re-rings of the channel doorbell for a
 	// minute, and a requeue inside that window must still reach a hook (SPEC-0024 REQ-6). With the
 	// ceiling at 0 nothing subscribes, so existing hooks receive nothing (the REQ-1 kill switch).
-	if cfg.NotifyHookMax > 0 {
-		dispatcher := notifyhook.NewDispatcher(notifyhook.Options{
-			Store: st, Validator: hookValidator, Log: log, Max: cfg.NotifyHookMax,
-		})
-		st.SetTodoReadyHook(dispatcher.Enqueue)
-		go dispatcher.Run(ctx)
-	}
+	startNotifyDispatcher(ctx, st, hookValidator, cfg.NotifyHookMax, log)
 	switch {
 	case cfg.NotifyHookMax == 0:
 		log.Info("notify hooks disabled", "reason", "SWITCHBOARD_NOTIFY_HOOK_MAX=0")
@@ -712,6 +706,27 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 			}
 		}
 	}
+}
+
+// notifyDispatchStore is the store surface the dispatcher wiring needs: the dispatcher's reads plus
+// the ready hook it subscribes to. *store.Store satisfies it.
+type notifyDispatchStore interface {
+	notifyhook.Store
+	SetTodoReadyHook(store.TodoReadyHook)
+}
+
+// startNotifyDispatcher subscribes a notify-hook dispatcher to st's ready hook and runs it on ctx,
+// returning it; with ceiling at 0 it subscribes nothing and returns nil (the SPEC-0024 REQ-1 kill
+// switch). It is split out of Run so a test drives the real wiring rather than a dispatcher it
+// built itself. Governing: SPEC-0024 REQ-1, REQ-6.
+func startNotifyDispatcher(ctx context.Context, st notifyDispatchStore, v *push.Validator, ceiling int, log *slog.Logger) *notifyhook.Dispatcher {
+	if ceiling <= 0 {
+		return nil
+	}
+	d := notifyhook.NewDispatcher(notifyhook.Options{Store: st, Validator: v, Log: log, Max: ceiling})
+	st.SetTodoReadyHook(d.Enqueue)
+	go d.Run(ctx)
+	return d
 }
 
 // notifyHookValidator builds the SSRF guard the notify-hook verbs (and later the dispatcher) share
