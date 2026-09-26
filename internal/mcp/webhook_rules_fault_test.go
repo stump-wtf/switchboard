@@ -8,9 +8,15 @@ package mcp
 // Typing".
 
 import (
+	"context"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
@@ -144,4 +150,124 @@ func TestTestWebhookRulesReportsFaultedAndEventsFilter(t *testing.T) {
 		t.Fatalf("routed filter = %+v, want event %d", list.Events, routed)
 	}
 	callErr(t, ctx, cs, "list_webhook_events", map[string]any{"disposition": "sideways"}, codeInvalidArgument)
+}
+
+// interleavingRouter runs before once, on the first evaluation, and then routes with next. It lets a
+// test land a concurrent edit between the save-time dry-run and the locked write.
+type interleavingRouter struct {
+	once   sync.Once
+	before func()
+	next   routing.Router
+}
+
+func (r *interleavingRouter) Route(ctx context.Context, cfg routing.Config, g routing.Grant, in routing.EnvelopeInput) routing.Decision {
+	r.once.Do(r.before)
+	return r.next.Route(ctx, cfg, g, in)
+}
+
+// openRulesWith opens a rule session for human A whose dry-runs use router.
+func openRulesWith(t *testing.T, ctx context.Context, f *routeFixture, slug string, router routing.Router) *sdk.ClientSession {
+	t.Helper()
+	verbs := append(append([]string{}, allRuleVerbs...), "list_webhook_events")
+	_, token := mustEndpoint(t, ctx, f.st, f.agentA1, slug, verbs)
+	return ruleSessionWithRouter(t, ctx, f.st, slug, token, router)
+}
+
+func storedRuleIDs(t *testing.T, ctx context.Context, f *routeFixture) []string {
+	t.Helper()
+	wr, err := f.st.WebhookRoutingByID(ctx, f.webhookA)
+	if err != nil {
+		t.Fatalf("read routing: %v", err)
+	}
+	ids := make([]string, 0, len(wr.Config.Rules))
+	for _, r := range wr.Config.Rules {
+		ids = append(ids, r.ID)
+	}
+	return ids
+}
+
+// The dry-run runs before the routing row lock, so the locked write saves the checked candidate
+// only if the stored rules are still the ones it was built from. An edit that lands in between
+// answers conflict, and the concurrent edit is what stays stored: nothing that was never dry-run is
+// saved (SPEC-0026 REQ-3, REQ-13).
+func TestWebhookRuleSaveConflictsWithAConcurrentEdit(t *testing.T) {
+	ctx, f, _ := ruleSessions(t)
+	seedStoredEvent(t, f, "ev", `{"n":1}`, "")
+	router := &interleavingRouter{next: routing.InProcess{}}
+	router.before = func() {
+		if _, err := f.st.UpdateWebhookRouting(ctx, f.webhookA, f.humanA, func(cur store.WebhookRouting) (routing.Config, error) {
+			cfg := cur.Config
+			cfg.Rules = append(slices.Clone(cfg.Rules), routing.Rule{ID: "concurrent", Expr: `false`, Action: routing.Action{Queue: "reviews"}})
+			return cfg, nil
+		}); err != nil {
+			t.Errorf("concurrent edit: %v", err)
+		}
+	}
+	cs := openRulesWith(t, ctx, f, "rules-c-66666666", router)
+	callErr(t, ctx, cs, "add_webhook_rule", map[string]any{"webhook_id": f.webhookA, "id": "mine",
+		"expr": `.kind == "push"`, "action": map[string]any{"queue": "forge"}}, codeConflict)
+	if got := storedRuleIDs(t, ctx, f); !slices.Equal(got, []string{"concurrent"}) {
+		t.Fatalf("stored rules = %v, want only the concurrent edit", got)
+	}
+}
+
+// When the evaluator cannot run, a save that needs a dry-run is refused with unavailable (retry),
+// not blamed on a rule, and nothing is saved.
+func TestWebhookRuleSaveRefusedWhenRoutingUnavailable(t *testing.T) {
+	ctx, f, _ := ruleSessions(t)
+	seedStoredEvent(t, f, "ev", `{"n":1}`, "")
+	cs := openRulesWith(t, ctx, f, "rules-u-77777777", routing.Unavailable{})
+	callErr(t, ctx, cs, "add_webhook_rule", map[string]any{"webhook_id": f.webhookA, "id": "mine",
+		"expr": `.kind == "push"`, "action": map[string]any{"queue": "forge"}}, codeUnavailable)
+	if got := storedRuleIDs(t, ctx, f); len(got) != 0 {
+		t.Fatalf("stored rules = %v, want none after an unavailable dry-run", got)
+	}
+}
+
+// move_webhook_rule is dry-run too: moving an unguarded rule ahead of the rule that guards it faults
+// on recent traffic, so the move is refused and the order is unchanged.
+func TestWebhookRuleMoveRefusedWhenItFaults(t *testing.T) {
+	ctx, f, open := ruleSessions(t)
+	cs, _ := open("A")
+	var out webhookRulesOut
+	callOK(t, ctx, cs, "set_webhook_rules", map[string]any{"webhook_id": f.webhookA, "rules": []any{
+		map[string]any{"id": "guard", "expr": `(.payload.n | type) != "number"`, "action": map[string]any{"drop": true}},
+		map[string]any{"id": "adder", "expr": `.payload.n + 1 > 1`, "action": map[string]any{"queue": "forge"}},
+	}}, &out)
+	seedStoredEvent(t, f, "num", `{"n":1}`, "")
+	bad := seedStoredEvent(t, f, "str", `{"n":"a"}`, "")
+
+	msg := callErr(t, ctx, cs, "move_webhook_rule", map[string]any{"webhook_id": f.webhookA, "rule_id": "adder", "position": 0}, codeInvalidArgument)
+	if !strings.Contains(msg, "adder") || !strings.Contains(msg, strconv.FormatInt(bad, 10)) {
+		t.Fatalf("move refusal %q does not name adder and event %d", msg, bad)
+	}
+	if got := storedRuleIDs(t, ctx, f); !slices.Equal(got, []string{"guard", "adder"}) {
+		t.Fatalf("stored order = %v, want guard then adder", got)
+	}
+}
+
+// Params saved before shapes were checked do not block rule edits. Only a save that changes the
+// params is held to the shape rule, so an owner can always edit, and remove, the rules that read
+// them (SPEC-0026 REQ-3).
+func TestWebhookRuleEditsKeepPreexistingParams(t *testing.T) {
+	ctx, f, open := ruleSessions(t)
+	cs, _ := open("A")
+	legacy := map[string]any{"trusted": map[string]any{"alice": true}} // an object: refused today
+	if _, err := f.st.UpdateWebhookRouting(ctx, f.webhookA, f.humanA, func(store.WebhookRouting) (routing.Config, error) {
+		return routing.Config{Params: legacy, Rules: []routing.Rule{
+			{ID: "old", Expr: `$params.trusted | has("alice")`, Action: routing.Action{Queue: "reviews"}}}}, nil
+	}); err != nil {
+		t.Fatalf("seed legacy params: %v", err)
+	}
+	var out webhookRulesOut
+	callOK(t, ctx, cs, "add_webhook_rule", map[string]any{"webhook_id": f.webhookA, "id": "new",
+		"expr": `.kind == "push"`, "action": map[string]any{"queue": "forge"}}, &out)
+	callOK(t, ctx, cs, "move_webhook_rule", map[string]any{"webhook_id": f.webhookA, "rule_id": "new", "position": 0}, &out)
+	callOK(t, ctx, cs, "remove_webhook_rule", map[string]any{"webhook_id": f.webhookA, "rule_id": "old"}, &out)
+	if !slices.Equal(ruleIDs(out), []string{"new"}) || !reflect.DeepEqual(out.Params, legacy) {
+		t.Fatalf("after edits: rules %v params %v, want [new] with the params kept", ruleIDs(out), out.Params)
+	}
+	// Changing the params is held to the shape rule.
+	callErr(t, ctx, cs, "set_webhook_rules", map[string]any{"webhook_id": f.webhookA, "rules": []any{},
+		"params": map[string]any{"trusted": map[string]any{"bob": true}}}, routing.CodeInvalidParams)
 }

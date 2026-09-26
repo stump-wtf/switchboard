@@ -447,7 +447,15 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 	}
 	g := routing.Grant{TargetQueue: pre.TargetQueue, Queues: pre.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
 		Tenant: pre.OwnerHumanID}
-	if err := routing.Validate(next, g); err != nil {
+	// Param shapes are checked only when this save changes the params (SPEC-0026 REQ-3). Params saved
+	// before shapes were checked are carried forward as they are, so they never stop the owner from
+	// editing or removing the rules that read them. Such a rule faults, and fails closed, until the
+	// params are rewritten.
+	validate := routing.Validate
+	if reflect.DeepEqual(next.Params, pre.Config.Params) {
+		validate = routing.ValidateKeepingParams
+	}
+	if err := validate(next, g); err != nil {
 		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 	}
 	// remove_webhook_rule is not dry-run (SPEC-0026 REQ-3 names the four verbs that add or change
@@ -466,7 +474,7 @@ func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, 
 		// The queue ceiling still comes from the locked row.
 		g = routing.Grant{TargetQueue: cur.TargetQueue, Queues: cur.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
 			Tenant: cur.OwnerHumanID}
-		if err := routing.Validate(next, g); err != nil {
+		if err := validate(next, g); err != nil { // cur.Config is pre.Config, so the same check applies
 			return routing.Config{}, err
 		}
 		return next, nil

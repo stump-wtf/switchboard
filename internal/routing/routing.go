@@ -276,9 +276,19 @@ func findForbidden(v reflect.Value) (string, string, bool) {
 	return "", "", false
 }
 
-// Validate checks a whole configuration against a grant: shape, count, compile, and reachability.
-// It returns the first *ValidationError; nil means the configuration is safe to store.
-func Validate(cfg Config, g Grant) error {
+// Validate checks a whole configuration against a grant: shape, count, compile, reachability, and
+// the shape of every params value. It returns the first *ValidationError; nil means the
+// configuration is safe to store.
+func Validate(cfg Config, g Grant) error { return validate(cfg, g, true) }
+
+// ValidateKeepingParams is Validate for a save that carries the stored params forward unchanged: it
+// checks everything but the params' value shapes. Params saved before shapes were checked must not
+// block an owner from editing, and above all from removing, the rules that read them. Whatever
+// sets params is still held to Validate.
+// Governing: SPEC-0026 REQ-3 "Save-Time Fault Refusal and Param Typing".
+func ValidateKeepingParams(cfg Config, g Grant) error { return validate(cfg, g, false) }
+
+func validate(cfg Config, g Grant, typedParams bool) error {
 	if len(cfg.Params) > 0 {
 		raw, err := json.Marshal(cfg.Params)
 		if err != nil {
@@ -288,8 +298,10 @@ func Validate(cfg Config, g Grant) error {
 			return &ValidationError{Index: paramsIndexForMessages, Code: CodeInvalidParams,
 				Msg: fmt.Sprintf("params encode to %d bytes; the limit is %d", len(raw), MaxParamsBytes)}
 		}
-		if err := checkParamTypes(cfg.Params); err != nil {
-			return err
+		if typedParams {
+			if err := checkParamTypes(cfg.Params); err != nil {
+				return err
+			}
 		}
 	}
 	if len(cfg.Rules) > MaxRules {

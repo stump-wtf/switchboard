@@ -92,12 +92,18 @@ func ruleSessions(t *testing.T) (context.Context, *routeFixture, func(human stri
 // race-instrumented test binary, which starts far slower than the production binary.
 func ruleSession(t *testing.T, ctx context.Context, st *store.Store, slug, token string) *sdk.ClientSession {
 	t.Helper()
-	h := New(st, slog.New(slog.NewTextHandler(discardWriter{}, nil)))
 	sb, err := routing.NewSandbox("", routing.WithDeadline(20*time.Second))
 	if err != nil {
 		t.Fatalf("sandbox: %v", err)
 	}
-	h.SetRouter(sb)
+	return ruleSessionWithRouter(t, ctx, st, slug, token, sb)
+}
+
+// ruleSessionWithRouter is ruleSession with the dry-run router of the test's choosing.
+func ruleSessionWithRouter(t *testing.T, ctx context.Context, st *store.Store, slug, token string, router routing.Router) *sdk.ClientSession {
+	t.Helper()
+	h := New(st, slog.New(slog.NewTextHandler(discardWriter{}, nil)))
+	h.SetRouter(router)
 	r := chi.NewRouter()
 	r.Mount("/mcp", h.Routes())
 	ts := httptest.NewServer(r)
