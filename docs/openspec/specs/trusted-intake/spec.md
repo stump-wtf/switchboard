@@ -95,7 +95,11 @@ cause. A webhook with no stored events MUST skip the dry-run.
 
 On a webhook with a trust gate (REQ-5), the dry-run MUST skip every stored event the gate would hold
 under the current `trusted_actors`, because rules never run on those, and MUST count only events the
-gate passes toward the 50. An event an untrusted actor sent MUST NOT refuse a save.
+gate passes toward the 50. An event an untrusted actor sent MUST NOT refuse a save. The scan MUST be
+bounded, and reads at most the webhook's 500 most recent stored events. When the bound stops it
+before 50 events pass, the save MUST still proceed, so an outsider's flood cannot block the owner's
+edits. The result MUST report how many events were checked and how many were skipped as held, and
+MUST carry a warning that names the shortfall.
 
 Every `params` value MUST be a string, a number, a boolean, or a list whose elements are all
 strings or all numbers. Any other shape, including nested objects and mixed lists, MUST be refused
@@ -107,6 +111,13 @@ with `invalid_argument` naming the key.
 - **WHEN** an agent adds a rule that faults on 3 of them
 - **THEN** the save fails, the error lists the rule and the 3 event ids, and the stored rules are
   unchanged
+
+#### Scenario: A flood of held deliveries is reported, not blocking
+
+- **GIVEN** a webhook with one trusted delivery followed by 500 deliveries the gate would hold
+- **WHEN** an agent adds a rule that faults on the trusted one
+- **THEN** the save succeeds, and its result reports 0 checked, 500 skipped as held, and a warning
+  that the rules went unchecked
 
 #### Scenario: Nested params refused
 
@@ -171,17 +182,24 @@ on a source with no actor projection (`stripe`, `slack`). The error MUST say why
 **Actor projection.** Switchboard MUST parse, in Go and only from a verified body:
 
 * **github and gitea**: `sender` is `sender.login`. `author` is the first present of
-  `comment.user.login`, `review.user.login`, `pull_request.user.login` and `issue.user.login`, or
-  null.
+  `comment.user.login`, `review.user.login`, `pull_request.user.login`, `issue.user.login` and
+  `discussion.user.login`, or null. The **thread author** is the first present of the last three,
+  or null. On a comment or review it can differ from `author`, and the delivery still carries the
+  thread's text.
 * **cairn**: `sender` and `author` are both the signed `actor_id`. `on_behalf_of` MUST NOT be used.
 
-Logins MUST compare case-insensitively. Actor ids MUST compare exactly.
+The projection MUST read keys exactly, as `.payload` reads them: no case-insensitive key matching,
+with a duplicate key resolved the same way `.payload` resolves it. A present field of the wrong type
+MUST name no one. Logins MUST compare with an ASCII-only case fold. Actor ids MUST compare exactly.
 
 **Evaluation.** On every `github`, `gitea` and `cairn` webhook, the gate MUST run after signature
 verification and before any rule:
 
-* `sender_trusted` MUST be whether `sender` is in the list, and `author_trusted` MUST be whether
-  `author` is in the list. When `author` is null, `author_trusted` MUST equal `sender_trusted`.
+* `sender_trusted` MUST be whether `sender` is in the list. `author_trusted` MUST be true only
+  when `author` is in the list and, when there is a thread author, the thread author is in the list
+  too. A trusted maintainer's comment on an outsider's issue therefore has `author_trusted = false`,
+  because the outsider's text still travels with it. When `author` is null, `author_trusted` MUST
+  equal `sender_trusted`.
 * `trusted` MUST be `sender_trusted` for `match = "sender"`, `author_trusted` for
   `match = "author"`, and both for `match = "both"`.
 * An untrusted delivery MUST be quarantined with `quarantine_reason = "untrusted_actor"`, and rules
@@ -226,6 +244,14 @@ verification and before any rule:
 - **GIVEN** `logins = ["JoeStump"]`
 - **WHEN** a delivery's `sender.login` is `joestump`
 - **THEN** the sender is trusted
+
+#### Scenario: A maintainer's comment keeps the outsider's thread untrusted
+
+- **GIVEN** a `github` webhook with `trusted_actors = {"logins": ["joestump"], "match": "sender"}`
+- **WHEN** `joestump` comments on an issue that `mallory` opened
+- **THEN** the delivery reaches the rules with `.actor = {sender: "joestump", author: "joestump",
+  sender_trusted: true, author_trusted: false, trusted: true}`, and under `match = "author"` it
+  would be quarantined
 
 #### Scenario: Token-trust webhook refused
 
