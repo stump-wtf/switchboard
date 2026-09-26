@@ -105,10 +105,14 @@ plain text: HTML, scripts and Markdown in it are never rendered. Three actions:
 
 - **release** routes it through the webhook's rules, or straight to the queue you name (it must be
   the webhook's target queue or one of the endpoint's allowed webhook queues).
-- **trust actor · release** adds the delivery's actor to the webhook's `trusted_actors`, then
+- **trust _name_ · release** adds the delivery's actor to the webhook's `trusted_actors`, then
   releases it through the rules. Which name it adds follows the list's `match`: the sender
   (`sender`, the default), the author (`author`), or both (`both`); on a Cairn webhook, the signed
-  `actor_id`. It is offered only for `untrusted_actor` items, and refused for rule faults.
+  `actor_id`. The button names exactly who it adds. It is offered only for `untrusted_actor` items
+  where that match mode names someone, and refused for rule faults.
+
+  The trust list is saved before the release runs. If the release then fails, the notice says the
+  actor **was trusted** and the item stays listed: release it again, name a queue, or discard it.
 - **discard** completes it with the reason you give (up to 500 characters).
 
 A release that the rules send back to quarantine, fault on, or drop, or one that loses a race with
