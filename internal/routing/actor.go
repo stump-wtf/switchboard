@@ -202,19 +202,26 @@ func DecodeTrustedActors(source string, raw []byte) (t TrustedActors, ok bool) {
 }
 
 // Actor is who a verified delivery says acted: the sender (who triggered the event) and the author
-// (who wrote the thing it is about). Either is "" when the body does not name one.
+// (who wrote the thing it is about). Thread is the author of the thread the event belongs to (the
+// pull request, issue or discussion). On a comment or review it can differ from Author, and the
+// delivery still carries the thread's own text. Any of them is "" when the body does not name one.
 type Actor struct {
 	Sender string
 	Author string
+	Thread string
 }
 
 // Forge key paths the actor projection reads. authorPaths is in precedence order, most specific text
-// first.
+// first. threadPaths are the objects whose own text (title, body) a comment or review delivery also
+// carries.
 var (
 	senderPath  = []string{"sender", "login"}
 	authorPaths = [][]string{
 		{"comment", "user", "login"}, {"review", "user", "login"},
-		{"pull_request", "user", "login"}, {"issue", "user", "login"},
+		{"pull_request", "user", "login"}, {"issue", "user", "login"}, {"discussion", "user", "login"},
+	}
+	threadPaths = [][]string{
+		{"pull_request", "user", "login"}, {"issue", "user", "login"}, {"discussion", "user", "login"},
 	}
 )
 
@@ -262,8 +269,9 @@ func firstString(body []byte, paths [][]string) (string, bool) {
 
 // ActorOf projects a verified body onto its actor. For github and gitea:
 //   - sender is sender.login;
-//   - author is the first present of comment.user.login, review.user.login, pull_request.user.login
-//     and issue.user.login.
+//   - author is the first present of comment.user.login, review.user.login, pull_request.user.login,
+//     issue.user.login and discussion.user.login;
+//   - thread is the first present of the last three.
 //
 // For cairn, sender and author are both the signed data.actor_id. on_behalf_of is the sharing
 // client's self-reported name and is never used. Keys match exactly (see exactString), and a body
@@ -274,10 +282,11 @@ func ActorOf(source string, body []byte) *Actor {
 	case "github", "gitea":
 		sender, ok1 := exactString(body, senderPath)
 		author, ok2 := firstString(body, authorPaths)
-		if !ok1 || !ok2 {
+		thread, ok3 := firstString(body, threadPaths)
+		if !ok1 || !ok2 || !ok3 {
 			return &Actor{}
 		}
-		return &Actor{Sender: sender, Author: author}
+		return &Actor{Sender: sender, Author: author, Thread: thread}
 	case SourceCairn:
 		id, ok := exactString(body, []string{"data", "actor_id"})
 		if !ok {
@@ -329,6 +338,11 @@ func (a *ActorTrust) IsTrusted() bool {
 // returns nil for a source with no actor projection (no gate). Logins compare ASCII
 // case-insensitively, and actor ids compare exactly. When the body names no author, author_trusted
 // equals sender_trusted.
+//
+// author_trusted is true only when every author whose text the delivery carries is trusted: the
+// comment or review author AND the thread's author. A maintainer's comment on an outsider's issue
+// therefore keeps author_trusted false, because the work order's subject is still the outsider's
+// text. ADR-0031: outside text keeps author_trusted = false downstream.
 func EvaluateTrust(source string, t TrustedActors, body []byte) *ActorTrust {
 	a := ActorOf(source, body)
 	if a == nil {
@@ -351,7 +365,7 @@ func EvaluateTrust(source string, t TrustedActors, body []byte) *ActorTrust {
 	sender := in(a.Sender)
 	author := sender
 	if a.Author != "" {
-		author = in(a.Author)
+		author = in(a.Author) && (a.Thread == "" || in(a.Thread))
 	}
 	trusted := sender
 	switch t.Match {
