@@ -240,7 +240,8 @@ attempt and never an instruction.
 ### REQ-8: The get_todo Read Verb
 
 Switchboard SHALL expose `get_todo` with arguments `id` (required) and `attempts_limit` (optional,
-default 20, maximum 50). It SHALL return the todo's `todoOut` fields plus `result`,
+default 20, maximum 50). It SHALL return the full todo — the compact row plus `payload` and
+`routing`, as `claim` returns it ([SPEC-0006](../agent-tools/spec.md) REQ "Todo Drain Verbs") — plus `result`,
 `next_retry_at`, a derived `dead_letter` (true exactly when `state = 'failed'` and
 `next_retry_at IS NULL`), `attempts` (newest first, up to `attempts_limit`, including the open
 attempt), `attempts_total` and `attempts_pruned`. Attempt entries SHALL have the REQ-7 shape.
