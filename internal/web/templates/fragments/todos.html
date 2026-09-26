@@ -77,7 +77,7 @@
   <td><span class="sb-status sb-status--{{.State}}" data-sb-state="{{.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.State}}</span>{{if and (eq .State "claimed") .HasLease}}<span class="sb-trow__sub" data-sb-countdown data-sb-deadline="{{.LeaseDeadlineMS}}" data-sb-suffix=" left">lease {{.LeaseSecs}}s left</span>{{else if and (eq .State "failed") .RetryScheduled}}<span class="sb-trow__sub sb-trow__sub--retry" data-sb-countdown data-sb-deadline="{{.RetryDeadlineMS}}" data-sb-prefix="↻ retry " data-sb-expired="↻ re-queuing…">↻ retry {{.RetrySecs}}s</span>{{else if eq .State "failed"}}<span class="sb-trow__sub">{{.Attempt}}/{{.MaxAttempts}} attempts</span>{{end}}</td>
   <td class="sb-mono">{{if .OwnerLabel}}{{.OwnerLabel}}{{else}}—{{end}}</td>
   <td class="sb-trow__age">{{reltime .CreatedAt}}</td>
-  <td class="sb-trow__act">{{if eq .State "pending"}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.ID}}/claim" hx-target="closest tr" hx-swap="outerHTML">Claim</button>{{else if eq .State "claimed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/complete" hx-target="closest tr" hx-swap="outerHTML">Complete</button>{{else if eq .State "failed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/retry" hx-target="closest tr" hx-swap="outerHTML">Retry</button>{{else}}<span class="sb-muted">—</span>{{end}}</td>
+  <td class="sb-trow__act">{{if .Held}}<span class="sb-muted" data-sb-held>held</span>{{else if eq .State "pending"}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.ID}}/claim" hx-target="closest tr" hx-swap="outerHTML">Claim</button>{{else if eq .State "claimed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/complete" hx-target="closest tr" hx-swap="outerHTML">Complete</button>{{else if eq .State "failed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/retry" hx-target="closest tr" hx-swap="outerHTML">Retry</button>{{else}}<span class="sb-muted">—</span>{{end}}</td>
 </tr>{{if .Insert}}</tbody></template>{{else if .OOB}}</template>{{end}}{{end}}
 
 {{/* drawer — the todo detail overlay: identity block, lease/retry cards, metadata, escaped
@@ -152,7 +152,8 @@
     <li data-sb-step="resolved"{{if .CompletedAt}} class="sb-timeline__done" data-sb-done{{end}}>{{if eq .Row.State "failed"}}failed{{else}}completed · ack{{end}}{{if .CompletedAt}} · {{reltime .CompletedAt}}{{end}}</li>
   </ol>
   <div class="sb-drawer__foot">
-    {{if eq .Row.State "pending"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/claim" hx-target="#sb-overlay" hx-swap="innerHTML">Claim under lease</button>
+    {{if .Row.Held}}<span class="sb-drawer__done" data-sb-held>held in quarantine · release or discard it in the Quarantine view</span>
+    {{else if eq .Row.State "pending"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/claim" hx-target="#sb-overlay" hx-swap="innerHTML">Claim under lease</button>
     {{else if eq .Row.State "claimed"}}<button type="button" class="sb-btn sb-btn--success" hx-post="/todos/{{.Row.ID}}/complete" hx-target="#sb-overlay" hx-swap="innerHTML">Complete · ack</button><button type="button" class="sb-btn sb-btn--danger" hx-post="/todos/{{.Row.ID}}/fail" hx-target="#sb-overlay" hx-swap="innerHTML">Fail</button>
     {{else if eq .Row.State "failed"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/retry" hx-target="#sb-overlay" hx-swap="innerHTML">Retry now</button>
     {{/* Terminal footer for done todos (design: detail.isDone → "✓ completed · acked to

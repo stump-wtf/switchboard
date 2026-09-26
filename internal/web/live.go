@@ -98,6 +98,7 @@ type laneCard struct {
 	Detail     string // foot line: "checking signature", the redacted rejection reason, "idem ok", owner…
 	OwnerLabel string
 	TodoID     string // enables the Claim action on pending cards
+	Held       bool   // on the quarantine queue: never offers Claim (SPEC-0026 REQ-6)
 	At         time.Time
 	TTLMS      int  // client-side expiry for ephemeral cards (0 = durable)
 	OOB        bool // render as an hx-swap-oob afterbegin insertion into the lane
@@ -585,6 +586,7 @@ func laneCardFromItem(it store.TodoItem) laneCard {
 		State:      it.State,
 		OwnerLabel: ownerLabel(it.Owner),
 		TodoID:     it.ID,
+		Held:       it.Queue == store.QueueQuarantine,
 		At:         it.CreatedAt,
 	}
 	card.Detail = laneCardDetail(it.Todo)
@@ -617,6 +619,7 @@ func (h *Handler) laneCardFromTodo(ctx context.Context, t store.Todo) laneCard {
 		State:      t.State,
 		OwnerLabel: h.ownerLabel(ctx, t.Owner),
 		TodoID:     t.ID,
+		Held:       t.Queue == store.QueueQuarantine,
 		At:         t.CreatedAt,
 	}
 	if t.EventID != nil && h.store != nil {

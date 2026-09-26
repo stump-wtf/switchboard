@@ -26,7 +26,7 @@
   <div class="sb-lcard__chips">
     <span class="sb-badge sb-badge--{{.TrustMode}}" title="{{trustdef .TrustMode}}">{{if eq .TrustMode "signed"}}<span aria-hidden="true">✓ </span>{{end}}{{.TrustMode}}</span>
     <span class="sb-status sb-status--{{.State}}">{{if eq .State "verifying"}}<span class="sb-lcard__pulse" aria-hidden="true"></span>{{else}}<span class="sb-status__dot" aria-hidden="true"></span>{{end}}{{lanestate .State}}</span>
-    {{if and (eq .State "pending") .TodoID}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.TodoID}}/claim" hx-swap="none">Claim</button>{{end}}
+    {{if and (eq .State "pending") .TodoID (not .Held)}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.TodoID}}/claim" hx-swap="none">Claim</button>{{end}}
   </div>
   <div class="sb-lcard__foot">{{if .Detail}}<span class="sb-lcard__detail">{{.Detail}}</span><span aria-hidden="true"> · </span>{{end}}<span class="sb-lcard__age">{{reltime .At}}</span></div>
 </li>{{if .OOB}}</ul>{{end}}{{end}}

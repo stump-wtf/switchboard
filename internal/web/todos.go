@@ -38,6 +38,7 @@ type todoRow struct {
 	TrustMode       string
 	State           string
 	OwnerLabel      string
+	Held            bool // on the quarantine queue: no lifecycle controls (SPEC-0026 REQ-6, released or discarded in the Quarantine view)
 	HasLease        bool
 	LeaseSecs       int   // remaining lease seconds at render time (claimed)
 	LeaseDeadlineMS int64 // unix-ms lease deadline for the sb.js countdown
@@ -318,6 +319,7 @@ func (h *Handler) todoRowFromItem(ctx context.Context, it store.TodoItem, oob, f
 		TrustMode:   it.TrustMode,
 		State:       it.State,
 		OwnerLabel:  h.ownerLabel(ctx, it.Owner),
+		Held:        it.Queue == store.QueueQuarantine,
 		Attempt:     it.Attempt,
 		MaxAttempts: it.MaxAttempts,
 		DedupCount:  it.DedupCount,

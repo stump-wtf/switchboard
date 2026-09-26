@@ -72,7 +72,7 @@ func (s *Store) BoardStats(ctx context.Context, ownerHumanID string) (BoardStats
 	var b BoardStats
 	err := s.pool.QueryRow(ctx, `
 		WITH mine AS (
-			SELECT t.id, t.state, t.created_at, t.event_id
+			SELECT t.id, t.state, t.queue, t.created_at, t.event_id
 			FROM todos t
 			JOIN endpoints ep ON ep.id = t.endpoint_id
 			JOIN agents    ag ON ag.id = ep.agent_id AND ag.owner_human_id = $1
@@ -81,7 +81,7 @@ func (s *Store) BoardStats(ctx context.Context, ownerHumanID string) (BoardStats
 			(SELECT count(*) FROM mine),
 			(SELECT count(*) FROM mine WHERE created_at >= date_trunc('day', now())),
 			(SELECT count(*) FROM mine WHERE state = 'claimed'),
-			(SELECT count(*) FROM mine WHERE state = 'pending'),
+			(SELECT count(*) FROM mine WHERE state = 'pending' AND queue <> 'quarantine'), -- held items are not claimable (SPEC-0026 REQ-6)
 			(SELECT COALESCE(round(100.0 * count(*) FILTER (WHERE e.trust_mode = 'signed') / NULLIF(count(*), 0)), 0)::int
 			   FROM events e WHERE e.received_at >= date_trunc('day', now()) AND `+eventOwnedBy("$1")+`),
 			(SELECT count(*) FROM events e WHERE e.received_at > now() - interval '1 minute'
