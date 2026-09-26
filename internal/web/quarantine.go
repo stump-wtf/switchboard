@@ -132,10 +132,13 @@ type quarantineItemView struct {
 	FaultDetail string
 	RuleID      string
 
-	Payload  string // pretty-printed, rendered as escaped text only
-	CanTrust bool   // trust-this-actor is offered: untrusted_actor with a named actor
-	TrustFor string // who the trust action names, for its accessible label
+	Payload    string   // pretty-printed, rendered as escaped text only
+	CanTrust   bool     // trust-this-actor is offered: untrusted_actor, and the action would add someone
+	TrustNames []string // exactly who the trust action adds under the webhook's match mode
 }
+
+// TrustFor is who the trust action adds, for its visible text and accessible label.
+func (v quarantineItemView) TrustFor() string { return strings.Join(v.TrustNames, " and ") }
 
 // quarantinePanelView feeds the "quarantine_panel" fragment: the notice and the item list.
 type quarantinePanelView struct {
@@ -209,12 +212,11 @@ func quarantineItemFrom(it store.QuarantinedItem, agents map[string]string) quar
 	if d.RuleID != "" {
 		v.RuleID = d.RuleID
 	}
-	v.CanTrust = v.Reason == routing.QuarantineUntrustedActor && (v.Sender != "" || v.Author != "")
-	if v.CanTrust {
-		v.TrustFor = v.Sender
-		if v.TrustFor == "" {
-			v.TrustFor = v.Author
-		}
+	// Offer trust only when the action would add someone, and name exactly who, under the webhook's
+	// match mode: the same trustNames the action itself runs. A missing webhook offers nothing.
+	if v.Reason == routing.QuarantineUntrustedActor && d.Actor != nil && it.Trust != nil {
+		v.TrustNames = trustNames(it.Trust.SourceType, it.Trust.TrustedActors, d.Actor)
+		v.CanTrust = len(v.TrustNames) > 0
 	}
 	payload := it.Event.Payload
 	if len(payload) == 0 {
@@ -348,7 +350,7 @@ func (h *Handler) TrustQuarantinedActor(w http.ResponseWriter, r *http.Request) 
 		h.quarantineFail(w, r, &human, id, err)
 		return
 	}
-	names := trustNames(wh, d.Actor)
+	names := trustNames(wh.SourceType, wh.TrustedActors, d.Actor)
 	if len(names) == 0 {
 		h.quarantineRespond(w, r, &human, "trust_refused")
 		return
@@ -389,8 +391,10 @@ func trustedReleaseFailure(err error) string {
 	}
 }
 
-// trustNames is who trusting a held delivery's actor adds, under the webhook's match mode.
-func trustNames(wh store.Webhook, a *routing.ActorTrust) []string {
+// trustNames is who trusting a held delivery's actor adds, under the webhook's match mode. Both the
+// view (the button's label, and whether it is offered) and the action call it, so they cannot
+// disagree about who gets trusted.
+func trustNames(sourceType string, trustedActors []byte, a *routing.ActorTrust) []string {
 	var sender, author string
 	if a.Sender != nil {
 		sender = *a.Sender
@@ -398,10 +402,10 @@ func trustNames(wh store.Webhook, a *routing.ActorTrust) []string {
 	if a.Author != nil {
 		author = *a.Author
 	}
-	if wh.SourceType == routing.SourceCairn {
+	if sourceType == routing.SourceCairn {
 		return nonEmpty(sender)
 	}
-	ta, _ := routing.DecodeTrustedActors(wh.SourceType, wh.TrustedActors)
+	ta, _ := routing.DecodeTrustedActors(sourceType, trustedActors)
 	switch ta.Match {
 	case routing.MatchAuthor:
 		if author == "" {

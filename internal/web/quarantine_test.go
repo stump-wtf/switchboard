@@ -41,6 +41,49 @@ func heldItem(reason, detail, payload string) store.QuarantinedItem {
 			EventHistoryItem: store.EventHistoryItem{Provider: "github", EventType: "issues", TrustMode: "signed",
 				Verified: true, WebhookID: "wh-1", ReceivedAt: time.Now()},
 			Payload: []byte(payload)},
+		Trust: &store.WebhookTrust{SourceType: "github", TrustedActors: []byte(`{"logins":["joestump"],"match":"sender"}`)},
+	}
+}
+
+// The trust button names exactly who the action adds, in its visible text and its accessible label,
+// under the webhook's match mode; it is offered only when that mode names someone (the same
+// trustNames the action runs), and never when the webhook is gone.
+func TestQuarantineTrustButtonNamesWhoIsTrusted(t *testing.T) {
+	const both = `{"actor":{"sender":"joestump","author":"mallory","sender_trusted":true,"author_trusted":false,"trusted":false}}`
+	const noSender = `{"actor":{"author":"someone","author_trusted":false,"trusted":false}}`
+	cases := []struct {
+		name, stored, detail string
+		trust                bool   // whether the webhook is still there
+		want                 string // the named actors, or "" for no button
+	}{
+		{"match sender", `{"logins":[],"match":"sender"}`, both, true, "joestump"},
+		{"match author", `{"logins":["joestump"],"match":"author"}`, both, true, "mallory"},
+		{"match both", `{"logins":[],"match":"both"}`, both, true, "joestump and mallory"},
+		{"match sender, no sender", `{"logins":[],"match":"sender"}`, noSender, true, ""},
+		{"webhook gone", `{"logins":[]}`, both, false, ""},
+	}
+	for _, c := range cases {
+		it := heldItem(routing.QuarantineUntrustedActor, c.detail, `{}`)
+		it.Trust.TrustedActors = []byte(c.stored)
+		if !c.trust {
+			it.Trust = nil
+		}
+		v := quarantineItemFrom(it, nil)
+		body := renderQuarantine(t, quarantinePanelView{CSRF: "tok", Items: []quarantineItemView{v}}, 1)
+		if c.want == "" {
+			if v.CanTrust || strings.Contains(body, "data-sb-quar-trust") {
+				t.Errorf("%s: trust offered (%v), want no button: the action would add nobody", c.name, v.TrustNames)
+			}
+			continue
+		}
+		for _, want := range []string{
+			`aria-label="Trust ` + c.want + ` on this webhook and release td_untr"`,
+			`<span class="sb-mono" data-sb-quar-trust-names>` + c.want + `</span> · release`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: missing %q", c.name, want)
+			}
+		}
 	}
 }
 
@@ -104,7 +147,7 @@ func TestQuarantineViewRendersEachReason(t *testing.T) {
 			t.Errorf("quarantine view: missing %q", want)
 		}
 	}
-	if n := strings.Count(body, `data-sb-quar-trust`); n != 1 {
+	if n := strings.Count(body, `data-sb-quar-trust>`); n != 1 {
 		t.Errorf("trust-this-actor rendered %d times, want once (untrusted_actor only; refused for rule_fault)", n)
 	}
 	if strings.Contains(body, `action="/quarantine/td_rule_fault/trust"`) {
@@ -216,7 +259,7 @@ func TestTrustNamesFollowTheMatchMode(t *testing.T) {
 		{"github", `{"logins":[]}`, &routing.ActorTrust{}, nil},
 	}
 	for _, c := range cases {
-		got := trustNames(store.Webhook{SourceType: c.source, TrustedActors: []byte(c.stored)}, c.actor)
+		got := trustNames(c.source, []byte(c.stored), c.actor)
 		if !slices.Equal(got, c.want) {
 			t.Errorf("trustNames(%s, %s) = %v, want %v", c.source, c.stored, got, c.want)
 		}

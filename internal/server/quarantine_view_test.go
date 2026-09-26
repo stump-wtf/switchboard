@@ -65,9 +65,15 @@ func newQuarFixture(t *testing.T) *quarFixture {
 // hold quarantines a verified delivery from sender on alice's webhook, as the receiver would.
 func (f *quarFixture) hold(t *testing.T, reason, sender string) store.Todo {
 	t.Helper()
+	return f.holdBy(t, reason, sender, sender)
+}
+
+// holdBy is hold with a distinct issue author.
+func (f *quarFixture) holdBy(t *testing.T, reason, sender, author string) store.Todo {
+	t.Helper()
 	key := fmt.Sprintf("quar-%d", quarSeq.Add(1))
-	payload := fmt.Sprintf(`{"action":"opened","sender":{"login":%q},"issue":{"title":"<script>alert(1)</script>","user":{"login":%q}}}`, sender, sender)
-	detail := fmt.Sprintf(`{"actor":{"sender":%q,"author":%q,"sender_trusted":false,"author_trusted":false,"trusted":false}}`, sender, sender)
+	payload := fmt.Sprintf(`{"action":"opened","sender":{"login":%q},"issue":{"title":"<script>alert(1)</script>","user":{"login":%q}}}`, sender, author)
+	detail := fmt.Sprintf(`{"actor":{"sender":%q,"author":%q,"sender_trusted":false,"author_trusted":false,"trusted":false}}`, sender, author)
 	disp := store.DispositionQuarantined
 	if reason == routing.QuarantineRuleFault {
 		detail = `{"fault":{"rule_index":0,"rule_id":"triage","cause":"type_error","detail":"cannot index number"}}`
@@ -283,6 +289,39 @@ func TestQuarantineReleaseDiscardAndTrust(t *testing.T) {
 	f.r.ServeHTTP(over, req)
 	if over.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized form = %d, want 413", over.Code)
+	}
+}
+
+// Under match=author the trust button names the author, and the action trusts exactly that name: the
+// label a screen reader announces and the list the action writes agree.
+func TestQuarantineTrustButtonFollowsMatchMode(t *testing.T) {
+	f := newQuarFixture(t)
+	if _, err := f.st.SetWebhookTrustedActors(f.ctx, f.whA.ID, f.epA.ID, []byte(`{"logins":["joestump"],"match":"author"}`)); err != nil {
+		t.Fatalf("set trust: %v", err)
+	}
+	held := f.holdBy(t, routing.QuarantineUntrustedActor, "joestump", "mallory")
+	page := getAs(t, f.r, f.aliceTok, "/quarantine").Body.String()
+	if !strings.Contains(page, `aria-label="Trust mallory on this webhook and release `) ||
+		!strings.Contains(page, `data-sb-quar-trust-names>mallory</span>`) || strings.Contains(page, `aria-label="Trust joestump`) {
+		t.Fatal("the trust button does not name the author under match=author")
+	}
+	if rec := f.act(t, f.aliceTok, "/quarantine/"+held.ID+"/trust", nil); noticeOf(rec.Body.String()) != "trusted" {
+		t.Fatalf("trust: notice %q", noticeOf(rec.Body.String()))
+	}
+	wh, err := f.st.WebhookForEndpoint(f.ctx, f.whA.ID, f.epA.ID)
+	ta, _ := routing.DecodeTrustedActors(wh.SourceType, wh.TrustedActors)
+	if err != nil || strings.Join(ta.Logins, ",") != "joestump,mallory" || ta.Match != routing.MatchAuthor {
+		t.Fatalf("trust list = %+v (%v), want [joestump mallory] under match=author", ta, err)
+	}
+
+	// With match=sender and no sender, the action would add nobody, so it is not offered.
+	if _, err := f.st.SetWebhookTrustedActors(f.ctx, f.whA.ID, f.epA.ID, []byte(`{"logins":["joestump"],"match":"sender"}`)); err != nil {
+		t.Fatalf("set trust: %v", err)
+	}
+	nobody := f.holdBy(t, routing.QuarantineUntrustedActor, "", "someone")
+	page = getAs(t, f.r, f.aliceTok, "/quarantine").Body.String()
+	if !strings.Contains(page, `data-sb-quar-item="`+nobody.ID+`"`) || strings.Contains(page, `action="/quarantine/`+nobody.ID+`/trust"`) {
+		t.Fatal("trust is offered on an item whose match mode names nobody")
 	}
 }
 

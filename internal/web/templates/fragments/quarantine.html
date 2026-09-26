@@ -51,7 +51,7 @@
     {{if $i.CanTrust}}
     <form method="post" action="/quarantine/{{$i.ID}}/trust" class="sb-quar__form" hx-post="/quarantine/{{$i.ID}}/trust" hx-target="#sb-quarantine-panel" hx-swap="outerHTML">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-      <button type="submit" class="sb-btn sb-btn--mono sb-btn--success" aria-label="Trust {{$i.TrustFor}} on this webhook and release {{$i.ShortID}}" data-sb-quar-trust>trust actor · release</button>
+      <button type="submit" class="sb-btn sb-btn--mono sb-btn--success" aria-label="Trust {{$i.TrustFor}} on this webhook and release {{$i.ShortID}}" data-sb-quar-trust>trust <span class="sb-mono" data-sb-quar-trust-names>{{$i.TrustFor}}</span> · release</button>
     </form>
     {{end}}
     <form method="post" action="/quarantine/{{$i.ID}}/discard" class="sb-quar__form" hx-post="/quarantine/{{$i.ID}}/discard" hx-target="#sb-quarantine-panel" hx-swap="outerHTML">

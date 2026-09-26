@@ -93,7 +93,7 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 				ID: "td_1", ShortID: "td_1", Reason: "untrusted_actor", ReasonLabel: payload, Source: payload,
 				Kind: payload, Title: payload, TrustMode: payload, WebhookID: payload, Endpoint: payload,
 				HasActor: true, Sender: payload, Author: payload, SenderTrusted: payload, FaultCause: payload,
-				FaultDetail: payload, RuleID: payload, Payload: payload, CanTrust: true, TrustFor: payload,
+				FaultDetail: payload, RuleID: payload, Payload: payload, CanTrust: true, TrustNames: []string{payload, payload},
 				ReceivedAt: time.Now()}}}}),
 		"endpoint-webhooks": renderPage(t, h, "endpoints", view{Title: "Endpoints", Human: human, CSRF: "tok", Shell: sh,
 			EndpointCards: []endpointCard{{ID: "e1", State: "active", Webhooks: []webhookSignalView{{
