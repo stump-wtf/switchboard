@@ -618,3 +618,42 @@ func TestListTodosCarriesRetryTimeAndDeadLetter(t *testing.T) {
 		t.Fatalf("at-cap row = %+v, want dead_letter=true and a null next_retry_at", dead)
 	}
 }
+
+// TestTodoRowsAlwaysCarryNextRetryAt: next_retry_at is always present on a todo row, as an explicit
+// null when no retry is scheduled, and dead_letter is always present too — on list_todos, claim,
+// heartbeat and complete alike. A caller must never have to infer "no retry" from a missing key,
+// so an `omitempty` creeping onto either field breaks the contract this pins. Governing: issue #214,
+// SPEC-0034 REQ-8.
+func TestTodoRowsAlwaysCarryNextRetryAt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := newFakeStore()
+	f.putTodo(store.Todo{EndpointID: defaultTestEndpointID, ID: "td_live", Queue: "reviews",
+		Title: "live", State: "pending", MaxAttempts: 3})
+	cs := session(t, ctx, f, []string{"reviews"}, []string{"list_todos", "claim", "heartbeat", "complete"})
+
+	check := func(verb string, row map[string]any) {
+		t.Helper()
+		next, ok := row["next_retry_at"]
+		if !ok || next != nil {
+			t.Fatalf("%s row: next_retry_at present=%v value=%v, want present and null", verb, ok, next)
+		}
+		if dead, ok := row["dead_letter"]; !ok || dead != false {
+			t.Fatalf("%s row: dead_letter present=%v value=%v, want present and false", verb, ok, dead)
+		}
+	}
+	var listed struct {
+		Todos []map[string]any `json:"todos"`
+	}
+	callOK(t, ctx, cs, "list_todos", map[string]any{"state": "pending"}, &listed)
+	if len(listed.Todos) != 1 {
+		t.Fatalf("list_todos returned %d rows, want 1", len(listed.Todos))
+	}
+	check("list_todos", listed.Todos[0])
+	for _, verb := range []string{"claim", "heartbeat", "complete"} {
+		var row map[string]any
+		callOK(t, ctx, cs, verb, map[string]any{"id": "td_live"}, &row)
+		check(verb, row)
+	}
+}
