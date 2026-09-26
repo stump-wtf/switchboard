@@ -15,6 +15,27 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Attempt history on todos.** Every claim opens an attempt and whatever ends the lease closes it
+  with an outcome (`completed`, `failed`, `released`, `lease_expired`, `reaped`, `canceled`,
+  `revoked`); `died` marks a lease that lapsed with no report. A todo keeps at most
+  `attempt_history_max_per_todo` attempts (a `settings` row, default 50, minimum 5), and they are
+  deleted with the todo. Migration `0022` adds the table and opens a `migrated` attempt for each
+  todo in flight when it runs. See the
+  [attempt history guide](https://switchboard.stump.wtf/docs/guides/attempt-history). (#315, #332)
+- **Attempts on the drain verbs.** `claim` and `claim_next` take a `claimant` label (128 bytes,
+  control characters removed) and answer with `attempt_seq`, `attempts_total` and the five most
+  recent `prior_attempts`. `complete` and `fail` take a `summary` (cut to 2048 bytes,
+  `summary_truncated`) and an `artifact` (an `mcp://cairn/` handle or an absolute `https` URL of at
+  most 512 bytes; anything else is `invalid`). Summaries are replayed to later claimers as data.
+  (#321)
+- **`SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT`.** Off by default. When `true`, a `complete` or `fail`
+  with no `summary` stores its `result`'s compact JSON as the summary, which shows later claimers
+  what clients wrote to `result`. (#321)
+- **`next_retry_at` and `dead_letter` on every todo row**, so a worker or an alert can tell a
+  retrying `failed` todo from a dead letter without comparing `attempt` to `max_attempts`. (#214)
+- **`switchboard_todo_attempts_closed_total{queue,outcome}`.** Counts closed attempts; each
+  `lease_expired` or `reaped` close also counts once in `switchboard_todo_leases_expired_total`.
+  (#320)
 - **Lease-token fence.** `claim` and `claim_next` take `require_fence`; a fenced claim returns a
   one-time `lease_token` that `heartbeat`, `complete` and `fail` must then present, so another
   worker on the same endpoint, or a stale one, gets `conflict` instead of closing the attempt.
@@ -29,6 +50,11 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   handle or an absolute `https` URL; anything else is `invalid` and changes nothing). It honours the
   lease-token fence. It is its own grant, listed by the vend wizard and the consent screen, and no
   other verb implies it. (#328)
+
+### Fixed
+
+- A todo re-queued by the retry scheduler within a minute of its last doorbell now rings again,
+  instead of waiting for the doorbell heartbeat. (#320)
 
 ## [0.3.0] - 2026-09-22
 
