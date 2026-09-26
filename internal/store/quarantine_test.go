@@ -69,6 +69,37 @@ func TestQuarantineIntakeIsOneOwnerTodoAndRedeliveryCollapses(t *testing.T) {
 	}
 }
 
+// A delivery first recorded as dropped or faulted (with no quarantine item: before the queue
+// existed) stays withheld when it is redelivered and would now be held: its dedup slot is spent.
+// Governing: SPEC-0020 REQ "Drop Action Semantics"; SPEC-0026 REQ-1, REQ-6.
+func TestWithheldRedeliveryIsNeverQuarantined(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := seedEndpoint(t, s, ctx, "withheld-owner", "q")
+	for _, tc := range []struct{ first, again, reason string }{
+		{DispositionDropped, DispositionFaulted, "rule_fault"},
+		{DispositionDropped, DispositionQuarantined, "untrusted_actor"},
+		{DispositionFaulted, DispositionFaulted, "rule_fault"},
+		{DispositionFaulted, DispositionQuarantined, "rule_action"},
+	} {
+		key := fmt.Sprintf("withheld-%d", heldSeq.Add(1))
+		ev := EventInput{Source: "github", Family: "webhook", EventType: "issues", ExternalID: key, TrustMode: "signed",
+			Verified: true, Payload: []byte(`{"n":1}`), Disposition: tc.first}
+		if _, out, disp, err := s.CreateIntakeEventTodos(ctx, ev, nil, CreateTodoParams{}); err != nil || len(out) != 0 || disp != tc.first {
+			t.Fatalf("%s: first = %d todos, %s, %v", tc.first, len(out), disp, err)
+		}
+		ev.Disposition = tc.again
+		_, out, disp, err := s.CreateIntakeEventTodos(ctx, ev, []string{owner}, CreateTodoParams{Source: "github", Kind: "webhook",
+			Title: "again", Payload: []byte(`{"n":1}`), IdempotencyKey: key, QuarantineReason: tc.reason})
+		if err != nil || len(out) != 0 || disp != tc.first {
+			t.Fatalf("%s then %s: %d todos, %s, %v; want withheld as %s", tc.first, tc.again, len(out), disp, err, tc.first)
+		}
+		var n int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos WHERE idempotency_key = $1`, key).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("%s then %s: %d todos in the table (%v), want none", tc.first, tc.again, n, err)
+		}
+	}
+}
+
 func TestReleaseMovesInPlaceAndFansOut(t *testing.T) {
 	s, ctx := testStore(t)
 	owner := seedEndpoint(t, s, ctx, "rel-owner", "q", "lane-m")
