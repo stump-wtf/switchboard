@@ -32,6 +32,20 @@ The event history keeps it for later inspection and replay. So treat a payload a
 - **Grant the event-history tools only where the job needs them** (`list_webhook_events`,
   `get_webhook_event`, `replay_webhook_event`). The web wizard leaves them unchecked; a CLI vend
   includes them.
+
+:::warning Known limitation: event history is not per-user yet
+
+The event-history tools and the recent-events resource read the **whole instance's** deliveries,
+not only the caller's. `list_webhook_events` filters by provider, event type, and time but not by
+owner; `get_webhook_event` returns any event by id; and `replay_webhook_event` can re-send any of
+them. On an instance with more than one user, an endpoint granted these tools can read, and replay,
+every other user's deliveries.
+
+Until this is fixed, **don't grant `list_webhook_events`, `get_webhook_event`, or
+`replay_webhook_event` to any endpoint whose holder shouldn't see every user's deliveries.** A fix
+that scopes event history to its owner is planned, and this note goes away when it ships.
+
+:::
 - **`replay_webhook_event` sends a stored payload back out** to a target, so treat it as a
   data-forwarding tool, not just a debugging one.
 
@@ -55,7 +69,7 @@ Whoever owns a webhook decides where its deliveries land, within limits switchbo
 |---|---|---|
 | Endpoint credential | `sbk_…` | Shown once at vend. Switchboard keeps only a hash. Revoke kills it immediately. |
 | OAuth token | opaque | Issued to one client for one endpoint through the consent screen. Short-lived, refreshed by the client. |
-| Webhook signing secret | `whsec_…` | Shown once at `create_webhook` or `rotate_webhook`, never returned again. |
+| Webhook signing secret | `whsec_…` | Shown once at `create_webhook` or `rotate_webhook`, never returned again. Stored encrypted when the instance sets an encryption key, **in plaintext** when it doesn't; see [Secrets at rest](#secrets-at-rest). |
 | Generic webhook URL | `/webhooks/w/<token>` | **The URL is the credential.** Anyone who has it can create todos. Treat it like a password, and rotate it if it leaks. |
 
 - **Give endpoints a lifetime** when the job is temporary. An expired endpoint stops working on its
@@ -64,6 +78,39 @@ Whoever owns a webhook decides where its deliveries land, within limits switchbo
   compromised. Revoke first, then vend a replacement.
 - **Prefer signed sources over `generic`.** A signature proves the body wasn't altered and binds it
   to a secret the URL doesn't reveal. A `generic` webhook only proves the caller knew the URL.
+
+## Secrets at rest
+
+Switchboard stores two kinds of secret it mints, and protects them differently:
+
+| Secret | At rest |
+|---|---|
+| Endpoint credentials (`sbk_…`) | **Hashed.** They can't be recovered from the database, only revoked. |
+| Webhook signing secrets (`whsec_…`) | Switchboard must recompute the HMAC on every delivery, so it keeps the secret recoverable: **AES-256-GCM encrypted** under `SWITCHBOARD_SECRET_ENCRYPTION_KEY` when that key is set, and **plaintext** when it's empty. |
+
+**An empty `SWITCHBOARD_SECRET_ENCRYPTION_KEY` is allowed, and it stores every signing secret in
+plaintext.** Anyone who can read the database, or a backup of it, can then forge signed
+deliveries to your webhooks. Switchboard warns rather than refusing to start, in two places:
+
+- **At startup**, if signed webhooks already exist:
+  `webhook signing secrets are stored in plaintext` with `signed_webhooks=<n>` and
+  `reason="SWITCHBOARD_SECRET_ENCRYPTION_KEY is empty"`.
+- **On every plaintext write** (`create_webhook` or `rotate_webhook` on a signed webhook):
+  `webhook signing secret stored without at-rest encryption`, naming the webhook and endpoint. The
+  secret itself is never logged.
+
+With a key set, startup logs `webhook signing secrets encrypted at rest`. A key that doesn't decode
+(base64 or hex) to exactly 32 bytes stops startup with an error instead of falling back to
+plaintext. Generate one with `openssl rand -base64 32`; see
+[Run your own switchboard](/guides/self-hosting#configuration).
+
+Two things to know before you set or change the key:
+
+- **Setting a key doesn't encrypt existing secrets.** Rows written without a key stay plaintext,
+  and switchboard keeps reading them. Rotate each signed webhook (`rotate_webhook`) to rewrite its
+  secret encrypted, then update the producer with the new secret.
+- **Keep the key.** Encrypted secrets can't be read without it. Lose or change it and every
+  encrypted signed webhook fails verification until it's rotated.
 
 ## Payloads are data, never instructions
 
