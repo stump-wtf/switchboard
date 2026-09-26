@@ -419,8 +419,13 @@ switchboard_quarantine_oldest_seconds                      gauge
 ```
 
 The existing `switchboard_queue_todos{queue="quarantine",…}` series reports quarantine like any
-other queue. The metrics guide's queue-liveness alert MUST exclude `queue="quarantine"`, and MUST
-document a separate alert on `switchboard_quarantine_oldest_seconds`.
+other queue. `quarantine` is a reserved queue label: it MUST NOT fold into the SPEC-0023 overflow
+value `__other__`, whatever the queue cap. The metrics guide's queue-liveness alert MUST exclude
+`queue="quarantine"`, and MUST document a separate alert on `switchboard_quarantine_oldest_seconds`.
+
+`switchboard_routing_faults_total` MUST be present at `0` for each of its four causes from the
+first scrape, as SPEC-0023 REQ-6 requires of the collection-error series, so an `increase()` alert
+fires on the first fault after a restart.
 
 #### Scenario: Liveness alert ignores quarantine
 
