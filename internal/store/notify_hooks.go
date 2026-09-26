@@ -6,7 +6,9 @@ package store
 // Ownership: a hook row carries only endpoint_id, and inherits that endpoint's owner scope. Every
 // method here therefore takes the caller's endpointID and puts it in the WHERE clause, so another
 // endpoint's hook id, including one on another endpoint of the same human, is ErrNotFound, exactly
-// like an unknown id (REQ-2 "Another endpoint's hook id").
+// like an unknown id (REQ-2 "Another endpoint's hook id"). A malformed id (not a UUID, such as the
+// spec's own "nh_1") is ErrNotFound too, via isUUID, rather than a Postgres 22P02 cast error that
+// would surface as a 500 and tell "malformed" apart from "not yours".
 //
 // Secrets: a hook secret is written ONLY through the SecretCipher envelope. Unlike the inbound
 // webhook secret, which falls back to plaintext with a warning when no key is configured, a notify
@@ -147,6 +149,9 @@ func (s *Store) CreateNotifyHook(ctx context.Context, endpointID, url string, qu
 	if err != nil {
 		return NotifyHook{}, err
 	}
+	if !isUUID(endpointID) {
+		return NotifyHook{}, ErrNotFound
+	}
 	if queues == nil {
 		queues = []string{}
 	}
@@ -192,6 +197,9 @@ func (s *Store) CreateNotifyHook(ctx context.Context, endpointID, url string, qu
 
 // ListNotifyHooks returns an endpoint's hooks, oldest first, with health and no secret.
 func (s *Store) ListNotifyHooks(ctx context.Context, endpointID string) ([]NotifyHook, error) {
+	if !isUUID(endpointID) {
+		return []NotifyHook{}, nil
+	}
 	rows, err := s.pool.Query(ctx, `SELECT `+notifyHookColumns+`
 		FROM notify_hooks WHERE endpoint_id = $1 ORDER BY created_at, id`, endpointID)
 	if err != nil {
@@ -211,6 +219,9 @@ func (s *Store) ListNotifyHooks(ctx context.Context, endpointID string) ([]Notif
 
 // GetNotifyHook returns one hook the endpoint owns, or ErrNotFound.
 func (s *Store) GetNotifyHook(ctx context.Context, id, endpointID string) (NotifyHook, error) {
+	if !isUUID(id) || !isUUID(endpointID) {
+		return NotifyHook{}, ErrNotFound
+	}
 	h, err := scanNotifyHook(s.pool.QueryRow(ctx, `SELECT `+notifyHookColumns+`
 		FROM notify_hooks WHERE id = $1 AND endpoint_id = $2`, id, endpointID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -234,6 +245,9 @@ func (s *Store) GetNotifyHook(ctx context.Context, id, endpointID string) (Notif
 // notifyhook.MintSecret, its only producer; the store cannot re-check it with
 // notifyhook.DecodeSecret, because the dispatcher in package notifyhook (#358) imports store.
 func (s *Store) RotateNotifyHookSecret(ctx context.Context, id, endpointID, newSecret string, grace time.Duration) (NotifyHook, error) {
+	if !isUUID(id) || !isUUID(endpointID) {
+		return NotifyHook{}, ErrNotFound
+	}
 	sealed, err := s.sealHookSecret(newSecret)
 	if err != nil {
 		return NotifyHook{}, err
@@ -262,6 +276,9 @@ func (s *Store) RotateNotifyHookSecret(ctx context.Context, id, endpointID, newS
 
 // DeleteNotifyHook removes a hook the endpoint owns, with both its secrets, or returns ErrNotFound.
 func (s *Store) DeleteNotifyHook(ctx context.Context, id, endpointID string) error {
+	if !isUUID(id) || !isUUID(endpointID) {
+		return ErrNotFound
+	}
 	ct, err := s.pool.Exec(ctx, `DELETE FROM notify_hooks WHERE id = $1 AND endpoint_id = $2`, id, endpointID)
 	if err != nil {
 		return fmt.Errorf("store: delete notify hook %s: %w", id, err)
@@ -278,6 +295,9 @@ func (s *Store) DeleteNotifyHook(ctx context.Context, id, endpointID string) err
 func (s *Store) NotifyHookSigningSecrets(ctx context.Context, id, endpointID string) (NotifyHookSecrets, error) {
 	if s.secretCipher == nil {
 		return NotifyHookSecrets{}, ErrSecretCipherRequired
+	}
+	if !isUUID(id) || !isUUID(endpointID) {
+		return NotifyHookSecrets{}, ErrNotFound
 	}
 	var cur string
 	var prev *string

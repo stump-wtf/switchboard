@@ -366,3 +366,43 @@ func TestNotifyHookRotation(t *testing.T) {
 		t.Fatalf("second sweep = %d, %v, want 0", n, err)
 	}
 }
+
+// TestNotifyHookMalformedIDIsNotFound: a hook id or endpoint id that is not a UUID (the spec's own
+// example is "nh_1") is answered exactly like an unknown id, ErrNotFound, on every method. Without
+// the isUUID guard it reached Postgres as a 22P02 cast error, which is both a 500 at the verb layer
+// and a signal that distinguishes "malformed" from "not yours" (REQ-2 "Another endpoint's hook id").
+func TestNotifyHookMalformedIDIsNotFound(t *testing.T) {
+	s, ctx := hookStore(t)
+	ep := seedEndpoint(t, s, ctx, "nh-malformed")
+	h, err := s.CreateNotifyHook(ctx, ep, testHookURL, nil, false, "whsec_kept", 5)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for _, bad := range []string{"nh_1", "", "not-a-uuid"} {
+		if _, err := s.GetNotifyHook(ctx, bad, ep); !errors.Is(err, ErrNotFound) {
+			t.Errorf("get(%q) = %v, want ErrNotFound", bad, err)
+		}
+		if _, err := s.RotateNotifyHookSecret(ctx, bad, ep, "whsec_new", time.Hour); !errors.Is(err, ErrNotFound) {
+			t.Errorf("rotate(%q) = %v, want ErrNotFound", bad, err)
+		}
+		if err := s.DeleteNotifyHook(ctx, bad, ep); !errors.Is(err, ErrNotFound) {
+			t.Errorf("delete(%q) = %v, want ErrNotFound", bad, err)
+		}
+		if _, err := s.NotifyHookSigningSecrets(ctx, bad, ep); !errors.Is(err, ErrNotFound) {
+			t.Errorf("secrets(%q) = %v, want ErrNotFound", bad, err)
+		}
+		// A malformed caller endpoint id is not-found too, never a cast error.
+		if _, err := s.GetNotifyHook(ctx, h.ID, bad); !errors.Is(err, ErrNotFound) {
+			t.Errorf("get with endpoint %q = %v, want ErrNotFound", bad, err)
+		}
+		if _, err := s.CreateNotifyHook(ctx, bad, testHookURL, nil, false, "whsec_x", 5); !errors.Is(err, ErrNotFound) {
+			t.Errorf("create on endpoint %q = %v, want ErrNotFound", bad, err)
+		}
+		if list, err := s.ListNotifyHooks(ctx, bad); err != nil || len(list) != 0 {
+			t.Errorf("list on endpoint %q = %+v, %v, want empty", bad, list, err)
+		}
+	}
+	if sec, err := s.NotifyHookSigningSecrets(ctx, h.ID, ep); err != nil || sec.Current != "whsec_kept" {
+		t.Fatalf("hook changed: %+v, %v", sec, err)
+	}
+}
