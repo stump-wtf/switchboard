@@ -424,7 +424,7 @@ through the same form.
 `match: "sender"` is what makes promotion work. The maintainer who labels an issue is its sender,
 so the `labeled` delivery is trusted even though an outsider wrote the issue.
 
-**2. The rules.** Route trusted label changes to lanes, drop what has no issue, and leave
+**2. The rules.** Route a trusted size label to its lane, drop what has no issue, and leave
 everything else in quarantine:
 
 ```json title="set_webhook_rules · public-mirror-intake"
@@ -435,10 +435,10 @@ everything else in quarantine:
      "expr": ".issue == null",
      "action": {"drop": true}},
     {"id": "switchboard-s", "name": "canonical tracker: stump.wtf/switchboard",
-     "expr": ".issue.repo == \"stump-wtf/switchboard\" and .issue.label_event and any(.issue.labels[]; . == \"size/S\")",
+     "expr": ".issue.repo == \"stump-wtf/switchboard\" and .issue.action == \"labeled\" and .issue.label == \"size/S\"",
      "action": {"queue": "lane-s", "exclusive": true, "once": true, "work_order": true}},
     {"id": "switchboard-m", "name": "canonical tracker: stump.wtf/switchboard",
-     "expr": ".issue.repo == \"stump-wtf/switchboard\" and .issue.label_event and any(.issue.labels[]; . == \"size/M\")",
+     "expr": ".issue.repo == \"stump-wtf/switchboard\" and .issue.action == \"labeled\" and .issue.label == \"size/M\"",
      "action": {"queue": "lane-m", "exclusive": true, "once": true, "work_order": true}}
   ],
   "default_action": {"quarantine": true}
@@ -452,7 +452,7 @@ The trust gate runs before any of these rules, so they only ever see a maintaine
 | An outsider opens an issue, or comments on one | Quarantined by the trust gate (`untrusted_actor`). No rule runs. |
 | A maintainer adds `size/S` or `size/M` to an issue on a mapped mirror | Routed to `lane-s` or `lane-m` on one endpoint, once per issue and lane, with a work order. |
 | A maintainer comments, or GitHub sends the hook's `ping` | Dropped by `not-issue`. Only `issues` events carry `.issue`, so these have none. |
-| Any other trusted issue event: an unsized label, an edit, a close, an issue on a mirror with no rules yet | Held by `default_action` (`rule_action`) for a human to look at. |
+| Any other trusted issue event: an unsized label, removing a label, an edit, a close, an issue on a mirror with no rules yet | Held by `default_action` (`rule_action`) for a human to look at. |
 
 **3. Map each mirror to its canonical tracker.** A fix lands on the canonical tracker, not on the
 mirror, so the worker has to know where that is. The work order already carries the mirror in
@@ -490,6 +490,10 @@ is promoted, or let it expire after 30 days.
 > instructions. Rules can route those orders to a more cautious lane by testing
 > `.actor.author_trusted == false`.
 
+- **The rules test the label that changed, not the labels the issue has.** `.issue.label` is the
+  one label this `labeled` delivery added. Testing `.issue.labels` instead would let any trusted
+  label change promote an issue that already carries a size label, however it got there: a
+  maintainer adding `bug` or removing `needs-triage` would route it though nobody chose a size.
 - **Issue-form labels promote nothing.** A form that applies `bug` when an outsider opens an issue
   sends an `opened` delivery from the outsider, which the trust gate holds. Only a size label added
   by a maintainer routes.

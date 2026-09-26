@@ -232,9 +232,9 @@ check, which aborts with a message naming them rather than silently hiding them.
 {
   "rules": [
     {"id": "not-issue", "expr": ".issue == null", "action": {"drop": true}},
-    {"id": "labeled-s", "expr": ".issue.label_event and any(.issue.labels[]; . == \"size/S\")",
+    {"id": "labeled-s", "expr": ".issue.action == \"labeled\" and .issue.label == \"size/S\"",
      "action": {"queue": "lane-s", "exclusive": true, "once": true, "work_order": true}},
-    {"id": "labeled-m", "expr": ".issue.label_event and any(.issue.labels[]; . == \"size/M\")",
+    {"id": "labeled-m", "expr": ".issue.action == \"labeled\" and .issue.label == \"size/M\"",
      "action": {"queue": "lane-m", "exclusive": true, "once": true, "work_order": true}}
   ],
   "default_action": {"quarantine": true}
@@ -245,6 +245,11 @@ The trust gate quarantines every untrusted delivery before these rules run. Of t
 `labeled` issue events go to a lane, a trusted delivery with no issue subject (a maintainer's own
 comment) is dropped on purpose by `not-issue`, and every other trusted issue event falls to the
 default and waits in quarantine.
+
+The lane rules test `.issue.label`, the one label the delivery added, never `.issue.labels`, the
+labels the issue already has. Testing the full set would let any trusted label change (adding `bug`,
+removing `needs-triage`) promote an issue that already carries a size label, though no maintainer
+chose one. (Settled in review of #509.)
 
 ## Risks / Trade-offs
 

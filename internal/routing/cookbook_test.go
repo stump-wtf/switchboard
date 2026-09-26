@@ -506,6 +506,15 @@ func TestPublicMirrorRecipe(t *testing.T) {
 			edit: func(b map[string]any) { b["sender"] = map[string]any{"login": "outside-reporter", "id": 9200001} }, want: held},
 		{name: "a trusted non-size label waits in quarantine", file: "issues-labeled-maintainer.json",
 			edit: setLabels("bug", "bug"), want: heldRule},
+		// Promotion keys on the label that changed, never on the labels already present: a trusted
+		// label change on an issue that already carries a size label routes nothing by itself.
+		{name: "a maintainer's unrelated label on an already-sized issue waits in quarantine", file: "issues-labeled-maintainer.json",
+			edit: setLabels("bug", "bug", "size/S"), want: heldRule},
+		{name: "a maintainer removing a label from a sized issue waits in quarantine", file: "issues-labeled-maintainer.json",
+			edit: func(b map[string]any) {
+				setLabels("needs-triage", "size/S")(b)
+				b["action"] = "unlabeled"
+			}, want: heldRule},
 		{name: "a labeled issue on a mirror with no rules waits in quarantine", file: "issues-labeled-maintainer.json",
 			edit: func(b map[string]any) { b["repository"].(map[string]any)["full_name"] = "stump-wtf/unmapped" }, want: heldRule},
 		{name: "a maintainer closing an issue waits in quarantine", file: "issues-labeled-maintainer.json",
