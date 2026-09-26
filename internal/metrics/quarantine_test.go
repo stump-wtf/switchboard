@@ -281,6 +281,20 @@ func TestDocumentedAlerts(t *testing.T) {
 		t.Errorf("unguarded liveness alert fired %d times, want 2 (forge and quarantine)", len(got))
 	}
 
+	// Quarantine is a reserved queue label: however many operator queues fill the cap first, it is
+	// reported as itself, so the exclusion above still matches it. Were it folded into __other__,
+	// its never-claimed rows would fire the liveness alert as queue="__other__". QueueStats sorts
+	// by name, so "quarantine" really does arrive after most operator queues on a busy instance.
+	capped := New(Options{QueueCap: 2})
+	capped.RegisterQueueStats(&fakeQueueStats{stats: []store.QueueStat{
+		{Queue: "alpha", Pending: 1, Claimed: 1},
+		{Queue: "beta", Claimed: 1},
+		{Queue: store.QueueQuarantine, Pending: 5, OldestPendingSeconds: 3600},
+	}})
+	if got := evalAlert(t, liveness, gather(t, capped)); len(got) != 0 {
+		t.Errorf("liveness alert fired for %v with quarantine past the queue cap, want nothing", got)
+	}
+
 	families := map[string]bool{}
 	for _, s := range samples {
 		families[s.name] = true
