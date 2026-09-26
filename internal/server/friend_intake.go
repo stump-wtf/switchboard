@@ -229,6 +229,11 @@ func validIntakeFields(b *friendRequestBody) bool {
 	if !validScopeList(b.RequestedVerbs) || !validScopeList(b.RequestedQueues) {
 		return false
 	}
+	// The reserved quarantine queue can never be granted, so asking for it is refused at intake rather
+	// than failing at approval. Governing: SPEC-0026 REQ-6 (reserved name).
+	if store.CheckQueueNames(b.RequestedQueues...) != nil {
+		return false
+	}
 	return true
 }
 

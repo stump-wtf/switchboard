@@ -279,6 +279,23 @@ func TestFriendIntakeEmptyScopeRejected(t *testing.T) {
 	}
 }
 
+// A request for the reserved quarantine queue → 400 at intake, no edge: it could never be approved.
+// Governing: SPEC-0026 REQ-6 (reserved name).
+func TestFriendIntakeReservedQueueRejected(t *testing.T) {
+	fs := okStore()
+	r := friendRouter(t, fs, fakeVerifier{subject: "pocket|alice"})
+
+	body := `{"to_persona":"11111111-1111-1111-1111-111111111111","from_persona":"peer://a",` +
+		`"requested_verbs":["create_for"],"requested_queues":["quarantine"],"reason":"x","provenance":"tok"}`
+	rec := postIntake(t, r, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if fs.created != nil {
+		t.Error("a reserved-queue request must create no edge")
+	}
+}
+
 // Unpublished/unknown target persona → 404, no edge (discovery bounded to advertised personas).
 func TestFriendIntakeUnpublishedPersona(t *testing.T) {
 	fs := okStore()

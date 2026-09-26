@@ -713,6 +713,8 @@ func (h *Handler) failFriendAction(w http.ResponseWriter, handler, edgeID string
 		http.Error(w, "conflict", http.StatusConflict)
 	case errors.Is(err, store.ErrScopeExceedsRequest):
 		http.Error(w, "granted scope exceeds requested", http.StatusBadRequest)
+	case errors.Is(err, store.ErrReservedQueue):
+		http.Error(w, `the queue name "quarantine" is reserved`, http.StatusBadRequest)
 	default:
 		h.log.Error("friend action", "handler", handler, "edge", edgeID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
