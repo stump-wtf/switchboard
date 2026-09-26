@@ -195,3 +195,55 @@ func TestReadyHookOnePerTransitionAcrossInstances(t *testing.T) {
 		t.Fatalf("racing reapers fired %d notifications for one requeue, want 1", n)
 	}
 }
+
+// The route fan-out (CreateEventTodos / CreateRoutedEventTodos) is the webhook ingest path, and it
+// fires the ready hook from its own call site, separate from CreateEventTodo's. Each NEW todo of a
+// verified fan-out fires once as created; an unverified fan-out, a redelivery that dedups onto the
+// existing todos, and a dropped delivery fire nothing.
+func TestReadyHookRoutedFanOut(t *testing.T) {
+	s, ctx := testStore(t)
+	epA := seedEndpoint(t, s, ctx, "ready-fan-a", "inbox")
+	epB := seedEndpoint(t, s, ctx, "ready-fan-b", "inbox")
+	rec := &readyRecorder{}
+	s.SetTodoReadyHook(rec.hook)
+	defer s.SetTodoReadyHook(nil)
+
+	in := func(key string, verified bool) EventInput {
+		return EventInput{Source: "gitea", Family: "webhook", EventType: "issues", ExternalID: key,
+			TrustMode: "signed", Verified: verified, Payload: []byte("raw")}
+	}
+	params := func(key string) CreateTodoParams {
+		return CreateTodoParams{Queue: "inbox", Source: "gitea", Kind: "issue", Title: "t " + key,
+			Payload: []byte(`{}`), IdempotencyKey: key}
+	}
+
+	_, out, err := s.CreateEventTodos(ctx, in("rf-1", true), []string{epA, epB}, params("rf-1"))
+	if err != nil || len(out) != 2 || !out[0].New || !out[1].New {
+		t.Fatalf("fan-out = %+v, %v; want two new todos", out, err)
+	}
+	want := []string{out[0].Todo.ID + ":created:0", out[1].Todo.ID + ":created:0"}
+	if got := rec.take(); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("fan-out ready fires = %v, want %v", got, want)
+	}
+
+	if _, out, err := s.CreateEventTodos(ctx, in("rf-1", true), []string{epA, epB}, params("rf-1")); err != nil || out[0].New || out[1].New {
+		t.Fatalf("redelivery = %+v, %v; want both deduplicated", out, err)
+	}
+	if got := rec.take(); len(got) != 0 {
+		t.Fatalf("a fan-out redelivery fired the ready hook: %v", got)
+	}
+
+	if _, out, err := s.CreateEventTodos(ctx, in("rf-2", false), []string{epA, epB}, params("rf-2")); err != nil || len(out) != 2 {
+		t.Fatalf("unverified fan-out = %+v, %v", out, err)
+	}
+	if got := rec.take(); len(got) != 0 {
+		t.Fatalf("an unverified fan-out fired the ready hook: %v", got)
+	}
+
+	if _, _, dropped, err := s.CreateRoutedEventTodos(ctx, in("rf-3", true), true, nil, CreateTodoParams{}); err != nil || !dropped {
+		t.Fatalf("drop = %v, %v", dropped, err)
+	}
+	if got := rec.take(); len(got) != 0 {
+		t.Fatalf("a dropped delivery fired the ready hook: %v", got)
+	}
+}
