@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -138,15 +139,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// here with the operator's http opt-in, CIDR allowlist and this server's own listen address, so
 	// the dispatcher can reuse the same Validator. Both risky knobs are off by default and WARN when
 	// on. Governing: SPEC-0024 REQ-1, REQ-3; design.md "Configuration".
-	hookAllow, err := push.ParseCIDRList(cfg.NotifyHookAllowCIDRs)
+	hookValidator, hookAllow, err := notifyHookValidator(cfg)
 	if err != nil {
 		return err // Validate already refused a malformed list; kept for defence in depth
 	}
-	hookValidator := push.New(
-		push.WithAllowHTTP(cfg.PushAllowHTTP),
-		push.WithAllowCIDRs(hookAllow...),
-		push.WithOwnListenAddrs(cfg.Addr),
-	)
 	mcph.SetNotifyHooks(mcpsrv.NotifyHookConfig{Store: st, Validator: hookValidator, Max: cfg.NotifyHookMax})
 	switch {
 	case cfg.NotifyHookMax == 0:
@@ -703,4 +699,21 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 			}
 		}
 	}
+}
+
+// notifyHookValidator builds the SSRF guard the notify-hook verbs (and later the dispatcher) share
+// from the operator's configuration: the http opt-in, the CIDR allowlist, and this server's own
+// listen address, so an allowlisted target can never be switchboard's own port. It is a function of
+// cfg alone so a test can prove the wiring rather than a Validator it built itself.
+// Governing: SPEC-0024 REQ-3 "Target Validation (SSRF Guard)".
+func notifyHookValidator(cfg config.Config) (*push.Validator, []netip.Prefix, error) {
+	allow, err := push.ParseCIDRList(cfg.NotifyHookAllowCIDRs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return push.New(
+		push.WithAllowHTTP(cfg.PushAllowHTTP),
+		push.WithAllowCIDRs(allow...),
+		push.WithOwnListenAddrs(cfg.Addr),
+	), allow, nil
 }
