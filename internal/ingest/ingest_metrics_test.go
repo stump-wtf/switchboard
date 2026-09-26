@@ -506,6 +506,11 @@ func TestSelfManagedMetricsExposition(t *testing.T) {
 		`switchboard_routing_decisions_total{action="queue",rule_id="default",webhook="` + first.ID + `"}`: 1,
 		`switchboard_routing_decisions_total{action="queue",rule_id="default",webhook="__other__"}`:        1,
 	}
+	// Every routing-fault cause is present at its zero baseline (SPEC-0026 REQ-11) and stays there:
+	// nothing here faulted.
+	for _, cause := range []string{metrics.FaultCauseBudget, metrics.FaultCauseCompile, metrics.FaultCauseError, metrics.FaultCauseTimeout} {
+		want[`switchboard_routing_faults_total{cause="`+cause+`"}`] = 0
+	}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s = %v, want %v", k, got[k], v)
