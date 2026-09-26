@@ -125,6 +125,19 @@ func TestSelfManagedFaultedDeliveryIsRecordedNotRouted(t *testing.T) {
 	}
 	expectCalls(t, rec, []recordedDelivery{{"cairn", "signed", "accepted"}}, nil, nil)
 
+	// The producer retries while the rules still fault. It is the same delivery, already recorded
+	// and counted, so it is neither counted nor warned about again.
+	retry := postSelfManaged(ing, "cairn-fault", body, cairnHeaders(body, "evt-fault"))
+	if retry.Code != http.StatusAccepted || !strings.Contains(retry.Body.String(), `"faulted":true`) {
+		t.Fatalf("retry = %d %s, want it still faulted", retry.Code, retry.Body.String())
+	}
+	if f := rec.takeFaults(); len(f) != 0 {
+		t.Fatalf("routing faults after a retry = %v, want none: one delivery counts once", f)
+	}
+	if got := strings.Count(logs.String(), "routing rule faulted"); got != 1 {
+		t.Fatalf("fault warnings after a retry = %d, want still 1", got)
+	}
+
 	// The owner fixes the rules; the producer redelivers. The slot is spent, so it stays faulted.
 	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
@@ -136,6 +149,56 @@ func TestSelfManagedFaultedDeliveryIsRecordedNotRouted(t *testing.T) {
 	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 0 {
 		t.Fatalf("todos after redelivery = %d, want none", n)
 	}
+	// Today's rules would queue it, but nothing was queued: no routing decision is counted, and no
+	// fault either (it was counted when it was recorded).
+	if f := rec.takeFaults(); len(f) != 0 {
+		t.Fatalf("routing faults after the fixed redelivery = %v, want none", f)
+	}
+	expectCalls(t, rec, repeatDelivery(2, recordedDelivery{"cairn", "signed", "accepted"}), nil, nil) // the retry and the redelivery
+}
+
+// A delivery that routed, redelivered after the owner's rules started to fault on it, keeps its
+// recorded outcome: its todo is reported back as an idempotent redelivery, and nothing claims a fault
+// the event row does not record (no faulted response, no fault counted, no warning).
+func TestSelfManagedRoutedRedeliveryIgnoresTodaysFault(t *testing.T) {
+	ing, pool, ctx, logs := ingestWithLogCapture(t, Config{})
+	ing.SetRouter(routing.InProcess{})
+	rec := &recordingMetrics{}
+	ing.SetMetrics(rec)
+	st := store.New(pool)
+	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-refault", cairnSecret)
+	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
+	}})
+	body := cairnBody("evt-refault", time.Now(), "routed first")
+	if first := postSelfManaged(ing, "cairn-refault", body, cairnHeaders(body, "evt-refault")); first.Code != http.StatusAccepted ||
+		!strings.Contains(first.Body.String(), `"created":1`) {
+		t.Fatalf("first delivery = %d %s, want one todo created", first.Code, first.Body.String())
+	}
+
+	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+		{ID: "broken", Expr: `.artifact.title + 1 > 1`, Action: routing.Action{Queue: "inbox"}},
+	}})
+	again := postSelfManaged(ing, "cairn-refault", body, cairnHeaders(body, "evt-refault"))
+	if again.Code != http.StatusAccepted || strings.Contains(again.Body.String(), "faulted") ||
+		!strings.Contains(again.Body.String(), `"created":0`) || !strings.Contains(again.Body.String(), `"todos":[{`) {
+		t.Fatalf("redelivery = %d %s, want the existing todo reported, not a fault", again.Code, again.Body.String())
+	}
+	var disp string
+	if err := pool.QueryRow(ctx, `SELECT disposition FROM events WHERE webhook_id = $1`, wh.ID).Scan(&disp); err != nil || disp != store.DispositionRouted {
+		t.Fatalf("event disposition = %q (%v), want routed", disp, err)
+	}
+	if n := countWhere(t, ctx, pool, `SELECT count(*) FROM todos WHERE endpoint_id = $1`, owner.ID); n != 1 {
+		t.Fatalf("todos = %d, want the one the original delivery minted", n)
+	}
+	if f := rec.takeFaults(); len(f) != 0 {
+		t.Fatalf("routing faults = %v, want none for a delivery recorded as routed", f)
+	}
+	if strings.Contains(logs.String(), "routing rule faulted") {
+		t.Fatalf("log = %q, want no fault warning for a delivery recorded as routed", logs.String())
+	}
+	expectCalls(t, rec, repeatDelivery(2, recordedDelivery{"cairn", "signed", "accepted"}), nil,
+		[]recordedDecision{{wh.ID, "ok", "queue"}})
 }
 
 // SPEC-0026 REQ-1 scenario "A faulting drop rule does not route its delivery": the default queue is

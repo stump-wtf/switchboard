@@ -295,3 +295,50 @@ func TestCreateIntakeEventTodosFaultedSpendsTheSlot(t *testing.T) {
 		t.Fatalf("recent for a bad id = %d (%v), want none", len(none), err)
 	}
 }
+
+// RecordIntake reports whether it recorded the event, so the receiver counts and logs a fault once
+// per delivery, and it always reports the RECORDED disposition: a routed delivery redelivered after
+// the rules started faulting on it stays routed and reports its existing todo. Governing: SPEC-0026
+// REQ-1.
+func TestRecordIntakeReportsTheRecordedOutcome(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "routing-record", "q")
+	wh, err := s.CreateWebhook(ctx, ep, "cairn", "q", "signed", "tok-routing-record", "whsec_r", 5)
+	if err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	queueTrace := []byte(`{"stage":"default","cause":"no_match_default","action":{"queue":"q"}}`)
+	faultTrace := []byte(`{"stage":"fault","cause":"error","action":{}}`)
+	params := func(key string) CreateTodoParams {
+		return CreateTodoParams{Queue: "q", Source: "cairn", Kind: "webhook", Title: "t", IdempotencyKey: key, RoutingTrace: queueTrace}
+	}
+
+	faulted := EventInput{Source: "cairn", Family: "webhook", ExternalID: wh.ID + ":r-1", TrustMode: "signed",
+		Payload: []byte(`{}`), WebhookID: wh.ID, RoutingTrace: faultTrace, Disposition: DispositionFaulted}
+	first, err := s.RecordIntake(ctx, faulted, nil, CreateTodoParams{})
+	if err != nil || !first.Inserted || first.Disposition != DispositionFaulted {
+		t.Fatalf("first = %+v (%v), want an inserted faulted delivery", first, err)
+	}
+	retry, err := s.RecordIntake(ctx, faulted, nil, CreateTodoParams{})
+	if err != nil || retry.Inserted || retry.Disposition != DispositionFaulted || retry.EventID != first.EventID {
+		t.Fatalf("retry = %+v (%v), want the same faulted event, not inserted", retry, err)
+	}
+
+	routed := EventInput{Source: "cairn", Family: "webhook", ExternalID: wh.ID + ":r-2", TrustMode: "signed",
+		Payload: []byte(`{}`), WebhookID: wh.ID, RoutingTrace: queueTrace}
+	orig, err := s.RecordIntake(ctx, routed, []string{ep}, params(routed.ExternalID))
+	if err != nil || !orig.Inserted || orig.Disposition != DispositionRouted || len(orig.Todos) != 1 || !orig.Todos[0].New {
+		t.Fatalf("routed = %+v (%v), want one new todo", orig, err)
+	}
+	refault := routed
+	refault.RoutingTrace, refault.Disposition = faultTrace, DispositionFaulted
+	again, err := s.RecordIntake(ctx, refault, nil, CreateTodoParams{})
+	if err != nil || again.Inserted || again.Disposition != DispositionRouted || len(again.Todos) != 1 ||
+		again.Todos[0].New || again.Todos[0].Todo.ID != orig.Todos[0].Todo.ID {
+		t.Fatalf("faulting redelivery of a routed delivery = %+v (%v), want routed with its existing todo", again, err)
+	}
+	ev, err := s.EventHistoryByID(ctx, orig.EventID)
+	if err != nil || ev.Disposition != DispositionRouted || !sameJSON(t, ev.RoutingTrace, queueTrace) {
+		t.Fatalf("event = %+v (%v), want it still routed with its original trace", ev.EventHistoryItem, err)
+	}
+}

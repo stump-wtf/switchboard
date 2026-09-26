@@ -218,12 +218,6 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "routing unavailable")
 		return
 	}
-	if decision.Faulted {
-		f := decision.Fault
-		i.log.Warn("routing rule faulted; delivery recorded and not routed",
-			"webhook", wh.ID, "rule_id", f.RuleID, "rule_index", f.RuleIndex,
-			"cause", f.Cause, "detail", f.Detail)
-	}
 	// Work orders (ADR-0025). The subject — the issue or artifact this delivery is about — is parsed
 	// here in Go from the verified body, never taken from a rule: it keys at-most-once delivery and
 	// populates the work order, and neither may depend on tenant-written jq.
@@ -256,7 +250,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// comes from the (endpoint_id, idempotency_key) dedup index, not from rewriting the key: a
 	// redelivery collapses independently within each target, while two targets of the SAME delivery
 	// never collapse onto each other. Governing: SPEC-0003 REQ "Per-Endpoint Idempotency and Dedup".
-	_, todos, disposition, err := i.store.CreateIntakeEventTodos(r.Context(),
+	rec, err := i.store.RecordIntake(r.Context(),
 		store.EventInput{
 			Source: wh.SourceType, Family: "webhook", EventType: kind, ExternalID: key,
 			TrustMode: wh.TrustMode, Verified: verified, VerifyDetail: verifyDetail,
@@ -285,10 +279,28 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	//
 	// A faulted delivery made no routing decision, so it is counted as a routing fault instead. Its
 	// verdict is accepted: it verified and persisted, and SPEC-0023's "dropped" means a drop action.
+	//
+	// Both follow the RECORDED outcome, not today's evaluation. A fault is counted and logged only
+	// when this call recorded the delivery as faulted, so a producer's retry of a delivery that still
+	// faults counts and logs nothing new: one delivery, one increment, one warning. No routing
+	// decision is counted for a delivery recorded as faulted (a redelivery stays faulted, whatever
+	// today's rules say), nor for a redelivery of a routed or dropped one that faults today.
 	// Governing: SPEC-0026 REQ-1.
-	if decision.Faulted {
-		m.RoutingFault(decision.Fault.Cause)
-	} else {
+	todos, disposition := rec.Todos, rec.Disposition
+	switch {
+	case disposition == store.DispositionFaulted:
+		if rec.Inserted && decision.Faulted {
+			f := decision.Fault
+			m.RoutingFault(f.Cause)
+			i.log.Warn("routing rule faulted; delivery recorded and not routed",
+				"webhook", wh.ID, "rule_id", f.RuleID, "rule_index", f.RuleIndex,
+				"cause", f.Cause, "detail", f.Detail)
+		}
+	case decision.Faulted:
+		// A redelivery of a delivery that was routed or dropped before today's rules started to
+		// fault on it. Its recorded outcome stands, and today's fault describes nothing that
+		// happened to it.
+	default:
 		countRoutingDecision(m, wh.ID, decision)
 	}
 	count.verdict = verdictAccepted
