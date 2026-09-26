@@ -54,6 +54,12 @@ func ValidateURL(ctx context.Context, v *push.Validator, raw string) (push.Targe
 	if u.User != nil {
 		return push.Target{}, fmt.Errorf("%w: url must not carry userinfo (user:pass@)", ErrInvalidURL)
 	}
+	// The stored form is u.String(), which percent-encodes a raw space or non-ASCII byte (one byte
+	// becomes three), so a URL within the limit as typed can exceed it once encoded. Checking only the
+	// raw length let that reach the column CHECK as an internal error instead of invalid_argument.
+	if n := len(u.String()); n > MaxURLLen {
+		return push.Target{}, fmt.Errorf("%w: url is %d bytes once encoded; the limit is %d", ErrInvalidURL, n, MaxURLLen)
+	}
 	return v.Resolve(ctx, raw)
 }
 

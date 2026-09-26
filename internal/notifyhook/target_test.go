@@ -75,3 +75,23 @@ func TestRedactURL(t *testing.T) {
 		}
 	}
 }
+
+// The length limit applies to what is stored — the URL as re-encoded by url.URL.String(), which
+// percent-encodes a raw space or non-ASCII byte and so can triple its length. A URL under the limit
+// as typed but over it once encoded must be refused here as invalid_argument, not reach the store and
+// trip the column CHECK (an internal error).
+func TestValidateURLLimitsEncodedLength(t *testing.T) {
+	v := push.New(push.WithResolver(fixedResolver{"dispatch.example.com": addrs("93.184.216.34")}))
+	raw := "https://dispatch.example.com/a" + strings.Repeat(" ", 1000) + "b"
+	if len(raw) > MaxURLLen {
+		t.Fatalf("fixture is %d bytes; it must fit the limit as typed", len(raw))
+	}
+	_, err := ValidateURL(context.Background(), v, raw)
+	if !errors.Is(err, ErrInvalidURL) {
+		t.Fatalf("encoded length over the limit: err = %v, want ErrInvalidURL", err)
+	}
+	tg, err := ValidateURL(context.Background(), v, "https://dispatch.example.com/a b")
+	if err != nil || len(tg.URL.String()) > MaxURLLen {
+		t.Fatalf("a short URL with a space must pass: %+v, %v", tg, err)
+	}
+}
