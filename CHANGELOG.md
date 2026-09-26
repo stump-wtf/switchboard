@@ -13,6 +13,18 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+### Breaking
+
+- **Routing rules fail closed.** A rule that errors, times out, runs out of memory or
+  budget, or no longer compiles no longer counts as a no-match: evaluation stops there,
+  and the delivery is recorded as `faulted` (a new `events.disposition` column) and routed
+  nowhere. A webhook with rules answers `503 routing unavailable` when the rule sandbox
+  cannot run, instead of routing by default. Rule saves that would fault on the webhook's
+  recent deliveries are refused, and `params` values must be strings, numbers, booleans or
+  homogeneous lists. There is no switch. Run the query in the
+  [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md)
+  before upgrading to find webhooks whose rules fault today. (#212)
+
 ## [0.3.0] - 2026-09-22
 
 The first release since `v0.2.0`, and the first release under

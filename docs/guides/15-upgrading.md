@@ -11,6 +11,37 @@ published image, check which release you are actually running first.
 To find your version, run `switchboard version`, or read it from `/healthz`. Newer builds
 also report it over MCP as `serverInfo.version`.
 
+## Upgrading past v0.3.0 (unreleased): routing rules fail closed
+
+:::warning Behaviour change, no switch
+A routing rule that errors, times out, runs out of memory or budget, or no longer compiles
+used to count as "no match": the delivery fell through to later rules or the default. It
+now **stops evaluation**, and the delivery is recorded as `faulted` and **routed nowhere**.
+A webhook with rules on an instance whose rule sandbox cannot run answers `503` instead of
+routing by default. There is no setting to turn this off.
+:::
+
+**Who is affected:** any webhook whose rules fault on some of its traffic today. Before
+this release those faults were recorded on the delivery's routing trace while it routed
+anyway. Before upgrading, find them with this read-only query against your database (the
+last 7 days; widen the interval if your traffic is sparse):
+
+```sql
+SELECT webhook_id, count(*) AS faulted_deliveries, max(received_at) AS last_seen
+  FROM events
+ WHERE received_at > now() - interval '7 days'
+   AND jsonb_array_length(COALESCE(routing_trace->'faults', '[]'::jsonb)) > 0
+ GROUP BY webhook_id ORDER BY faulted_deliveries DESC;
+```
+
+For each webhook it lists, dry-run a recent delivery with `test_webhook_rules
+{"event_id": …}`, fix the rule (usually a `//` default or a type guard), and save it. After
+the upgrade, `list_webhook_events {"disposition": "faulted"}` lists deliveries that faulted,
+and a rule save that would fault on the webhook's 50 most recent deliveries is refused.
+
+The upgrade also adds `events.disposition` (migration `0022`), a metadata-only column add
+that backfills drops from their stored traces.
+
 ## Upgrading to v0.3.0
 
 ### Read this first
