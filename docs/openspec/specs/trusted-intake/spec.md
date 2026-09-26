@@ -266,8 +266,11 @@ A quarantined todo:
 * MUST NOT ring a doorbell on any endpoint other than a classifier endpoint (REQ-8);
 * MUST NOT fire a notify hook (SPEC-0024);
 * MUST NOT be returned by `list_todos`, `claim` or `claim_next` on any endpoint;
-* MUST be visible only in its owner scope's Quarantine view (REQ-9) and to that scope's classifier
-  endpoints;
+* MUST be visible only to its owner scope and to that scope's classifier endpoints. The owner
+  releases or discards it only in the Quarantine view (REQ-9). The owner's Board MAY list it
+  read-only under the `quarantine` queue, but MUST NOT offer it as work (no claim, complete or retry
+  control) or count it as awaiting a claim;
+* its event MUST NOT be deleted by retention while the item is held;
 * MUST be auto-discarded 30 days after creation, or sooner if the operator's retention bound is
   shorter, with `result = {"expired": true}`.
 

@@ -98,6 +98,13 @@ verdict, or the fault):
   quarantine, fault, or drop it, the release is refused and the item stays held. A **discard**
   completes it with the reason. Otherwise it **expires** after 30 days (or sooner under the
   operator's retention bound). Each outcome is recorded on the todo with who, when and what.
+- **Its owner sees it, read-only.** The Board lists it under the `quarantine` queue with no
+  Claim, Complete or Retry control, and does not count it as awaiting a claim. Release and discard
+  happen in the Quarantine view. Retention keeps the delivery's event while the item is held, so
+  the item stays releasable.
+- **The event keeps its intake outcome.** A released `rule_fault` delivery still lists as
+  `disposition: "faulted"`: the disposition records what intake did, and the todo's
+  `released_by` and `released_at` record the release.
 - **`quarantine` is reserved.** It is refused as a webhook target queue, an endpoint scope or
   ceiling queue, and a rule's `queue`.
 
