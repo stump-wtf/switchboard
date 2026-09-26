@@ -17,6 +17,8 @@ package store
 // Bounds", REQ-18 "Database Operation Standards".
 //
 // @joestump-agent 09/23/2026 - Added for #315 (epic #313).
+// @joestump-agent 09/26/2026 - A committed claim reads its prior closed attempts (fillPrior) for the
+// claim responses' prior_attempts (#321).
 
 import (
 	"context"
@@ -72,11 +74,19 @@ type ClaimOpts struct {
 	TokenHash []byte // SHA-256 of the lease token when the claim asked for a fence (REQ-6), else nil
 }
 
-// ClaimedAttempt describes the attempt a committed claim opened.
+// ClaimedAttempt describes the attempt a committed claim opened, and what came before it.
+//
+// Prior is the todo's most recent closed attempts before this one, newest first, at most
+// PriorAttemptsMax (SPEC-0034 REQ-7): what the claim response hands the next claimer so it learns
+// what earlier attempts tried without a second call. It is nil on a first claim.
 type ClaimedAttempt struct {
 	Seq           int
 	AttemptsTotal int
+	Prior         []Attempt
 }
+
+// PriorAttemptsMax is how many closed attempts a claim response carries (SPEC-0034 REQ-7).
+const PriorAttemptsMax = 5
 
 // Report is what a holder says when it ends its attempt: the todo's result (stored on the todo, as
 // before) and the attempt's summary and artifact. Summary is clipped, never rejected (REQ-5).
@@ -301,6 +311,63 @@ func (s *Store) todoAttempts(ctx context.Context, scope, id string, limit int, s
 		return nil, 0, 0, ErrNotFound
 	}
 	return out, total, pruned, nil
+}
+
+// fillPrior reads a committed claim's prior attempts into ca.Prior (SPEC-0034 REQ-7). It runs after
+// the claim statement commits, never inside it: the statement's own snapshot would still show the
+// attempt a takeover closed as open, and would still hold the rows it pruned. It reads only attempts
+// with a lower seq than the one the claim opened, all of which are closed by then (one open attempt
+// per todo), so a close racing in after the commit cannot change the answer. A first claim has
+// nothing before it and costs no query.
+//
+// The read is scoped exactly as TodoAttempts is, by the todo's endpoint in the same statement
+// (REQ-10), though the claim that just committed already proved the caller owns the todo.
+//
+// A failed read never fails the claim: the lease is already committed, and an error here would hand
+// the caller a todo it holds but was told it did not get. The claim returns with Prior nil, the
+// response still carries attempt_seq, and get_todo reads the same history. The warning names the
+// todo and the error only, never attempt text (REQ-19).
+func (s *Store) fillPrior(ctx context.Context, endpointID, id string, ca *ClaimedAttempt) {
+	if ca.Seq <= 1 {
+		return
+	}
+	prior, err := s.priorAttempts(ctx, endpointID, id, ca.Seq)
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("store: prior attempts unread after a committed claim", "todo", id, "err", err)
+		}
+		return
+	}
+	ca.Prior = prior
+}
+
+// priorAttempts returns up to PriorAttemptsMax closed attempts of todo id with seq below before,
+// newest first, filtered on the todo's endpoint in the same statement.
+func (s *Store) priorAttempts(ctx context.Context, endpointID, id string, before int) ([]Attempt, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+attemptCols+`
+		FROM todo_attempts a JOIN todos t ON t.id = a.todo_id
+		WHERE a.todo_id = $1 AND t.endpoint_id = $2 AND a.seq < $3 AND a.ended_at IS NOT NULL
+		ORDER BY a.seq DESC
+		LIMIT $4`, id, endpointID, before, PriorAttemptsMax)
+	if err != nil {
+		return nil, fmt.Errorf("store: prior attempts %s: %w", id, err)
+	}
+	defer rows.Close()
+	var out []Attempt
+	for rows.Next() {
+		var a Attempt
+		if err := rows.Scan(&a.Seq, &a.Attempt, &a.ClaimerKind, &a.Claimant, &a.ClaimedAt,
+			&a.LastHeartbeatAt, &a.LeaseExpiresAt, &a.EndedAt, &a.Outcome, &a.Disposition, &a.Died,
+			&a.Summary, &a.SummaryTruncated, &a.Artifact); err != nil {
+			return nil, fmt.Errorf("store: prior attempts %s scan: %w", id, err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: prior attempts %s: %w", id, err)
+	}
+	return out, nil
 }
 
 // AttemptMetrics is the optional sink for switchboard_todo_attempts_closed_total (SPEC-0034 REQ-14).

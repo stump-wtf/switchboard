@@ -545,7 +545,8 @@ func (s *Store) ClaimTodo(ctx context.Context, endpointID, id, owner string, ttl
 
 // ClaimTodoWith is ClaimTodo with the attempt inputs (claimant, MCP session, lease-token hash). The
 // claim opens the todo's new attempt in the same statement, closing a lapsed lease's attempt first
-// when it takes one over (SPEC-0034 REQ-2, REQ-3).
+// when it takes one over (SPEC-0034 REQ-2, REQ-3). After the commit it reads the attempts before
+// the new one into ClaimedAttempt.Prior (REQ-7, fillPrior).
 func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string, o ClaimOpts) (Todo, ClaimedAttempt, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, ClaimedAttempt{}, err
@@ -574,6 +575,7 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 	}
 	s.fireTodoHook("claimed", t)
 	s.countClaim(t, takeover, closedOld)
+	s.fillPrior(ctx, endpointID, t.ID, &ca)
 	return t, ca, nil
 }
 
@@ -648,6 +650,7 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 	}
 	s.fireTodoHook("claimed", t)
 	s.countClaim(t, takeover, closedOld)
+	s.fillPrior(ctx, endpointID, t.ID, &ca)
 	return t, ca, nil
 }
 
