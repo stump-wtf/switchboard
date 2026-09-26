@@ -171,12 +171,15 @@ func TestRuntimeCollectorsRegistered(t *testing.T) {
 }
 
 // TestHonestAbsence: a vector nobody incremented emits no series at all — never a zero that reads
-// as a measurement (SPEC-0023 REQ-6). InitCollectionErrors is the one deliberate zero: a baseline
-// for increase().
+// as a measurement (SPEC-0023 REQ-6). The deliberate zeros are baselines for an increase() alert:
+// InitCollectionErrors, and the four routing-fault causes New pre-creates (SPEC-0026 REQ-11), which
+// the ingest path always counts, so their zero is a measurement rather than an absence.
 func TestHonestAbsence(t *testing.T) {
 	m := New(Options{})
-	if got := familyLabels(t, m); len(got) != 0 {
-		t.Fatalf("fresh registry emits switchboard_ families %v, want none", got)
+	got := familyLabels(t, m)
+	delete(got, "switchboard_routing_faults_total")
+	if len(got) != 0 {
+		t.Fatalf("fresh registry emits switchboard_ families %v, want only the routing-fault baseline", got)
 	}
 	m.InitCollectionErrors("queue")
 	mustValue(t, m, "switchboard_metrics_collection_errors_total", map[string]string{"collector": "queue"}, 0)

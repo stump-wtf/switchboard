@@ -344,7 +344,10 @@ scrape_configs:
 ```
 
 A series appears only once there is something to count. A counter nothing has incremented yet is
-absent rather than zero, because a zero and an unmeasured value look identical once scraped.
+absent rather than zero, because a zero and an unmeasured value look identical once scraped. The
+exceptions are the counters an `increase()` alert below reads: every `cause` of
+`switchboard_routing_faults_total` and each collector's `switchboard_metrics_collection_errors_total`
+start at `0`, so the first fault after a restart still shows as an increase.
 
 ### Intake and quarantine series
 

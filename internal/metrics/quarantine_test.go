@@ -307,3 +307,25 @@ func TestDocumentedAlerts(t *testing.T) {
 		}
 	}
 }
+
+// SwitchboardRoutingFaults is increase(...[15m]) > 0. A series that first appears at 1 has no
+// earlier sample, so increase() over it is 0 and the first fault after every restart would go
+// unalerted. New therefore pre-creates every bounded cause at zero, the same baseline
+// InitCollectionErrors gives the collector-failure alert.
+func TestRoutingFaultSeriesHaveABaseline(t *testing.T) {
+	m := New(Options{})
+	got := map[string]float64{}
+	for _, s := range gather(t, m) {
+		if s.name == "switchboard_routing_faults_total" {
+			got[s.labels["cause"]] = s.value
+		}
+	}
+	for _, cause := range []string{FaultCauseTimeout, FaultCauseError, FaultCauseCompile, FaultCauseBudget} {
+		if v, ok := got[cause]; !ok || v != 0 {
+			t.Errorf("switchboard_routing_faults_total{cause=%q} = %v (present %v) before any fault, want 0", cause, v, ok)
+		}
+	}
+	if _, ok := got[Other]; ok {
+		t.Errorf("the overflow cause %q is pre-created; only the four named causes need a baseline", Other)
+	}
+}
