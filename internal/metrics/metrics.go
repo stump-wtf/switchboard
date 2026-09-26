@@ -187,6 +187,12 @@ func New(opts Options) *Metrics {
 		m.quarantineItems, m.quarantineResolved,
 		m.collectionErrors,
 	)
+	// Every bounded fault cause starts at zero, so the documented increase() alert has a baseline
+	// and the first fault after a restart fires it; a series born at 1 has no increase. Other is
+	// left to appear on demand: nothing in routing maps to it. Governing: SPEC-0026 REQ-11.
+	for _, cause := range []string{FaultCauseTimeout, FaultCauseError, FaultCauseCompile, FaultCauseBudget} {
+		m.routingFaults.WithLabelValues(cause)
+	}
 	return m
 }
 
