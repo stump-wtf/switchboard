@@ -104,7 +104,7 @@ func TestSandboxWithoutRulesNeverStartsAChild(t *testing.T) {
 }
 
 // A single allocation of a gigabyte, and a doubling pipe chain, are both contained: the child dies
-// at its memory limit and the delivery takes the default, recorded as a sandbox fault.
+// at its memory limit (or the rule times out first), and the delivery is faulted at the bomb rule.
 func TestSandboxContainsMemoryBombs(t *testing.T) {
 	for name, expr := range map[string]string{
 		"repeat":   `("x" * 1e9) | length > 0`,
@@ -115,33 +115,26 @@ func TestSandboxContainsMemoryBombs(t *testing.T) {
 			start := time.Now()
 			// A 5s deadline (rather than testSandbox's 20s) keeps "contained" meaning contained: a child
 			// stalled by cgroup memory pressure (seen at 10.7s in a 768 MiB container) is killed by the
-			// parent well inside the 10s bound below, and lands as a sandbox fault.
+			// parent well inside the 10s bound below, and lands as a timeout of the bomb rule.
 			d := testSandbox(t, WithChildMemBytes(64<<20), WithDeadline(5*time.Second)).Route(context.Background(), cfg, grant(), cairnInput(cairnBody))
 			if elapsed := time.Since(start); elapsed > 10*time.Second {
 				t.Fatalf("bomb took %v to contain", elapsed)
 			}
-			// Two containment outcomes are both correct, and which one wins is a scheduling race inside
-			// the child. Either the watchdog kills the child (a sandbox-level fault: Unavailable, the
-			// receiver answers 503), or the bomb rule's own timeout fires first and the delivery is
-			// faulted at the bomb rule. Either way nothing routes: not the bomb's drop, not the next
-			// rule, not the default (SPEC-0026 REQ-1, REQ-2).
+			// Which containment wins is a scheduling race inside the child: the watchdog kills it at the
+			// memory limit, or the bomb rule's own timeout fires first. Either way the delivery is
+			// FAULTED AT THE BOMB RULE, the same disposition on every run: a child killed while running
+			// a rule faults that rule rather than making the delivery Unavailable, which would answer
+			// 503 forever for a delivery the rule can never evaluate. Nothing routes: not the bomb's
+			// drop, not the next rule, not the default (SPEC-0026 REQ-1, REQ-2).
 			if d.Drop || d.Queue != "" || len(d.Endpoints) != 0 {
 				t.Fatalf("decision = %+v, a contained bomb must route nowhere", d)
 			}
-			if d.Fault == nil || len(d.Trace.Faults) != 1 {
-				t.Fatalf("decision = %+v, want the bomb recorded as exactly one fault", d)
+			if !d.Faulted || d.Unavailable || d.Fault == nil || len(d.Trace.Faults) != 1 {
+				t.Fatalf("decision = %+v, want Faulted with exactly one fault", d)
 			}
-			switch f := *d.Fault; {
-			case f.RuleIndex == -1 && f.Cause == FaultSandbox:
-				if !d.Unavailable {
-					t.Fatalf("killed child decision = %+v, want Unavailable", d)
-				}
-			case f.RuleID == "bomb" && (f.Cause == FaultTimeout || f.Cause == FaultError || f.Cause == FaultBudgetExhausted):
-				if !d.Faulted {
-					t.Fatalf("faulted bomb decision = %+v, want Faulted", d)
-				}
-			default:
-				t.Fatalf("fault = %+v, want a sandbox failure or a faulted bomb rule", f)
+			if f := *d.Fault; f.RuleID != "bomb" || f.RuleIndex != 0 ||
+				(f.Cause != FaultTimeout && f.Cause != FaultError && f.Cause != FaultBudgetExhausted) {
+				t.Fatalf("fault = %+v, want the bomb rule faulted by its limits", f)
 			}
 		})
 	}
@@ -236,5 +229,92 @@ func TestDecideRefusesOutOfRangeIndex(t *testing.T) {
 	d := Decide(Config{Rules: []Rule{rule("only", `true`, Action{Drop: true})}}, grant(), MatchResult{RuleIndex: &bad})
 	if d.Drop || d.Queue != "" || !d.Unavailable {
 		t.Fatalf("decision = %+v, want Unavailable for an out-of-range index", d)
+	}
+}
+
+// childOut builds what a child wrote, stamping each line's arrival at the given offset from t0.
+func childOut(t0 time.Time, lines ...any) *childOutput {
+	out := &childOutput{limit: maxChildResponseBytes}
+	_, _ = out.Write([]byte(childMagic))
+	for i := 0; i < len(lines); i += 2 {
+		_, _ = out.Write([]byte(lines[i].(string)))
+		out.marks[len(out.marks)-1].at = t0.Add(lines[i+1].(time.Duration))
+	}
+	return out
+}
+
+// classifyChild pins which dead children fault the rule they were running (the delivery is
+// recorded as faulted) and which make the delivery Unavailable (503, the producer retries). A kill
+// that is a property of the rule and the payload must never be a 503: it would fail the same way on
+// every retry, and nothing would ever record it (SPEC-0026 REQ-1, REQ-2).
+func TestClassifyChildAttributesKillsToTheRunningRule(t *testing.T) {
+	t0 := time.Now()
+	deadline := t0.Add(2 * time.Second)
+	cases := []struct {
+		name      string
+		out       *childOutput
+		end       childEnd
+		wantRule  int // -1: a sandbox fault (Unavailable)
+		wantCause string
+	}{
+		{"memory kill mid-rule faults that rule",
+			childOut(t0, "@0\n", 10*time.Millisecond, "@1\n", 20*time.Millisecond), childEnd{memory: true}, 1, FaultBudgetExhausted},
+		{"memory kill before any rule is the sandbox",
+			childOut(t0), childEnd{memory: true}, -1, FaultSandbox},
+		{"deadline long after the rule started is its timeout",
+			childOut(t0, "@0\n", 100*time.Millisecond), childEnd{deadline: deadline}, 0, FaultTimeout},
+		{"deadline soon after the rule started is the host being slow",
+			childOut(t0, "@0\n", 1900*time.Millisecond), childEnd{deadline: deadline}, -1, FaultSandbox},
+		{"deadline before any rule is the host being slow",
+			childOut(t0), childEnd{deadline: deadline}, -1, FaultSandbox},
+		{"a partial line from a killed child is ignored",
+			childOut(t0, "@0\n", 10*time.Millisecond, "@", 20*time.Millisecond), childEnd{memory: true}, 0, FaultBudgetExhausted},
+		{"a rule index out of range is not trusted",
+			childOut(t0, "@5\n", 10*time.Millisecond), childEnd{memory: true}, -1, FaultSandbox},
+		{"a rule index out of order is not trusted",
+			childOut(t0, "@1\n", 10*time.Millisecond, "@0\n", 20*time.Millisecond), childEnd{memory: true}, -1, FaultSandbox},
+		{"any other failure is the sandbox",
+			childOut(t0, "@0\n", 10*time.Millisecond), childEnd{failed: true}, -1, FaultSandbox},
+		{"a clean exit with no result is the sandbox",
+			childOut(t0, "@0\n", 10*time.Millisecond), childEnd{}, -1, FaultSandbox},
+		{"output past the result is not trusted",
+			childOut(t0, "={}\n", 10*time.Millisecond, "@0\n", 20*time.Millisecond), childEnd{}, -1, FaultSandbox},
+	}
+	cfg := Config{Rules: []Rule{rule("first", `false`, Action{Drop: true}), rule("second", `true`, Action{Queue: "forge"})}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := classifyChild(tc.out, tc.end, len(cfg.Rules))
+			if len(m.Faults) != 1 || m.Faults[0].RuleIndex != tc.wantRule || m.Faults[0].Cause != tc.wantCause {
+				t.Fatalf("result = %+v, want one fault at rule %d with cause %s", m, tc.wantRule, tc.wantCause)
+			}
+			d := Decide(cfg, grant(), m)
+			if tc.wantRule >= 0 && (!d.Faulted || d.Unavailable || d.Fault.RuleID != cfg.Rules[tc.wantRule].ID) {
+				t.Fatalf("decision = %+v, want Faulted at %s", d, cfg.Rules[tc.wantRule].ID)
+			}
+			if tc.wantRule < 0 && !d.Unavailable {
+				t.Fatalf("decision = %+v, want Unavailable", d)
+			}
+		})
+	}
+
+	// A clean result is taken as is.
+	m := classifyChild(childOut(t0, "@0\n", time.Millisecond, "@1\n", 2*time.Millisecond, `={"rule_index":1}`+"\n", 3*time.Millisecond), childEnd{}, 2)
+	if m.RuleIndex == nil || *m.RuleIndex != 1 || len(m.Faults) != 0 {
+		t.Fatalf("clean result = %+v, want a match at rule 1", m)
+	}
+}
+
+// The child announces each rule before running it, and only then its result, so a parent that
+// sees the child die knows which rule it was in.
+func TestRunChildAnnouncesEachRule(t *testing.T) {
+	req := `{"rules":[{"id":"a","expr":"false","action":{"drop":true}},{"id":"b","expr":"true","action":{"queue":"forge"}}],` +
+		`"input":{"source":"cairn","trust_mode":"signed","verified":true,"webhook_id":"wh-1","body":"e30="}}`
+	var out strings.Builder
+	if code := runChild(strings.NewReader(req), &out, 1<<40); code != 0 {
+		t.Fatalf("runChild exit = %d", code)
+	}
+	want := childMagic + "@0\n@1\n" + `={"rule_index":1}` + "\n"
+	if out.String() != want {
+		t.Fatalf("child output = %q, want %q", out.String(), want)
 	}
 }

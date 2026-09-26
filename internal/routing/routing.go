@@ -543,6 +543,13 @@ func Evaluate(ctx context.Context, cfg Config, g Grant, event map[string]any) De
 // recorded and ends evaluation. It is never a no-match that lets the next rule, or the default,
 // route the delivery (SPEC-0026 REQ-1).
 func Match(ctx context.Context, rules []Rule, params map[string]any, event map[string]any) MatchResult {
+	return match(ctx, rules, params, event, nil)
+}
+
+// match is Match with a progress hook: starting, when non-nil, is called with each rule's index just
+// before that rule is compiled and run. The sandbox child reports it to the parent, so a child that
+// is killed mid-rule (memory, deadline) can be attributed to the rule it was running.
+func match(ctx context.Context, rules []Rule, params map[string]any, event map[string]any, starting func(int)) MatchResult {
 	budget, cancel := context.WithTimeout(ctx, EventBudget)
 	defer cancel()
 
@@ -552,6 +559,9 @@ func Match(ctx context.Context, rules []Rule, params map[string]any, event map[s
 		if budget.Err() != nil {
 			res.Faults = []RuleFault{{RuleIndex: i, RuleID: r.ID, Cause: FaultBudgetExhausted}}
 			return res
+		}
+		if starting != nil {
+			starting(i)
 		}
 		code, err := Compile(r.Expr)
 		if err != nil {
