@@ -16,7 +16,8 @@ also report it over MCP as `serverInfo.version`.
 :::warning Behaviour change, no switch
 A routing rule that errors, times out, runs out of memory or budget, or no longer compiles
 used to count as "no match": the delivery fell through to later rules or the default. It
-now **stops evaluation**, and the delivery is recorded as `faulted` and **routed nowhere**.
+now **stops evaluation**, and the delivery is recorded as `faulted` and **held in the
+owner's quarantine** instead of reaching any queue.
 A webhook with rules on an instance whose rule sandbox cannot run answers `503` instead of
 routing by default. There is no setting to turn this off.
 :::
@@ -41,6 +42,32 @@ would fault on the webhook's 50 most recent deliveries is refused.
 
 The upgrade also adds `events.disposition` (migration `0022`), a metadata-only column add
 that backfills drops from their stored traces.
+
+## Upgrading past v0.3.0 (unreleased): `quarantine` is a reserved queue name
+
+:::warning The migration refuses to run if the name is in use
+Deliveries that are held for review (an untrusted actor, a faulting rule, or a rule's
+`{"quarantine": true}`) now wait on a reserved queue called `quarantine` on the webhook
+owner's endpoint, where no agent can list, claim or be rung for them. Migration
+`0028_quarantine` aborts, naming the counts, if any todo, endpoint scope or webhook-queue
+ceiling, or webhook target already uses a queue with that name, and Switchboard will not
+start until it applies.
+:::
+
+**Who is affected:** only a deployment that already routes work to a queue literally named
+`quarantine`. Check before upgrading with this read-only query:
+
+```sql
+SELECT (SELECT count(*) FROM todos WHERE queue = 'quarantine') AS todos,
+       (SELECT count(*) FROM endpoints
+         WHERE 'quarantine' = ANY(scope_queues) OR 'quarantine' = ANY(webhook_queues)) AS endpoints,
+       (SELECT count(*) FROM endpoint_webhooks WHERE target_queue = 'quarantine') AS webhooks;
+```
+
+If any count is non-zero, move that work to a differently named queue first: drain or
+re-route the todos, re-vend the endpoints without `quarantine` in their scope or ceiling,
+and point the webhooks at the new queue. From this release on, `quarantine` is refused as a
+webhook target, a vend scope or ceiling, a friend request queue and a rule action's queue.
 
 ## Upgrading to v0.3.0
 

@@ -24,6 +24,14 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   homogeneous lists. There is no switch. Run the query in the
   [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md)
   before upgrading to find webhooks whose rules fault today. (#212)
+- **`quarantine` is a reserved queue name.** Held deliveries (from an untrusted actor, a
+  faulting rule, or a rule's new `{"quarantine": true}` action) wait there on the webhook
+  owner's endpoint until the owner releases or discards them, or they expire after 30
+  days; no agent can list, claim or be rung for them. A faulted delivery is held there
+  rather than routed nowhere. Migration `0028` aborts if a todo, endpoint or webhook
+  already uses a queue with that name; the
+  [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md)
+  has the query to check first. (#386)
 
 ## [0.3.0] - 2026-09-22
 
