@@ -209,7 +209,7 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 	if sb, err := routing.NewSandbox(""); err == nil {
 		h.SetRouter(sb)
 	} else if log != nil {
-		log.Error("routing sandbox unavailable; test_webhook_rules will route by default", "err", err)
+		log.Error("routing sandbox unavailable; test_webhook_rules reports unavailable and rule saves that need a dry-run are refused", "err", err)
 	}
 	h.wg.Add(1)
 	go h.janitor()
