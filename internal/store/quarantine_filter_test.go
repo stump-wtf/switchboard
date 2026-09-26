@@ -118,6 +118,49 @@ func TestQuarantineDefaultFilterCoversEveryTodoMethod(t *testing.T) {
 			}
 			return unchanged(t, f, id, "quarantine/pending/")
 		},
+		"ClaimTodoWith": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			if _, _, err := s.ClaimTodoWith(ctx, ep, id, "w", ClaimOpts{TTL: ttl}); !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("ClaimTodoWith = %v, want not found", err)
+			}
+			return unchanged(t, f, id, "quarantine/pending/")
+		},
+		"ClaimNextWith": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			if got, _, err := s.ClaimNextWith(ctx, ep, q, "w", ClaimOpts{TTL: ttl}); err == nil && got.ID == id {
+				return fmt.Errorf("ClaimNextWith handed out the held todo")
+			}
+			return unchanged(t, f, id, "quarantine/pending/")
+		},
+		"CompleteTodoWith": func(t *testing.T) error {
+			id := f.seedHeld(t, "claimed")
+			if _, err := s.CompleteTodoWith(ctx, ep, id, "w", Report{Summary: "done"}); !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("CompleteTodoWith = %v, want not found", err)
+			}
+			return unchanged(t, f, id, "quarantine/claimed/w")
+		},
+		"FailTodoWith": func(t *testing.T) error {
+			id := f.seedHeld(t, "claimed")
+			if _, err := s.FailTodoWith(ctx, ep, id, "w", Report{Summary: "no"}); !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("FailTodoWith = %v, want not found", err)
+			}
+			return unchanged(t, f, id, "quarantine/claimed/w")
+		},
+		"ReleaseTodoWith": func(t *testing.T) error {
+			id := f.seedHeld(t, "claimed")
+			if _, err := s.ReleaseTodoWith(ctx, ep, id, "w", Report{Summary: "later"}); !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("ReleaseTodoWith = %v, want not found", err)
+			}
+			return unchanged(t, f, id, "quarantine/claimed/w")
+		},
+		"TodoAttempts": func(t *testing.T) error {
+			// The agent-facing attempt history: a held item's id must not resolve for its endpoint.
+			id := f.seedHeld(t, "pending")
+			if _, _, _, err := s.TodoAttempts(ctx, ep, id, 20); !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("TodoAttempts = %v, want not found", err)
+			}
+			return nil
+		},
 		"ClaimTodoOperatorOwned": func(t *testing.T) error {
 			id := f.seedHeld(t, "pending")
 			if _, err := s.ClaimTodoOperatorOwned(ctx, human, id, "w", ttl); err == nil {
