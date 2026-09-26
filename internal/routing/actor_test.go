@@ -167,6 +167,10 @@ func TestEvaluateTrust(t *testing.T) {
 	outsiderIssue := []byte(`{"action":"opened","issue":{"number":1,"user":{"login":"mallory"}},"sender":{"login":"mallory"}}`)
 	labeled := []byte(`{"action":"labeled","issue":{"number":1,"user":{"login":"mallory"}},"sender":{"login":"joestump"}}`)
 	push := []byte(`{"ref":"refs/heads/main","sender":{"login":"joestump"}}`)
+	caseVariant := []byte(`{"sender":{"login":"mallory"},"SENDER":{"login":"joestump"}}`)
+	duplicate := []byte(`{"sender":{"login":"joestump"},"sender":{"login":"mallory"}}`)
+	kelvin := []byte(`{"sender":{"login":"Kelvin"}}`)
+	malformed := []byte(`{"comment":{"user":{"login":7}},"issue":{"user":{"login":"joestump"}},"sender":{"login":"joestump"}}`)
 	cases := []struct {
 		name, source, trust string
 		body                []byte
@@ -185,6 +189,22 @@ func TestEvaluateTrust(t *testing.T) {
 		{"empty list", "github", `{"logins":[]}`, labeled, "false", "false", "false"},
 		// REQ-5 scenario "Allow-all is explicit and flagged": trusted, per-actor flags null.
 		{"allow all", "gitea", `{"allow_all":true}`, outsiderIssue, "null", "null", "true"},
+		// Keys match exactly, as .payload does: a case-variant duplicate cannot name another sender.
+		{"case-variant key", "github", `{"logins":["joestump"]}`, caseVariant, "false", "false", "false"},
+		// A duplicate key resolves last-wins, exactly as .payload does.
+		{"duplicate key", "github", `{"logins":["joestump"]}`, duplicate, "false", "false", "false"},
+		// Logins fold ASCII only: the Kelvin sign (U+212A) is not "k".
+		{"unicode fold", "github", `{"logins":["kelvin"]}`, kelvin, "false", "false", "false"},
+		// A body whose actor fields have the wrong type names no one.
+		{"malformed login", "github", `{"logins":["joestump"]}`, malformed, "false", "false", "false"},
+	}
+
+	// .actor and .payload agree about who acted, whatever the key casing.
+	env := Envelope(EnvelopeInput{Source: "github", Body: caseVariant, Verified: true,
+		Actor: EvaluateTrust("github", mustParse(t, "github", `{"logins":["joestump"]}`), caseVariant)})
+	if got := env["actor"].(map[string]any)["sender"]; got != "mallory" ||
+		env["payload"].(map[string]any)["sender"].(map[string]any)["login"] != "mallory" {
+		t.Fatalf(".actor.sender = %v, want mallory, the same sender .payload.sender.login names", got)
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -208,56 +208,106 @@ type Actor struct {
 	Author string
 }
 
-// forgeActorBody is the subset of a github/gitea payload the actor projection reads.
-type forgeActorBody struct {
-	Sender      *forgeLogin `json:"sender"`
-	Comment     *actorOwned `json:"comment"`
-	Review      *actorOwned `json:"review"`
-	PullRequest *actorOwned `json:"pull_request"`
-	Issue       *actorOwned `json:"issue"`
-}
-
-type actorOwned struct {
-	User *forgeLogin `json:"user"`
-}
-
-func (o *actorOwned) login() string {
-	if o == nil || o.User == nil {
-		return ""
+// Forge key paths the actor projection reads. authorPaths is in precedence order, most specific text
+// first.
+var (
+	senderPath  = []string{"sender", "login"}
+	authorPaths = [][]string{
+		{"comment", "user", "login"}, {"review", "user", "login"},
+		{"pull_request", "user", "login"}, {"issue", "user", "login"},
 	}
-	return o.User.Login
+)
+
+// exactString reads the string at path through nested objects, matching every key exactly. It
+// decodes into maps rather than structs on purpose. encoding/json matches struct fields
+// case-insensitively, but the envelope's .payload is decoded into map[string]any, which matches keys
+// exactly. Both resolve a duplicate key last-wins. Reading through maps keeps the projection and
+// .payload agreeing about who acted, so a body carrying both "sender" and "SENDER" cannot show a rule
+// one actor while the gate trusts another. ok is false when a step is present with the wrong type. A
+// missing or null step is absent: ("", true).
+func exactString(body []byte, path []string) (s string, ok bool) {
+	raw := json.RawMessage(body)
+	for _, k := range path {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) != nil {
+			return "", false
+		}
+		v, present := obj[k] // a nil map (JSON null) reads as absent
+		if !present {
+			return "", true
+		}
+		raw = v
+	}
+	if json.Unmarshal(raw, &s) != nil {
+		return "", false
+	}
+	return s, true
 }
 
-// ActorOf projects a verified body onto its actor. For github and gitea, sender is sender.login, and
-// author is the first present of comment.user.login, review.user.login, pull_request.user.login and
-// issue.user.login. For cairn, both are the signed actor_id; on_behalf_of is the sharing client's
-// self-reported name and is never used. Other sources have no projection and return nil.
+// firstString is the first non-empty exactString over paths. ok is false if any path probed on the
+// way has the wrong type, so a malformed body trusts no one rather than falling through to a later
+// path.
+func firstString(body []byte, paths [][]string) (string, bool) {
+	for _, p := range paths {
+		s, ok := exactString(body, p)
+		if !ok {
+			return "", false
+		}
+		if s != "" {
+			return s, true
+		}
+	}
+	return "", true
+}
+
+// ActorOf projects a verified body onto its actor. For github and gitea:
+//   - sender is sender.login;
+//   - author is the first present of comment.user.login, review.user.login, pull_request.user.login
+//     and issue.user.login.
+//
+// For cairn, sender and author are both the signed data.actor_id. on_behalf_of is the sharing
+// client's self-reported name and is never used. Keys match exactly (see exactString), and a body
+// the projection cannot read names no one, so the gate trusts no one. Other sources have no
+// projection and return nil.
 func ActorOf(source string, body []byte) *Actor {
 	switch source {
 	case "github", "gitea":
-		var p forgeActorBody
-		if json.Unmarshal(body, &p) != nil {
+		sender, ok1 := exactString(body, senderPath)
+		author, ok2 := firstString(body, authorPaths)
+		if !ok1 || !ok2 {
 			return &Actor{}
 		}
-		a := &Actor{}
-		if p.Sender != nil {
-			a.Sender = p.Sender.Login
-		}
-		for _, o := range []*actorOwned{p.Comment, p.Review, p.PullRequest, p.Issue} {
-			if l := o.login(); l != "" {
-				a.Author = l
-				break
-			}
-		}
-		return a
+		return &Actor{Sender: sender, Author: author}
 	case SourceCairn:
-		var p cairnSubjectBody
-		if json.Unmarshal(body, &p) != nil {
+		id, ok := exactString(body, []string{"data", "actor_id"})
+		if !ok {
 			return &Actor{}
 		}
-		return &Actor{Sender: p.Data.ActorID, Author: p.Data.ActorID}
+		return &Actor{Sender: id, Author: id}
 	}
 	return nil
+}
+
+// loginEqual compares forge logins with an ASCII-only case fold. GitHub and Gitea logins are ASCII
+// and compare case-insensitively. Unicode folding (strings.EqualFold) would also match look-alikes,
+// such as the Kelvin sign for "k", so every non-ASCII byte must match exactly.
+func loginEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }
 
 // ActorTrust is a delivery's actor with the trust gate's verdict: the .actor envelope field. Every
@@ -276,8 +326,9 @@ func (a *ActorTrust) IsTrusted() bool {
 }
 
 // EvaluateTrust runs the trust gate for a verified delivery (SPEC-0026 REQ-5 "Evaluation"). It
-// returns nil for a source with no actor projection (no gate). Logins compare case-insensitively and
-// actor ids exactly. When the body names no author, author_trusted equals sender_trusted.
+// returns nil for a source with no actor projection (no gate). Logins compare ASCII
+// case-insensitively, and actor ids compare exactly. When the body names no author, author_trusted
+// equals sender_trusted.
 func EvaluateTrust(source string, t TrustedActors, body []byte) *ActorTrust {
 	a := ActorOf(source, body)
 	if a == nil {
@@ -295,7 +346,7 @@ func EvaluateTrust(source string, t TrustedActors, body []byte) *ActorTrust {
 		if source == SourceCairn {
 			return slices.Contains(t.ActorIDs, name)
 		}
-		return slices.ContainsFunc(t.Logins, func(l string) bool { return strings.EqualFold(l, name) })
+		return slices.ContainsFunc(t.Logins, func(l string) bool { return loginEqual(l, name) })
 	}
 	sender := in(a.Sender)
 	author := sender
