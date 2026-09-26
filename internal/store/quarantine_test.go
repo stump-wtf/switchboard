@@ -170,6 +170,19 @@ func TestReleaseOntoALiveDuplicateConflicts(t *testing.T) {
 	}
 }
 
+// A held item is not work awaiting a claim: the Board's AwaitingClaim tile leaves it out.
+// Governing: SPEC-0026 REQ-6.
+func TestBoardStatsLeavesHeldItemsOutOfAwaitingClaim(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := seedEndpoint(t, s, ctx, "stats-held-owner", "q")
+	holdOn(t, s, ctx, owner)
+	seedPending(t, s, ctx, owner, "q", "ordinary")
+	b, err := s.BoardStats(ctx, ownerOf(t, s, ctx, owner))
+	if err != nil || b.AwaitingClaim != 1 || b.TotalTodos != 2 {
+		t.Fatalf("stats = %+v (%v), want 1 awaiting claim of 2 todos", b, err)
+	}
+}
+
 func TestReleaseMovesInPlaceAndFansOut(t *testing.T) {
 	s, ctx := testStore(t)
 	owner := seedEndpoint(t, s, ctx, "rel-owner", "q", "lane-m")

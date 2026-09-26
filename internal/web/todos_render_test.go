@@ -571,3 +571,31 @@ func TestTodoRowInsertPairForCreation(t *testing.T) {
 		}
 	}
 }
+
+// A held todo (queue quarantine) is the owner's to see, but never claimable work: the table row,
+// the drawer and the Board lane card offer no Claim, and the drawer points at the Quarantine view.
+// Governing: SPEC-0026 REQ-6 (never offered as claimable work), REQ-9.
+func TestHeldTodoOffersNoLifecycleControls(t *testing.T) {
+	h := newTestHandler(t)
+	held := store.TodoItem{Todo: store.Todo{ID: "td_held", Queue: store.QueueQuarantine, Source: "github", Kind: "issues",
+		State: "pending", CreatedAt: time.Now()}, TrustMode: "signed"}
+	row := todoRow{ID: held.ID, ShortID: "held", State: "pending", Held: true, CreatedAt: held.CreatedAt}
+	if out := renderFrag(t, h, "todo_row", row); strings.Contains(out, "/claim") || !strings.Contains(out, "data-sb-held") {
+		t.Errorf("held row offers a lifecycle control or no held marker: %q", out)
+	}
+	if out := renderFrag(t, h, "drawer", drawerView{Row: row}); strings.Contains(out, "/claim") || !strings.Contains(out, "Quarantine view") {
+		t.Errorf("held drawer offers Claim or no pointer to the Quarantine view: %q", out)
+	}
+	card := laneCardFromItem(held)
+	if !card.Held {
+		t.Fatal("lane card from a quarantine item is not marked held")
+	}
+	if out := renderFrag(t, h, "lane_card", card); strings.Contains(out, "/claim") {
+		t.Errorf("held lane card offers Claim: %q", out)
+	}
+	// An ordinary pending todo still does.
+	row.Held = false
+	if out := renderFrag(t, h, "todo_row", row); !strings.Contains(out, "/claim") {
+		t.Errorf("pending row lost its Claim: %q", out)
+	}
+}
