@@ -248,7 +248,7 @@ func TestCreateIntakeEventTodosFaultedSpendsTheSlot(t *testing.T) {
 	if err != nil || disp != DispositionFaulted || len(todos) != 0 {
 		t.Fatalf("faulted = (%d todos, %q, %v), want faulted with no todos", len(todos), disp, err)
 	}
-	ev, err := s.EventHistoryByID(ctx, evID)
+	ev, err := s.EventHistoryByID(ctx, callerOf(t, s, ctx, ep), evID)
 	if err != nil || ev.Disposition != DispositionFaulted || !sameJSON(t, ev.RoutingTrace, faultTrace) {
 		t.Fatalf("faulted event = %+v (%v), want disposition faulted and the fault trace", ev.EventHistoryItem, err)
 	}
@@ -276,7 +276,7 @@ func TestCreateIntakeEventTodosFaultedSpendsTheSlot(t *testing.T) {
 		t.Fatal("an unknown disposition was accepted")
 	}
 
-	items, err := s.ListEventHistory(ctx, EventHistoryFilter{Disposition: DispositionFaulted, Limit: 50})
+	items, err := s.ListEventHistory(ctx, callerOf(t, s, ctx, ep), EventHistoryFilter{Disposition: DispositionFaulted, Limit: 50})
 	if err != nil {
 		t.Fatalf("list faulted: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestRecordIntakeReportsTheRecordedOutcome(t *testing.T) {
 		again.Todos[0].New || again.Todos[0].Todo.ID != orig.Todos[0].Todo.ID {
 		t.Fatalf("faulting redelivery of a routed delivery = %+v (%v), want routed with its existing todo", again, err)
 	}
-	ev, err := s.EventHistoryByID(ctx, orig.EventID)
+	ev, err := s.EventHistoryByID(ctx, callerOf(t, s, ctx, ep), orig.EventID)
 	if err != nil || ev.Disposition != DispositionRouted || !sameJSON(t, ev.RoutingTrace, queueTrace) {
 		t.Fatalf("event = %+v (%v), want it still routed with its original trace", ev.EventHistoryItem, err)
 	}
