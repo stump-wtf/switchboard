@@ -43,6 +43,7 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_DEV_LOGIN` | off | Unauthenticated local login. Never in production. |
 | `SWITCHBOARD_METRICS_TOKEN` | — | Scrape token for `GET /metrics`. Unset, the endpoint answers `401` to everything. At least 32 bytes. See [Metrics](#metrics). |
 | `SWITCHBOARD_FRIENDING`, `SWITCHBOARD_PERSONAS`, `SWITCHBOARD_A2A`, `SWITCHBOARD_A2UI` | off | Advanced capabilities, hidden until switched on. |
+| `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT` | off | Set to `true` so a `complete` or `fail` with no `summary` stores the compact JSON of its `result` as the attempt summary. Later claimers then see it in `prior_attempts` and `get_todo`, so turn it on only if your clients' results are safe to show them. |
 
 One setting is easy to get wrong: **`SWITCHBOARD_BASE_URL` decides whether session cookies are
 marked `Secure`.** Switchboard sets that flag when the base URL starts with `https://`. Behind TLS,
