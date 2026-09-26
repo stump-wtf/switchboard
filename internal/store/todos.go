@@ -432,7 +432,11 @@ func (s *Store) RecordIntake(ctx context.Context, e EventInput, targetEndpointID
 				return IntakeResult{}, err
 			}
 			return IntakeResult{EventID: ev.ID, Todos: out, Disposition: prior}, nil
-		case withheld(prior) && !withheld(disp):
+		case withheld(prior):
+			// Whatever today's outcome is (routed, withheld, or held on quarantine), a delivery
+			// first recorded as dropped or faulted stays exactly that: a redelivery never turns
+			// it into work or into a quarantine item. This includes a delivery that faulted before
+			// the quarantine queue existed and faults again now.
 			disp, quarantine = prior, false
 		}
 	}
