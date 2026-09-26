@@ -43,7 +43,13 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_DEV_LOGIN` | off | Unauthenticated local login. Never in production. |
 | `SWITCHBOARD_METRICS_TOKEN` | — | Scrape token for `GET /metrics`. Unset, the endpoint answers `401` to everything. At least 32 bytes. See [Metrics](#metrics). |
 | `SWITCHBOARD_FRIENDING`, `SWITCHBOARD_PERSONAS`, `SWITCHBOARD_A2A`, `SWITCHBOARD_A2UI` | off | Advanced capabilities, hidden until switched on. |
-| `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT` | off | Set to `true` so a `complete` or `fail` with no `summary` stores the compact JSON of its `result` as the attempt summary. Later claimers then see it in `prior_attempts` and `get_todo`, so turn it on only if your clients' results are safe to show them. |
+| `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT` | off | Set to `true` so a `complete` or `fail` with no `summary` stores the compact JSON of its `result` as the attempt summary. Off because clients written before attempt history never expected anyone else to read `result`: turning it on replays it to every later claimer in `prior_attempts` and `get_todo`. See [Attempt history](/guides/attempt-history#summary-from-result). |
+
+A few limits live in the database's `settings` table rather than the environment: retention
+(`retention_max_age_days`, 30 by default, and `retention_max_rows`, 500000) and the per-todo attempt
+history cap (`attempt_history_max_per_todo`, 50 by default and never below 5). They are read while
+the service runs, so a change needs no restart. See
+[Attempt history](/guides/attempt-history#retention).
 
 One setting is easy to get wrong: **`SWITCHBOARD_BASE_URL` decides whether session cookies are
 marked `Secure`.** Switchboard sets that flag when the base URL starts with `https://`. Behind TLS,
@@ -343,6 +349,10 @@ scrape_configs:
     static_configs:
       - targets: ["switchboard.example.com"]
 ```
+
+`switchboard_todo_attempts_closed_total{queue,outcome}` counts how todo attempts end. Its
+`lease_expired` and `reaped` outcomes are deaths, and each also counts once in
+`switchboard_todo_leases_expired_total`. See [Attempt history](/guides/attempt-history#metrics).
 
 A series appears only once there is something to count. A counter nothing has incremented yet is
 absent rather than zero, because a zero and an unmeasured value look identical once scraped.

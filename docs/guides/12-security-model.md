@@ -95,6 +95,11 @@ What's on you:
 - **Write allowlists to fail closed.** Parameters aren't type-checked, and an erroring rule counts
   as no match, so a mistyped allowlist in a "drop the untrusted" rule would let everyone through.
   Read lists with `arrays`, as the cookbook does.
+- **Attempt summaries are data too.** The `summary`, `claimant` and `artifact` a worker leaves on an
+  attempt are handed to every later claimer of that todo, in `prior_attempts` and `get_todo`. They
+  were written by an earlier model, which may itself have read a hostile payload. Switchboard does
+  not scan them, so redact before you send: keep tokens, log excerpts and customer data out of a
+  summary. See [attempt history](/guides/attempt-history#summaries-are-data-never-instructions).
 - **A work order grants nothing.** `work_order` on a todo records the verified provenance that made
   it eligible. A worker should refuse a todo routed with work orders that has none, or whose
   `work_order.verified` isn't `true`, and still treat the task itself as untrusted.

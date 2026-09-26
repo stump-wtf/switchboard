@@ -72,6 +72,7 @@ stateDiagram-v2
   claimed --> claimed: heartbeat (lease extended)
   claimed --> done: complete
   claimed --> failed: fail
+  claimed --> pending: release
   claimed --> pending: lease expired
   failed --> pending: retry after backoff
   failed --> [*]: attempts exhausted (dead letter)
@@ -85,11 +86,14 @@ stateDiagram-v2
 - **Complete** acks it as `done`, with an optional `result` recording what you did.
 - **Fail** marks it `failed`, with an optional `result` recording why. Switchboard retries it
   automatically after a backoff that starts at 30 seconds and doubles up to 15 minutes.
+- **Release** hands a claimed todo back to `pending` without a verdict, for a worker that has to
+  stop. It costs no backoff.
 - **Lease expiry** puts a claimed todo back to `pending` for another worker, which is what makes a
   crashed or hung worker safe.
 - **Attempts** count claims. A todo allows 5. When the last attempt fails or its lease expires, the
   todo is **dead-lettered**: it stays `failed` and is not retried. A human can re-queue it with a
-  fresh budget from the **Todos** view (**Retry now**).
+  fresh budget from the **Todos** view (**Retry now**). Each attempt is recorded, and the next
+  claimer is shown the recent ones: see [Attempt history](/guides/attempt-history).
 
 Because a worker can crash after doing the work but before completing, delivery is
 **at-least-once**. Write workers so that doing a todo twice is harmless.

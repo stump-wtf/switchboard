@@ -95,6 +95,11 @@ anything.
 
 ## A todo keeps coming back
 
+Start with `get_todo` on it. Its attempts, newest first, say who claimed it and how each attempt
+ended. An attempt with `died: true` had its lease lapse with no report, so the worker never got as far
+as `complete` or `fail`. A run of `failed` attempts with summaries points at the work instead. See
+[died is not failed](/guides/attempt-history#died-is-not-failed).
+
 - **The lease expired.** Leases default to 300 seconds. Long work needs `heartbeat` (with
   `lease_ttl_seconds`) before the lease runs out, or a longer lease at `claim`.
 - **Every claim spends an attempt.** An attempt counts when the todo is claimed, not when it fails.
@@ -113,20 +118,19 @@ anything.
   at 30 seconds and doubles to a 15-minute cap. It will be worked again on its own.
 - **Dead-lettered.** The attempt budget is spent. Nothing re-queues it, and it waits for a human.
 
-`list_todos` returns no field that says which one a todo is in — there is no "next retry" time in its
-output — so a queue full of `failed` todos looks the same whether it is busy recovering or has
-quietly stopped. Tell them apart this way:
+Every todo row says which one it is:
 
-- **Compare `attempt` with `max_attempts`,** both of which every todo carries. `attempt` below
-  `max_attempts` means a retry is still coming; `attempt` equal to it means dead-lettered.
-- **Open the Todos view** for the definitive answer: a retrying todo shows a `↻ retry` countdown, and
-  a dead-lettered one says it was dead-lettered after N/M attempts and offers **Retry now**.
-- **Watch whether the count moves.** Retrying todos leave `failed` on their own within 15 minutes.
-  A `failed` count that never changes is dead letters, not work in progress.
+- **`dead_letter: true`** means nothing will re-queue it. It waits for **Retry now** on the Board.
+- **`next_retry_at`** is when a retrying todo goes back to `pending`. It is `null` whenever no retry
+  is scheduled, which includes every dead letter.
+
+`list_todos` with `{"state": "failed"}` returns both kinds, so read `dead_letter` rather than the
+state. The Todos view shows the same thing: a retrying todo has a `↻ retry` countdown, and a
+dead-lettered one says it was dead-lettered after N/M attempts and offers **Retry now**.
 
 Two things follow from this for anyone writing a worker or an alert. Don't treat `failed` as a
 terminal state, and don't count it as a queue-health signal on its own: the number that matters is
-how many todos are at their attempt ceiling.
+how many todos have `dead_letter: true`.
 
 ## Tool errors
 
@@ -134,7 +138,9 @@ how many todos are at their attempt ceiling.
 |---|---|
 | `forbidden: queue … not in this endpoint's scope` | The endpoint wasn't vended that queue. |
 | a tool is missing from the client's tool list | The endpoint wasn't granted it. Scope can't be widened; vend a new endpoint. |
-| `not_found` on `claim` or `complete` | The id is wrong, or the todo belongs to a different endpoint. |
+| `not_found` on `claim`, `complete` or `get_todo` | The id is wrong, the todo belongs to a different endpoint, or it is outside this endpoint's queues. |
+| `conflict` on `heartbeat`, `complete`, `fail` or `release` | The todo is not claimed, or its lease is not yours. On a [fenced](/guides/attempt-history#the-fence) attempt, the `lease_token` was missing or wrong. Sending a `lease_token` for an attempt that was not fenced is also `conflict`. |
+| `invalid` naming `artifact` | `artifact` must be an `mcp://cairn/<id>` handle or an absolute `https` URL of at most 512 bytes. Nothing changed; the todo is still claimed. |
 | `ceiling_exceeded` on `create_webhook` | The endpoint has used its webhook allowance. `list_webhooks` shows `ceiling.max` and `ceiling.used`. |
 | `forbidden_source_type` | The endpoint wasn't allowed that source type. CLI-vended endpoints allow only `generic`; use the web wizard for GitHub, Gitea, or Cairn. |
 | `list_todos` returns 50 when you asked for more | Ask for 200 or fewer. A larger limit is currently treated as the default. |
