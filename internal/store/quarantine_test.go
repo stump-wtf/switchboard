@@ -100,6 +100,43 @@ func TestWithheldRedeliveryIsNeverQuarantined(t *testing.T) {
 	}
 }
 
+// A delivery first recorded as routed stays routed when a redelivery would now be held (the author
+// fell off the trust list, a rule now faults, or a rule now quarantines): its todos already exist
+// and are reported back, and no held copy is minted beside the work already handed out. The original
+// routes to a fan-out target rather than the owner, so the held copy would not dedup onto it.
+// Governing: SPEC-0026 REQ-1, REQ-6.
+func TestRoutedRedeliveryIsNeverQuarantined(t *testing.T) {
+	s, ctx := testStore(t)
+	owner := seedEndpoint(t, s, ctx, "routed-owner", "q")
+	target := seedEndpoint(t, s, ctx, "routed-target", "q")
+	for _, tc := range []struct{ again, reason string }{
+		{DispositionQuarantined, "untrusted_actor"},
+		{DispositionFaulted, "rule_fault"},
+		{DispositionQuarantined, "rule_action"},
+	} {
+		key := fmt.Sprintf("routed-%d", heldSeq.Add(1))
+		ev := EventInput{Source: "github", Family: "webhook", EventType: "issues", ExternalID: key, TrustMode: "signed",
+			Verified: true, Payload: []byte(`{"n":1}`)}
+		p := CreateTodoParams{Queue: "q", Source: "github", Kind: "webhook", Title: "first", Payload: []byte(`{"n":1}`),
+			IdempotencyKey: key}
+		_, first, disp, err := s.CreateIntakeEventTodos(ctx, ev, []string{target}, p)
+		if err != nil || len(first) != 1 || disp != DispositionRouted {
+			t.Fatalf("first = %d todos, %s, %v", len(first), disp, err)
+		}
+		ev.Disposition = tc.again
+		p.QuarantineReason, p.QuarantineDetail = tc.reason, []byte(`{}`)
+		_, out, disp, err := s.CreateIntakeEventTodos(ctx, ev, []string{owner}, p)
+		if err != nil || disp != DispositionRouted || len(out) != 1 || out[0].New || out[0].Todo.ID != first[0].Todo.ID {
+			t.Fatalf("routed then %s/%s: %+v, %s, %v; want the original todo reported as routed", tc.again, tc.reason, out, disp, err)
+		}
+		var n int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM todos WHERE idempotency_key = $1 AND queue = $2`,
+			key, QueueQuarantine).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("routed then %s/%s: %d held todos (%v), want none", tc.again, tc.reason, n, err)
+		}
+	}
+}
+
 // Retention never deletes the event a pending quarantine item holds, by age or by row cap, so the
 // item stays releasable and counted; once the item is no longer held the event is prunable again.
 // An item whose event is gone anyway (older rows) is ErrHeldEventGone, not a generic failure.
