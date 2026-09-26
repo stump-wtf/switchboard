@@ -35,7 +35,8 @@ const QuarantineListCap = 200
 var ErrTrustListRefused = errors.New("store: the trust list refused the actor")
 
 // ListQuarantinedForHuman returns the open quarantine items (queue quarantine, state pending) on the
-// human's endpoints, newest first, each with the event it holds. limit is clamped to
+// human's endpoints, newest first, each with the event it holds and its webhook's trust
+// configuration. limit is clamped to
 // [1, QuarantineListCap]. Governing: SPEC-0026 REQ-9 (the owner scope's items only).
 func (s *Store) ListQuarantinedForHuman(ctx context.Context, ownerHumanID string, limit int) ([]QuarantinedItem, error) {
 	if limit <= 0 || limit > QuarantineListCap {
@@ -83,13 +84,59 @@ func (s *Store) ListQuarantinedForHuman(ctx context.Context, ownerHumanID string
 			return nil, fmt.Errorf("store: list quarantined events: %w", err)
 		}
 	}
+	trust, err := s.webhookTrustByID(ctx, events)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]QuarantinedItem, 0, len(todos))
 	for _, t := range todos {
 		it := QuarantinedItem{Todo: t}
 		if t.EventID != nil {
 			it.Event = events[*t.EventID]
 		}
+		// Only the webhook the held todo's endpoint owns counts, as WebhookForEndpoint reads it for
+		// the trust action itself.
+		if w, ok := trust[it.Event.WebhookID]; ok && w.endpointID == t.EndpointID {
+			it.Trust = &w.WebhookTrust
+		}
 		out = append(out, it)
+	}
+	return out, nil
+}
+
+type listedWebhookTrust struct {
+	WebhookTrust
+	endpointID string
+}
+
+// webhookTrustByID reads the trust configuration of the webhooks the listed events arrived on.
+func (s *Store) webhookTrustByID(ctx context.Context, events map[int64]EventHistoryDetail) (map[string]listedWebhookTrust, error) {
+	var ids []string
+	for _, ev := range events {
+		if isUUID(ev.WebhookID) && !slices.Contains(ids, ev.WebhookID) {
+			ids = append(ids, ev.WebhookID)
+		}
+	}
+	out := map[string]listedWebhookTrust{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id::text, endpoint_id::text, source_type, trusted_actors
+		FROM endpoint_webhooks WHERE id = ANY($1::uuid[])`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: list quarantined webhooks: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var w listedWebhookTrust
+		if err := rows.Scan(&id, &w.endpointID, &w.SourceType, &w.TrustedActors); err != nil {
+			return nil, fmt.Errorf("store: list quarantined webhooks: %w", err)
+		}
+		out[id] = w
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list quarantined webhooks: %w", err)
 	}
 	return out, nil
 }

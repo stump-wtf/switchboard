@@ -61,6 +61,17 @@ func CheckQueueNames(queues ...string) error {
 type QuarantinedItem struct {
 	Todo  Todo
 	Event EventHistoryDetail
+	// Trust is the receiving webhook's trust configuration, so the view can name exactly who
+	// "trust this actor" would add under the list's match mode. ListQuarantinedForHuman sets it; it
+	// is nil when the webhook is gone or no longer belongs to the held todo's endpoint.
+	Trust *WebhookTrust
+}
+
+// WebhookTrust is the part of a webhook that decides who trusting an actor adds: its source type and
+// its stored trusted_actors list (routing.DecodeTrustedActors reads it).
+type WebhookTrust struct {
+	SourceType    string
+	TrustedActors []byte
 }
 
 // QuarantinedForHuman returns one open quarantine item (queue quarantine, state pending) that the

@@ -57,6 +57,11 @@ func TestQuarantineViewReadsAreOwnerScoped(t *testing.T) {
 		if it.Event.WebhookID != whA.ID || string(it.Event.Payload) != `{"n":1}` {
 			t.Fatalf("item %s event = %+v, want the held delivery on %s", it.Todo.ID, it.Event, whA.ID)
 		}
+		// The receiving webhook's trust configuration rides along, so the view can name who
+		// "trust this actor" adds.
+		if it.Trust == nil || it.Trust.SourceType != "github" || len(it.Trust.TrustedActors) == 0 {
+			t.Fatalf("item %s trust = %+v, want the github webhook's trust list", it.Todo.ID, it.Trust)
+		}
 	}
 	if !slices.Equal(ids, []string{second.ID, first.ID}) {
 		t.Fatalf("list = %v, want the two open items newest first (%s, %s), without the discarded one", ids, second.ID, first.ID)
