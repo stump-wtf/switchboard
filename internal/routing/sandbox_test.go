@@ -49,7 +49,7 @@ func onlySandboxFault(t *testing.T, d Decision) RuleFault {
 // The child is the production path: its decision must be identical to in-process evaluation.
 func TestSandboxAgreesWithInProcess(t *testing.T) {
 	cfg := Config{Rules: []Rule{
-		rule("err", `.artifact.title | error`, Action{Drop: true}),
+		rule("miss", `.artifact.title == "nope"`, Action{Drop: true}),
 		rule("handoff", `.artifact.title | startswith("[handoff:")`, Action{Queue: "handoff", Endpoints: []string{epC}}),
 	}, Default: &Action{Drop: true}}
 	in := cairnInput(cairnBody)
@@ -60,6 +60,35 @@ func TestSandboxAgreesWithInProcess(t *testing.T) {
 	}
 	if got.Queue != "handoff" || !slices.Equal(got.Endpoints, []string{epC}) {
 		t.Fatalf("decision = %+v, want handoff on %s", got, epC)
+	}
+}
+
+// A rule fault inside the child faults the delivery exactly as in-process evaluation does: the
+// child reports the fault, and the parent never routes past it (SPEC-0026 REQ-1).
+func TestSandboxFaultAgreesWithInProcess(t *testing.T) {
+	cfg := Config{Rules: []Rule{
+		rule("err", `.artifact.title | error`, Action{Drop: true}),
+		rule("handoff", `.artifact.title | startswith("[handoff:")`, Action{Queue: "handoff", Endpoints: []string{epC}}),
+	}, Default: &Action{Queue: "inbox"}}
+	in := cairnInput(cairnBody)
+	got := testSandbox(t).Route(context.Background(), cfg, grant(), in)
+	want := InProcess{}.Route(context.Background(), cfg, grant(), in)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sandbox decision differs from in-process:\n got %+v\nwant %+v", got, want)
+	}
+	assertFaulted(t, got, "err", 0, FaultError)
+}
+
+// Without a sandbox, a webhook with rules is Unavailable (the receiver answers 503) and one without
+// rules routes as it always did (SPEC-0026 REQ-2).
+func TestUnavailableRouter(t *testing.T) {
+	d := Unavailable{}.Route(context.Background(), Config{Rules: []Rule{rule("ok", `true`, Action{Queue: "forge"})}}, grant(), cairnInput(`{}`))
+	if !d.Unavailable || d.Queue != "" || len(d.Endpoints) != 0 {
+		t.Fatalf("decision = %+v, want Unavailable with no route", d)
+	}
+	none := Unavailable{}.Route(context.Background(), Config{}, grant(), cairnInput(`{}`))
+	if none.Unavailable || none.Queue != "inbox" {
+		t.Fatalf("no-rules decision = %+v, want the target queue", none)
 	}
 }
 
@@ -75,7 +104,7 @@ func TestSandboxWithoutRulesNeverStartsAChild(t *testing.T) {
 }
 
 // A single allocation of a gigabyte, and a doubling pipe chain, are both contained: the child dies
-// at its memory limit and the delivery takes the default, recorded as a sandbox fault.
+// at its memory limit (or the rule times out first), and the delivery is faulted at the bomb rule.
 func TestSandboxContainsMemoryBombs(t *testing.T) {
 	for name, expr := range map[string]string{
 		"repeat":   `("x" * 1e9) | length > 0`,
@@ -86,40 +115,26 @@ func TestSandboxContainsMemoryBombs(t *testing.T) {
 			start := time.Now()
 			// A 5s deadline (rather than testSandbox's 20s) keeps "contained" meaning contained: a child
 			// stalled by cgroup memory pressure (seen at 10.7s in a 768 MiB container) is killed by the
-			// parent well inside the 10s bound below, and lands as a sandbox fault.
+			// parent well inside the 10s bound below, and lands as a timeout of the bomb rule.
 			d := testSandbox(t, WithChildMemBytes(64<<20), WithDeadline(5*time.Second)).Route(context.Background(), cfg, grant(), cairnInput(cairnBody))
 			if elapsed := time.Since(start); elapsed > 10*time.Second {
 				t.Fatalf("bomb took %v to contain", elapsed)
 			}
-			// Two containment outcomes are both correct, and which one wins is a scheduling race inside
-			// the child: the watchdog kills the child (a sandbox-level fault, default routing), or the
-			// bomb rule's own timeout fires first and it is recorded as a faulted no-match before the
-			// next rule matches. What must never happen is the bomb rule matching (its drop) or the
-			// evaluation escaping the child's bounds.
-			if d.Drop {
-				t.Fatalf("decision = %+v, the bomb rule must never match", d)
+			// Which containment wins is a scheduling race inside the child: the watchdog kills it at the
+			// memory limit, or the bomb rule's own timeout fires first. Either way the delivery is
+			// FAULTED AT THE BOMB RULE, the same disposition on every run: a child killed while running
+			// a rule faults that rule rather than making the delivery Unavailable, which would answer
+			// 503 forever for a delivery the rule can never evaluate. Nothing routes: not the bomb's
+			// drop, not the next rule, not the default (SPEC-0026 REQ-1, REQ-2).
+			if d.Drop || d.Queue != "" || len(d.Endpoints) != 0 {
+				t.Fatalf("decision = %+v, a contained bomb must route nowhere", d)
 			}
-			if len(d.Trace.Faults) == 0 {
-				t.Fatalf("decision = %+v, want the bomb recorded as a fault", d)
+			if !d.Faulted || d.Unavailable || d.Fault == nil || len(d.Trace.Faults) != 1 {
+				t.Fatalf("decision = %+v, want Faulted with exactly one fault", d)
 			}
-			switch f := d.Trace.Faults[0]; {
-			case f.RuleIndex == -1 && f.Cause == FaultSandbox:
-				if d.Queue != "inbox" || d.Trace.Cause != CauseNoMatch {
-					t.Fatalf("killed child decision = %+v, want default routing", d)
-				}
-			case f.RuleID == "bomb" && (f.Cause == FaultTimeout || f.Cause == FaultError):
-				// A single uninterruptible builtin can outlive its own RuleTimeout and eat what is left
-				// of the event budget, which starves the rules behind it. Whether "ok" still gets to run
-				// is load-dependent; both landings are contained. What matters is that the bomb never
-				// routed: the next rule (forge) or the default (inbox), nothing else.
-				if d.Queue == "forge" && d.Trace.RuleID != "ok" {
-					t.Fatalf("faulted bomb decision = %+v, want the next rule to match", d)
-				}
-				if d.Queue != "forge" && d.Queue != "inbox" {
-					t.Fatalf("faulted bomb decision = %+v, want forge or the default", d)
-				}
-			default:
-				t.Fatalf("faults = %+v, want a sandbox failure or a faulted bomb rule", d.Trace.Faults)
+			if f := *d.Fault; f.RuleID != "bomb" || f.RuleIndex != 0 ||
+				(f.Cause != FaultTimeout && f.Cause != FaultError && f.Cause != FaultBudgetExhausted) {
+				t.Fatalf("fault = %+v, want the bomb rule faulted by its limits", f)
 			}
 		})
 	}
@@ -159,14 +174,14 @@ func TestSandboxDeadlineKillsTheChild(t *testing.T) {
 	if f := onlySandboxFault(t, d); f.Cause != FaultSandbox || !strings.Contains(f.Detail, "deadline") {
 		t.Fatalf("fault = %+v, want a deadline sandbox failure", f)
 	}
-	if d.Queue != "inbox" {
-		t.Fatalf("decision = %+v, want default routing", d)
+	if !d.Unavailable || d.Queue != "" {
+		t.Fatalf("decision = %+v, want Unavailable with no route", d)
 	}
 }
 
-// With every slot taken, a delivery waits briefly and then routes by default instead of queueing
-// unboundedly behind other tenants' evaluations.
-func TestSandboxBusyRoutesByDefault(t *testing.T) {
+// With every slot taken, a delivery waits briefly and is then refused as Unavailable (the producer
+// retries), instead of queueing unboundedly behind other tenants' evaluations or routing by default.
+func TestSandboxBusyIsUnavailable(t *testing.T) {
 	s := testSandbox(t, WithMaxChildren(1))
 	s.queueWait = 20 * time.Millisecond
 	s.slots <- struct{}{}
@@ -174,6 +189,9 @@ func TestSandboxBusyRoutesByDefault(t *testing.T) {
 	d := s.Route(context.Background(), Config{Rules: []Rule{rule("ok", `true`, Action{Queue: "forge"})}}, grant(), cairnInput(`{}`))
 	if f := onlySandboxFault(t, d); f.Cause != FaultSandboxBusy {
 		t.Fatalf("fault = %+v, want %s", f, FaultSandboxBusy)
+	}
+	if !d.Unavailable || d.Queue != "" {
+		t.Fatalf("decision = %+v, want Unavailable with no route", d)
 	}
 }
 
@@ -204,11 +222,155 @@ func TestChildEnvironIsMinimal(t *testing.T) {
 	}
 }
 
-// Decide trusts only the caller's config: an out-of-range index from a broken evaluator is ignored.
-func TestDecideIgnoresOutOfRangeIndex(t *testing.T) {
+// Decide trusts only the caller's config: an out-of-range index from a broken evaluator is never
+// followed, and never falls back to the default either. It is Unavailable.
+func TestDecideRefusesOutOfRangeIndex(t *testing.T) {
 	bad := 7
 	d := Decide(Config{Rules: []Rule{rule("only", `true`, Action{Drop: true})}}, grant(), MatchResult{RuleIndex: &bad})
-	if d.Drop || d.Queue != "inbox" {
-		t.Fatalf("decision = %+v, want the default for an out-of-range index", d)
+	if d.Drop || d.Queue != "" || !d.Unavailable {
+		t.Fatalf("decision = %+v, want Unavailable for an out-of-range index", d)
+	}
+}
+
+// childOut builds what a child wrote, stamping each line's arrival at the given offset from t0.
+func childOut(t0 time.Time, lines ...any) *childOutput {
+	out := &childOutput{limit: maxChildResponseBytes}
+	_, _ = out.Write([]byte(childMagic))
+	for i := 0; i < len(lines); i += 2 {
+		_, _ = out.Write([]byte(lines[i].(string)))
+		out.marks[len(out.marks)-1].at = t0.Add(lines[i+1].(time.Duration))
+	}
+	return out
+}
+
+// classifyChild pins which dead children fault the rule they were running (the delivery is
+// recorded as faulted) and which make the delivery Unavailable (503, the producer retries). A kill
+// that is a property of the rule and the payload must never be a 503: it would fail the same way on
+// every retry, and nothing would ever record it (SPEC-0026 REQ-1, REQ-2).
+func TestClassifyChildAttributesKillsToTheRunningRule(t *testing.T) {
+	t0 := time.Now()
+	deadline := t0.Add(2 * time.Second)
+	cases := []struct {
+		name      string
+		out       *childOutput
+		end       childEnd
+		wantRule  int // -1: a sandbox fault (Unavailable)
+		wantCause string
+	}{
+		{"memory kill mid-rule faults that rule",
+			childOut(t0, "@0\n", 10*time.Millisecond, "@1\n", 20*time.Millisecond), childEnd{memory: true}, 1, FaultBudgetExhausted},
+		{"memory kill before any rule is the sandbox",
+			childOut(t0), childEnd{memory: true}, -1, FaultSandbox},
+		{"deadline long after the rule started is its timeout",
+			childOut(t0, "@0\n", 100*time.Millisecond), childEnd{deadline: deadline}, 0, FaultTimeout},
+		{"deadline soon after the rule started is the host being slow",
+			childOut(t0, "@0\n", 1900*time.Millisecond), childEnd{deadline: deadline}, -1, FaultSandbox},
+		{"deadline before any rule is the host being slow",
+			childOut(t0), childEnd{deadline: deadline}, -1, FaultSandbox},
+		{"a partial line from a killed child is ignored",
+			childOut(t0, "@0\n", 10*time.Millisecond, "@", 20*time.Millisecond), childEnd{memory: true}, 0, FaultBudgetExhausted},
+		{"a rule index out of range is not trusted",
+			childOut(t0, "@5\n", 10*time.Millisecond), childEnd{memory: true}, -1, FaultSandbox},
+		{"a rule index out of order is not trusted",
+			childOut(t0, "@1\n", 10*time.Millisecond, "@0\n", 20*time.Millisecond), childEnd{memory: true}, -1, FaultSandbox},
+		{"any other failure is the sandbox",
+			childOut(t0, "@0\n", 10*time.Millisecond), childEnd{failed: true}, -1, FaultSandbox},
+		{"a clean exit with no result is the sandbox",
+			childOut(t0, "@0\n", 10*time.Millisecond), childEnd{}, -1, FaultSandbox},
+		{"output past the result is not trusted",
+			childOut(t0, "={}\n", 10*time.Millisecond, "@0\n", 20*time.Millisecond), childEnd{}, -1, FaultSandbox},
+	}
+	cfg := Config{Rules: []Rule{rule("first", `false`, Action{Drop: true}), rule("second", `true`, Action{Queue: "forge"})}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := classifyChild(tc.out, tc.end, len(cfg.Rules))
+			if len(m.Faults) != 1 || m.Faults[0].RuleIndex != tc.wantRule || m.Faults[0].Cause != tc.wantCause {
+				t.Fatalf("result = %+v, want one fault at rule %d with cause %s", m, tc.wantRule, tc.wantCause)
+			}
+			d := Decide(cfg, grant(), m)
+			if tc.wantRule >= 0 && (!d.Faulted || d.Unavailable || d.Fault.RuleID != cfg.Rules[tc.wantRule].ID) {
+				t.Fatalf("decision = %+v, want Faulted at %s", d, cfg.Rules[tc.wantRule].ID)
+			}
+			if tc.wantRule < 0 && !d.Unavailable {
+				t.Fatalf("decision = %+v, want Unavailable", d)
+			}
+		})
+	}
+
+	// A clean result is taken as is.
+	m := classifyChild(childOut(t0, "@0\n", time.Millisecond, "@1\n", 2*time.Millisecond, `={"rule_index":1}`+"\n", 3*time.Millisecond), childEnd{}, 2)
+	if m.RuleIndex == nil || *m.RuleIndex != 1 || len(m.Faults) != 0 {
+		t.Fatalf("clean result = %+v, want a match at rule 1", m)
+	}
+}
+
+// The child announces each rule before running it, and only then its result, so a parent that
+// sees the child die knows which rule it was in.
+func TestRunChildAnnouncesEachRule(t *testing.T) {
+	req := `{"rules":[{"id":"a","expr":"false","action":{"drop":true}},{"id":"b","expr":"true","action":{"queue":"forge"}}],` +
+		`"input":{"source":"cairn","trust_mode":"signed","verified":true,"webhook_id":"wh-1","body":"e30="}}`
+	var out strings.Builder
+	if code := runChild(strings.NewReader(req), &out, 1<<40); code != 0 {
+		t.Fatalf("runChild exit = %d", code)
+	}
+	want := childMagic + "@0\n@1\n" + `={"rule_index":1}` + "\n"
+	if out.String() != want {
+		t.Fatalf("child output = %q, want %q", out.String(), want)
+	}
+}
+
+// One tenant cannot hold every evaluation slot. With two slots, a tenant whose evaluation is stuck
+// (here: holding a slot directly) and whose next delivery is waiting still leaves the other slot to
+// a second tenant, whose delivery routes. Only the busy tenant's own delivery is refused as busy
+// (ADR-0038 F5, SPEC-0026 REQ-2).
+func TestSandboxBusyTenantDoesNotStarveAnother(t *testing.T) {
+	s := testSandbox(t, WithMaxChildren(2))
+	s.queueWait = 50 * time.Millisecond
+	ctx := context.Background()
+
+	holdA, ok := s.acquire(ctx, "tenant-a")
+	if !ok {
+		t.Fatal("tenant a could not take its first slot")
+	}
+	cfg := Config{Rules: []Rule{rule("ok", `true`, Action{Queue: "forge"})}}
+
+	a := grant()
+	a.Tenant = "tenant-a"
+	if f := onlySandboxFault(t, s.Route(ctx, cfg, a, cairnInput(`{}`))); f.Cause != FaultSandboxBusy {
+		t.Fatalf("tenant a's second delivery fault = %+v, want %s: a tenant holds at most its share", f, FaultSandboxBusy)
+	}
+
+	b := grant()
+	b.Tenant = "tenant-b"
+	if d := s.Route(ctx, cfg, b, cairnInput(`{}`)); d.Unavailable || d.Queue != "forge" {
+		t.Fatalf("tenant b's delivery = %+v, want it routed while tenant a is busy", d)
+	}
+
+	holdA()
+	s.mu.Lock()
+	left := len(s.tenants)
+	s.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d tenant shares left after every slot was released, want 0", left)
+	}
+}
+
+// Without an owner, the webhook is the tenant, so two unowned webhooks still share fairly.
+func TestSandboxTenantDefaultsToTheWebhook(t *testing.T) {
+	s := testSandbox(t, WithMaxChildren(2))
+	s.queueWait = 50 * time.Millisecond
+	hold, ok := s.acquire(context.Background(), "webhook:wh-1")
+	if !ok {
+		t.Fatal("could not take a slot")
+	}
+	defer hold()
+	cfg := Config{Rules: []Rule{rule("ok", `true`, Action{Queue: "forge"})}}
+	if f := onlySandboxFault(t, s.Route(context.Background(), cfg, grant(), cairnInput(`{}`))); f.Cause != FaultSandboxBusy {
+		t.Fatalf("fault = %+v, want %s for the same webhook", f, FaultSandboxBusy)
+	}
+	other := cairnInput(`{}`)
+	other.WebhookID = "wh-2"
+	if d := s.Route(context.Background(), cfg, grant(), other); d.Unavailable {
+		t.Fatalf("another webhook's delivery = %+v, want it routed", d)
 	}
 }

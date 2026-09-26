@@ -139,9 +139,13 @@ What's on you:
 - **Labels, tags, and `on_behalf_of` are not provenance.** Anyone who can label an issue or tag an
   artifact controls them. They can choose a queue among deliveries you already trust, never decide
   that a delivery is trusted. Cairn's `on_behalf_of` is the sharing client's self-reported name.
-- **Write allowlists to fail closed.** Parameters aren't type-checked, and an erroring rule counts
-  as no match, so a mistyped allowlist in a "drop the untrusted" rule would let everyone through.
-  Read lists with `arrays`, as the cookbook does.
+- **Routing fails closed.** A rule that errors, times out, or runs out of budget stops
+  evaluation, and the delivery is recorded as `faulted` and routed nowhere. A mistyped allowlist
+  in a "drop the untrusted" rule therefore admits no one rather than everyone. `params` are
+  type-checked, and a save whose rules fault on the webhook's recent deliveries is refused. A
+  sandbox that cannot run at all refuses deliveries with `503` instead of routing them by
+  default. Still read lists with `arrays`, as the cookbook does, so a missing list evaluates
+  cleanly instead of faulting.
 - **A work order grants nothing.** `work_order` on a todo records the verified provenance that made
   it eligible. A worker should refuse a todo routed with work orders that has none, or whose
   `work_order.verified` isn't `true`, and still treat the task itself as untrusted.

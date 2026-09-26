@@ -39,6 +39,9 @@ type WebhookRouting struct {
 	TargetQueue   string
 	WebhookQueues []string
 	Config        routing.Config
+	// OwnerHumanID is the human who owns the webhook (through its endpoint's agent). The routing
+	// sandbox shares its evaluation slots fairly across owners (ADR-0038 F5).
+	OwnerHumanID string
 }
 
 // webhookRoutingSelect projects a webhook's routing row and computes the owner's allowed webhook
@@ -62,7 +65,7 @@ const webhookRoutingSelect = `
 		       ) granted
 		       WHERE q IS NOT NULL
 	       ), '{}'),
-	       w.routing_rules, w.default_action, w.routing_params
+	       w.routing_rules, w.default_action, w.routing_params, a.owner_human_id::text
 	FROM endpoint_webhooks w
 	JOIN endpoints e ON e.id = w.endpoint_id
 	JOIN agents a ON a.id = e.agent_id`
@@ -71,7 +74,7 @@ func scanWebhookRouting(row pgx.Row) (WebhookRouting, error) {
 	var wr WebhookRouting
 	var rules, def, params []byte
 	err := row.Scan(&wr.WebhookID, &wr.EndpointID, &wr.SourceType, &wr.TrustMode, &wr.TargetQueue,
-		&wr.WebhookQueues, &rules, &def, &params)
+		&wr.WebhookQueues, &rules, &def, &params, &wr.OwnerHumanID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WebhookRouting{}, ErrNotFound
 	}
@@ -215,4 +218,30 @@ func (s *Store) EventForWebhook(ctx context.Context, eventID int64, webhookID st
 		return EventHistoryDetail{}, ErrNotFound
 	}
 	return scanEventDetail(s.pool.QueryRow(ctx, eventDetailSelect+` WHERE id = $1 AND webhook_id = $2`, eventID, webhookID))
+}
+
+// RecentWebhookEvents returns up to limit of webhookID's most recent stored deliveries, newest first,
+// with the full record a dry-run needs (headers, payload). The caller has already established
+// ownership of webhookID. It serves the save-time dry-run (SPEC-0026 REQ-3), which must run BEFORE
+// UpdateWebhookRouting takes its row lock: a pooled read inside that lock deadlocks the pool under
+// concurrent rule edits (see mcp/webhook_rules.go). idx_events_webhook covers the scan.
+func (s *Store) RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]EventHistoryDetail, error) {
+	if !isUUID(webhookID) || limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, eventDetailSelect+`
+		WHERE webhook_id = $1 ORDER BY received_at DESC, id DESC LIMIT $2`, webhookID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: recent webhook events: %w", err)
+	}
+	defer rows.Close()
+	var out []EventHistoryDetail
+	for rows.Next() {
+		e, err := scanEventDetail(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: recent webhook events scan: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

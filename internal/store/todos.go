@@ -291,44 +291,119 @@ func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpoi
 	return id, out, err
 }
 
-// CreateRoutedEventTodos is CreateEventTodos with the routing stage's outcome applied (SPEC-0020).
-// When drop is true — or when this delivery is a redelivery of one that was ALREADY dropped — the
-// event row is recorded (with its routing trace, spending its (source, external_id) dedup slot) and
-// the transaction commits with no todo, no todo hook, and no doorbell. The stickiness is what keeps
-// the dedup contract routing-independent: a producer redelivering a dropped event after the owner
-// edited the rules does not get it re-processed into work. The returned bool reports that outcome.
-// Governing: SPEC-0020 REQ "Drop Action Semantics", design "Drop semantics: spend the dedup slot,
-// keep the receipt"; ADR-0024.
+// CreateRoutedEventTodos is CreateIntakeEventTodos with a drop flag: drop true records the delivery
+// as dropped unless e.Disposition already names a withheld outcome. The returned bool reports that
+// the delivery was withheld (dropped or faulted, now or by its original delivery), so no todo was
+// minted. Governing: SPEC-0020 REQ "Drop Action Semantics", design "Drop semantics: spend the dedup
+// slot, keep the receipt"; ADR-0024.
 func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop bool, targetEndpointIDs []string, p CreateTodoParams) (int64, []CreatedTodo, bool, error) {
-	if !drop && len(targetEndpointIDs) == 0 {
-		return 0, nil, false, fmt.Errorf("store: CreateEventTodos requires at least one target endpoint")
+	if drop && e.Disposition == "" {
+		e.Disposition = DispositionDropped
+	}
+	id, out, disp, err := s.CreateIntakeEventTodos(ctx, e, targetEndpointIDs, p)
+	return id, out, withheld(disp), err
+}
+
+// Event dispositions (events.disposition, migration 0022). Governing: SPEC-0026 "Disposition".
+const (
+	DispositionRouted      = "routed"
+	DispositionDropped     = "dropped"
+	DispositionFaulted     = "faulted"
+	DispositionQuarantined = "quarantined"
+)
+
+// withheld reports whether a disposition records the delivery without minting work.
+func withheld(disposition string) bool {
+	return disposition == DispositionDropped || disposition == DispositionFaulted
+}
+
+// CreateIntakeEventTodos records a verified delivery with the outcome intake decided for it,
+// e.Disposition (empty means routed), and mints its todos when that outcome is routed. It returns
+// the disposition that actually applies, which is the one on the event row. For a redelivery that is
+// always the disposition the ORIGINAL delivery recorded.
+//
+// A dropped or faulted delivery is recorded (with its trace, spending its (source, external_id)
+// dedup slot) and commits with no todo, no todo hook and no doorbell. A fault spends the slot
+// exactly as a drop does (SPEC-0026 REQ-1). The stickiness keeps the dedup contract independent of
+// routing: a producer redelivering a withheld event after the owner edited the rules does not get it
+// re-processed into work.
+// Governing: SPEC-0020 REQ "Drop Action Semantics"; SPEC-0026 REQ-1 "Faults Stop Evaluation";
+// ADR-0024, ADR-0031.
+func (s *Store) CreateIntakeEventTodos(ctx context.Context, e EventInput, targetEndpointIDs []string, p CreateTodoParams) (int64, []CreatedTodo, string, error) {
+	r, err := s.RecordIntake(ctx, e, targetEndpointIDs, p)
+	return r.EventID, r.Todos, r.Disposition, err
+}
+
+// IntakeResult is what recording one delivery did.
+type IntakeResult struct {
+	EventID int64
+	Todos   []CreatedTodo
+	// Disposition is the outcome recorded on the event row, which is the one that applies. For a
+	// redelivery that is always the ORIGINAL delivery's: a withheld original stays withheld, and a
+	// routed original stays routed (reporting its existing todos) even when today's rules would
+	// withhold it.
+	Disposition string
+	// Inserted reports that this call recorded the event. It is false for a redelivery, so a caller
+	// counts and logs an outcome once per delivery rather than once per retry.
+	Inserted bool
+}
+
+// RecordIntake is CreateIntakeEventTodos with the whole result, including whether this call
+// recorded the event. See CreateIntakeEventTodos for the semantics.
+// Governing: SPEC-0026 REQ-1 (each faulted delivery counted and logged once).
+func (s *Store) RecordIntake(ctx context.Context, e EventInput, targetEndpointIDs []string, p CreateTodoParams) (IntakeResult, error) {
+	if e.Disposition == "" {
+		e.Disposition = DispositionRouted
+	}
+	disp := e.Disposition
+	if disp != DispositionRouted && !withheld(disp) {
+		return IntakeResult{}, fmt.Errorf("store: unsupported intake disposition %q", disp)
+	}
+	if !withheld(disp) && len(targetEndpointIDs) == 0 {
+		return IntakeResult{}, fmt.Errorf("store: CreateEventTodos requires at least one target endpoint")
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, nil, false, err
+		return IntakeResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	ev, inserted, err := insertEvent(ctx, tx, e)
 	if err != nil {
-		return 0, nil, false, err
+		return IntakeResult{}, err
 	}
-	if !inserted && !drop {
-		// The first routing decision recorded for a delivery is the one that counts for a drop.
-		if err := tx.QueryRow(ctx,
-			`SELECT COALESCE((routing_trace->'action'->>'drop')::boolean, false) FROM events WHERE id = $1`, ev.ID,
-		).Scan(&drop); err != nil {
-			return 0, nil, false, fmt.Errorf("store: read prior routing: %w", err)
+	if !inserted {
+		// The first intake outcome recorded for a delivery is the one that applies to every
+		// redelivery of it. A withheld original stays withheld. A routed original stays routed even
+		// when today's rules would withhold it: its todos already exist, so they are reported as the
+		// idempotent redelivery they are, and nothing claims a fault or a drop the event row does not
+		// record.
+		var prior string
+		if err := tx.QueryRow(ctx, `SELECT disposition FROM events WHERE id = $1`, ev.ID).Scan(&prior); err != nil {
+			return IntakeResult{}, fmt.Errorf("store: read prior disposition: %w", err)
+		}
+		if !withheld(prior) && withheld(disp) {
+			out, err := eventTodos(ctx, tx, ev.ID)
+			if err != nil {
+				return IntakeResult{}, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return IntakeResult{}, err
+			}
+			return IntakeResult{EventID: ev.ID, Todos: out, Disposition: prior}, nil
+		}
+		if withheld(prior) {
+			disp = prior
 		}
 	}
-	if drop {
+	if withheld(disp) {
 		if err := tx.Commit(ctx); err != nil {
-			return 0, nil, false, err
+			return IntakeResult{}, err
 		}
 		if inserted {
 			s.fireEventHook(ev)
 		}
-		return ev.ID, nil, true, nil
+		return IntakeResult{EventID: ev.ID, Disposition: disp, Inserted: inserted}, nil
 	}
 	if p.OnceKey != "" {
 		// At-most-once work orders (ADR-0025). The first delivery to claim (webhook, key) mints the
@@ -338,7 +413,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 		// re-mints them, even after they are done. The conflict update is a no-op that lets RETURNING
 		// hand back the claiming event either way.
 		if e.WebhookID == "" {
-			return 0, nil, false, fmt.Errorf("store: a once key needs the delivery's webhook")
+			return IntakeResult{}, fmt.Errorf("store: a once key needs the delivery's webhook")
 		}
 		// A redelivery must claim with the key its ORIGINAL delivery claimed, recorded in the
 		// event's routing trace — never the freshly-evaluated one. Between the two arrivals the
@@ -353,7 +428,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 			if err := tx.QueryRow(ctx,
 				`SELECT COALESCE(routing_trace->>'once_key', '') FROM events WHERE id = $1`, ev.ID,
 			).Scan(&stored); err != nil {
-				return 0, nil, false, fmt.Errorf("store: read prior once key: %w", err)
+				return IntakeResult{}, fmt.Errorf("store: read prior once key: %w", err)
 			}
 			if stored == "" {
 				stored = p.OnceKey
@@ -367,7 +442,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 				INSERT INTO routing_once (webhook_id, once_key, event_id) VALUES ($1, $2, $3)
 				ON CONFLICT (webhook_id, once_key) DO UPDATE SET once_key = EXCLUDED.once_key
 				RETURNING event_id`, e.WebhookID, claimKey, ev.ID).Scan(&claimedBy); err != nil {
-				return 0, nil, false, fmt.Errorf("store: claim once key: %w", err)
+				return IntakeResult{}, fmt.Errorf("store: claim once key: %w", err)
 			}
 			switch {
 			case claimedBy == nil || *claimedBy != ev.ID:
@@ -375,25 +450,25 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 					if _, err := tx.Exec(ctx, `UPDATE events
 						SET routing_trace = COALESCE(routing_trace, '{}'::jsonb) || '{"once":"repeat"}'::jsonb
 						WHERE id = $1`, ev.ID); err != nil {
-						return 0, nil, false, fmt.Errorf("store: mark once repeat: %w", err)
+						return IntakeResult{}, fmt.Errorf("store: mark once repeat: %w", err)
 					}
 				}
 				if err := tx.Commit(ctx); err != nil {
-					return 0, nil, false, err
+					return IntakeResult{}, err
 				}
 				if inserted {
 					s.fireEventHook(ev)
 				}
-				return ev.ID, nil, false, nil
+				return IntakeResult{EventID: ev.ID, Disposition: DispositionRouted, Inserted: inserted}, nil
 			case !inserted:
 				out, err := eventTodos(ctx, tx, ev.ID)
 				if err != nil {
-					return 0, nil, false, err
+					return IntakeResult{}, err
 				}
 				if err := tx.Commit(ctx); err != nil {
-					return 0, nil, false, err
+					return IntakeResult{}, err
 				}
-				return ev.ID, out, false, nil
+				return IntakeResult{EventID: ev.ID, Todos: out, Disposition: DispositionRouted}, nil
 			}
 		}
 		// A redelivery whose original delivery never claimed (p.OnceKey cleared above) falls
@@ -417,12 +492,12 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 		tp.EndpointID = epID
 		t, wasNew, err := createTodo(ctx, tx, tp)
 		if err != nil {
-			return 0, nil, false, err
+			return IntakeResult{}, err
 		}
 		out = append(out, CreatedTodo{Todo: t, New: wasNew})
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, nil, false, err
+		return IntakeResult{}, err
 	}
 	// Hooks fire only after the durable commit, event before todos, mirroring the Board's
 	// lifecycle order. Governing: SPEC-0015 REQ "Patch Panel Board".
@@ -448,7 +523,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 			s.fireDoorbell(ct.Todo)
 		}
 	}
-	return ev.ID, out, false, nil
+	return IntakeResult{EventID: ev.ID, Todos: out, Disposition: DispositionRouted, Inserted: inserted}, nil
 }
 
 // createTodo is the querier-based core of CreateTodo: it runs on either the pool or a transaction and
@@ -1284,6 +1359,9 @@ type EventInput struct {
 	// Governing: SPEC-0020 REQ "Routing Trace", REQ "Drop Action Semantics".
 	WebhookID    string
 	RoutingTrace []byte
+	// Disposition is the intake outcome (DispositionRouted and friends); empty records routed.
+	// Governing: SPEC-0026 REQ-1.
+	Disposition string
 }
 
 // InsertEvent records an accepted delivery, deduping on (source, external_id). Returns the event id
@@ -1304,15 +1382,20 @@ func (s *Store) InsertEvent(ctx context.Context, e EventInput) (int64, error) {
 // delivery, existing row returned). The EventSummary carries the fields the Board feed renders.
 func insertEvent(ctx context.Context, q querier, e EventInput) (EventSummary, bool, error) {
 	ev := EventSummary{Source: e.Source, EventType: e.EventType, TrustMode: e.TrustMode}
+	disposition := e.Disposition
+	if disposition == "" {
+		disposition = DispositionRouted
+	}
 	err := q.QueryRow(ctx, `
 		INSERT INTO events (source, family, event_type, external_id, trust_mode, verified, verify_detail,
-			content_type, headers, payload, payload_size, source_ip, webhook_id, routing_trace)
+			content_type, headers, payload, payload_size, source_ip, webhook_id, routing_trace, disposition)
 		VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,NULLIF($12,'')::inet,
-			NULLIF($13,'')::uuid, $14)
+			NULLIF($13,'')::uuid, $14, $15)
 		ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL DO NOTHING
 		RETURNING id, received_at`,
 		e.Source, e.Family, e.EventType, e.ExternalID, e.TrustMode, e.Verified, e.VerifyDetail,
-		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP, e.WebhookID, e.RoutingTrace).Scan(&ev.ID, &ev.ReceivedAt)
+		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP, e.WebhookID, e.RoutingTrace,
+		disposition).Scan(&ev.ID, &ev.ReceivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Duplicate delivery — fetch the existing row.
 		if err2 := q.QueryRow(ctx,
