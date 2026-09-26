@@ -171,6 +171,11 @@ type Handler struct {
 	// time, so new sessions pick up a flip without racing live ones.
 	a2uiEnabled atomic.Pointer[bool]
 
+	// summaryFromResult is the operator's SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT opt-in: complete and
+	// fail with no summary store the result's compact JSON as the attempt summary (report.go
+	// resultReport). The zero value is off, the spec's default. Governing: SPEC-0034 REQ-5.
+	summaryFromResult atomic.Bool
+
 	// router evaluates rules for test_webhook_rules — the same out-of-process sandbox the receiver
 	// uses (New installs it; tests swap in routing.InProcess). Governing: ADR-0024, SPEC-0020.
 	router atomic.Pointer[routing.Router]
@@ -229,6 +234,11 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 // newServer time, so sessions established after the call see the resources; live ones are
 // untouched. Default off.
 func (h *Handler) SetA2UIEnabled(enabled bool) { h.a2uiEnabled.Store(&enabled) }
+
+// SetAttemptSummaryFromResult sets the operator's summary-from-result option (SPEC-0034 REQ-5): when
+// on, a complete or fail that sends no summary closes its attempt with the result's compact JSON as
+// the summary. Default off. It applies to every call after it, on live sessions too.
+func (h *Handler) SetAttemptSummaryFromResult(on bool) { h.summaryFromResult.Store(on) }
 
 // a2uiOn reads the gate; nil reads as off.
 func (h *Handler) a2uiOn() bool {

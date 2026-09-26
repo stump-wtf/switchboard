@@ -53,6 +53,10 @@ type fakeStore struct {
 	fences map[string][]byte
 	// attempts is each todo's seeded attempt history, newest first (SPEC-0034; get_todo reads it).
 	attempts map[string][]store.Attempt
+	// claims and reports record, in call order, every committed claim's inputs and every report a
+	// complete or fail was called with (SPEC-0034 REQ-1, REQ-5), for the attempt-input tests.
+	claims  []store.ClaimOpts
+	reports []store.Report
 }
 
 // RingOnAttach hands out attachRings once. Deliberately ignores failErr: a stream open in a test
@@ -314,7 +318,7 @@ func (f *fakeStore) ClaimTodoWith(ctx context.Context, endpointID, id, owner str
 		return t, store.ClaimedAttempt{}, err
 	}
 	f.setFence(t.ID, o.TokenHash)
-	return t, store.ClaimedAttempt{}, nil
+	return t, f.claimed(t.ID, o), nil
 }
 
 func (f *fakeStore) ClaimNextWith(ctx context.Context, endpointID string, queues []string, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error) {
@@ -323,7 +327,31 @@ func (f *fakeStore) ClaimNextWith(ctx context.Context, endpointID string, queues
 		return t, store.ClaimedAttempt{}, err
 	}
 	f.setFence(t.ID, o.TokenHash)
-	return t, store.ClaimedAttempt{}, nil
+	return t, f.claimed(t.ID, o), nil
+}
+
+// claimed records a committed claim's inputs and answers what the store would: the next seq after
+// the seeded history, and the closed seeded attempts (newest first) as the prior list, at most
+// store.PriorAttemptsMax. The seeded history itself is left alone, so get_todo tests read it as
+// seeded.
+func (f *fakeStore) claimed(id string, o store.ClaimOpts) store.ClaimedAttempt {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claims = append(f.claims, o)
+	ca := store.ClaimedAttempt{Seq: len(f.attempts[id]) + 1, AttemptsTotal: len(f.attempts[id]) + 1}
+	for _, a := range f.attempts[id] {
+		if a.EndedAt != nil && len(ca.Prior) < store.PriorAttemptsMax {
+			ca.Prior = append(ca.Prior, a)
+		}
+	}
+	return ca
+}
+
+// reported records the report a complete or fail was called with, whatever its outcome.
+func (f *fakeStore) reported(r store.Report) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports = append(f.reports, r)
 }
 
 func (f *fakeStore) HeartbeatTodoWith(ctx context.Context, endpointID, id, owner string, ttl time.Duration, tokenHash []byte) (store.Todo, error) {
@@ -334,6 +362,7 @@ func (f *fakeStore) HeartbeatTodoWith(ctx context.Context, endpointID, id, owner
 }
 
 func (f *fakeStore) CompleteTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error) {
+	f.reported(r)
 	if f.fenceMiss(endpointID, id, r.TokenHash) {
 		return store.Todo{}, store.ErrConflict
 	}
@@ -345,6 +374,7 @@ func (f *fakeStore) CompleteTodoWith(ctx context.Context, endpointID, id, owner 
 }
 
 func (f *fakeStore) FailTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error) {
+	f.reported(r)
 	if f.fenceMiss(endpointID, id, r.TokenHash) {
 		return store.Todo{}, store.ErrConflict
 	}

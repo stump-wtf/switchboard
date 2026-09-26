@@ -2,8 +2,7 @@ package mcp
 
 // Attempt report inputs
 //
-// The summary and artifact a lease-ending verb (release today; complete and fail with #321) closes
-// its attempt with. attemptReport is the one place they are checked, so every verb accepts and
+// The summary and artifact a lease-ending verb (complete, fail and release) closes its attempt with. attemptReport is the one place they are checked, so every verb accepts and
 // refuses exactly the same values: a malformed artifact is an invalid call naming the argument,
 // refused before the store is touched, while a long summary is only long and the store cuts it
 // (store.ClipSummary, in reportArgs) and sets summary_truncated on the attempt. The MCP layer does
@@ -14,6 +13,8 @@ package mcp
 // Standards"; design.md "Summaries are truncated, never rejected".
 //
 // @joestump-agent 09/25/2026 - Added for #328 (epic #313).
+// @joestump-agent 09/26/2026 - complete and fail share it through resultReport, which adds the
+// operator's summary-from-result fallback (#321).
 
 import (
 	"net/url"
@@ -38,6 +39,26 @@ func attemptReport(summary, artifact, leaseToken string) (store.Report, error) {
 		return store.Report{}, errInvalidArtifact
 	}
 	return store.Report{Summary: summary, Artifact: artifact, TokenHash: leaseTokenHash(leaseToken)}, nil
+}
+
+// resultReport is the report complete and fail close their attempt with: attemptReport's checks and
+// fence hash, plus the result they store on the todo. When the caller sent no summary and the
+// operator set SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT, the summary is the result's compact JSON,
+// which the store then cuts and flags like any summary. The option is off by default because it
+// shows what existing clients wrote to result to later claimers, who never saw result before
+// (SPEC-0034 REQ-5). release takes no result, so it has no fallback.
+//
+// Governing: SPEC-0034 REQ-5; design.md "No summary from result unless the operator opts in".
+func (h *Handler) resultReport(result any, summary, artifact, leaseToken string) (store.Report, error) {
+	r, err := attemptReport(summary, artifact, leaseToken)
+	if err != nil {
+		return store.Report{}, err
+	}
+	r.Result = rawJSON(result) // json.Marshal output, already compact
+	if summary == "" && len(r.Result) > 0 && h.summaryFromResult.Load() {
+		r.Summary = string(r.Result)
+	}
+	return r, nil
 }
 
 // validArtifact reports whether s is an mcp://cairn handle or an absolute https URL with a host,
