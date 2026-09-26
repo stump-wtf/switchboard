@@ -57,6 +57,11 @@ func CheckQueueNames(queues ...string) error {
 	return nil
 }
 
+// ErrHeldEventGone is returned for a held item whose event no longer exists, so it cannot be routed
+// again. Retention keeps a held item's event (Prune), so only rows older than that guard reach it.
+// A caller refuses the release and says to discard the item instead.
+var ErrHeldEventGone = errors.New("store: the held delivery's event is gone")
+
 // QuarantinedItem is one held delivery: its todo, and the event it holds.
 type QuarantinedItem struct {
 	Todo  Todo
@@ -77,9 +82,12 @@ func (s *Store) QuarantinedForHuman(ctx context.Context, ownerHumanID, id string
 		return QuarantinedItem{}, fmt.Errorf("store: quarantined item: %w", err)
 	}
 	if t.EventID == nil {
-		return QuarantinedItem{}, fmt.Errorf("store: quarantined item %s has no event", t.ID)
+		return QuarantinedItem{Todo: t}, fmt.Errorf("%w: quarantined item %s", ErrHeldEventGone, t.ID)
 	}
 	ev, err := scanEventDetail(s.pool.QueryRow(ctx, eventDetailSelect+` WHERE id = $1`, *t.EventID))
+	if errors.Is(err, ErrNotFound) {
+		return QuarantinedItem{Todo: t}, fmt.Errorf("%w: quarantined item %s", ErrHeldEventGone, t.ID)
+	}
 	if err != nil {
 		return QuarantinedItem{}, fmt.Errorf("store: quarantined item event: %w", err)
 	}
@@ -145,6 +153,12 @@ func (s *Store) ApplyQuarantineRelease(ctx context.Context, plan ReleasePlan) ([
 			released_by = $6, released_at = now(), updated_at = now()
 		WHERE id = $1
 		RETURNING `+todoCols, held.ID, plan.Queue, plan.Endpoints[0], plan.Trace, plan.WorkOrder, plan.By))
+	if isUniqueViolation(err) {
+		// The first target already holds a live todo for this delivery (idx_todos_dedupe): a
+		// routed copy from before the owner tightened trust. Nothing is moved; the item stays
+		// held for the human to discard.
+		return nil, fmt.Errorf("%w: a live todo for this delivery already exists on the release target", ErrConflict)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store: release: move held todo: %w", err)
 	}

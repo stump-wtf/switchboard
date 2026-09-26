@@ -45,13 +45,25 @@ var (
 // to queue. It returns the todos the release produced: the held todo first (same id, new queue and
 // target), then any further fan-out targets.
 func (i *Ingest) ReleaseQuarantined(ctx context.Context, ownerHumanID, todoID, by, queue string) ([]store.CreatedTodo, error) {
-	wrap := func(err error) error { return fmt.Errorf("todo %s: %s: %w", todoID, stageRelease, err) }
+	// Errors name the webhook and the stage (SPEC-0026 REQ-13), plus the item, once the webhook is
+	// known; before that only the item id is.
+	webhookID := ""
+	wrap := func(err error) error {
+		if webhookID == "" {
+			return fmt.Errorf("todo %s: %s: %w", todoID, stageRelease, err)
+		}
+		return fmt.Errorf("webhook %s: todo %s: %s: %w", webhookID, todoID, stageRelease, err)
+	}
 
 	item, err := i.store.QuarantinedForHuman(ctx, ownerHumanID, todoID)
+	if errors.Is(err, store.ErrHeldEventGone) {
+		return nil, wrap(fmt.Errorf("%w: the held delivery's event is gone; discard it instead", ErrReleaseConflict))
+	}
 	if err != nil {
 		return nil, wrap(err)
 	}
 	ev := item.Event
+	webhookID = ev.WebhookID
 	if ev.WebhookID == "" {
 		return nil, wrap(fmt.Errorf("%w: the delivery's webhook no longer exists; discard it instead", ErrReleaseConflict))
 	}
@@ -131,7 +143,8 @@ func (i *Ingest) ReleaseQuarantined(ctx context.Context, ownerHumanID, todoID, b
 		Verified: ev.Verified, TrustMode: rt.TrustMode,
 	})
 	if errors.Is(err, store.ErrConflict) {
-		return nil, wrap(fmt.Errorf("%w: the item is no longer held, or its work order was already issued", ErrReleaseConflict))
+		return nil, wrap(fmt.Errorf("%w: the item is no longer held, its work order was already issued, or the target "+
+			"already holds a live todo for this delivery (if it is still held, discard it)", ErrReleaseConflict))
 	}
 	if err != nil {
 		return nil, wrap(err)
