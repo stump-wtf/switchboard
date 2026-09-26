@@ -32,7 +32,8 @@ lives on the webhook, not in the rules, so a rule edit can never remove it.
 | any of them | `{"allow_all": true}`, which trusts every verified sender | — |
 
 - **sender** is whoever triggered the event (`sender.login`). **author** is whoever wrote the thing
-  it is about: the comment, review, pull request, issue or discussion author. With
+  it is about: the comment, review, pull request, issue or discussion author. A Gitea review
+  payload names no reviewer, so a Gitea review's author is its sender. With
   `match: "sender"`, a maintainer who labels an outsider's issue moves it on, while
   `.actor.author_trusted` stays `false` so your rules and workers still know the text is an
   outsider's.
