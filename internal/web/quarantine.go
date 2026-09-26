@@ -73,18 +73,20 @@ type quarantineNotice struct {
 // quarantineNotices is the fixed table of outcomes. A redirect carries only a key from it, and the
 // page renders only its fixed text, so nothing from a request is ever reflected into the page.
 var quarantineNotices = map[string]quarantineNotice{
-	"released":         {Kind: "ok", Text: "released · routed through the webhook's rules"},
-	"released_queue":   {Kind: "ok", Text: "released to the named queue"},
-	"trusted":          {Kind: "ok", Text: "actor trusted · delivery released"},
-	"discarded":        {Kind: "ok", Text: "discarded"},
-	"conflict":         {Kind: "warn", Text: "conflict · the item was not released: it is no longer held, or the webhook's rules send it back to quarantine, fault on it, or drop it. Name a queue to release it, or discard it"},
-	"trusted_conflict": {Kind: "warn", Text: "actor trusted, but the release was refused (conflict): name a queue to release it, or discard it"},
-	"queue_refused":    {Kind: "danger", Text: "that queue is not one this webhook may route to"},
-	"queue_invalid":    {Kind: "danger", Text: "a queue name is at most 128 characters, with no spaces"},
-	"reason_required":  {Kind: "danger", Text: "discarding needs a reason of 1–500 characters"},
-	"trust_refused":    {Kind: "danger", Text: "trust this actor applies only to deliveries held as untrusted_actor that name an actor; release or discard this one instead"},
-	"trust_full":       {Kind: "danger", Text: "the webhook's trust list cannot take this actor (it is full, or the name is too long)"},
-	"unavailable":      {Kind: "danger", Text: "routing is unavailable right now; nothing was changed. Try again shortly"},
+	"released":            {Kind: "ok", Text: "released · routed through the webhook's rules"},
+	"released_queue":      {Kind: "ok", Text: "released to the named queue"},
+	"trusted":             {Kind: "ok", Text: "actor trusted · delivery released"},
+	"discarded":           {Kind: "ok", Text: "discarded"},
+	"conflict":            {Kind: "warn", Text: "conflict · the item was not released: it is no longer held, or the webhook's rules send it back to quarantine, fault on it, or drop it. Name a queue to release it, or discard it"},
+	"trusted_conflict":    {Kind: "warn", Text: "actor trusted, but the release was refused (conflict): the item is no longer held, or the webhook's rules send it back to quarantine, fault on it, or drop it. Name a queue to release it, or discard it"},
+	"trusted_unavailable": {Kind: "warn", Text: "actor trusted, but routing is unavailable right now, so the delivery was not released and is still held. Release it again shortly, or discard it"},
+	"trusted_error":       {Kind: "danger", Text: "actor trusted, but the release failed; the delivery may still be held. Reload, then release or discard it"},
+	"queue_refused":       {Kind: "danger", Text: "that queue is not one this webhook may route to"},
+	"queue_invalid":       {Kind: "danger", Text: "a queue name is at most 128 characters, with no spaces"},
+	"reason_required":     {Kind: "danger", Text: "discarding needs a reason of 1–500 characters"},
+	"trust_refused":       {Kind: "danger", Text: "trust this actor applies only to deliveries held as untrusted_actor that name an actor; release or discard this one instead"},
+	"trust_full":          {Kind: "danger", Text: "the webhook's trust list cannot take this actor (it is full, or the name is too long)"},
+	"unavailable":         {Kind: "danger", Text: "routing is unavailable right now; nothing was changed. Try again shortly"},
 }
 
 func noticeFor(code string) *quarantineNotice {
@@ -360,15 +362,31 @@ func (h *Handler) TrustQuarantinedActor(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	h.log.Info("quarantine: actor trusted", "webhook", wh.ID, "todo", id, "human", human.ID)
+	// The trust list is committed now. Every release outcome from here on must say so: a notice that
+	// claims nothing changed would leave the human believing the actor is still untrusted.
 	if _, err := h.quarantine.ReleaseQuarantined(ctx, human.ID, id, "human:"+human.ID, ""); err != nil {
-		if errors.Is(err, ingest.ErrReleaseConflict) {
-			h.quarantineRespond(w, r, &human, "trusted_conflict")
-			return
+		code := trustedReleaseFailure(err)
+		if code == "trusted_error" {
+			h.log.Error("quarantine: release after trust", "todo", id, "err", err)
 		}
-		h.quarantineFail(w, r, &human, id, err)
+		h.quarantineRespond(w, r, &human, code)
 		return
 	}
 	h.quarantineRespond(w, r, &human, "trusted")
+}
+
+// trustedReleaseFailure maps a release error that followed a committed trust-list write onto a
+// notice that says the actor was trusted. The item was read as the human's own held item a moment
+// earlier, so not-found here is a lost race (released or discarded meanwhile), not a foreign id.
+func trustedReleaseFailure(err error) string {
+	switch {
+	case errors.Is(err, ingest.ErrRoutingUnavailable):
+		return "trusted_unavailable"
+	case errors.Is(err, ingest.ErrReleaseConflict), errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrNotFound):
+		return "trusted_conflict"
+	default:
+		return "trusted_error"
+	}
 }
 
 // trustNames is who trusting a held delivery's actor adds, under the webhook's match mode.

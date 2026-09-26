@@ -9,6 +9,8 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stump-wtf/switchboard/internal/ingest"
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
@@ -249,6 +252,27 @@ func TestQuarantineActionInputChecks(t *testing.T) {
 		rec := post("/quarantine/td_1/x", c.form, c.fn)
 		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != c.want {
 			t.Errorf("%s: %d → %q, want 303 → %q", c.name, rec.Code, rec.Header().Get("Location"), c.want)
+		}
+	}
+}
+
+// After trust-this-actor commits the trust list, every release failure maps to a notice that says the
+// actor was trusted, and none of them claims that nothing changed.
+func TestTrustedReleaseFailureSaysTrusted(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("wrapped: %w", ingest.ErrRoutingUnavailable), "trusted_unavailable"},
+		{fmt.Errorf("wrapped: %w", ingest.ErrReleaseConflict), "trusted_conflict"},
+		{store.ErrConflict, "trusted_conflict"},
+		{store.ErrNotFound, "trusted_conflict"}, // a lost race: the item was the human's a moment earlier
+		{errors.New("db: connection reset"), "trusted_error"},
+	} {
+		got := trustedReleaseFailure(tc.err)
+		n := noticeFor(got)
+		if got != tc.want || n == nil || !strings.HasPrefix(n.Text, "actor trusted") || strings.Contains(n.Text, "nothing was changed") {
+			t.Errorf("trustedReleaseFailure(%v) = %q (%+v), want %q with a trust-aware text", tc.err, got, n, tc.want)
 		}
 	}
 }

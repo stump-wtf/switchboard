@@ -22,6 +22,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stump-wtf/switchboard/internal/ingest"
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
@@ -38,6 +39,7 @@ type quarFixture struct {
 	bobTok   string
 	epA      store.Endpoint
 	whA      store.Webhook
+	ing      *ingest.Ingest
 }
 
 func newQuarFixture(t *testing.T) *quarFixture {
@@ -46,7 +48,7 @@ func newQuarFixture(t *testing.T) *quarFixture {
 	// The in-process router evaluates rules without the sandbox child, so a test can give the
 	// webhook rules (the conflict case) and still release through the real intake service.
 	ing.SetRouter(routing.InProcess{})
-	f := &quarFixture{r: r, st: st, ctx: ctx}
+	f := &quarFixture{r: r, st: st, ctx: ctx, ing: ing}
 	f.alice, f.aliceTok = mintSession(t, st, ctx, "quar-alice", "Alice Quarantine", "qalice@example.com")
 	f.bob, f.bobTok = mintSession(t, st, ctx, "quar-bob", "Bob Quarantine", "qbob@example.com")
 	f.epA = seedEndpoint(t, st, ctx, f.alice.ID, "quar-agent-alice", "hash-qa", "sbk_qa", "reviews")
@@ -281,6 +283,48 @@ func TestQuarantineReleaseDiscardAndTrust(t *testing.T) {
 	f.r.ServeHTTP(over, req)
 	if over.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized form = %d, want 413", over.Code)
+	}
+}
+
+// Once trust-this-actor has saved the trust list, a release that then fails must say the actor was
+// trusted. Answering "nothing was changed" would leave the human believing the actor is still
+// untrusted, while its next deliveries already skip quarantine.
+func TestQuarantineTrustThenReleaseFailureSaysTrusted(t *testing.T) {
+	f := newQuarFixture(t)
+	// A rule makes the release need the evaluator, and the evaluator cannot run.
+	if _, err := f.st.UpdateWebhookRouting(f.ctx, f.whA.ID, f.alice.ID, func(store.WebhookRouting) (routing.Config, error) {
+		return routing.Config{Rules: []routing.Rule{{ID: "all", Expr: "true", Action: routing.Action{Queue: "reviews"}}}}, nil
+	}); err != nil {
+		t.Fatalf("set rules: %v", err)
+	}
+	f.ing.SetRouter(routing.Unavailable{})
+
+	held := f.hold(t, routing.QuarantineUntrustedActor, "newbie")
+	rec := f.act(t, f.aliceTok, "/quarantine/"+held.ID+"/trust", nil)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || noticeOf(body) != "trusted_unavailable" || !strings.Contains(body, "actor trusted") ||
+		strings.Contains(body, "nothing was changed") {
+		t.Fatalf("trust with routing unavailable = %d, notice %q; want trusted_unavailable, never 'nothing was changed'", rec.Code, noticeOf(body))
+	}
+	if !f.stillHeld(t, held.ID) || !strings.Contains(body, `data-sb-quar-item="`+held.ID+`"`) {
+		t.Fatal("the unreleased item is no longer held and listed")
+	}
+	wh, err := f.st.WebhookForEndpoint(f.ctx, f.whA.ID, f.epA.ID)
+	ta, _ := routing.DecodeTrustedActors(wh.SourceType, wh.TrustedActors)
+	if err != nil || strings.Join(ta.Logins, ",") != "joestump,newbie" {
+		t.Fatalf("trusted logins = %v (%v), want [joestump newbie]: the trust write committed", ta.Logins, err)
+	}
+
+	// Without HTMX the redirect carries the same trust-aware code.
+	held2 := f.hold(t, routing.QuarantineUntrustedActor, "newbie2")
+	form := url.Values{"csrf_token": {f.csrf(t, f.aliceTok)}}
+	req := httptest.NewRequest(http.MethodPost, "/quarantine/"+held2.ID+"/trust", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: f.aliceTok})
+	plain := httptest.NewRecorder()
+	f.r.ServeHTTP(plain, req)
+	if plain.Code != http.StatusSeeOther || plain.Header().Get("Location") != "/quarantine?n=trusted_unavailable" {
+		t.Fatalf("plain trust = %d → %q, want 303 → /quarantine?n=trusted_unavailable", plain.Code, plain.Header().Get("Location"))
 	}
 }
 
