@@ -32,9 +32,16 @@ lives on the webhook, not in the rules, so a rule edit can never remove it.
 | any of them | `{"allow_all": true}`, which trusts every verified sender | — |
 
 - **sender** is whoever triggered the event (`sender.login`). **author** is whoever wrote the thing
-  it is about: the comment, review, pull request or issue author. With `match: "sender"`, a
-  maintainer who labels an outsider's issue moves it on, while `.actor.author_trusted` stays
-  `false` so your rules and workers still know the text is an outsider's.
+  it is about: the comment, review, pull request, issue or discussion author. With
+  `match: "sender"`, a maintainer who labels an outsider's issue moves it on, while
+  `.actor.author_trusted` stays `false` so your rules and workers still know the text is an
+  outsider's.
+- **`author_trusted` covers the whole thread.** A comment or review delivery also carries its issue
+  or pull request, so `author_trusted` is `true` only when the comment's author *and* the thread's
+  author are both trusted. A maintainer's comment on an outsider's issue has
+  `.actor.author = "<maintainer>"` and `author_trusted = false`. Under `match: "author"` or
+  `"both"`, such a delivery is held. Promote outside threads with `match: "sender"` instead.
+- Logins compare with an ASCII-only case fold, and keys are read exactly as `.payload` reads them.
 - **A new webhook trusts no one.** `create_webhook` without `trusted_actors` stores an empty list
   and says so in its result. Set the list with `set_trusted_actors`, and reset it with
   `clear_trusted_actors`. `set_trusted_actors` requires the argument; omitting it never clears.
@@ -138,7 +145,8 @@ and GitHub's (`labeled`) both set `.issue.label_event`, with the current labels 
 
 A rule never sees an untrusted delivery (the gate holds it first), so `.actor.trusted` is `true`
 whenever a rule runs on a gated source. The per-actor flags are what rules use:
-`.actor.author_trusted == false` picks out work a trusted maintainer moved on an outsider's behalf.
+`.actor.author_trusted == false` picks out work a trusted maintainer moved on an outsider's behalf,
+including a maintainer's comment or review on an outsider's thread.
 Work orders carry the same verdict as `author_trusted`.
 
 The first output of your filter decides the match with jq truthiness: anything except `false` and
@@ -169,7 +177,12 @@ To catch faults before they reach live traffic, `set_webhook_rules`, `add_webhoo
 most recent deliveries that its trust gate passes today. If any rule faults on any of them, the save
 is refused, naming the rule, the event ids and the cause. Deliveries the gate would hold are
 skipped, since your rules never run on them: an outsider cannot block your saves with a payload
-built to fault, nor flood your real traffic out of the checked window. `test_webhook_rules` on a
+built to fault. The scan reads at most the newest 500 deliveries to find those 50. If more than 500
+held deliveries have arrived since your last trusted one, fewer than 50 are checked, possibly none.
+The save still goes through, so a flood cannot block your edits. Every save's result carries
+`dry_run: {checked, skipped_held, warning}`, and `warning` is set when the bound cut the check
+short. When you see it, run `test_webhook_rules` against a known trusted `event_id` before you rely
+on the rules. `test_webhook_rules` on a
 held delivery (`held: true`) reports the gate's decision, as live traffic records it, and puts
 what your rules would do in `rules_would`. `params` values must be a string, a number, a boolean, or a list of
 all strings or all numbers (`invalid_params` otherwise).
