@@ -360,7 +360,9 @@ Rules fail closed, and untrusted deliveries wait in the owner's quarantine (see
 
 `by` says what kind of resolver acted, never which one: a human's id and a classifier's slug stay
 out of the labels. Quarantine is also an ordinary queue in `switchboard_queue_todos`, with
-`queue="quarantine"`, so its depth shows up next to every other queue.
+`queue="quarantine"`, so its depth shows up next to every other queue. It is a reserved label: it
+never folds into `__other__`, however many queues reach the cap first, so the alert below can
+exclude it by name.
 
 ### Alerts
 

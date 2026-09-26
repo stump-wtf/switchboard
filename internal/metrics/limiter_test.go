@@ -73,6 +73,34 @@ func TestLabelLimiterRejectsUnsafeValuesWithoutSpendingASlot(t *testing.T) {
 	}
 }
 
+// A reserved value reports as itself whether it arrives first, last or after the cap is full, and
+// never spends one of the operator slots. SPEC-0026 REQ-11: the liveness alert excludes
+// queue="quarantine" by name, so that name must never fold into the overflow bucket.
+func TestLabelLimiterReservedValuesNeverFold(t *testing.T) {
+	l := newLabelLimiter(2, "quarantine", "", Other)
+	for _, q := range []string{"alpha", "beta"} {
+		if got := l.label(q); got != q {
+			t.Fatalf("label(%q) = %q, want it admitted", q, got)
+		}
+	}
+	if got := l.label("gamma"); got != Other {
+		t.Fatalf("third operator value: got %q, want %q", got, Other)
+	}
+	if got := l.label("quarantine"); got != "quarantine" {
+		t.Fatalf("reserved value past a full cap: got %q, want its own label", got)
+	}
+	// Asking for the reserved value first spends no slot either.
+	l = newLabelLimiter(1, "quarantine")
+	_ = l.label("quarantine")
+	if got := l.label("alpha"); got != "alpha" {
+		t.Fatalf("operator value after the reserved one: got %q, want it admitted", got)
+	}
+	// Unsafe reserved values are ignored, not trusted: empty and the sentinel still report as Other.
+	if l := newLabelLimiter(1, "", Other); len(l.reserved) != 0 {
+		t.Fatalf("unsafe reserved values were kept: %v", l.reserved)
+	}
+}
+
 // TestLabelLimiterConcurrentAdmission races many goroutines on first sightings of overlapping
 // values. The admitted set must end at exactly the cap, and every value must get one consistent
 // answer across all goroutines — never its own label on one call and __other__ on another. Run

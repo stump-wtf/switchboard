@@ -22,6 +22,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // Enumerated label values. Anything a caller passes outside these sets is reported as Other, never
@@ -119,9 +121,11 @@ type Metrics struct {
 // (SPEC-0023 REQ-1).
 func New(opts Options) *Metrics {
 	m := &Metrics{
-		reg:      prometheus.NewRegistry(),
-		log:      opts.Log,
-		queues:   newLabelLimiter(opts.QueueCap),
+		reg: prometheus.NewRegistry(),
+		log: opts.Log,
+		// The reserved quarantine queue never folds into Other: the liveness alert excludes it by
+		// name (SPEC-0026 REQ-11).
+		queues:   newLabelLimiter(opts.QueueCap, store.QueueQuarantine),
 		webhooks: newLabelLimiter(opts.WebhookCap),
 
 		todosCreated: prometheus.NewCounterVec(prometheus.CounterOpts{
