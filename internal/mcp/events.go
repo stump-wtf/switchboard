@@ -78,7 +78,7 @@ type eventSummaryOut struct {
 	ReceivedAt  string `json:"received_at" jsonschema:"RFC 3339 receipt time"`
 	WebhookID   string `json:"webhook_id,omitempty" jsonschema:"the self-managed webhook the delivery arrived on, if any"`
 	Routing     any    `json:"routing,omitempty" jsonschema:"how the delivery was routed (SPEC-0020 trace); a drop shows action.drop=true"`
-	Disposition string `json:"disposition" jsonschema:"the intake outcome: routed, dropped, quarantined, or faulted (a rule faulted, so the delivery was recorded and routed nowhere)"`
+	Disposition string `json:"disposition" jsonschema:"the intake outcome: routed, dropped, quarantined, or faulted (a rule faulted, so the delivery was held on the owner's quarantine queue as rule_fault)"`
 }
 
 // eventDispositions is the closed set the disposition filter accepts (events.disposition).
