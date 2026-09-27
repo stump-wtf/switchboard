@@ -15,7 +15,7 @@ records a lot and shows very little of it:
 
 * **Attempts are stored but not shown.** `todo_attempts` (ADR-0039) holds who claimed each attempt,
   when, its heartbeats, and how it ended, with a summary and an artifact handle. The web UI renders
-  none of it on `main`. PR #508 adds attempts to the Board drawer, and PR #511 lets agents fill in
+  none of it on `main`. PR #508 (open at the time of writing) adds attempts to the Board drawer, and PR #511 (open) lets agents fill in
   `summary`, `artifact` and `claimant` over MCP.
 * **The source event is also stored but not shown.** `events` holds the verification detail, the
   sanitized headers, the disposition, and the `routing_trace` that says which rule sent the todo
