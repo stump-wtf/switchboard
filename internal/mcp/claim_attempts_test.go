@@ -325,6 +325,20 @@ func TestSummaryFromResultOption(t *testing.T) {
 	if got := f.lastReport(t).Summary; got != "" {
 		t.Fatalf("no result and no summary gave summary %q, want none", got)
 	}
+
+	// The summary is text a later claimer reads, so a result's <, > and & stay as written rather
+	// than as json.Marshal's \u003c HTML escapes; Go test output ("got <nil>") hits this constantly.
+	// The result stored on the todo is untouched.
+	f.putTodo(claimedTodo("td_6"))
+	callOK(t, ctx, cs, "fail", map[string]any{"id": "td_6", "result": map[string]any{"error": "got <nil> & want <x>"}}, &out)
+	r := f.lastReport(t)
+	if want := `{"error":"got <nil> & want <x>"}`; r.Summary != want {
+		t.Fatalf("opted-in summary = %q, want %q (no HTML escaping)", r.Summary, want)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(r.Result, &stored); err != nil || stored["error"] != "got <nil> & want <x>" {
+		t.Fatalf("stored result = %s (%v), want the result unchanged", r.Result, err)
+	}
 }
 
 // REQ-19: no log line carries a claimant, summary, artifact or result-derived summary, on success,

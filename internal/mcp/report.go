@@ -18,6 +18,8 @@ package mcp
 // operator's summary-from-result fallback (#321).
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/url"
 	"regexp"
 
@@ -57,9 +59,23 @@ func (h *Handler) resultReport(result any, summary, artifact, leaseToken string)
 	}
 	r.Result = rawJSON(result) // json.Marshal output, already compact
 	if summary == "" && len(r.Result) > 0 && h.summaryFromResult.Load() {
-		r.Summary = string(r.Result)
+		r.Summary = summaryJSON(result, r.Result)
 	}
 	return r, nil
+}
+
+// summaryJSON is result's compact JSON as a summary: like json.Marshal but without its HTML
+// escaping, so a later claimer reads "<nil>" rather than "\u003cnil\u003e". The result stored on the
+// todo keeps json.Marshal's form; the store's jsonb column normalizes it either way. marshaled is
+// that form, the fallback should the encoder ever fail.
+func summaryJSON(result any, marshaled []byte) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(result); err != nil { // unreachable: rawJSON already marshaled it
+		return string(marshaled)
+	}
+	return string(bytes.TrimSuffix(b.Bytes(), []byte("\n")))
 }
 
 // validArtifact reports whether s is an mcp://cairn handle or an absolute https URL with a host,
