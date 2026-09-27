@@ -353,3 +353,10 @@ func ownerOf(t *testing.T, s *Store, ctx context.Context, endpointID string) str
 	}
 	return owner
 }
+
+// callerOf is the endpoint-shaped caller the event-history reads take: the endpoint itself and its
+// owner, as the MCP layer passes its authenticated endpoint.
+func callerOf(t *testing.T, s *Store, ctx context.Context, endpointID string) AuthEndpoint {
+	t.Helper()
+	return AuthEndpoint{ID: endpointID, OwnerHumanID: ownerOf(t, s, ctx, endpointID)}
+}
