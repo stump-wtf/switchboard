@@ -21,8 +21,17 @@
 FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY . .
+# The build identity (internal/buildinfo, SPEC-0027 REQ-1). .git is not in the build context
+# (.dockerignore), so the binary has no embedded VCS info to fall back on: pass COMMIT and DATE
+# (git log -1 --format=%cI) or the image reports them as unknown.
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/switchboard ./cmd/switchboard
+ARG COMMIT=
+ARG DATE=
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags "-s -w \
+      -X github.com/stump-wtf/switchboard/internal/buildinfo.Version=${VERSION} \
+      -X github.com/stump-wtf/switchboard/internal/buildinfo.Commit=${COMMIT} \
+      -X github.com/stump-wtf/switchboard/internal/buildinfo.Date=${DATE}" \
+    -o /out/switchboard ./cmd/switchboard
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/switchboard /usr/local/bin/switchboard

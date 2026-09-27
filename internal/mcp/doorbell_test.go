@@ -23,6 +23,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
+	"github.com/stump-wtf/switchboard/internal/buildinfo"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -60,6 +61,41 @@ func TestChannelCapabilityAdvertised(t *testing.T) {
 		if !strings.Contains(init.Instructions, want) {
 			t.Fatalf("instructions missing %q: %q", want, init.Instructions)
 		}
+	}
+}
+
+// TestInitializeReportsBuildVersion: serverInfo.version is buildinfo's resolved Version, and the
+// instructions' first line is the build banner, before the doorbell contract text.
+// Governing: SPEC-0027 REQ-2 "MCP Server Version and Session Instructions" (scenario "Client sees
+// the real version").
+func TestInitializeReportsBuildVersion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"list_todos"})
+	ts := newTestServer(t, f)
+
+	cs, err := connect(t, ctx, ts.URL+"/mcp/agent-a-11111111", token)
+	if err != nil {
+		t.Fatalf("initialize handshake: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	init := cs.InitializeResult()
+	bi := buildinfo.Get()
+	if init.ServerInfo.Version != bi.Version || init.ServerInfo.Version == "" {
+		t.Fatalf("serverInfo.version = %q, want buildinfo.Get().Version %q", init.ServerInfo.Version, bi.Version)
+	}
+	first, rest, _ := strings.Cut(init.Instructions, "\n")
+	if first != bi.Banner() {
+		t.Fatalf("instructions first line = %q, want %q", first, bi.Banner())
+	}
+	if !strings.HasPrefix(first, "switchboard "+bi.Version) {
+		t.Fatalf("banner %q does not lead with the version", first)
+	}
+	if !strings.HasPrefix(rest, "Todos routed to you") {
+		t.Fatalf("doorbell contract must follow the banner line, got %q", rest)
 	}
 }
 
