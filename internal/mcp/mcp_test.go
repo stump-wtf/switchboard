@@ -39,6 +39,7 @@ type fakeStore struct {
 	mu             sync.Mutex
 	todos          map[string]store.Todo
 	events         map[int64]store.EventHistoryDetail // SPEC-0005 event-history rows (events_test.go)
+	eventOwners    map[int64]string                   // owner human per event; reads filter on it (SPEC-0033)
 	webhooks       map[string]store.Webhook           // SPEC-0006 self-managed webhooks (webhooks_test.go)
 	webhookSecrets map[string]string                  // minted signing secret held server-side, by webhook id (never surfaced)
 	webhookN       int                                // monotonic id source for created webhooks
@@ -57,6 +58,9 @@ type fakeStore struct {
 	// complete or fail was called with (SPEC-0034 REQ-1, REQ-5), for the attempt-input tests.
 	claims  []store.ClaimOpts
 	reports []store.Report
+	// attemptsLimit is the limit the last TodoAttempts call received, so a test can pin the
+	// handler's own default and clamp rather than the fake's.
+	attemptsLimit int
 }
 
 // RingOnAttach hands out attachRings once. Deliberately ignores failErr: a stream open in a test
@@ -76,6 +80,7 @@ func newFakeStore() *fakeStore {
 		byOAuthHash:    map[string]store.AuthEndpoint{},
 		todos:          map[string]store.Todo{},
 		events:         map[int64]store.EventHistoryDetail{},
+		eventOwners:    map[int64]string{},
 		webhooks:       map[string]store.Webhook{},
 		webhookSecrets: map[string]string{},
 		settings:       map[string]string{},
@@ -443,6 +448,7 @@ func (f *fakeStore) TodoAttempts(_ context.Context, endpointID, id string, limit
 	if _, ok := f.scopedTodo(endpointID, id); !ok {
 		return nil, 0, 0, store.ErrNotFound
 	}
+	f.attemptsLimit = limit
 	if limit <= 0 {
 		limit = 20
 	}

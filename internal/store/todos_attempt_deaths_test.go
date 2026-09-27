@@ -64,28 +64,7 @@ func TestAttemptsClosedCounter(t *testing.T) {
 	}
 	step := func(name string, want map[string]int, wantExpired map[string]int, do func()) {
 		t.Helper()
-		beforeClosed := rec.closedSnapshot()
-		_, _, _, beforeExpired := rec.snapshot()
-		do()
-		afterClosed := rec.closedSnapshot()
-		_, _, _, afterExpired := rec.snapshot()
-		for k, n := range want {
-			if got := afterClosed[k] - beforeClosed[k]; got != n {
-				t.Fatalf("%s: closed[%s] moved by %d, want %d", name, k, got, n)
-			}
-		}
-		total := 0
-		for k := range afterClosed {
-			total += afterClosed[k] - beforeClosed[k]
-		}
-		if total != len(want) {
-			t.Fatalf("%s: %d closes counted, want exactly %d", name, total, len(want))
-		}
-		for q, n := range wantExpired {
-			if got := afterExpired[q] - beforeExpired[q]; got != n {
-				t.Fatalf("%s: lease expiries on %s moved by %d, want %d", name, q, got, n)
-			}
-		}
+		assertCloses(t, rec, name, want, wantExpired, do)
 	}
 
 	id := claim("reap")
@@ -146,6 +125,133 @@ func TestAttemptsClosedCounter(t *testing.T) {
 	step("revoke", map[string]int{"revoke/revoked": 1, "takeover/revoked": 1}, nil, func() {
 		if err := s.RevokeEndpoint(ctx, ep, ownerOf(t, s, ctx, ep)); err != nil {
 			t.Fatalf("revoke: %v", err)
+		}
+	})
+	assertAttemptInvariant(t, s, ctx)
+}
+
+// assertCloses runs do and asserts the attempts-closed counter moved by exactly want, with no other
+// close counted, and the lease-expiry counter by wantExpired on each queue it names.
+func assertCloses(t *testing.T, rec *recMetrics, name string, want, wantExpired map[string]int, do func()) {
+	t.Helper()
+	beforeClosed := rec.closedSnapshot()
+	_, _, _, beforeExpired := rec.snapshot()
+	do()
+	afterClosed := rec.closedSnapshot()
+	_, _, _, afterExpired := rec.snapshot()
+	for k, n := range want {
+		if got := afterClosed[k] - beforeClosed[k]; got != n {
+			t.Fatalf("%s: closed[%s] moved by %d, want %d", name, k, got, n)
+		}
+	}
+	total := 0
+	for k := range afterClosed {
+		total += afterClosed[k] - beforeClosed[k]
+	}
+	if total != len(want) {
+		t.Fatalf("%s: %d closes counted, want exactly %d", name, total, len(want))
+	}
+	for q, n := range wantExpired {
+		if got := afterExpired[q] - beforeExpired[q]; got != n {
+			t.Fatalf("%s: lease expiries on %s moved by %d, want %d", name, q, got, n)
+		}
+	}
+}
+
+// REQ-14 on the paths TestAttemptsClosedCounter does not drive: the Board's operator-owned claim
+// (takeover), release, complete and fail, and the two other revocation cascades, endpoint expiry and
+// friend-edge revocation. Each is a separate statement with its own closed flag and its own count
+// call, so each needs its own planted case.
+func TestAttemptsClosedCounterBoardAndCascades(t *testing.T) {
+	s, ctx, rec := meteredStore(t)
+	ep := seedEndpoint(t, s, ctx, "attempts-closed-board")
+	human := ownerOf(t, s, ctx, ep)
+	op := "op:" + human
+	claim := func(queue string) string {
+		t.Helper()
+		id := seedPending(t, s, ctx, ep, queue, queue)
+		if _, err := s.ClaimTodoOperatorOwned(ctx, human, id, op, time.Hour); err != nil {
+			t.Fatalf("board claim %s: %v", queue, err)
+		}
+		return id
+	}
+
+	id := claim("b-takeover")
+	expireLease(t, s, ctx, id)
+	assertCloses(t, rec, "board takeover", map[string]int{"b-takeover/lease_expired": 1},
+		map[string]int{"b-takeover": 1}, func() {
+			if _, err := s.ClaimTodoOperatorOwned(ctx, human, id, op, time.Hour); err != nil {
+				t.Fatalf("board takeover: %v", err)
+			}
+		})
+	// A board claim of a pending todo closes nothing.
+	fresh := seedPending(t, s, ctx, ep, "b-fresh", "fresh")
+	assertCloses(t, rec, "board claim of pending", map[string]int{}, map[string]int{"b-fresh": 0}, func() {
+		if _, err := s.ClaimTodoOperatorOwned(ctx, human, fresh, op, time.Hour); err != nil {
+			t.Fatalf("board claim: %v", err)
+		}
+	})
+
+	id = claim("b-release")
+	assertCloses(t, rec, "board release", map[string]int{"b-release/released": 1}, nil, func() {
+		if _, err := s.ReleaseTodoOperatorOwned(ctx, human, id, op); err != nil {
+			t.Fatalf("board release: %v", err)
+		}
+	})
+	id = claim("b-complete")
+	assertCloses(t, rec, "board complete", map[string]int{"b-complete/completed": 1}, nil, func() {
+		if _, err := s.CompleteTodoOperatorOwned(ctx, human, id, op, nil); err != nil {
+			t.Fatalf("board complete: %v", err)
+		}
+	})
+	id = claim("b-fail")
+	assertCloses(t, rec, "board fail", map[string]int{"b-fail/failed": 1}, nil, func() {
+		if _, err := s.FailTodoOperatorOwned(ctx, human, id, op, nil); err != nil {
+			t.Fatalf("board fail: %v", err)
+		}
+	})
+
+	// Endpoint expiry: a lapsed lifetime revokes the endpoint and closes its open attempt, counted
+	// after the sweep commits. A pending todo on it closes nothing.
+	exp := expiryFixture(t, s, ctx, human, "expiring-bot", "attempts-closed-expiry-hash", nil)
+	expID := seedPending(t, s, ctx, exp.ID, "reviews", "expiring")
+	if _, err := s.ClaimTodo(ctx, exp.ID, expID, "w", time.Hour); err != nil {
+		t.Fatalf("claim on expiring endpoint: %v", err)
+	}
+	_ = seedPending(t, s, ctx, exp.ID, "reviews", "never claimed")
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE endpoints SET expires_at = now() - interval '1 minute' WHERE id = $1`, exp.ID); err != nil {
+		t.Fatalf("backdate expiry: %v", err)
+	}
+	assertCloses(t, rec, "endpoint expiry", map[string]int{"reviews/revoked": 1}, nil, func() {
+		if _, err := s.ExpireEndpoints(ctx); err != nil {
+			t.Fatalf("expire endpoints: %v", err)
+		}
+	})
+
+	// Friend-edge revocation revokes the friend-vended endpoint through the same cascade.
+	target := mustHuman(t, s, ctx, "pocket|attempts-closed-friend", "Target")
+	_ = mustHuman(t, s, ctx, "pocket|attempts-closed-friend-req", "Requester")
+	agent := mustAgent(t, s, ctx, target.ID, "friend-bot")
+	edge := mustFriendRequest(t, s, ctx, CreateFriendRequestParams{
+		FromPersona: "a@attempts", ToPersona: "b@attempts", ToHuman: target.ID,
+		RequestedVerbs: []string{"create_for"},
+	})
+	slug, _ := MintSlug("friend-bot")
+	_, fep, err := s.ApproveFriendRequest(ctx, ApproveFriendRequestParams{
+		EdgeID: edge.ID, OwnerHumanID: target.ID, AgentID: agent.ID,
+		CredentialHash: "attempts-closed-friend-hash", CredentialPrefix: "sbk_ac", Slug: slug,
+	})
+	if err != nil {
+		t.Fatalf("approve friend request: %v", err)
+	}
+	fid := seedPending(t, s, ctx, fep.ID, "friend-q", "friend work")
+	if _, err := s.ClaimTodo(ctx, fep.ID, fid, "w", time.Hour); err != nil {
+		t.Fatalf("claim on friend endpoint: %v", err)
+	}
+	assertCloses(t, rec, "friend-edge revoke", map[string]int{"friend-q/revoked": 1}, nil, func() {
+		if _, err := s.RevokeFriendEdge(ctx, edge.ID, target.ID); err != nil {
+			t.Fatalf("revoke friend edge: %v", err)
 		}
 	})
 	assertAttemptInvariant(t, s, ctx)

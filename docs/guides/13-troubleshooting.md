@@ -70,10 +70,26 @@ anything.
   - **Gitea vs GitHub actions differ.** A label change is `label_updated` on Gitea and `labeled` on
     GitHub.
   - **An earlier rule matched.** First match wins; check `rule_id` on the trace.
-- **`faults` is present.** The rule errored (`error`), ran too long (`timeout`,
-  `budget_exhausted`), or no longer compiles (`compile_error`). A faulting rule counts as no match.
-  A jq error usually means indexing into a missing value; use `//` defaults (`.payload.issue.title
-  // ""`) and `[]?` for lists.
+- **`stage: fault` (disposition `faulted`).** The rule at `rule_id` errored (`error`), ran too
+  long (`timeout`, `budget_exhausted`), ran the rule sandbox out of memory (`budget_exhausted`,
+  detail "exceeded its memory limit"), or no longer compiles (`compile_error`). Evaluation stopped
+  there and the delivery was recorded with no todo, so it did not fall through to later rules or
+  the default. A jq error usually means indexing into a missing value; use `//` defaults
+  (`.payload.issue.title // ""`) and `[]?` for lists. `list_webhook_events {"disposition":
+  "faulted"}` lists every one, and `test_webhook_rules {"event_id": …}` reproduces it.
+- **A rule save is refused, naming events.** The rules fault on some of the webhook's 50 most
+  recent deliveries. Dry-run the named event ids with `test_webhook_rules`, fix the expression, and
+  save again.
+- **The producer sees `503 routing unavailable`.** The rule sandbox could not run (it failed to
+  start, every slot this owner may use was busy, or it died before reaching a rule), so nothing
+  was recorded. Gitea and Cairn retry, and the retry lands once the sandbox is healthy; GitHub does
+  not redeliver on its own, so redeliver from the hook's recent deliveries. Check the server log
+  for the matching error. A rule that exhausts the sandbox's memory or deadline is not this case:
+  it faults (above), so it cannot 503 forever.
+- **Checking before an upgrade to fail-closed routing.** Before that release, a fault was
+  recorded on the trace while the delivery still routed. The
+  [upgrade note](/guides/upgrading) has a read-only query that lists each webhook's faulted
+  deliveries over the last 7 days.
 - **`cause: rule_not_granted`.** The rule matched, but its queue or one of its `endpoints` is no
   longer reachable: the route was removed or the target revoked. The default applied, and later
   rules were skipped.

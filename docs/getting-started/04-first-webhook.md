@@ -82,10 +82,15 @@ If your agent is channel-connected, a doorbell arrives now. Either way, the queu
 {"todos": [{
   "id": "td_69315ae1-…", "queue": "inbox", "source": "generic", "kind": "webhook",
   "title": "self-managed generic delivery", "state": "pending", "attempt": 0, "max_attempts": 5,
-  "payload": {"hello": "switchboard"},
-  "routing": {"stage": "default", "cause": "no_match_default", "action": {"queue": "inbox"}}
+  "next_retry_at": null, "dead_letter": false,
+  "created_at": "…", "payload_size": 24
 }]}
 ```
+
+A listing carries compact rows: `payload_size` says what claiming will return, and the `payload` and
+`routing` trace arrive with the `claim`. `next_retry_at` is the time a failed todo re-enters
+`pending`, or `null` when no retry is scheduled; `dead_letter` is `true` when it failed and nothing
+will re-queue it.
 
 Work it:
 
