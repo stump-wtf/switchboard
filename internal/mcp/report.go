@@ -2,8 +2,9 @@ package mcp
 
 // Attempt report inputs
 //
-// The summary and artifact a lease-ending verb (complete, fail and release) closes its attempt with. attemptReport is the one place they are checked, so every verb accepts and
-// refuses exactly the same values: a malformed artifact is an invalid call naming the argument,
+// The summary and artifact a lease-ending verb (complete, fail and release) closes its attempt
+// with. attemptReport is the one place they are checked, so every verb accepts and refuses
+// exactly the same values: a malformed artifact is an invalid call naming the argument,
 // refused before the store is touched, while a long summary is only long and the store cuts it
 // (store.ClipSummary, in reportArgs) and sets summary_truncated on the attempt. The MCP layer does
 // not pre-clip, because the store can only report the cut it makes itself. Neither value is ever
