@@ -180,6 +180,12 @@ func TestTenantIsolationAcrossHumansOnASharedQueueName(t *testing.T) {
 			if got, err := s.GetTodo(ctx, f.epA, aClaimed.ID); err != nil || got.ID != aClaimed.ID {
 				t.Fatalf("A reading its own todo: got %+v err=%v", got, err)
 			}
+			// ...and its attempt history (get_todo's read), whose open attempt the foreign probe
+			// below must not reveal. Governing: SPEC-0034 REQ-10.
+			if as, total, _, err := s.TodoAttempts(ctx, f.epA, aClaimed.ID, 20); err != nil ||
+				len(as) != 1 || total != 1 || as[0].EndedAt != nil {
+				t.Fatalf("A reading its own attempts: %d attempts, total %d, err=%v; want one open attempt", len(as), total, err)
+			}
 
 			// --- UNHAPPY: B's pull path cannot see A's work. ---
 			listB, err := s.ListTodos(ctx, f.epB, []string{queue}, "", 50)
@@ -250,6 +256,12 @@ func TestTenantIsolationAcrossHumansOnASharedQueueName(t *testing.T) {
 					return err
 				}},
 				{"RetryTodo", func(id string) error { _, err := s.RetryTodo(ctx, f.epB, id); return err }},
+				// get_todo's history read: a foreign todo's attempts are not_found, never an empty list
+				// that would confirm the id. Governing: SPEC-0034 REQ-10 "Foreign todo".
+				{"TodoAttempts", func(id string) error {
+					_, _, _, err := s.TodoAttempts(ctx, f.epB, id, 20)
+					return err
+				}},
 			}
 			// The owner strings above are deliberately A's ("agent-a") on the transitions that check
 			// ownership: B guessing the right owner must STILL be refused, so the refusal cannot be
@@ -394,6 +406,8 @@ func TestTenantIsolationRejectsBrokenScopeCleanly(t *testing.T) {
 		assertCleanMiss(t, scope, "ReleaseTodo", err)
 		_, err = s.RetryTodo(ctx, scope, live.ID)
 		assertCleanMiss(t, scope, "RetryTodo", err)
+		_, _, _, err = s.TodoAttempts(ctx, scope, live.ID, 20)
+		assertCleanMiss(t, scope, "TodoAttempts", err)
 	}
 
 	// The row is untouched and A can still work it — proof the broken-scope refusals above are
