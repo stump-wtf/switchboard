@@ -25,6 +25,28 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md)
   before upgrading to find webhooks whose rules fault today. (#212)
 
+### Security
+
+- **Event history is scoped to its owner.** `list_webhook_events`, `get_webhook_event`,
+  `replay_webhook_event` and the `switchboard://events/recent` resource could read and
+  replay every tenant's deliveries. Each event now records the endpoint that owns it, and
+  every history read and replay returns only the caller's own events; another tenant's
+  event id answers `not_found`, like an id that does not exist. Event deduplication is
+  keyed per owner as well. Existing events are backfilled from their webhook. Events whose
+  owner can no longer be established (their webhook was deleted before this release) stay
+  invisible, to the tools and to the board, and age out through retention. (#194)
+- **Friend-approved endpoints read no event history.** A friend endpoint is minted on one of
+  the approver's agents, so owner scoping alone would have let a friend request that asked for
+  the event-history tools read and replay all of the approver's deliveries. A friend endpoint
+  now lists nothing and every event id answers `not_found`, whatever it was granted, until
+  friend endpoints get their own authority (#420). (#194)
+- **The board's dedup markers stay within one owner.** The feed's `deduped` stage, the LIVE
+  rate and the todo dedup badge no longer match another owner's delivery that shares an
+  external id. (#194)
+- Permanently deleting an endpoint now also deletes the deliveries it owns. Todos those
+  deliveries created on a friend's endpoint keep their payload but lose the event link, so they
+  read as trust `queue` and no longer ring as verified. (#194)
+
 ## [0.3.0] - 2026-09-22
 
 The first release since `v0.2.0`, and the first release under

@@ -101,8 +101,9 @@ source IPs, `bytea` for raw event bodies). It MUST create the hot-path partial a
 - `idx_todos_dedupe` UNIQUE on `todos (queue, idempotency_key) WHERE idempotency_key IS NOT NULL AND
   state <> 'done' AND state <> 'failed'` — at most one non-terminal todo per `(queue,
   idempotency_key)`.
-- `idx_events_dedupe` UNIQUE on `events (source, external_id) WHERE external_id IS NOT NULL` —
-  event-level delivery dedup.
+- `idx_events_dedupe` UNIQUE on `events (endpoint_id, source, external_id) NULLS NOT DISTINCT WHERE
+  external_id IS NOT NULL` — event-level delivery dedup, keyed per owning endpoint so one owner's
+  delivery is never answered with another's event (SPEC-0033 F14, migration 0024).
 - `idx_events_source_time` on `events (source, received_at DESC)` for read surfaces.
 
 Switchboard-minted credentials MUST be stored hashed (e.g. `endpoints.credential_hash`); no signing
