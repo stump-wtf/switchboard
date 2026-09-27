@@ -323,8 +323,12 @@ func renderAttemptsA2UI(hist a2uiAttempts) []a2uiComponent {
 	comps = append(comps, list)
 	if hidden := hist.Total - len(hist.Rows); hidden > 0 {
 		col.Children = append(col.Children, "attempts-more")
+		noun := "attempts"
+		if hidden == 1 {
+			noun = "attempt"
+		}
 		comps = append(comps, a2uiComponent{Component: "Text", ID: "attempts-more", Variant: "caption",
-			Text: fmt.Sprintf("%d earlier attempts not shown.", hidden)})
+			Text: fmt.Sprintf("%d earlier %s not shown.", hidden, noun)})
 	}
 	return append([]a2uiComponent{col}, comps...)
 }

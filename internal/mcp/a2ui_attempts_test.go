@@ -91,6 +91,15 @@ func TestRenderTodoA2UIListsAttempts(t *testing.T) {
 	}
 }
 
+// One left out reads as one attempt, as the Board drawer words it.
+func TestRenderTodoA2UIOneHiddenAttemptIsSingular(t *testing.T) {
+	todo := store.Todo{ID: "td_1", Queue: "q", Title: "one more", State: "claimed", CreatedAt: time.Now()}
+	p := renderTodoA2UI(todo, a2uiAttempts{Rows: a2uiHistory(), Total: 4})
+	if c := findComponent(p, "attempts-more"); c == nil || c.Text != "1 earlier attempt not shown." {
+		t.Errorf("attempts-more = %+v, want \"1 earlier attempt not shown.\"", c)
+	}
+}
+
 func TestRenderTodoA2UINoAttempts(t *testing.T) {
 	p := renderTodoA2UI(store.Todo{ID: "td_n", Queue: "q", Title: "new", State: "pending", CreatedAt: time.Now()}, a2uiAttempts{})
 	if err := validateRefs(p); err != nil {
