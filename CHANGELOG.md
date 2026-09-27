@@ -48,6 +48,8 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   the CLI's `User-Agent` changes the same way. Release container images report the tag
   too, and images built from `main` report a `git describe` version instead of a bare
   commit hash.
+- A todo re-queued by the retry scheduler within a minute of its last doorbell now rings again,
+  instead of waiting for the doorbell heartbeat. (#320)
 
 ### Security
 
@@ -77,8 +79,8 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   with an outcome (`completed`, `failed`, `released`, `lease_expired`, `reaped`, `canceled`,
   `revoked`); `died` marks a lease that lapsed with no report. A todo keeps at most
   `attempt_history_max_per_todo` attempts (a `settings` row, default 50, minimum 5), and they are
-  deleted with the todo. Migration `0022` adds the table and opens a `migrated` attempt for each
-  todo in flight when it runs. See the
+  deleted with the todo. Migration `0022_todo_attempts` adds the table and opens an attempt, with
+  claimant `migrated`, for each todo in flight when it runs. See the
   [attempt history guide](https://switchboard.stump.wtf/docs/guides/attempt-history). (#315, #332)
 - **Attempts on the drain verbs.** `claim` and `claim_next` take a `claimant` label (128 bytes,
   control characters removed) and answer with `attempt_seq`, `attempts_total` and the five most
@@ -108,11 +110,6 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   handle or an absolute `https` URL; anything else is `invalid` and changes nothing). It honours the
   lease-token fence. It is its own grant, listed by the vend wizard and the consent screen, and no
   other verb implies it. (#328)
-
-### Fixed
-
-- A todo re-queued by the retry scheduler within a minute of its last doorbell now rings again,
-  instead of waiting for the doorbell heartbeat. (#320)
 
 ## [0.3.0] - 2026-09-22
 
