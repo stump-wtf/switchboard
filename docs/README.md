@@ -57,6 +57,7 @@ ADR-0018 to ADR-0029 are not indexed here yet; browse [`adrs/`](adrs/) for them.
 | [ADR-0037](adrs/ADR-0037-provider-issued-signing-secrets.md) | **Provider-issued signing secrets** | `awaiting_secret`, the write-only `set_webhook_secret` verb, Slack URL verification, Linear and Plain kinds. |
 | [ADR-0038](adrs/ADR-0038-teams-and-tenancy.md) | **Teams and tenancy** | Every resource has one user or team owner; the operator bounds tenant data and never reads it. |
 | [ADR-0039](adrs/ADR-0039-attempt-history-on-todos.md) | **Attempt history on todos** | Every committed claim opens an attempt record; `get_todo`, `release` and an opt-in lease-token fence. |
+| [ADR-0042](adrs/ADR-0042-agent-activity-and-todo-audit-trail.md) | **Agent activity + todo audit trail** | OTLP/HTTP trace ingest bound to todos, heartbeat notes, a `todo_activity` log, the todo page and the Activity feed. |
 
 ## OpenSpec Specifications
 
@@ -97,6 +98,7 @@ SPEC-0015 to SPEC-0023 are not indexed here yet; browse [`openspec/specs/`](open
 | [SPEC-0032](openspec/specs/provider-signing-secrets/spec.md) | Provider-issued signing secrets | ADR-0037 | Secret origin, `awaiting_secret`, `set_webhook_secret`, rotation, replay guard, Slack handshake, Linear and Plain. |
 | [SPEC-0033](openspec/specs/teams-tenancy/spec.md) | Teams and tenancy | ADR-0038 | Owner model, reach, team roles and invites, team queues, operator surfaces, enrollment, the audit fixes. |
 | [SPEC-0034](openspec/specs/todo-attempts/spec.md) | Attempt history | ADR-0039 | Attempt records, died-versus-failed, prior attempts on claim, `get_todo`, `release`, the lease-token fence. |
+| [SPEC-0036](openspec/specs/agent-activity/spec.md) | Agent activity + audit trail | ADR-0042 | `/otlp/{endpoint}/v1/traces`, span binding, masking, heartbeat notes, `todo_activity`, the todo page, waterfall and Activity feed. |
 
 ## Reference Contracts
 
