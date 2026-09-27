@@ -12,6 +12,20 @@ script sends a webhook; switchboard checks who sent it, decides where it goes, a
 This page is the vocabulary. [Sign in and vend your first endpoint](/getting-started/first-endpoint)
 is where you start doing things.
 
+## Your instance URL
+
+Every example in getting started talks to **your** Switchboard instance, written as
+`$SWITCHBOARD_URL`: the instance you run yourself, or the one your operator gave you. The instance
+stump.wtf runs, `https://switchboard.stump.wtf`, is one example. Set it once in your shell and the
+commands on these pages work as copied:
+
+```bash
+export SWITCHBOARD_URL=https://switchboard.example.com   # your instance, no trailing slash
+```
+
+JSON config files such as `.mcp.json` and `crush.json` can't expand a shell variable in a URL, so
+those examples write `https://<your-switchboard>` instead. Replace it with the same URL.
+
 ## The whole path
 
 ```mermaid
@@ -39,8 +53,8 @@ flowchart LR
 
 | Term | What it is |
 |---|---|
-| **Endpoint** | Your agent's door into switchboard: an MCP URL (`https://switchboard.stump.wtf/mcp/<slug>`) plus a bearer credential (`sbk_…`). It carries a fixed scope: which queues it drains, which tools it may call, how many webhooks it may create, and how long it lives. You vend endpoints; you can revoke them instantly. |
-| **Webhook** | An ingest URL (`https://switchboard.stump.wtf/webhooks/w/<token>`) that an endpoint created. Its **source type** (`github`, `gitea`, `cairn`, `generic`, …) decides how deliveries are verified, and its **target queue** is where they land by default. |
+| **Endpoint** | Your agent's door into switchboard: an MCP URL (`$SWITCHBOARD_URL/mcp/<slug>`) plus a bearer credential (`sbk_…`). It carries a fixed scope: which queues it drains, which tools it may call, how many webhooks it may create, and how long it lives. You vend endpoints; you can revoke them instantly. |
+| **Webhook** | An ingest URL (`$SWITCHBOARD_URL/webhooks/w/<token>`) that an endpoint created. Its **source type** (`github`, `gitea`, `cairn`, `generic`, …) decides how deliveries are verified, and its **target queue** is where they land by default. |
 | **Event** | One accepted delivery, stored with its headers and body. The history is what dry-runs and debugging read. |
 | **Routing rule** | A jq expression plus an action: send matching deliveries to a queue (optionally only some targets), or drop them. First match wins. |
 | **Todo** | One unit of work, carrying the delivery's payload. It moves through `pending` → `claimed` → `done` or `failed`. |
