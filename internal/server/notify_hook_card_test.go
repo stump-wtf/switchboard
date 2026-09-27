@@ -10,11 +10,16 @@ package server
 // and "Redirect Validation"; SPEC-0015 REQ "Wizard Interaction Pattern" (delete confirms).
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/metrics"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
@@ -206,5 +211,53 @@ func TestNotifyHookOperatorDisableCounts(t *testing.T) {
 		if got := operatorDisables(); got != step.want {
 			t.Fatalf("step %d after %s: operator disables = %v, want %v", i, step.action, got, step.want)
 		}
+	}
+}
+
+// TestNotifyHookCardUnavailableWhenHooksReadFails drives the degraded path of the endpoints page:
+// the cards load but the hooks read does not. The card must say the hooks are unavailable rather
+// than render "no notify hooks", which would hide an auto-disabled hook waiting for a re-enable.
+// The failure is a real one: another session holds an ACCESS EXCLUSIVE lock on notify_hooks, so
+// the hooks read blocks until the request's deadline while the endpoint read (which never touches
+// that table) succeeds. The lock is transaction-scoped and released by the rollback.
+func TestNotifyHookCardUnavailableWhenHooksReadFails(t *testing.T) {
+	f := newTenancyFixture(t)
+	if _, err := f.st.CreateNotifyHook(f.ctx, f.epA.ID, "https://dispatch.example.com/locked", nil, false, "whsec_locked_secret", 5); err != nil {
+		t.Fatalf("create hook: %v", err)
+	}
+	u, err := url.Parse(os.Getenv("SWITCHBOARD_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	u.Path = "/switchboard_test_server" // newDBRouterWeb's database
+	locker, err := db.Connect(f.ctx, u.String())
+	if err != nil {
+		t.Fatalf("connect locker: %v", err)
+	}
+	t.Cleanup(locker.Close)
+	tx, err := locker.Begin(f.ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(f.ctx) }()
+	if _, err := tx.Exec(f.ctx, `LOCK TABLE notify_hooks IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(f.ctx, 750*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/endpoints", nil).WithContext(ctx)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: f.aliceTok})
+	rec := httptest.NewRecorder()
+	f.r.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, `id="sb-ep-`+f.epA.ID+`"`) {
+		t.Fatalf("endpoints page = %d without alice's card; the degraded path must still render the cards", rec.Code)
+	}
+	if !strings.Contains(body, "data-sb-hooks-unavailable") {
+		t.Error("a failed hooks read did not render the unavailable state")
+	}
+	if strings.Contains(body, "data-sb-hooks-empty") {
+		t.Error("a failed hooks read rendered the empty state, hiding the hooks the owner may need to act on")
 	}
 }
