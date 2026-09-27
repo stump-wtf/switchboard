@@ -9,7 +9,9 @@ create a webhook, send a test delivery, watch it become a todo, and claim it. Th
 GitHub, Gitea, your own signed producer, and Cairn.
 
 You need an endpoint vended with a webhook allowance (the wizard's webhooks step) and an agent
-connected to it. See [Sign in and vend your first endpoint](/getting-started/first-endpoint).
+connected to it. See [Sign in and vend your first endpoint](/getting-started/first-endpoint). The
+`curl` examples read your instance from `$SWITCHBOARD_URL` (see
+[Your instance URL](/getting-started/concepts#your-instance-url)).
 
 ## 1. Create a webhook
 
@@ -22,7 +24,7 @@ Ask your agent to call `create_webhook`, or call it yourself from any MCP client
 ```json
 {
   "webhook_id": "6aa636e3-…",
-  "ingest_url": "https://switchboard.stump.wtf/webhooks/w/<token>",
+  "ingest_url": "https://<your-switchboard>/webhooks/w/<token>",
   "source_type": "generic",
   "target_queue": "inbox",
   "trust_mode": "token"
@@ -48,7 +50,7 @@ returns it again.
 A `generic` webhook accepts any POST to its URL:
 
 ```bash
-curl -sS -X POST "https://switchboard.stump.wtf/webhooks/w/<token>" \
+curl -sS -X POST "$SWITCHBOARD_URL/webhooks/w/<token>" \
   -H 'Content-Type: application/json' \
   -d '{"hello": "switchboard"}'
 ```
