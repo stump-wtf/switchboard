@@ -80,9 +80,9 @@ func TestSelfManagedFaultedDeliveryIsRecordedNotRouted(t *testing.T) {
 	rec := &recordingMetrics{}
 	ing.SetMetrics(rec)
 	st := store.New(pool)
-	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-fault", cairnSecret)
+	_, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-fault", cairnSecret)
 
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{
+	setRules(t, ctx, st, wh.ID, routing.Config{
 		Rules: []routing.Rule{
 			{ID: "trust", Expr: `.artifact.actor_id as $a | any($params.trusted[]; . == $a) | not`, Action: routing.Action{Drop: true}},
 			{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
@@ -139,7 +139,7 @@ func TestSelfManagedFaultedDeliveryIsRecordedNotRouted(t *testing.T) {
 	}
 
 	// The owner fixes the rules; the producer redelivers. The slot is spent, so it stays faulted.
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
 	}})
 	again := postSelfManaged(ing, "cairn-fault", body, cairnHeaders(body, "evt-fault"))
@@ -166,8 +166,8 @@ func TestSelfManagedRoutedRedeliveryIgnoresTodaysFault(t *testing.T) {
 	rec := &recordingMetrics{}
 	ing.SetMetrics(rec)
 	st := store.New(pool)
-	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-refault", cairnSecret)
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	_, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-refault", cairnSecret)
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
 	}})
 	body := cairnBody("evt-refault", time.Now(), "routed first")
@@ -176,7 +176,7 @@ func TestSelfManagedRoutedRedeliveryIgnoresTodaysFault(t *testing.T) {
 		t.Fatalf("first delivery = %d %s, want one todo created", first.Code, first.Body.String())
 	}
 
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "broken", Expr: `.artifact.title + 1 > 1`, Action: routing.Action{Queue: "inbox"}},
 	}})
 	again := postSelfManaged(ing, "cairn-refault", body, cairnHeaders(body, "evt-refault"))
@@ -207,8 +207,8 @@ func TestSelfManagedFaultingDropRuleSkipsDefault(t *testing.T) {
 	ing, pool, ctx, _ := ingestWithLogCapture(t, Config{})
 	ing.SetRouter(routing.InProcess{})
 	st := store.New(pool)
-	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-fault-drop", cairnSecret)
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{
+	_, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-fault-drop", cairnSecret)
+	setRules(t, ctx, st, wh.ID, routing.Config{
 		Rules:   []routing.Rule{{ID: "noise", Expr: `last(range(1e12)) > 0`, Action: routing.Action{Drop: true}}},
 		Default: &routing.Action{Queue: "inbox"},
 	})
@@ -231,8 +231,8 @@ func TestSelfManagedUnavailableSandboxRefusesDelivery(t *testing.T) {
 	rec := &recordingMetrics{}
 	ing.SetMetrics(rec)
 	st := store.New(pool)
-	h, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-down", cairnSecret)
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	_, owner, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-down", cairnSecret)
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
 	}})
 
@@ -278,8 +278,8 @@ func TestSelfManagedRoutingWithoutFaultsIsQuiet(t *testing.T) {
 	ing, pool, ctx, logs := ingestWithLogCapture(t, Config{})
 	ing.SetRouter(routing.InProcess{})
 	st := store.New(pool)
-	h, _, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-quiet", cairnSecret)
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	_, _, wh := seedWebhook(t, st, ctx, "cairn", "signed", "inbox", "cairn-quiet", cairnSecret)
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "ok", Expr: `true`, Action: routing.Action{Queue: "inbox"}},
 	}})
 

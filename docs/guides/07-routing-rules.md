@@ -96,7 +96,8 @@ all strings or all numbers (`invalid_params` otherwise).
 ## The tools
 
 All seven are webhook self-management verbs on your vended endpoint, gated by scope and by owning
-the webhook (any endpoint of the same human may manage it).
+the webhook: only the endpoint that owns a webhook may manage its rules. Your other endpoints get
+`not_found`, exactly as for a webhook that does not exist.
 
 | Tool | Does |
 |---|---|

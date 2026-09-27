@@ -209,23 +209,22 @@ func (s *Store) ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpo
 // a cross-tenant enumeration surface. Governing: ADR-0022, ADR-0010 (human-vended friending),
 // SPEC-0001 REQ "Deterministic Route Fan-Out (Token-Free)".
 
-// WebhookOwnerEndpointForHuman resolves the endpoint that owns webhookID, but only when that
-// endpoint's agent belongs to ownerHumanID. Unknown, malformed, and owned-by-another-human ids are
-// ALL ErrNotFound and therefore indistinguishable — the same non-leaking shape RotateWebhookSecret /
+// WebhookOwnerEndpointFor resolves the endpoint that owns webhookID, but only when that endpoint IS
+// callerEndpointID: a webhook is configured by its own endpoint, never by a sibling endpoint of the
+// same human (F19, SPEC-0033 REQ "Closing the Audited Surfaces"). Unknown, malformed, and
+// owned-by-any-other-endpoint ids are ALL ErrNotFound and therefore indistinguishable — the same non-leaking shape RotateWebhookSecret /
 // DeleteWebhook use, so a routing verb cannot be turned into an existence oracle for another human's
 // webhooks. The returned endpoint id is the webhook's implicit always-target (ResolveWebhookTargets
 // seeds it), which the caller surfaces so an agent can see the full fan-out set.
-func (s *Store) WebhookOwnerEndpointForHuman(ctx context.Context, webhookID, ownerHumanID string) (string, error) {
-	if !isUUID(webhookID) || !isUUID(ownerHumanID) {
+func (s *Store) WebhookOwnerEndpointFor(ctx context.Context, webhookID, callerEndpointID string) (string, error) {
+	if !isUUID(webhookID) || !isUUID(callerEndpointID) {
 		return "", ErrNotFound
 	}
 	var endpointID string
 	err := s.pool.QueryRow(ctx, `
 		SELECT w.endpoint_id::text
 		FROM endpoint_webhooks w
-		JOIN endpoints e ON e.id = w.endpoint_id
-		JOIN agents   a ON a.id = e.agent_id
-		WHERE w.id = $1 AND a.owner_human_id = $2`, webhookID, ownerHumanID).Scan(&endpointID)
+		WHERE w.id = $1 AND w.endpoint_id = $2`, webhookID, callerEndpointID).Scan(&endpointID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}

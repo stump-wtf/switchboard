@@ -528,7 +528,7 @@ amendment F11 requires.
 
 - **WHEN** a friend request asks for `set_webhook_rules`, and the target human approves it
 - **THEN** the minted endpoint's grant contains only `create_for` and the drain verbs, and a call to
-  `set_webhook_rules` returns `scope_denied`
+  `set_webhook_rules` returns `forbidden` (the [SPEC-0006](../agent-tools/spec.md) scope-violation code)
 
 #### Scenario: Rule verbs stay on their own webhook (F3, F19)
 

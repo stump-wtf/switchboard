@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stump-wtf/switchboard/internal/cred"
@@ -30,6 +31,7 @@ import (
 // the same store path the self-managed receiver uses, and an event-verb session for each endpoint.
 type historyFixture struct {
 	*routeFixture
+	pool           *pgxpool.Pool
 	eventA, eventB int64
 	sessA1, sessA2 *sdk.ClientSession // human A's two endpoints
 	sessB          *sdk.ClientSession // human B
@@ -42,7 +44,7 @@ func newHistoryFixture(t *testing.T) (context.Context, *historyFixture) {
 	pool, ctx := routeTestPool(t)
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	t.Cleanup(cancel)
-	f := &historyFixture{routeFixture: newRouteFixture(t, ctx, pool)}
+	f := &historyFixture{routeFixture: newRouteFixture(t, ctx, pool), pool: pool}
 
 	deliver := func(webhookID, endpointID, key, payload string) int64 {
 		t.Helper()
@@ -228,10 +230,10 @@ func TestEventHistorySurvivesWebhookDelete(t *testing.T) {
 
 // A friend approval mints the remote peer's endpoint onto one of the APPROVER's agents, so the
 // endpoint's owner is the approver. B's peer asks A for the event verbs, and A approves with no
-// narrowing: the friend endpoint is advertised the tools, and every one of them reads nothing of
-// A's. The list and the resource are empty, get and replay are not_found exactly like an unknown
-// id, and the refused replay makes no outbound request. Until #420 (F3) gives friend endpoints
-// their own authority, their history reach is empty.
+// narrowing. Since #420 (F3) the grant never carries them; the test then widens the friend endpoint
+// by hand, as a pre-0025 one was, and every event tool reads nothing of A's. The list and the
+// resource are empty, get and replay are not_found exactly like an unknown id, and the refused
+// replay makes no outbound request.
 // Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads", REQ "Closing the Audited
 // Surfaces" (F3).
 func TestEventHistoryFriendEndpointReadsNothing(t *testing.T) {
@@ -259,11 +261,17 @@ func TestEventHistoryFriendEndpointReadsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("approve friend request: %v", err)
 	}
+	// Since #420 (F3) a friend grant can never carry the event verbs: the request drops them and the
+	// approval mints create_for alone.
 	for _, v := range eventVerbNames {
-		if !slices.Contains(ep.ScopeVerbs, v) {
-			t.Fatalf("fixture: friend grant %v lacks %s, so the test would pass on scope alone", ep.ScopeVerbs, v)
+		if slices.Contains(ep.ScopeVerbs, v) {
+			t.Fatalf("friend grant %v carries %s; F3 bounds a friend grant to create_for and the drain verbs", ep.ScopeVerbs, v)
 		}
 	}
+	// The owner scoping below is defense in depth behind that bound, so exercise it directly: widen
+	// the friend endpoint by hand, as a pre-0025 friend endpoint was, so the test cannot pass on
+	// scope alone.
+	grantVerbs(t, ctx, f.pool, ep.ID, append([]string{"create_for"}, eventVerbNames...))
 	friend := routeSession(t, ctx, f.st, slug, token)
 
 	if ids := listedIDs(t, ctx, friend); len(ids) != 0 {
