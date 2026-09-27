@@ -250,13 +250,14 @@ func (s *Store) RevokeFriendEdge(ctx context.Context, edgeID, ownerHumanID strin
 	// force-expired — mirroring RevokeEndpoint and ExpireEndpoints so friend-edge revocation is
 	// instant and total from every credential's point of view. Governing: SPEC-0016 REQ
 	// "Revocation Cascade", SPEC-0007 REQ "Instant, Total Revocation".
+	var closed []string
 	if edge.EndpointID != "" {
 		if _, err := tx.Exec(ctx,
 			`UPDATE endpoints SET state = 'revoked', revoked_at = now() WHERE id = $1 AND state = 'active'`,
 			edge.EndpointID); err != nil {
 			return FriendEdge{}, err
 		}
-		if err := deadLetterEndpointTodos(ctx, tx, []string{edge.EndpointID}); err != nil {
+		if closed, err = deadLetterEndpointTodos(ctx, tx, []string{edge.EndpointID}); err != nil {
 			return FriendEdge{}, err
 		}
 		if err := revokeEndpointOAuth(ctx, tx, []string{edge.EndpointID}); err != nil {
@@ -273,6 +274,7 @@ func (s *Store) RevokeFriendEdge(ctx context.Context, edgeID, ownerHumanID strin
 	if err := tx.Commit(ctx); err != nil {
 		return FriendEdge{}, err
 	}
+	s.countRevokedAttempts(closed)
 	return edge, nil
 }
 

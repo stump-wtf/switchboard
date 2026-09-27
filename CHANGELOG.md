@@ -47,6 +47,17 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   deliveries created on a friend's endpoint keep their payload but lose the event link, so they
   read as trust `queue` and no longer ring as verified. (#194)
 
+### Added
+
+- **Lease-token fence.** `claim` and `claim_next` take `require_fence`; a fenced claim returns a
+  one-time `lease_token` that `heartbeat`, `complete` and `fail` must then present, so another
+  worker on the same endpoint, or a stale one, gets `conflict` instead of closing the attempt.
+  Only the token's SHA-256 is stored. (#325)
+- **`get_todo`.** Reads one todo with its `result`, `next_retry_at`, `dead_letter` and its attempt
+  history, newest first (`attempts_limit`, default 20, maximum 50). `list_todos` implies it, so
+  existing endpoints get it without a re-vend. A foreign todo, or one outside the granted queues,
+  answers `not_found` exactly as an unknown id does. (#326)
+
 ## [0.3.0] - 2026-09-22
 
 The first release since `v0.2.0`, and the first release under

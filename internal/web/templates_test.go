@@ -362,7 +362,7 @@ func TestVendVerbOptionsEnumerateAgentToolsSurface(t *testing.T) {
 	for _, o := range opts {
 		byName[o.Name] = o.Checked
 	}
-	for _, v := range []string{"list_todos", "claim", "complete", "fail", "heartbeat"} {
+	for _, v := range []string{"list_todos", "get_todo", "claim", "complete", "fail", "heartbeat"} {
 		checked, ok := byName[v]
 		if !ok || !checked {
 			t.Errorf("drain verb %q must be offered and pre-checked (offered=%v checked=%v)", v, ok, checked)

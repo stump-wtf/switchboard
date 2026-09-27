@@ -5,6 +5,7 @@ package mcp
 // runs everywhere, including CI runners without a database.
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -48,6 +49,14 @@ type fakeStore struct {
 	// cooldown makes a row ring once per attach — and attachCalls records every call's scope.
 	attachRings []store.Todo
 	attachCalls [][]string
+	// fences holds the open attempt's lease-token hash by todo id (SPEC-0034 REQ-6); absent is
+	// unfenced.
+	fences map[string][]byte
+	// attempts is each todo's seeded attempt history, newest first (SPEC-0034; get_todo reads it).
+	attempts map[string][]store.Attempt
+	// attemptsLimit is the limit the last TodoAttempts call received, so a test can pin the
+	// handler's own default and clamp rather than the fake's.
+	attemptsLimit int
 }
 
 // RingOnAttach hands out attachRings once. Deliberately ignores failErr: a stream open in a test
@@ -71,6 +80,8 @@ func newFakeStore() *fakeStore {
 		webhooks:       map[string]store.Webhook{},
 		webhookSecrets: map[string]string{},
 		settings:       map[string]string{},
+		fences:         map[string][]byte{},
+		attempts:       map[string][]store.Attempt{},
 	}
 }
 
@@ -298,6 +309,100 @@ func (f *fakeStore) FailTodo(_ context.Context, endpointID, id, owner string, re
 	return t, nil
 }
 
+// The ...With lifecycle wraps the calls above and models the store's lease-token fence
+// (store.leaseFence): a claim records its hash, and heartbeat, complete and fail on a live claim
+// apply only when the presented hash equals it (nil equals nil), else store.ErrConflict.
+
+func (f *fakeStore) ClaimTodoWith(ctx context.Context, endpointID, id, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error) {
+	t, err := f.ClaimTodo(ctx, endpointID, id, owner, o.TTL)
+	if err != nil {
+		return t, store.ClaimedAttempt{}, err
+	}
+	f.setFence(t.ID, o.TokenHash)
+	return t, store.ClaimedAttempt{}, nil
+}
+
+func (f *fakeStore) ClaimNextWith(ctx context.Context, endpointID string, queues []string, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error) {
+	t, err := f.ClaimNext(ctx, endpointID, queues, owner, o.TTL)
+	if err != nil {
+		return t, store.ClaimedAttempt{}, err
+	}
+	f.setFence(t.ID, o.TokenHash)
+	return t, store.ClaimedAttempt{}, nil
+}
+
+func (f *fakeStore) HeartbeatTodoWith(ctx context.Context, endpointID, id, owner string, ttl time.Duration, tokenHash []byte) (store.Todo, error) {
+	if f.fenceMiss(endpointID, id, tokenHash) {
+		return store.Todo{}, store.ErrConflict
+	}
+	return f.HeartbeatTodo(ctx, endpointID, id, owner, ttl)
+}
+
+func (f *fakeStore) CompleteTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error) {
+	if f.fenceMiss(endpointID, id, r.TokenHash) {
+		return store.Todo{}, store.ErrConflict
+	}
+	t, err := f.CompleteTodo(ctx, endpointID, id, owner, r.Result)
+	if err == nil {
+		f.setFence(id, nil)
+	}
+	return t, err
+}
+
+func (f *fakeStore) FailTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error) {
+	if f.fenceMiss(endpointID, id, r.TokenHash) {
+		return store.Todo{}, store.ErrConflict
+	}
+	t, err := f.FailTodo(ctx, endpointID, id, owner, r.Result)
+	if err == nil {
+		f.setFence(id, nil)
+	}
+	return t, err
+}
+
+// setFence records (or, for nil, clears) a todo's open-attempt fence.
+func (f *fakeStore) setFence(id string, hash []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if hash == nil {
+		delete(f.fences, id)
+		return
+	}
+	f.fences[id] = hash
+}
+
+// fenceMiss reports whether a live claim in this endpoint's scope is fenced by a hash other than
+// the presented one. Absent, foreign and unclaimed rows are left to the wrapped call to classify.
+func (f *fakeStore) fenceMiss(endpointID, id string, hash []byte) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.scopedTodo(endpointID, id)
+	if !ok || t.State != "claimed" {
+		return false
+	}
+	return !bytes.Equal(f.fences[id], hash)
+}
+
+// TodoAttempts mirrors store.TodoAttempts over the seeded history: endpoint-scoped, a foreign or
+// unknown id is ErrNotFound, the limit is clamped to 20/50, and total counts every seeded attempt.
+func (f *fakeStore) TodoAttempts(_ context.Context, endpointID, id string, limit int) ([]store.Attempt, int, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return nil, 0, 0, f.failErr
+	}
+	if _, ok := f.scopedTodo(endpointID, id); !ok {
+		return nil, 0, 0, store.ErrNotFound
+	}
+	f.attemptsLimit = limit
+	if limit <= 0 {
+		limit = 20
+	}
+	limit = min(limit, 50)
+	all := f.attempts[id]
+	return append([]store.Attempt(nil), all[:min(limit, len(all))]...), len(all), 0, nil
+}
+
 // putTodo seeds a todo row.
 func (f *fakeStore) putTodo(t store.Todo) {
 	f.mu.Lock()
@@ -515,7 +620,8 @@ func TestHandshake(t *testing.T) {
 	}
 
 	// tools/list advertises exactly the endpoint's allowlisted verbs (SPEC-0014 REQ "Agent Tool
-	// Surface over MCP") — this endpoint was vended with list_todos + claim only.
+	// Surface over MCP") — this endpoint was vended with list_todos + claim only, and list_todos
+	// implies get_todo (SPEC-0034 REQ-8).
 	tools, err := cs.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
@@ -525,7 +631,7 @@ func TestHandshake(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	if want := []string{"claim", "list_todos"}; !slices.Equal(names, want) {
+	if want := []string{"claim", "get_todo", "list_todos"}; !slices.Equal(names, want) {
 		t.Fatalf("advertised tools = %v, want %v", names, want)
 	}
 

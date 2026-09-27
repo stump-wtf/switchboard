@@ -81,6 +81,8 @@ type Store struct {
 	endpointSeenHook atomic.Pointer[EndpointSeenHook]
 	// doorbellHook mirrors todoHook for push-eligible creations (the MCP channel doorbell).
 	doorbellHook atomic.Pointer[TodoDoorbellHook]
+	// requeuedHook observes retries the scheduler re-queued, before their wakeup (todos.go).
+	requeuedHook atomic.Pointer[TodoRequeuedHook]
 	// metricsSink receives the SPEC-0023 REQ-3 lifecycle counters (metrics.go). Nil = no-op.
 	metricsSink atomic.Pointer[Metrics]
 }
