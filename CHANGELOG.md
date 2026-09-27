@@ -13,6 +13,15 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-27
+
+Routing rules now fail closed, replay targets belong to their endpoint and every replay
+passes the SSRF guard, event history is scoped to its owner, and workers can fence their
+leases and read a todo's attempt history with `get_todo`. **Read the
+[upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md)
+before upgrading**: two changes are breaking, and the replay-target migration cannot be
+reversed.
+
 ### Breaking
 
 - **Routing rules fail closed.** A rule that errors, times out, runs out of memory or
