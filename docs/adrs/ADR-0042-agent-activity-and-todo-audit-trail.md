@@ -368,3 +368,4 @@ flowchart LR
     smaller pattern floor, because it keeps far less text by default.
   * Harness: the first exporter. It passes the claim's `traceparent` to the process it runs.
 * Implemented by [SPEC-0036](../openspec/specs/agent-activity/spec.md).
+* **Extended by [ADR-0043](ADR-0043-todo-lineage-subject-threads-and-tags.md):** thread keys, lineage links with provenance, tags, and the `/graph` view. These add "how todos relate" to this record's "what happened inside one todo".
