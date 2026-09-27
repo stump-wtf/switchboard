@@ -54,6 +54,9 @@ type fakeStore struct {
 	fences map[string][]byte
 	// attempts is each todo's seeded attempt history, newest first (SPEC-0034; get_todo reads it).
 	attempts map[string][]store.Attempt
+	// attemptsLimit is the limit the last TodoAttempts call received, so a test can pin the
+	// handler's own default and clamp rather than the fake's.
+	attemptsLimit int
 }
 
 // RingOnAttach hands out attachRings once. Deliberately ignores failErr: a stream open in a test
@@ -391,6 +394,7 @@ func (f *fakeStore) TodoAttempts(_ context.Context, endpointID, id string, limit
 	if _, ok := f.scopedTodo(endpointID, id); !ok {
 		return nil, 0, 0, store.ErrNotFound
 	}
+	f.attemptsLimit = limit
 	if limit <= 0 {
 		limit = 20
 	}

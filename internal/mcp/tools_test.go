@@ -146,7 +146,8 @@ func TestListTodosScoped(t *testing.T) {
 	callErr(t, ctx, cs, "list_todos", map[string]any{"queue": "deploys"}, "forbidden")
 }
 
-// TestPayloadShipsOnceAtClaim: only claim and claim_next return the payload and routing trace;
+// TestPayloadShipsOnceAtClaim: only claim, claim_next and get_todo return the payload and routing
+// trace (get_todo per SPEC-0034 REQ-8);
 // list_todos, heartbeat, complete and fail return compact rows. A listing of full rows grew with
 // whatever the producer sent — 57 pending forge todos came to 1.07 MB and wedged two 196K-token
 // workers — and every ack echoed a payload the caller already held.
@@ -219,6 +220,13 @@ func TestPayloadShipsOnceAtClaim(t *testing.T) {
 	got = nil
 	callOK(t, ctx, cs, "fail", map[string]any{"id": "td_b"}, &got)
 	compact("fail", got)
+
+	// get_todo is the full todo, as claim returns it (SPEC-0034 REQ-8), after the lease is gone too.
+	for _, id := range []string{"td_a", "td_b"} {
+		got = nil
+		callOK(t, ctx, cs, "get_todo", map[string]any{"id": id}, &got)
+		full("get_todo", got)
+	}
 }
 
 // TestClaimCompleteLifecycle drives claim → heartbeat → complete over tools/call, checking the
