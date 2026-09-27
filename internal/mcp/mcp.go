@@ -134,6 +134,9 @@ type ToolStore interface {
 	UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
 	ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error)
 	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
+	// RecentWebhookEvents feeds the save-time dry-run (SPEC-0026 REQ-3): the webhook's latest
+	// deliveries, read before the routing row lock.
+	RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]store.EventHistoryDetail, error)
 	// EndpointScopeQueues feeds the grant's per-target scopes for exclusive delivery (ADR-0025).
 	EndpointScopeQueues(ctx context.Context, endpointIDs []string) (map[string][]string, error)
 	// SettingString backs replay target resolution (SPEC-0005 REQ "Replay Safety"): the
@@ -213,7 +216,7 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 	if sb, err := routing.NewSandbox(""); err == nil {
 		h.SetRouter(sb)
 	} else if log != nil {
-		log.Error("routing sandbox unavailable; test_webhook_rules will route by default", "err", err)
+		log.Error("routing sandbox unavailable; test_webhook_rules reports unavailable and rule saves that need a dry-run are refused", "err", err)
 	}
 	h.wg.Add(1)
 	go h.janitor()
