@@ -2,7 +2,7 @@
 # setup-go works on this act_runner (reduit proves it) — unlike setup-python (see the design record).
 # The FULL suite — including the Postgres-backed store/server tests — runs against a service
 # container, so the gate executes what branch protection actually claims to gate (issue #128).
-# Reproduce locally with `make ci`.
+# Reproduce locally with `make check` (lint + vet + test + build).
 # NOTE: this act_runner pins container.network to the DEFAULT docker bridge, which has no
 # embedded DNS — the GitHub-style `postgres` alias does NOT resolve. The resolve step below
 # finds the service container via the socket act mounts into every job and points the DSN at
@@ -79,7 +79,7 @@ jobs:
           unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^vendor/'))
           if [ -n "$unformatted" ]; then echo "unformatted:"; echo "$unformatted"; exit 1; fi
       - name: go vet
-        run: go vet ./...
+        run: make vet
       - name: build
         run: go build ./...
       - name: resolve and wait for postgres
@@ -117,12 +117,11 @@ jobs:
         # The sb.js behavioral suite (jstest/, via TestJSModules) needs node; without it that test
         # SKIPS and non-verbose `go test` shows nothing — so record the JS-gate status explicitly.
         run: |
+          # `make test` itself warns when node is missing; this records the active case too.
           if command -v node >/dev/null 2>&1; then
             echo "JS gate active: node $(node --version) — jstest/ runs via TestJSModules"
-          else
-            echo "WARNING: node not found in PATH — TestJSModules will SKIP: the sb.js behavioral suite (jstest/) will NOT run" >&2
           fi
-          go test ./...
+          make test
       - name: test (race — queue + MCP packages)
         # The durable queue's correctness rests on concurrent claims (FOR UPDATE SKIP LOCKED) and the
         # lease reaper, so the race detector guards the queue packages in the PRIMARY gate too, not

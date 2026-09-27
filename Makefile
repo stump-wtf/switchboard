@@ -1,5 +1,5 @@
-# switchboard — local dev entry points. `make ci` runs the gate you can reproduce before a PR.
-.PHONY: build run fmt vet lint test tidy ci
+# switchboard — local dev entry points. `make check` runs the whole gate you can reproduce before a PR.
+.PHONY: build run fmt vet lint test tidy ci check
 
 # The build identity every surface reports (internal/buildinfo, SPEC-0027 REQ-1): the git describe,
 # the full commit and its RFC 3339 commit date — or VERSION=… / COMMIT=… / DATE=… on the make line.
@@ -33,3 +33,5 @@ tidy:  ## Sync go.mod/go.sum
 	go mod tidy
 
 ci: vet test build  ## The gate: vet + test + build
+
+check: lint ci  ## Everything CI gates: lint + vet + test + build
