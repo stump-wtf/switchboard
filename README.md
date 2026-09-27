@@ -220,11 +220,12 @@ The trust mode is always fixed per source type and shown in the UI — never sil
 ## Development
 
 ```bash
-make ci     # the gate: go vet + go test ./... + go build — the local mirror of CI
+make check  # everything CI gates: golangci-lint + go vet + go test ./... + go build
+make ci     # the gate minus lint: go vet + go test ./... + go build
 make fmt    # gofmt -w .
 make vet    # go vet ./...
 make test   # go test ./...
-make lint   # golangci-lint (optional; not part of `make ci`)
+make lint   # golangci-lint (part of `make check`, not `make ci`)
 ```
 
 ### Database-backed tests
