@@ -766,15 +766,22 @@ func TestDispatchDeadHookDoesNotDelaySibling(t *testing.T) {
 }
 
 // The endpoint and its scope are re-read before every attempt, not only at match time: revoking the
-// endpoint, or removing the queue from its scope, after attempt 1 stops attempts 2 and 3.
+// endpoint, or removing the queue from its scope, after attempt 1 stops attempts 2 and 3. The
+// notification still finishes once, as failed with attempt 1's 503 and the stop reason logged, so
+// the attempt already counted gets its outcome and the receiver's failure reaches its health.
 func TestDispatchEndpointChangeStopsRetries(t *testing.T) {
-	for name, mutate := range map[string]func(st *memStore){
-		"endpoint revoked": func(st *memStore) { delete(st.endpoints, testEndpoint) },
-		"queue left scope": func(st *memStore) {
+	for name, tc := range map[string]struct {
+		mutate  func(st *memStore)
+		stopped string
+	}{
+		"endpoint revoked": {func(st *memStore) { delete(st.endpoints, testEndpoint) }, "endpoint revoked"},
+		"queue left scope": {func(st *memStore) {
 			st.endpoints[testEndpoint] = store.NotifyEndpoint{Slug: "agent-a", ScopeQueues: []string{"reviews"}}
-		},
+		}, "queue left the endpoint scope"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			var logs bytes.Buffer
+			var logMu sync.Mutex
 			rcv := newReceiver(t, http.StatusServiceUnavailable)
 			st := newMemStore()
 			st.addHook(t, testEndpoint, "h1", rcv.hookURL("/"))
@@ -784,20 +791,32 @@ func TestDispatchEndpointChangeStopsRetries(t *testing.T) {
 			st.onGet = func(string) {
 				once.Do(func() {
 					st.mu.Lock()
-					mutate(st)
+					tc.mutate(st)
 					st.mu.Unlock()
 				})
 			}
 			st.mu.Unlock()
-			h := newHarness(t, st, rcv)
+			met := newCountingMetrics()
+			h := newHarness(t, st, rcv, func(o *Options) { o.Metrics = met; o.Log = newLockedLogger(&logs, &logMu) })
 			h.d.Enqueue(readyTodo(testEndpoint, "inbox"), store.ReadyCreated)
-			deadline := time.Now().Add(5 * time.Second)
-			for len(rcv.got()) == 0 && time.Now().Before(deadline) {
-				time.Sleep(10 * time.Millisecond)
+			if dl := h.wait(t); dl.Delivered || dl.Attempts != 1 || dl.Result != Result5xx {
+				t.Fatalf("delivery = %+v, want failed after attempt 1's 503", dl)
 			}
 			h.quiet(t)
 			if n := len(rcv.got()); n != 1 {
 				t.Fatalf("receiver saw %d requests, want only attempt 1", n)
+			}
+			if notes, attempts, _ := met.snapshot(); notes["todo.ready/failed"] != 1 || len(notes) != 1 || attempts["5xx"] != 1 {
+				t.Fatalf("metrics: notifications %v attempts %v, want one failed and one 5xx", notes, attempts)
+			}
+			if hk := st.hook("h1"); hk.ConsecutiveFailures != 1 {
+				t.Fatalf("hook health = %+v, want attempt 1's 503 recorded as one failure", hk)
+			}
+			logMu.Lock()
+			out := logs.String()
+			logMu.Unlock()
+			if !strings.Contains(out, `stopped="`+tc.stopped+`"`) {
+				t.Fatalf("early stop not logged as %q:\n%s", tc.stopped, out)
 			}
 		})
 	}
