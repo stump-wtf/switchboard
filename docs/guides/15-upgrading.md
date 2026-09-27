@@ -11,7 +11,7 @@ published image, check which release you are actually running first.
 To find your version, run `switchboard version`, or read it from `/healthz`. Newer builds
 also report it over MCP as `serverInfo.version`.
 
-## Upgrading to Unreleased
+## Upgrading to v0.4.0
 
 ### Replay targets are owned by the endpoint
 
