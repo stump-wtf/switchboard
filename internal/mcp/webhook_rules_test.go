@@ -56,6 +56,10 @@ func (f *fakeStore) EventForWebhook(_ context.Context, _ int64, _ string) (store
 	return store.EventHistoryDetail{}, store.ErrNotFound
 }
 
+func (f *fakeStore) RecentWebhookEvents(context.Context, string, int) ([]store.EventHistoryDetail, error) {
+	return nil, nil
+}
+
 var allRuleVerbs = []string{
 	"list_webhook_rules", "set_webhook_rules", "add_webhook_rule", "update_webhook_rule",
 	"move_webhook_rule", "remove_webhook_rule", "test_webhook_rules",
@@ -72,7 +76,7 @@ func ruleSessions(t *testing.T) (context.Context, *routeFixture, func(human stri
 	if _, err := pool.Exec(ctx, `UPDATE endpoints SET webhook_queues = ARRAY['reviews','forge'] WHERE id = $1`, f.epA1); err != nil {
 		t.Fatalf("set ceiling: %v", err)
 	}
-	verbs := append(append(append([]string{}, allRuleVerbs...), allRouteVerbs...), "get_webhook_event")
+	verbs := append(append(append([]string{}, allRuleVerbs...), allRouteVerbs...), "get_webhook_event", "list_webhook_events")
 	open := func(human string) (*sdk.ClientSession, string) {
 		agent, slug := f.agentA1, "rules-a-44444444"
 		if human == "B" {
@@ -88,12 +92,18 @@ func ruleSessions(t *testing.T) (context.Context, *routeFixture, func(human stri
 // race-instrumented test binary, which starts far slower than the production binary.
 func ruleSession(t *testing.T, ctx context.Context, st *store.Store, slug, token string) *sdk.ClientSession {
 	t.Helper()
-	h := New(st, slog.New(slog.NewTextHandler(discardWriter{}, nil)))
 	sb, err := routing.NewSandbox("", routing.WithDeadline(20*time.Second))
 	if err != nil {
 		t.Fatalf("sandbox: %v", err)
 	}
-	h.SetRouter(sb)
+	return ruleSessionWithRouter(t, ctx, st, slug, token, sb)
+}
+
+// ruleSessionWithRouter is ruleSession with the dry-run router of the test's choosing.
+func ruleSessionWithRouter(t *testing.T, ctx context.Context, st *store.Store, slug, token string, router routing.Router) *sdk.ClientSession {
+	t.Helper()
+	h := New(st, slog.New(slog.NewTextHandler(discardWriter{}, nil)))
+	h.SetRouter(router)
 	r := chi.NewRouter()
 	r.Mount("/mcp", h.Routes())
 	ts := httptest.NewServer(r)

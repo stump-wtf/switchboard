@@ -5,8 +5,13 @@ package store
 // get_webhook_event. Both are projections of exactly the `events` table columns
 // (internal/db/migrations/0001_init.sql) so the MCP, HTTP, and UI surfaces never drift.
 //
+// Every read here is owner-scoped: it takes the calling endpoint and returns only events whose
+// events.endpoint_id belongs to that endpoint's owner, so a second tenant gets nothing and a foreign
+// id reads exactly like an unknown one (ErrNotFound). An event with no owner is invisible to every
+// caller, and all history is invisible to a friend-vended endpoint (see eventInReach).
+//
 // Governing: ADR-0005 (compact list, full get), SPEC-0005 REQ "Event Shape Parity and Trust
-// Disclosure".
+// Disclosure"; ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads" (#194, F1).
 
 import (
 	"context"
@@ -33,6 +38,9 @@ type EventHistoryItem struct {
 	// how it was routed (nil when it was not). Governing: SPEC-0020 REQ "Routing Trace".
 	WebhookID    string
 	RoutingTrace []byte
+	// Disposition is the intake outcome: routed, dropped, quarantined or faulted.
+	// Governing: SPEC-0026 REQ-1.
+	Disposition string
 }
 
 // EventHistoryDetail is the SPEC-0005 EventDetail projection: every summary field plus the full
@@ -57,7 +65,10 @@ type EventHistoryDetail struct {
 type EventHistoryFilter struct {
 	Provider  string
 	EventType string
-	Limit     int
+	// Disposition restricts the scan to one intake outcome (e.g. "faulted"). Governing: SPEC-0026
+	// REQ-1 (the owner can see faulted deliveries through list_webhook_events).
+	Disposition string
+	Limit       int
 	// SinceTime / SinceID bound the lower edge inclusively. `since` is supplied over MCP as either an
 	// ISO-8601 timestamp (→ SinceTime, received_at >= t) or an event id (→ SinceID, id >= i); the tool
 	// layer decides which. Both may be zero (no lower bound).
@@ -70,11 +81,50 @@ type EventHistoryFilter struct {
 	CursorID   int64
 }
 
+// eventInReach is the tenant predicate every history read applies: the event's owning endpoint
+// belongs to the caller's human, AND the caller is one of that human's own endpoints that was not
+// minted by a friend approval.
+//
+// The second half is load-bearing. A friend approval mints the REMOTE peer's endpoint onto one of
+// the approver's agents (ApproveFriendRequest), so by owner_human_id alone that endpoint is the
+// approver's, and a friend request that asked for the event verbs would read and replay every
+// delivery on all of the approver's webhooks. A friend endpoint acts for someone else, so its
+// history reach is empty until #420 (F3) gives friend endpoints their own authority: it lists
+// nothing, and every id is not_found. The check keys on friend_edges.endpoint_id, which is written
+// in the same transaction that mints the endpoint, so no friend endpoint exists without it.
+//
+// Today's reach is otherwise human-level: a human's own endpoints all see that human's history,
+// whatever queues they were vended for. #411 replaces the human id with a store.Reach value bounded
+// by the grant, and this builder is the one place that changes. Kept as a builder rather than
+// inlined so the security boundary cannot drift between the list and the single-row read. The owner
+// and caller ids are bound at ownerParam and callerParam.
+// Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads", REQ "Closing the Audited
+// Surfaces" (F3).
+func eventInReach(ownerParam, callerParam string) string {
+	return `endpoint_id IN (SELECT ep.id FROM endpoints ep JOIN agents ag ON ag.id = ep.agent_id
+		WHERE ag.owner_human_id = ` + ownerParam + `)
+		AND EXISTS (SELECT 1 FROM endpoints c JOIN agents ca ON ca.id = c.agent_id
+			WHERE c.id = ` + callerParam + ` AND ca.owner_human_id = ` + ownerParam + `
+			  AND NOT EXISTS (SELECT 1 FROM friend_edges f WHERE f.endpoint_id = c.id))`
+}
+
+// historyCallerValid reports whether caller can be scoped at all. A caller without a well-formed
+// owner and endpoint id reads nothing, never an unscoped scan.
+func historyCallerValid(caller AuthEndpoint) bool {
+	return isUUID(caller.OwnerHumanID) && isUUID(caller.ID)
+}
+
 // ListEventHistory returns event summaries newest first under the stable
 // `received_at DESC, id DESC` order SPEC-0005 REQ "Deterministic Pagination and Filtering" pins.
 // Filters and the keyset cursor are composed as AND-ed conditions with ordinal placeholders so a
 // zero-valued filter field contributes no predicate at all.
-func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]EventHistoryItem, error) {
+//
+// Only events in the caller's reach (eventInReach) are returned; a malformed or empty caller returns
+// nothing rather than an unscoped scan. Governing: SPEC-0033 REQ "Owner-Scoped History Reads".
+func (s *Store) ListEventHistory(ctx context.Context, caller AuthEndpoint, f EventHistoryFilter) ([]EventHistoryItem, error) {
+	if !historyCallerValid(caller) {
+		return nil, nil
+	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 50
@@ -91,11 +141,16 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 		args = append(args, v)
 		return "$" + strconv.Itoa(len(args))
 	}
+	owner := ph(caller.OwnerHumanID)
+	conds = append(conds, eventInReach(owner, ph(caller.ID)))
 	if f.Provider != "" {
 		conds = append(conds, "source = "+ph(f.Provider))
 	}
 	if f.EventType != "" {
 		conds = append(conds, "event_type = "+ph(f.EventType))
+	}
+	if f.Disposition != "" {
+		conds = append(conds, "disposition = "+ph(f.Disposition))
 	}
 	if !f.SinceTime.IsZero() {
 		conds = append(conds, "received_at >= "+ph(f.SinceTime))
@@ -109,13 +164,10 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 		// rows land at the head between requests.
 		conds = append(conds, "(received_at, id) < ("+ph(f.CursorTime)+", "+ph(f.CursorID)+")")
 	}
-	where := ""
-	if len(conds) > 0 {
-		where = "WHERE " + strings.Join(conds, " AND ")
-	}
+	where := "WHERE " + strings.Join(conds, " AND ")
 	query := fmt.Sprintf(`
 		SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at,
-			COALESCE(webhook_id::text, ''), routing_trace
+			COALESCE(webhook_id::text, ''), routing_trace, disposition
 		FROM events
 		%s
 		ORDER BY received_at DESC, id DESC
@@ -130,7 +182,7 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 	for rows.Next() {
 		var e EventHistoryItem
 		if err := rows.Scan(&e.ID, &e.Provider, &e.EventType, &e.TrustMode, &e.Verified,
-			&e.PayloadSize, &e.ReceivedAt, &e.WebhookID, &e.RoutingTrace); err != nil {
+			&e.PayloadSize, &e.ReceivedAt, &e.WebhookID, &e.RoutingTrace, &e.Disposition); err != nil {
 			return nil, fmt.Errorf("list event history scan: %w", err)
 		}
 		out = append(out, e)
@@ -145,7 +197,7 @@ func (s *Store) ListEventHistory(ctx context.Context, f EventHistoryFilter) ([]E
 // full-record shape cannot drift between them.
 const eventDetailSelect = `
 	SELECT id, source, COALESCE(event_type, ''), trust_mode, verified, payload_size, received_at,
-		COALESCE(webhook_id::text, ''), routing_trace,
+		COALESCE(webhook_id::text, ''), routing_trace, disposition,
 		COALESCE(verify_detail, ''), COALESCE(external_id, ''), COALESCE(content_type, ''),
 		COALESCE(host(source_ip), ''), COALESCE(headers, '{}'::jsonb), COALESCE(payload, ''::bytea)
 	FROM events`
@@ -153,7 +205,7 @@ const eventDetailSelect = `
 func scanEventDetail(row pgx.Row) (EventHistoryDetail, error) {
 	var e EventHistoryDetail
 	err := row.Scan(&e.ID, &e.Provider, &e.EventType, &e.TrustMode, &e.Verified, &e.PayloadSize, &e.ReceivedAt,
-		&e.WebhookID, &e.RoutingTrace,
+		&e.WebhookID, &e.RoutingTrace, &e.Disposition,
 		&e.VerifyDetail, &e.ExternalID, &e.ContentType, &e.SourceIP, &e.Headers, &e.Payload)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return EventHistoryDetail{}, ErrNotFound
@@ -164,9 +216,17 @@ func scanEventDetail(row pgx.Row) (EventHistoryDetail, error) {
 	return e, nil
 }
 
-// EventHistoryByID returns the full sanitized record for one event, or ErrNotFound.
-func (s *Store) EventHistoryByID(ctx context.Context, id int64) (EventHistoryDetail, error) {
-	e, err := scanEventDetail(s.pool.QueryRow(ctx, eventDetailSelect+` WHERE id = $1`, id))
+// EventHistoryByID returns the full sanitized record for one event in the caller's reach, or
+// ErrNotFound. Another owner's event, an owner-less event, any event asked for by a friend-vended
+// endpoint and an id that does not exist are the same ErrNotFound, so probing ids reveals nothing.
+// Replay calls this before it reads anything else, so a foreign event's payload is never loaded.
+// Governing: SPEC-0033 REQ "Owner-Scoped History Reads", scenario "Replay of a foreign event".
+func (s *Store) EventHistoryByID(ctx context.Context, caller AuthEndpoint, id int64) (EventHistoryDetail, error) {
+	if !historyCallerValid(caller) {
+		return EventHistoryDetail{}, ErrNotFound
+	}
+	e, err := scanEventDetail(s.pool.QueryRow(ctx,
+		eventDetailSelect+` WHERE id = $1 AND `+eventInReach("$2", "$3"), id, caller.OwnerHumanID, caller.ID))
 	if errors.Is(err, ErrNotFound) {
 		return EventHistoryDetail{}, ErrNotFound
 	}

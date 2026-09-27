@@ -205,6 +205,28 @@ func TestInterruptKeepsAttemptOpen(t *testing.T) {
 	assertAttemptInvariant(t, s, ctx)
 }
 
+// REQ-3: an A2A cancel of an interrupted todo closes the attempt the interrupt kept open. The
+// terminal-path test cancels a claimed todo only; this is the other half of the REQ-3 row.
+func TestCancelInterruptedClosesAttempt(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "cancel-interrupted")
+	id := seedPending(t, s, ctx, ep, "q", "cancel-interrupted")
+	if _, err := s.ClaimTodo(ctx, ep, id, "w", time.Hour); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := s.InterruptTodo(ctx, id, "w", "input-required", nil); err != nil {
+		t.Fatalf("interrupt: %v", err)
+	}
+	if _, err := s.CancelTodo(ctx, id, nil); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	a := newestClosed(t, s, ctx, ep, id)
+	if a.Outcome != "canceled" || a.Disposition != "canceled" || a.Died {
+		t.Fatalf("canceled interrupted attempt = %s/%s died=%v, want canceled/canceled", a.Outcome, a.Disposition, a.Died)
+	}
+	assertAttemptInvariant(t, s, ctx)
+}
+
 // REQ-2: the one-open-attempt rule is a constraint checked at COMMIT. A planted second open attempt
 // is accepted by the INSERT and refused by the COMMIT.
 func TestSecondOpenAttemptFailsAtCommit(t *testing.T) {
@@ -503,6 +525,33 @@ func TestRetentionCascadesAttempts(t *testing.T) {
 	if n := count(t, s, ctx, "todo_attempts", "todo_id = '"+done+"'"); n != 0 {
 		t.Fatalf("%d attempts outlived their pruned todo", n)
 	}
+}
+
+// REQ-11: permanently deleting a revoked endpoint removes its todos' attempts. The attempt row is
+// reached twice by that DELETE, through todos (CASCADE) and through claimer_endpoint_id (SET
+// NULL), so this pins that the two referential actions compose instead of failing the delete.
+func TestDeleteEndpointCascadesAttempts(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "delete-endpoint-cascade")
+	human := ownerOf(t, s, ctx, ep)
+	done := seedTerminal(t, s, ctx, ep, "q", "done", "done")
+	held := seedPending(t, s, ctx, ep, "q", "held")
+	if _, err := s.ClaimTodo(ctx, ep, held, "w", time.Hour); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := s.RevokeEndpoint(ctx, ep, human); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if n := count(t, s, ctx, "todo_attempts", "todo_id IN ('"+done+"', '"+held+"')"); n != 2 {
+		t.Fatalf("before delete: %d attempts, want 2", n)
+	}
+	if err := s.DeleteEndpoint(ctx, ep, human); err != nil {
+		t.Fatalf("delete endpoint: %v", err)
+	}
+	if n := count(t, s, ctx, "todo_attempts", "todo_id IN ('"+done+"', '"+held+"')"); n != 0 {
+		t.Fatalf("%d attempts outlived their deleted endpoint", n)
+	}
+	assertAttemptInvariant(t, s, ctx)
 }
 
 // REQ-10: the store read is scoped to the todo's endpoint. A foreign todo and a never-minted id are
