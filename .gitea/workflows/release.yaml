@@ -87,9 +87,9 @@ jobs:
       # evidence the version was stamped. Assert it, rather than remember to
       # check. Only the linux/amd64 artifact is executed — the runner cannot run
       # the darwin or windows builds, so this is the one that can be proven here.
-      # POSITIVE control. The pass condition is "the output contains the tag",
-      # never "the output lacks the word dev" — an absence check passes on any
-      # unexpected string, including an error.
+      # POSITIVE control. The pass condition is "the output is exactly
+      # `switchboard <tag>`", never "the output lacks the word dev" — an
+      # absence check passes on any unexpected string, including an error.
       #
       # Written the wrong way first and caught locally: on a darwin host the
       # linux binary cannot execute, `version` returned "exec format error",
@@ -108,14 +108,20 @@ jobs:
           fi
           echo "version output: $got"
 
-          want="${GITEA_REF_NAME#v}"
-          case "$got" in
-            *"$want"*) echo "stamped version contains the tag ($want)" ;;
-            *)
-              echo "::error::binary reports '$got', expected it to contain '$want'." \
-                   "A wrong -X path injects nothing and still exits 0."
-              exit 1
-              ;;
-          esac
+          # The full tag, "v" included: goreleaser stamps {{.Tag}} into
+          # internal/buildinfo.Version (SPEC-0027 REQ-1), so a v0.3.0 release
+          # reports exactly "switchboard v0.3.0". Exact equality, not a
+          # substring: a substring match on the tag without its "v" would pass
+          # a build still stamped with {{.Version}}, and one on the tag would
+          # pass "v0.3.0+dirty". goreleaser builds with -buildvcs=false, so a
+          # missed stamp reports "dev" here instead of the VCS tag.
+          want="switchboard ${GITEA_REF_NAME}"
+          if [ "$got" = "$want" ]; then
+            echo "stamped version is the tag ($want)"
+          else
+            echo "::error::binary reports '$got', expected exactly '$want'." \
+                 "A wrong -X path injects nothing and still exits 0."
+            exit 1
+          fi
         env:
           GITEA_REF_NAME: ${{ gitea.ref_name }}
