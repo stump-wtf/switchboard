@@ -39,6 +39,12 @@ const (
 	// RuleDefault is the rule_id a routing decision carries when no rule matched and the webhook's
 	// default target applied.
 	RuleDefault = "default"
+
+	// Routing fault causes (SPEC-0026 REQ-11).
+	FaultCauseTimeout = "timeout"
+	FaultCauseError   = "error"
+	FaultCauseCompile = "compile"
+	FaultCauseBudget  = "budget"
 )
 
 var (
@@ -82,6 +88,8 @@ type Metrics struct {
 	deliveries       *prometheus.CounterVec
 	routingDecisions *prometheus.CounterVec
 	verifyFailures   *prometheus.CounterVec
+	// SPEC-0026 REQ-1 / REQ-11: deliveries whose routing stopped at a rule fault.
+	routingFaults *prometheus.CounterVec
 
 	// REQ-6: a collector that could not compute its families says so here.
 	collectionErrors *prometheus.CounterVec
@@ -132,6 +140,10 @@ func New(opts Options) *Metrics {
 			Name: "switchboard_webhook_verify_failures_total",
 			Help: "Webhook deliveries that failed verification, by provider and bounded reason.",
 		}, []string{"provider", "reason"}),
+		routingFaults: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_routing_faults_total",
+			Help: "Deliveries whose routing stopped at a rule fault and routed nowhere, by cause (timeout|error|compile|budget).",
+		}, []string{"cause"}),
 
 		collectionErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_metrics_collection_errors_total",
@@ -142,7 +154,7 @@ func New(opts Options) *Metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.todosCreated, m.todosClaimed, m.todosCompleted, m.leasesExpired, m.todoAttempts,
-		m.deliveries, m.routingDecisions, m.verifyFailures,
+		m.deliveries, m.routingDecisions, m.verifyFailures, m.routingFaults,
 		m.collectionErrors,
 	)
 	return m
@@ -260,6 +272,33 @@ func (m *Metrics) RoutingDecision(webhookID, ruleID, action string) {
 	}
 	m.routingDecisions.WithLabelValues(m.webhookLabel(webhookID), ruleLabel(ruleID),
 		oneOf(action, ActionQueue, ActionDrop)).Inc()
+}
+
+// RoutingFault counts one delivery whose routing stopped at a rule fault. cause is the routing
+// package's fault cause; it is folded into the four label values SPEC-0026 REQ-11 names, and
+// anything else reports as Other.
+func (m *Metrics) RoutingFault(cause string) {
+	if m == nil {
+		return
+	}
+	m.routingFaults.WithLabelValues(faultCauseLabel(cause)).Inc()
+}
+
+// faultCauseLabel maps routing's fault causes (routing.FaultTimeout and friends, spelled out here
+// because this package imports neither routing nor ingest) onto the REQ-11 label set.
+func faultCauseLabel(cause string) string {
+	switch cause {
+	case "timeout":
+		return FaultCauseTimeout
+	case "error":
+		return FaultCauseError
+	case "compile_error":
+		return FaultCauseCompile
+	case "budget_exhausted":
+		return FaultCauseBudget
+	default:
+		return Other
+	}
 }
 
 // attemptBucket folds an attempt number into the three buckets REQ-3 names. A claim is always at

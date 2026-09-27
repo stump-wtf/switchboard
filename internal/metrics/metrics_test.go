@@ -117,9 +117,11 @@ func TestDeclaredFamiliesMatchSpec(t *testing.T) {
 	m.WebhookDelivery("github", "signed", VerdictAccepted)
 	m.WebhookVerifyFailure("github", "bad_signature")
 	m.RoutingDecision("wh-1", "", ActionQueue)
+	m.RoutingFault("timeout")
 	m.CollectionError("queue")
 
 	want := map[string]string{
+		"switchboard_routing_faults_total":            "cause",
 		"switchboard_todos_created_total":             "queue,source",
 		"switchboard_todos_claimed_total":             "queue",
 		"switchboard_todos_completed_total":           "outcome,queue",
@@ -210,6 +212,20 @@ func TestEnumCoercion(t *testing.T) {
 	m.RoutingDecision("wh-1", "", "reroute")
 	mustValue(t, m, "switchboard_routing_decisions_total", map[string]string{"webhook": "wh-1", "rule_id": "default", "action": "drop"}, 1)
 	mustValue(t, m, "switchboard_routing_decisions_total", map[string]string{"webhook": "wh-1", "rule_id": "default", "action": Other}, 1)
+}
+
+// TestRoutingFaultCauses: routing's fault causes fold onto the four SPEC-0026 REQ-11 label values,
+// and anything else, a sandbox cause included, is __other__.
+func TestRoutingFaultCauses(t *testing.T) {
+	m := New(Options{})
+	for _, c := range []string{"timeout", "error", "error", "compile_error", "budget_exhausted", "sandbox_failure"} {
+		m.RoutingFault(c)
+	}
+	for label, want := range map[string]float64{
+		FaultCauseTimeout: 1, FaultCauseError: 2, FaultCauseCompile: 1, FaultCauseBudget: 1, Other: 1,
+	} {
+		mustValue(t, m, "switchboard_routing_faults_total", map[string]string{"cause": label}, want)
+	}
 }
 
 // TestRuleIDLabel: only server-minted ids (rule_<24 hex>) reach the label; no match is "default";
@@ -321,6 +337,7 @@ func TestNilReceiverIsNoOp(t *testing.T) {
 	m.WebhookDelivery("github", "signed", VerdictAccepted)
 	m.WebhookVerifyFailure("github", "bad_signature")
 	m.RoutingDecision("wh", "", ActionQueue)
+	m.RoutingFault("timeout")
 	m.CollectionError("queue")
 	m.InitCollectionErrors("queue")
 	if m.Registry() != nil {

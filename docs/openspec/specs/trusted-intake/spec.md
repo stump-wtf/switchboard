@@ -78,6 +78,15 @@ or it failed wholesale for this delivery), the receiver MUST answer `503` with
 `{"error": "routing unavailable"}`, MUST NOT persist an event or a todo, and MUST log an error, so
 that the producer retries. A webhook with no rules MUST be unaffected.
 
+"Cannot evaluate at all" means a failure that says nothing about the delivery: no sandbox, no free
+evaluation slot, an evaluation process that failed to start or died before it began a rule, a
+deadline kill while no rule had run longer than the per-event budget, or output that cannot be
+trusted. An evaluation process killed at its memory limit or its deadline WHILE RUNNING A RULE is a
+fault of that rule on that delivery, not an unavailable sandbox: it MUST be handled under REQ-1
+(disposition `faulted`, cause `budget_exhausted` for memory or `timeout` for the deadline, and the
+rule named), and the save-time dry-run (REQ-3) MUST refuse it with `invalid_argument` naming the
+rule. Answering `503` for it would fail the same way on every retry and leave no record.
+
 #### Scenario: Sandbox down
 
 - **GIVEN** a webhook with rules, on an instance whose sandbox failed to start
@@ -95,7 +104,12 @@ cause. A webhook with no stored events MUST skip the dry-run.
 
 Every `params` value MUST be a string, a number, a boolean, or a list whose elements are all
 strings or all numbers. Any other shape, including nested objects and mixed lists, MUST be refused
-with `invalid_argument` naming the key.
+with `invalid_params` naming the key: routing's own validation code, which SPEC-0020 requires the
+rule verbs to surface verbatim and which the params size limit already uses. The shape check
+applies to a save that sets or changes `params`. A save that carries the stored `params` forward
+unchanged (every verb but a `set_webhook_rules` that passes new `params`) MUST NOT be refused over
+the shape of params stored before this check existed, so an owner can always edit or remove the
+rules that read them.
 
 #### Scenario: A rule that faults on real traffic is refused
 
@@ -107,7 +121,7 @@ with `invalid_argument` naming the key.
 #### Scenario: Nested params refused
 
 - **WHEN** `set_webhook_rules` is called with `params = {"trusted": {"alice": true}}`
-- **THEN** the call fails with `invalid_argument` naming `trusted`
+- **THEN** the call fails with `invalid_params` naming `trusted`
 
 ### REQ-4: Params Are Never Cleared by Omission
 
