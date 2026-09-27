@@ -196,8 +196,9 @@ otherwise fall back to the body hash. A sender-asserted id is trusted exactly as
 travels with: it MUST be scoped to the self-managed webhook it arrived on, so a sender
 can only ever collapse its own deliveries. If a non-terminal todo already exists
 in the target queue for the derived key, ingestion MUST return the existing todo and create nothing
-new. Events MUST additionally dedup on `(source, external_id)` so a duplicate delivery does not
-create a second event row.
+new. Events MUST additionally dedup on `(endpoint_id, source, external_id)`, the owning endpoint
+included (SPEC-0033 F14), so a duplicate delivery does not create a second event row and one owner's
+delivery never collapses onto another owner's event.
 
 #### Scenario: Redelivery of the same webhook creates one todo
 

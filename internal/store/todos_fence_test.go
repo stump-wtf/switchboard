@@ -305,3 +305,52 @@ func TestFenceBoardActionsExempt(t *testing.T) {
 	}
 	assertAttemptInvariant(t, s, ctx)
 }
+
+// REQ-6 on the claim_next path the MCP tool drives: a fenced ClaimNextWith stores the token's hash
+// on the attempt it opens, so the holder's token applies and no token, or another token, is
+// ErrConflict. The MCP tests run against a fake store, so this is the real-Postgres proof that
+// claim_next, and not only claim, arms the fence.
+func TestFenceClaimNextArmsTheFence(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "fence-claim-next")
+	id := seedPending(t, s, ctx, ep, "fence-next", "next")
+	claimed, _, err := s.ClaimNextWith(ctx, ep, []string{"fence-next"}, "agent:a",
+		ClaimOpts{TTL: time.Hour, TokenHash: fenceHash("next-token")})
+	if err != nil || claimed.ID != id {
+		t.Fatalf("claim_next = %s, %v; want %s", claimed.ID, err, id)
+	}
+	for _, h := range [][]byte{nil, fenceHash("other")} {
+		if _, err := s.CompleteTodoWith(ctx, ep, id, "agent:a", Report{TokenHash: h}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("complete with token hash %x after a fenced claim_next = %v, want ErrConflict", h, err)
+		}
+	}
+	assertUntouched(t, s, ctx, ep, id, "agent:a", *claimed.LeaseExpiresAt)
+	if _, err := s.CompleteTodoWith(ctx, ep, id, "agent:a", Report{TokenHash: fenceHash("next-token")}); err != nil {
+		t.Fatalf("holder's complete after a fenced claim_next: %v", err)
+	}
+	assertAttemptInvariant(t, s, ctx)
+}
+
+// REQ-6: a Board takeover of a fenced attempt closes it and opens an unfenced one under the same
+// owner string, so the displaced worker's token now misses as a token on an unfenced attempt.
+func TestFenceBoardTakeoverStrandsTheOldToken(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "fence-board-takeover")
+	human := ownerOf(t, s, ctx, ep)
+	id := seedPending(t, s, ctx, ep, "q", "takeover")
+	claimFenced(t, s, ctx, ep, id, "agent:a", "worker")
+	expireLease(t, s, ctx, id)
+	if _, err := s.ClaimTodoOperatorOwned(ctx, human, id, "agent:a", time.Hour); err != nil {
+		t.Fatalf("board takeover of a lapsed fenced attempt: %v", err)
+	}
+	for _, v := range fencedVerbs {
+		if _, err := v.call(s, ctx, ep, id, "agent:a", fenceHash("worker")); !errors.Is(err, ErrConflict) {
+			t.Fatalf("displaced worker's %s = %v, want ErrConflict", v.name, err)
+		}
+	}
+	as, _, _ := attemptsOf(t, s, ctx, ep, id)
+	if len(as) != 2 || as[0].EndedAt != nil || as[1].Outcome != "lease_expired" {
+		t.Fatalf("attempts after the takeover = %+v, want an open seq 2 over a lease_expired seq 1", as)
+	}
+	assertAttemptInvariant(t, s, ctx)
+}
