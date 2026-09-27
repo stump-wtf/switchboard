@@ -83,9 +83,9 @@ An empty `claim_next` (`{"empty": true}`) carries none of these.
 
 ### get_todo
 
-`get_todo` with an `id` returns one todo in full: the usual row, its stored `result`, and its
-attempts, newest first, including the open one, up to `attempts_limit`. `attempts_total` and
-`attempts_pruned` count what the list leaves out.
+`get_todo` with an `id` returns one todo in full: the todo as `claim` returns it, `payload` and
+`routing` included, its stored `result`, and its attempts, newest first, including the open one, up
+to `attempts_limit`. `attempts_total` and `attempts_pruned` count what the list leaves out.
 
 An endpoint holding `list_todos` can call `get_todo`, so endpoints vended before it existed have it
 already. A todo owned by another endpoint, or outside this endpoint's queues, answers `not_found`,
@@ -176,9 +176,10 @@ claimer of the todo. Enable it only when you know your clients' results are safe
 ### Retention
 
 - **Per-todo cap.** A todo keeps at most `attempt_history_max_per_todo` attempts, 50 by default. A
-  value below 5 is raised to 5, and a value that is not a whole number falls back to 50. When a
-  claim would exceed the cap, the oldest closed attempts are deleted in the same transaction and
-  counted in `attempts_pruned`. The open attempt is never pruned.
+  value below 5 is raised to 5, and anything that is not a whole number from 0 to 999999, a negative
+  number included, falls back to 50. When a claim would exceed the cap, the oldest closed attempts
+  are deleted in the same transaction and counted in `attempts_pruned`. The open attempt is never
+  pruned.
 - **With the todo.** Attempts are deleted with their todo. Retention already removes terminal todos
   (`retention_max_age_days`, 30 by default, and `retention_max_rows`), so history lasts as long as
   its todo. A live todo keeps its history, and so does a failed one waiting for its retry.
