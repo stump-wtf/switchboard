@@ -31,7 +31,7 @@ var eventVerbNames = []string{
 
 // --- fakeStore event-history methods (the struct lives in mcp_test.go) ---
 
-func (f *fakeStore) ListEventHistory(_ context.Context, flt store.EventHistoryFilter) ([]store.EventHistoryItem, error) {
+func (f *fakeStore) ListEventHistory(_ context.Context, caller store.AuthEndpoint, flt store.EventHistoryFilter) ([]store.EventHistoryItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
@@ -55,6 +55,9 @@ func (f *fakeStore) ListEventHistory(_ context.Context, flt store.EventHistoryFi
 	var out []store.EventHistoryItem
 	for _, e := range f.events {
 		it := e.EventHistoryItem
+		if f.eventOwners[it.ID] != caller.OwnerHumanID {
+			continue
+		}
 		if flt.Provider != "" && it.Provider != flt.Provider {
 			continue
 		}
@@ -84,27 +87,32 @@ func (f *fakeStore) ListEventHistory(_ context.Context, flt store.EventHistoryFi
 	return out, nil
 }
 
-func (f *fakeStore) EventHistoryByID(_ context.Context, id int64) (store.EventHistoryDetail, error) {
+func (f *fakeStore) EventHistoryByID(_ context.Context, caller store.AuthEndpoint, id int64) (store.EventHistoryDetail, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return store.EventHistoryDetail{}, f.failErr
 	}
 	e, ok := f.events[id]
-	if !ok {
+	if !ok || f.eventOwners[id] != caller.OwnerHumanID {
 		return store.EventHistoryDetail{}, store.ErrNotFound
 	}
 	return e, nil
 }
 
-// putEvent seeds an event row.
-func (f *fakeStore) putEvent(e store.EventHistoryDetail) {
+// putEvent seeds an event row owned by "h-1", the owner every fake endpoint carries.
+func (f *fakeStore) putEvent(e store.EventHistoryDetail) { f.putEventFor("h-1", e) }
+
+// putEventFor seeds an event row owned by ownerHumanID; the fake's reads filter on it the way the
+// store's owner predicate does (SPEC-0033 REQ "Owner-Scoped History Reads").
+func (f *fakeStore) putEventFor(ownerHumanID string, e store.EventHistoryDetail) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e.ReceivedAt.IsZero() {
 		e.ReceivedAt = time.Now()
 	}
 	f.events[e.ID] = e
+	f.eventOwners[e.ID] = ownerHumanID
 }
 
 // rawStructured returns a tool's structured output as a raw map, for asserting which keys are
@@ -288,10 +296,10 @@ func TestGetWebhookEventDetail(t *testing.T) {
 }
 
 // TestReplayWebhookEventSurface: the replay verb resolves its id (unknown → not_found) before any
-// outbound thought, and with #40's delivery landed a valid id with neither an explicit target nor a
-// configured default is the hard invalid_argument (never a guessed target). The full SSRF/delivery
-// behaviour is exercised in replay_test.go.
-// Governing: SPEC-0005 scenario "Unknown id raises not_found", "No target and no default is an error".
+// outbound thought, and a valid id with neither an explicit target nor an owned replay target is the
+// hard replay_target_required (never a guessed target). The full SSRF/delivery behaviour is exercised
+// in replay_test.go.
+// Governing: SPEC-0005 scenario "Unknown id raises not_found", SPEC-0033 REQ "Owned Replay Targets".
 func TestReplayWebhookEventSurface(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -304,8 +312,8 @@ func TestReplayWebhookEventSurface(t *testing.T) {
 	cs := session(t, ctx, f, []string{"reviews"}, eventVerbNames)
 
 	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 999}, "not_found")
-	// No explicit target and no configured replay_default_target: a hard invalid_argument.
-	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 3}, "invalid_argument")
+	// No explicit target and no owned target: a hard replay_target_required.
+	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 3}, codeReplayTargetRequired)
 }
 
 // TestEventStoreFailureIsGenericToClient: a DB failure inside an event read reaches the client

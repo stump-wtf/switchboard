@@ -65,9 +65,10 @@ agent hit a usage limit, call **`release`** with the todo's `id`. The todo goes 
 **pending** for the next claimer: no backoff, no failure, and the attempt counter is unchanged.
 `release` is its own grant, and no other verb implies it.
 
-To read one todo in full, call **`get_todo`** with its `id`: the row, its stored `result`, and its
-attempts, newest first. Every todo row also says whether it is waiting for a retry
-(`next_retry_at`) or dead-lettered (`dead_letter`).
+To read one todo in full, call **`get_todo`** with its `id`: the todo as `claim` returns it,
+`payload` and `routing` included, plus its stored `result` and its attempts, newest first. Every
+todo row also says whether it is waiting for a retry (`next_retry_at`) or dead-lettered
+(`dead_letter`).
 
 [Attempt history](/guides/attempt-history) is the reference for all of this: every argument and its
 limit, died versus failed, and what to keep out of a summary.

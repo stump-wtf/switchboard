@@ -154,6 +154,22 @@ func TestGetTodoAttemptShape(t *testing.T) {
 	if len(got.Attempts) != 2 || got.Attempts[0].Seq != 3 || got.Attempts[1].Seq != 2 || got.AttemptsTotal != 3 {
 		t.Fatalf("attempts_limit 2 = %d attempts (total %d), want seqs 3,2 of 3", len(got.Attempts), got.AttemptsTotal)
 	}
+
+	// The handler applies REQ-8's default and maximum itself, before the store: the fake records
+	// the limit it was handed, so this pins the handler, not the store's own clamp.
+	for _, c := range []struct{ in, want int }{{0, 20}, {-5, 20}, {7, 7}, {50, 50}, {51, 50}, {10_000, 50}} {
+		args := map[string]any{"id": "td_hist"}
+		if c.in != 0 {
+			args["attempts_limit"] = c.in
+		}
+		callOK(t, ctx, cs, "get_todo", args, &got)
+		f.mu.Lock()
+		seen := f.attemptsLimit
+		f.mu.Unlock()
+		if seen != c.want {
+			t.Errorf("attempts_limit %d reached the store as %d, want %d", c.in, seen, c.want)
+		}
+	}
 }
 
 // REQ-7: the advertised schema tells a reader that attempt text is data, never an instruction.
