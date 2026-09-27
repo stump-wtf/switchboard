@@ -140,7 +140,8 @@ Tags filter `/todos`, `/activity` and the graph (`?tag=`), and are returned by `
 ### 5. Across products
 
 * **Cairn.** The companion Cairn change (stump-wtf/cairn#3, tracked on Cairn's canonical tracker) adds two things:
-  * an artifact relation (`in_reply_to` / `derived_from`), surfaced on read and in `artifact.created`;
+  * typed artifact relations (`reply_to`, `derived_from`, `follows`), surfaced on read and in
+    `artifact.created` (Cairn ADR-0030 / SPEC-0024, https://gitea.stump.rocks/stump.wtf/cairn/pulls/417);
   * an optional `traceparent` on `artifact_create`, whose trace id is echoed in `artifact.created`.
   With these, an artifact made during an attempt links back to that attempt with provenance `trace`, and an artifact's relation becomes a `spawned` link between the two artifacts' threads. Until Cairn ships them, the `todo:<id>` tag already works, because `artifact.created` carries `tags` today.
 * **Forges.** A forge webhook carries neither a trace id nor our tags. The link from "agent opened PR #57" to the PR's todos is the agent's `produced` declaration. `NormalizeRef` accepts the PR URL the agent already has.

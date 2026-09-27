@@ -189,7 +189,8 @@ Cairn already puts `tags` in `artifact.created`, which `cairnSubject` reads. The
 `trace_id`), `cairnSubject` reads two more fields:
 
 * `data.trace_id` becomes a `trace` link (REQ-10);
-* `data.in_reply_to` / `data.derived_from`, an artifact id, becomes a `spawned` link from the todo
+* each `data.relations[]` entry (`reply_to`, `derived_from` or `follows`, per Cairn ADR-0030 /
+  SPEC-0024), an artifact id, becomes a `spawned` link from the todo
   whose thread key is `cairn:<that id>` in scope. That is the most recent such todo, with provenance
   `tagged`.
 
