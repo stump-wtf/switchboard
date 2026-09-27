@@ -73,15 +73,23 @@ inserts.
 - Numeric offset: duplicates/gaps under concurrent inserts.
 - `limit` only: cannot page beyond the first window.
 
-### Optional replay target with a configured default
+### Optional replay target, defaulting to the endpoint's owned target
 
-**Choice**: `target_url` optional; fall back to `settings.replay_default_target`; hard
-`invalid_argument` if neither is set. Never replay back to the originating provider.
-**Rationale**: Ergonomic for the common "replay to my local consumer" case while staying explicit;
-providers are senders, not receivers, so back-to-provider is meaningless and a footgun.
+**Choice**: `target_url` optional; fall back to the calling endpoint's first owned replay target
+(named at vend time); `replay_target_required` if neither exists. Every target, owned or explicit,
+passes the shared SSRF guard (`internal/push.Validator`, https only) at call time and again at dial
+time. Never replay back to the originating provider. A refusal tells the caller its class only, never
+the address a host resolved to.
+**Rationale**: Ergonomic for the common "replay to my own consumer" case while staying explicit and
+tenant-scoped; providers are senders, not receivers, so back-to-provider is meaningless and a footgun.
 **Alternatives considered**:
-- Always-required target: tedious when a stable dev target exists.
+- Always-required target: tedious when a stable target exists.
+- An instance-wide configured default (`settings.replay_default_target`) and allowlist: the original
+  choice, retired because one tenant's default was every tenant's and an allowlisted target skipped
+  the SSRF guard (audit F9).
 - Back-to-provider: nonsensical; providers don't receive webhooks.
+
+*Amended by [SPEC-0033](../teams-tenancy/spec.md) REQ "Owned Replay Targets" (#421).*
 
 ### SDK structured output
 
@@ -95,7 +103,7 @@ declared output schemas.
 
 The MCP server is one component inside the switchboard process. Tools resolve against the PostgreSQL
 data-access layer; the single side-effecting tool (`replay`) additionally drives an outbound HTTP
-client toward a localhost/trusted downstream consumer. The recent-events resource shares the exact
+client toward the endpoint's own downstream consumer, through the shared SSRF guard. The recent-events resource shares the exact
 `EventSummary` projection used by `list`.
 
 The sequence below traces a representative agent workflow — scan, drill in, replay — across the MCP
@@ -106,7 +114,7 @@ sequenceDiagram
     participant Agent as MCP client (agent)
     participant MCP as switchboard MCP server
     participant DB as PostgreSQL (events)
-    participant Down as downstream consumer<br/>(localhost/trusted)
+    participant Down as downstream consumer<br/>(owned or explicit target)
 
     Agent->>MCP: list_webhook_events(provider="github", limit=50)
     MCP->>DB: SELECT summaries ORDER BY received_at DESC, id DESC LIMIT 50
@@ -119,9 +127,9 @@ sequenceDiagram
     MCP-->>Agent: EventDetail
 
     Agent->>MCP: replay_webhook_event(id=4213, target_url?)
-    alt no target_url and no configured default
-        MCP-->>Agent: error invalid_argument (no request made)
-    else scheme not http/https
+    alt no target_url and no owned replay target
+        MCP-->>Agent: error replay_target_required (no request made)
+    else not https, or refused by the SSRF guard
         MCP-->>Agent: error invalid_argument (no request made)
     else valid target
         MCP->>DB: read stored raw payload
@@ -141,9 +149,10 @@ ever crosses the boundary.
 - **Summary/detail split means two round-trips when an agent wants full payloads for many events** →
   Accepted: the common case is scan-then-drill-down, and lean summaries keep context small. An agent
   needing many full records pays the extra `get` calls deliberately.
-- **`replay` is inherently an outbound-request tool and an SSRF risk** → Mitigated by scheme
-  validation (`http`/`https` only), a localhost/trusted-network default or allowlist, per-caller rate
-  limiting, and mandatory logging of every replay.
+- **`replay` is inherently an outbound-request tool and an SSRF risk** → Mitigated by the shared
+  SSRF guard on every target (https only, no private/loopback/link-local/CGNAT address) at call and
+  dial time, no redirect-following, per-caller rate limiting, and mandatory logging of every replay
+  (target host only).
 - **Cursor opacity hides sort semantics from clients** → Accepted: opacity is deliberate so the
   encoding can evolve; a malformed cursor fails fast with `invalid_argument`.
 - **Trust metadata is only useful if clients read it** → The contract makes `trust_mode`/`verified`

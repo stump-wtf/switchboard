@@ -37,6 +37,7 @@ import (
 
 	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/push"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -50,10 +51,15 @@ type apiHandler struct {
 	// holding an open stream on a credential that no longer exists. Nil is tolerated (tests that
 	// build the API without an MCP handler) and simply skips the teardown.
 	endpointRevoked func(endpointID string)
+	// replayGuard validates the replay targets a vend names (api_replay_targets.go): the shared SSRF
+	// guard's defaults, the same rules replay_webhook_event applies. Governing: SPEC-0033 REQ "Owned
+	// Replay Targets".
+	replayGuard *push.Validator
 }
 
 func newAPIHandler(st *store.Store, baseURL string, log *slog.Logger, onEndpointRevoked func(string)) *apiHandler {
-	return &apiHandler{st: st, base: strings.TrimRight(baseURL, "/"), log: log, endpointRevoked: onEndpointRevoked}
+	return &apiHandler{st: st, base: strings.TrimRight(baseURL, "/"), log: log, endpointRevoked: onEndpointRevoked,
+		replayGuard: push.New()}
 }
 
 // operatorKey is the API context key carrying the resolved operator principal.
@@ -116,6 +122,10 @@ type vendEndpointIn struct {
 	// Queue is the single scoped queue the endpoint drains and the webhook routes to.
 	// Defaults to "inbox".
 	Queue string `json:"queue,omitempty"`
+	// ReplayTargets are the replay destinations the endpoint owns (first = default for a replay that
+	// names none). Optional; each must pass the SSRF guard. Governing: SPEC-0033 REQ "Owned Replay
+	// Targets".
+	ReplayTargets []string `json:"replay_targets,omitempty"`
 }
 
 type vendWebhookOut struct {
@@ -127,13 +137,14 @@ type vendWebhookOut struct {
 }
 
 type vendEndpointOut struct {
-	AgentName string         `json:"agent_name"`
-	Slug      string         `json:"slug"`
-	MCPURL    string         `json:"mcp_url"`
-	Token     string         `json:"token"`
-	Queue     string         `json:"queue"`
-	Verbs     []string       `json:"verbs"`
-	Webhook   vendWebhookOut `json:"webhook"`
+	AgentName     string         `json:"agent_name"`
+	Slug          string         `json:"slug"`
+	MCPURL        string         `json:"mcp_url"`
+	Token         string         `json:"token"`
+	Queue         string         `json:"queue"`
+	Verbs         []string       `json:"verbs"`
+	ReplayTargets []string       `json:"replay_targets"`
+	Webhook       vendWebhookOut `json:"webhook"`
 	// MCPJSON is the ready-to-paste .mcp.json stanza wiring an MCP client to the endpoint with the
 	// credential embedded — byte-identical to the web reveal's wiring (internal/mcp).
 	MCPJSON   json.RawMessage `json:"mcp_json,omitempty"`
@@ -155,7 +166,9 @@ type endpointOut struct {
 	State     string   `json:"state"`
 	Queues    []string `json:"queues"`
 	Verbs     []string `json:"verbs"`
-	ExpiresAt *string  `json:"expires_at,omitempty"`
+	// ReplayTargets are the endpoint's owned replay destinations, shown only to its owner.
+	ReplayTargets []string `json:"replay_targets"`
+	ExpiresAt     *string  `json:"expires_at,omitempty"`
 }
 
 // VendEndpoint is the one-call mint: agent + endpoint + queue + webhook. Every default is chosen so
@@ -178,6 +191,13 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Queue == "" {
 		in.Queue = "inbox"
+	}
+	// Owned replay targets are checked by the SSRF guard BEFORE anything is minted, so a refused
+	// target leaves no agent and no endpoint. Governing: SPEC-0033 REQ "Owned Replay Targets".
+	replayTargets, err := normalizeReplayTargets(r.Context(), a.replayGuard, in.ReplayTargets)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// The basics scope: mcp.AllVerbs() — the full todo-drain surface (the core scope an endpoint
@@ -206,6 +226,7 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		WebhookMax:         whMax,
 		WebhookSourceTypes: whSources,
 		WebhookQueues:      whQueues,
+		ReplayTargets:      replayTargets,
 	})
 	if err != nil {
 		a.fail(w, "vend endpoint", err)
@@ -228,7 +249,7 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, vendEndpointOut{
 			AgentName: res.AgentName, Slug: ep.Slug,
 			MCPURL: mcp.EndpointURL(a.base, ep.Slug),
-			Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs,
+			Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs, ReplayTargets: replayTargets,
 			MCPJSON: json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
 		})
 		return
@@ -242,7 +263,7 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, vendEndpointOut{
 		AgentName: res.AgentName, Slug: ep.Slug,
 		MCPURL: mcp.EndpointURL(a.base, ep.Slug),
-		Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs,
+		Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs, ReplayTargets: replayTargets,
 		Webhook:   vendWebhookOut{WebhookID: webhook.ID, IngestURL: a.base + "/webhooks/w/" + ingestToken, TrustMode: "token"},
 		MCPJSON:   json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
 		ExpiresAt: expiresAt,
@@ -262,7 +283,7 @@ func (a *apiHandler) ListEndpoints(w http.ResponseWriter, r *http.Request) {
 	for _, c := range cards {
 		e := endpointOut{
 			ID: c.ID, Slug: c.Slug, AgentName: c.AgentName, State: c.State,
-			Queues: c.ScopeQueues, Verbs: c.ScopeVerbs,
+			Queues: c.ScopeQueues, Verbs: c.ScopeVerbs, ReplayTargets: nonNilStrings(c.ReplayTargets),
 		}
 		if c.ExpiresAt != nil {
 			s := c.ExpiresAt.UTC().Format(time.RFC3339)

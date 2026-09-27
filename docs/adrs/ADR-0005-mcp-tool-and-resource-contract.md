@@ -10,6 +10,11 @@ related: [ADR-0000, ADR-0002, ADR-0003]
 > **Amended 2026-09-21 (#181).** `list_providers` was removed with the provider registry
 > ([ADR-0020](ADR-0020-runtime-provider-registry.md), superseded). The event-history tools are
 > `list_webhook_events`, `get_webhook_event`, and `replay_webhook_event`.
+>
+> **Amended by [ADR-0038](ADR-0038-teams-and-tenancy.md) (F9, #421).** The configured default replay
+> target and the allowlist below are retired: an omitted `target_url` falls back to the calling
+> endpoint's own replay target, `replay_target_required` when it has none, and every target passes
+> the shared SSRF guard. See SPEC-0033 REQ "Owned Replay Targets".
 
 ## Context and Problem Statement
 
