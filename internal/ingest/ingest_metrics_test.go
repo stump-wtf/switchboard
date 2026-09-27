@@ -12,8 +12,9 @@ package ingest
 // The receiver tests install recordingMetrics through SetMetrics and assert the raw calls. One test
 // wires the real *metrics.Metrics instead and reads the gathered series, so the literals this
 // package passes are proven to survive the metrics side's label coercion. That import is test-only;
-// internal/metrics imports nothing from switchboard, so there is no cycle, and production code in
-// this package still never imports it.
+// internal/metrics imports only internal/store (for QueueStat and the reserved quarantine queue) and
+// its dependencies, never ingest, so there is no cycle, and production code in this package still
+// never imports it.
 //
 // Governing: SPEC-0023 REQ-4 "Ingest and routing" (scenario "a routing rule that matches nothing"),
 // REQ-5 "Cardinality"; ADR-0028.
