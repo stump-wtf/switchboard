@@ -296,10 +296,10 @@ func TestGetWebhookEventDetail(t *testing.T) {
 }
 
 // TestReplayWebhookEventSurface: the replay verb resolves its id (unknown → not_found) before any
-// outbound thought, and with #40's delivery landed a valid id with neither an explicit target nor a
-// configured default is the hard invalid_argument (never a guessed target). The full SSRF/delivery
-// behaviour is exercised in replay_test.go.
-// Governing: SPEC-0005 scenario "Unknown id raises not_found", "No target and no default is an error".
+// outbound thought, and a valid id with neither an explicit target nor an owned replay target is the
+// hard replay_target_required (never a guessed target). The full SSRF/delivery behaviour is exercised
+// in replay_test.go.
+// Governing: SPEC-0005 scenario "Unknown id raises not_found", SPEC-0033 REQ "Owned Replay Targets".
 func TestReplayWebhookEventSurface(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -312,8 +312,8 @@ func TestReplayWebhookEventSurface(t *testing.T) {
 	cs := session(t, ctx, f, []string{"reviews"}, eventVerbNames)
 
 	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 999}, "not_found")
-	// No explicit target and no configured replay_default_target: a hard invalid_argument.
-	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 3}, "invalid_argument")
+	// No explicit target and no owned target: a hard replay_target_required.
+	callErr(t, ctx, cs, "replay_webhook_event", map[string]any{"id": 3}, codeReplayTargetRequired)
 }
 
 // TestEventStoreFailureIsGenericToClient: a DB failure inside an event read reaches the client

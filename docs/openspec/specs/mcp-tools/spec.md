@@ -95,24 +95,27 @@ across pages. A malformed cursor MUST raise `invalid_argument`.
 
 `replay_webhook_event` is the only side-effecting tool. It MUST re-POST the stored raw payload and a
 replay-safe subset of headers to a target URL. `target_url` is OPTIONAL; when omitted the tool MUST
-fall back to the configured `replay_default_target` setting, and when neither is present it MUST
-return `invalid_argument` rather than guessing a target. The tool MUST NOT replay back to the
-originating provider. The target URL scheme MUST be `http` or `https`; any other scheme MUST be
-rejected with `invalid_argument`. The implementation SHOULD constrain targets to a
-localhost/trusted-network default or an allowlist to avoid becoming an SSRF primitive. Every replay
-attempt MUST be logged. The response MUST report `id`, resolved `target_url`, `delivered` (whether
+fall back to the calling endpoint's first owned replay target, and when neither is present it MUST
+return `replay_target_required` rather than guessing a target. The tool MUST NOT replay back to the
+originating provider. Every target, owned or not, MUST pass the shared SSRF guard
+(`internal/push.Validator`) at call time and again at dial time; no target is trusted. The instance
+settings `replay_default_target` and `replay_allowed_targets` are removed. Every replay attempt MUST
+be logged. The response MUST report `id`, resolved `target_url`, `delivered` (whether
 the POST completed at all), `response_status` (downstream HTTP status, or null on connection
 failure), and `response_ms`.
 
+*Amended by SPEC-0033 REQ "Owned Replay Targets" (#421), which replaced the configured default target
+and the SHOULD-level allowlist with endpoint-owned targets and a guard nothing bypasses.*
+
 #### Scenario: No target and no default is an error, not a guess
 
-- **WHEN** `replay_webhook_event` is called with neither `target_url` nor a configured
-  `replay_default_target`
-- **THEN** the tool MUST return `invalid_argument` and MUST NOT perform any outbound request
+- **WHEN** `replay_webhook_event` is called with no `target_url` by an endpoint that owns no replay
+  target
+- **THEN** the tool MUST return `replay_target_required` and MUST NOT perform any outbound request
 
 #### Scenario: Non-http scheme is rejected before any request
 
-- **WHEN** `replay_webhook_event` is called with a `target_url` whose scheme is not `http`/`https`
+- **WHEN** `replay_webhook_event` is called with a `target_url` whose scheme is not `https`
   (e.g. `file://` or `gopher://`)
 - **THEN** the tool MUST reject it with `invalid_argument` and MUST NOT perform any outbound request
 
@@ -139,8 +142,8 @@ wired by the implementation, but a pull-able recent-events resource is REQUIRED.
 
 Tools MUST raise MCP tool errors with a stable machine `code` and a human `message`. The `message`
 MUST NOT contain any secret material. The defined codes are: `not_found` (unknown event id),
-`invalid_argument` (bad input — missing replay target with no default, non-http(s) target, malformed
-cursor, out-of-range limit), `replay_failed` (replay could not connect to or complete against the
+`invalid_argument` (bad input — a target the SSRF guard refuses, malformed cursor, out-of-range
+limit), `replay_target_required` (no `target_url` and no owned replay target), `replay_failed` (replay could not connect to or complete against the
 target), `rate_limited` (the caller's per-endpoint replay budget is exhausted — see Rate Limiting;
 distinct from `invalid_argument` and `replay_failed` so a caller can back off deterministically), and
 `internal` (unexpected server-side failure).
