@@ -235,7 +235,7 @@ the sender" the standard requires. Before emitting a notification, switchboard M
 `</channel>` sequence in payload-derived content so a webhook body cannot break out of the
 `<channel>` wrapper. Secret-bearing values MUST NOT be inlined into a push; they MUST remain behind a
 fetchable `secret-ref`. A todo the endpoint's own operator authored over the operator API
-([ADR-0026](../../../adrs/ADR-0026-operator-authored-todos.md)) carries the strongest attribution
+([ADR-0040](../../../adrs/ADR-0040-operator-authored-todos.md)) carries the strongest attribution
 switchboard has — an OIDC-authenticated human, the principal that vended the endpoint — and MUST be
 push-eligible, recorded as a verified delivery event of trust mode `operator`; its title and payload
 remain untrusted content and MUST pass through the same neutralization as any other push.
