@@ -49,8 +49,8 @@ endpoints in place, and the verbs it removes cannot be restored.
 ### Added
 
 - **A worker can end an attempt without a verdict: `release`.** When an attempt ends for a
-  reason that is not the work's fault -- the daemon is shutting down, an operator stops it,
-  a usage limit is hit -- `release {id, summary?, artifact?, lease_token?}` hands the todo
+  reason that is not the work's fault — the daemon is shutting down, an operator stops it,
+  a usage limit is hit — `release {id, summary?, artifact?, lease_token?}` hands the todo
   back to the queue. The todo returns to `pending` with its attempt counter unchanged, so
   no retry backoff is burned and the attempt does not read as a failure; the attempt closes
   as `released` and the todo is requeued. It takes the same lease-token fence as
