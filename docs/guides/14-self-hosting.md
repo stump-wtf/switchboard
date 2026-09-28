@@ -41,6 +41,7 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_GITHUB_REDIRECT_URL` | `<base>/auth/callback` | Override only if your proxy rewrites paths. |
 | `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | — | Recommended. Encrypts webhook signing secrets at rest. 32 bytes, base64 or hex. **Empty stores them in plaintext**; see [Secrets at rest](/guides/security-model#secrets-at-rest). |
 | `SWITCHBOARD_DEV_LOGIN` | off | Unauthenticated local login. Never in production. |
+| `SWITCHBOARD_NOTIFY_HOOK_MAX` | `5` | Per-endpoint ceiling on outbound notify hooks. `0` turns notify hooks off. Notify hooks also require `SWITCHBOARD_SECRET_ENCRYPTION_KEY`: without it, no hook can be created, because a hook secret is never stored in plaintext. |
 | `SWITCHBOARD_METRICS_TOKEN` | — | Scrape token for `GET /metrics`. Unset, the endpoint answers `401` to everything. At least 32 bytes. See [Metrics](#metrics). |
 | `SWITCHBOARD_FRIENDING`, `SWITCHBOARD_PERSONAS`, `SWITCHBOARD_A2A`, `SWITCHBOARD_A2UI` | off | Advanced capabilities, hidden until switched on. |
 
@@ -157,6 +158,7 @@ network, use `sslmode=verify-full`.
 | `db: ping: … connection refused` | The DSN is right but nothing is listening. |
 | `cred: secret encryption key must decode (base64 or hex) to exactly 32 bytes` | The key is the wrong length or encoding. |
 | `config: SWITCHBOARD_METRICS_TOKEN is N bytes; it must be at least 32 …` | The scrape token is too short. It must also be printable ASCII with no spaces. |
+| `config: SWITCHBOARD_NOTIFY_HOOK_MAX="…" must be a non-negative integer` | The notify-hook ceiling is not a whole number. Use `0` to turn notify hooks off. |
 
 Each of these exits immediately and says which one it is.
 

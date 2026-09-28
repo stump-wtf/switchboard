@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -92,7 +93,21 @@ type Config struct {
 	// file with a trailing newline still matches. (SWITCHBOARD_METRICS_TOKEN)
 	// Governing: SPEC-0023 REQ-1 "The endpoint", ADR-0028.
 	MetricsToken string
+
+	// NotifyHookMax is the per-endpoint ceiling on outbound notify hooks, an instance-wide operator
+	// bound. 0 is the kill switch: every create is refused, and dispatch to existing hooks stops.
+	// Unset means DefaultNotifyHookMax; a non-integer or negative value fails startup (Validate).
+	// (SWITCHBOARD_NOTIFY_HOOK_MAX)
+	// Governing: SPEC-0024 REQ-1 "Hook Ownership and Scope", design.md "Configuration".
+	NotifyHookMax int
+	// notifyHookMaxRaw keeps the env value so Validate can reject a malformed one instead of
+	// silently applying the default to a typo.
+	notifyHookMaxRaw string
 }
+
+// DefaultNotifyHookMax is the per-endpoint notify-hook ceiling when SWITCHBOARD_NOTIFY_HOOK_MAX is
+// unset (SPEC-0024 REQ-1).
+const DefaultNotifyHookMax = 5
 
 // MinMetricsTokenLen is the shortest scrape token Validate accepts. The bound is on length only; the
 // documented generator (openssl rand -hex 32) yields 64 characters carrying 256 random bits.
@@ -105,6 +120,8 @@ func FromEnv() Config {
 	if redirect == "" {
 		redirect = base + "/auth/callback"
 	}
+	notifyHookMaxRaw := strings.TrimSpace(os.Getenv("SWITCHBOARD_NOTIFY_HOOK_MAX"))
+	notifyHookMax := parseNotifyHookMax(notifyHookMaxRaw)
 	githubRedirect := os.Getenv("SWITCHBOARD_GITHUB_REDIRECT_URL")
 	if githubRedirect == "" {
 		githubRedirect = base + "/auth/callback"
@@ -128,7 +145,22 @@ func FromEnv() Config {
 		A2AEnabled:          os.Getenv("SWITCHBOARD_A2A") == "1",
 		A2UIEnabled:         os.Getenv("SWITCHBOARD_A2UI") == "1",
 		MetricsToken:        strings.TrimSpace(os.Getenv("SWITCHBOARD_METRICS_TOKEN")),
+		NotifyHookMax:       notifyHookMax,
+		notifyHookMaxRaw:    notifyHookMaxRaw,
 	}
+}
+
+// parseNotifyHookMax reads SWITCHBOARD_NOTIFY_HOOK_MAX: unset is the default, anything else must be
+// a non-negative integer. A bad value maps to -1, which Validate turns into a startup error.
+func parseNotifyHookMax(raw string) int {
+	if raw == "" {
+		return DefaultNotifyHookMax
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return -1
+	}
+	return n
 }
 
 // Validate rejects configuration that must fail startup rather than run degraded. It never echoes
@@ -146,6 +178,9 @@ func (c Config) Validate() error {
 				return errors.New("config: SWITCHBOARD_METRICS_TOKEN must be printable ASCII with no whitespace")
 			}
 		}
+	}
+	if c.NotifyHookMax < 0 {
+		return fmt.Errorf("config: SWITCHBOARD_NOTIFY_HOOK_MAX=%q must be a non-negative integer (0 disables notify hooks)", c.notifyHookMaxRaw)
 	}
 	return nil
 }
