@@ -11,9 +11,11 @@ is emptied at tag time. Pre-1.0, a superseded surface is removed outright rather
 deprecated, so a breaking change is listed under **Breaking** and carries a note in
 [Upgrading](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md).
 
-## [Unreleased]
+## [0.5.0] - 2026-09-28
 
-**Read the [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md#upgrading-to-unreleased)
+Friend-vended endpoints stop acting with the approver's authority, and a worker can end
+an attempt without a verdict. **Read the
+[upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md#upgrading-to-v050)
 before upgrading**: migration `0025_friend_edges_own_authority` narrows existing friend
 endpoints in place, and the verbs it removes cannot be restored.
 
@@ -43,6 +45,21 @@ endpoints in place, and the verbs it removes cannot be restored.
   webhook now answers `not_found`. To edit a webhook's rules, use the endpoint that owns it.
   (#420)
 - Friend requests from two different users' same-named personas no longer collide. (#420)
+
+### Added
+
+- **A worker can end an attempt without a verdict: `release`.** When an attempt ends for a
+  reason that is not the work's fault -- the daemon is shutting down, an operator stops it,
+  a usage limit is hit -- `release {id, summary?, artifact?, lease_token?}` hands the todo
+  back to the queue. The todo returns to `pending` with its attempt counter unchanged, so
+  no retry backoff is burned and the attempt does not read as a failure; the attempt closes
+  as `released` and the todo is requeued. It takes the same lease-token fence as
+  `complete` and `fail`, and an endpoint holds it only when its grant names it. (#507)
+- **`summary` and `artifact` on a released attempt.** Both are optional and both are kept
+  on the attempt for later claimers. `artifact` is an `mcp://cairn/<id>` handle or an
+  absolute `https` URL of at most 512 bytes; Switchboard never fetches it. A URL carrying
+  userinfo is refused, because the artifact is handed to every later claimer and rendered
+  as a link on the Board. (#507)
 
 ## [0.4.0] - 2026-09-27
 

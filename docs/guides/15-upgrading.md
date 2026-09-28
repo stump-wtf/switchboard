@@ -11,7 +11,7 @@ published image, check which release you are actually running first.
 To find your version, run `switchboard version`, or read it from `/healthz`. Newer builds
 also report it over MCP as `serverInfo.version`.
 
-## Upgrading to Unreleased
+## Upgrading to v0.5.0
 
 ### Read this first
 
@@ -24,13 +24,20 @@ cannot be fully reversed.** It also makes routing rules fail closed, with no swi
   endpoint of the same person, answer `not_found`;
 - every endpoint minted by approving a friend request is **narrowed in place** to
   `create_for` and the drain verbs (`list_todos`, `get_todo`, `claim`, `claim_next`,
-  `complete`, `fail`, `heartbeat`), and its friendship's recorded grant is narrowed with it;
+  `complete`, `fail`, `release`, `heartbeat`), and its friendship's recorded grant is
+  narrowed with it;
 - a friend request (over A2A, or from the Friends page) that names only verbs a friend can
   never be granted is refused with a 400 instead of being stored.
 
 Migration `0025_friend_edges_own_authority` rewrites `endpoints.scope_verbs` and
 `friend_edges.granted_verbs` in place. Its index change can be undone, but the verbs it
 removes cannot be put back from the database. Back up first.
+
+The migration's own narrowing list predates the `release` verb (#507) and does not carry
+it, so a friend endpoint that holds `release` loses it on upgrade. The list below is the
+correct one, and the verification query says what to expect; see
+[issue #538](https://gitea.stump.rocks/stump.wtf/switchboard/issues/538) for the migration
+fix. Re-grant `release` to such an endpoint after upgrading if its agent needs it.
 
 ### What breaks, and who is affected
 
@@ -97,7 +104,7 @@ works.
     FROM endpoints e
     JOIN friend_edges f ON f.endpoint_id = e.id
    WHERE f.state = 'approved'
-     AND NOT e.scope_verbs <@ ARRAY['create_for','list_todos','get_todo','claim','claim_next','complete','fail','heartbeat'];
+     AND NOT e.scope_verbs <@ ARRAY['create_for','list_todos','get_todo','claim','claim_next','complete','fail','release','heartbeat'];
   ```
 
 - From a webhook's own endpoint, `list_webhook_rules` returns its rules; from any other
