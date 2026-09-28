@@ -11,6 +11,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/stump-wtf/switchboard/internal/push"
 )
 
 // Config is the resolved runtime configuration.
@@ -100,6 +102,14 @@ type Config struct {
 	// (SWITCHBOARD_NOTIFY_HOOK_MAX)
 	// Governing: SPEC-0024 REQ-1 "Hook Ownership and Scope", design.md "Configuration".
 	NotifyHookMax int
+	// NotifyHookAllowCIDRs is the operator's comma-separated CIDR allowlist exempting ranges from the
+	// notify-hook SSRF guard's private-address rule, for a single-tenant or homelab install whose
+	// receiver is on the LAN. Empty (the default) exempts nothing. It opens the listed ranges to EVERY
+	// tenant; loopback and link-local are exempted only by entries wholly inside them, and
+	// switchboard's own listen address and port stay refused. A malformed entry fails startup.
+	// (SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS)
+	// Governing: SPEC-0024 REQ-3, design.md "Private ranges are an operator bound, off by default".
+	NotifyHookAllowCIDRs string
 	// notifyHookMaxRaw keeps the env value so Validate can reject a malformed one instead of
 	// silently applying the default to a typo.
 	notifyHookMaxRaw string
@@ -127,26 +137,27 @@ func FromEnv() Config {
 		githubRedirect = base + "/auth/callback"
 	}
 	return Config{
-		Addr:                getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
-		BaseURL:             base,
-		DatabaseURL:         os.Getenv("SWITCHBOARD_DATABASE_URL"),
-		OIDCIssuer:          os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
-		OIDCClientID:        os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
-		OIDCClientSecret:    os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
-		OIDCRedirectURL:     redirect,
-		GitHubClientID:      os.Getenv("SWITCHBOARD_GITHUB_CLIENT_ID"),
-		GitHubClientSecret:  os.Getenv("SWITCHBOARD_GITHUB_CLIENT_SECRET"),
-		GitHubRedirectURL:   githubRedirect,
-		SecretEncryptionKey: os.Getenv("SWITCHBOARD_SECRET_ENCRYPTION_KEY"),
-		DevLogin:            os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
-		FriendingEnabled:    os.Getenv("SWITCHBOARD_FRIENDING") == "1",
-		PushAllowHTTP:       os.Getenv("SWITCHBOARD_PUSH_ALLOW_HTTP") == "1",
-		PersonasEnabled:     os.Getenv("SWITCHBOARD_PERSONAS") == "1",
-		A2AEnabled:          os.Getenv("SWITCHBOARD_A2A") == "1",
-		A2UIEnabled:         os.Getenv("SWITCHBOARD_A2UI") == "1",
-		MetricsToken:        strings.TrimSpace(os.Getenv("SWITCHBOARD_METRICS_TOKEN")),
-		NotifyHookMax:       notifyHookMax,
-		notifyHookMaxRaw:    notifyHookMaxRaw,
+		Addr:                 getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
+		BaseURL:              base,
+		DatabaseURL:          os.Getenv("SWITCHBOARD_DATABASE_URL"),
+		OIDCIssuer:           os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
+		OIDCClientID:         os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
+		OIDCClientSecret:     os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
+		OIDCRedirectURL:      redirect,
+		GitHubClientID:       os.Getenv("SWITCHBOARD_GITHUB_CLIENT_ID"),
+		GitHubClientSecret:   os.Getenv("SWITCHBOARD_GITHUB_CLIENT_SECRET"),
+		GitHubRedirectURL:    githubRedirect,
+		SecretEncryptionKey:  os.Getenv("SWITCHBOARD_SECRET_ENCRYPTION_KEY"),
+		DevLogin:             os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
+		FriendingEnabled:     os.Getenv("SWITCHBOARD_FRIENDING") == "1",
+		PushAllowHTTP:        os.Getenv("SWITCHBOARD_PUSH_ALLOW_HTTP") == "1",
+		PersonasEnabled:      os.Getenv("SWITCHBOARD_PERSONAS") == "1",
+		A2AEnabled:           os.Getenv("SWITCHBOARD_A2A") == "1",
+		A2UIEnabled:          os.Getenv("SWITCHBOARD_A2UI") == "1",
+		MetricsToken:         strings.TrimSpace(os.Getenv("SWITCHBOARD_METRICS_TOKEN")),
+		NotifyHookMax:        notifyHookMax,
+		NotifyHookAllowCIDRs: strings.TrimSpace(os.Getenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS")),
+		notifyHookMaxRaw:     notifyHookMaxRaw,
 	}
 }
 
@@ -178,6 +189,9 @@ func (c Config) Validate() error {
 				return errors.New("config: SWITCHBOARD_METRICS_TOKEN must be printable ASCII with no whitespace")
 			}
 		}
+	}
+	if _, err := push.ParseCIDRList(c.NotifyHookAllowCIDRs); err != nil {
+		return fmt.Errorf("config: SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS: %w", err)
 	}
 	if c.NotifyHookMax < 0 {
 		return fmt.Errorf("config: SWITCHBOARD_NOTIFY_HOOK_MAX=%q must be a non-negative integer (0 disables notify hooks)", c.notifyHookMaxRaw)

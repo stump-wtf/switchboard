@@ -19,7 +19,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -56,6 +59,15 @@ type Validator struct {
 	// already denied wholesale, so this matters mainly for a non-loopback bind (e.g. 0.0.0.0 expanded
 	// to a routable interface address, or an explicit public bind).
 	ownIPs []net.IP
+	// ownAddrPorts are the listen addresses that named a port (e.g. 127.0.0.1:8080). An address the
+	// CIDR allowlist exempts is compared against these as address PLUS port, so a same-host receiver
+	// on another port is reachable while switchboard's own port stays refused (SPEC-0024 REQ-3).
+	ownAddrPorts []netip.AddrPort
+	// ownWildcardPorts are ports switchboard binds on every interface (":8080", "0.0.0.0:8080"). An
+	// allowlist-exempted address on one of these ports may be switchboard itself, so it is refused.
+	ownWildcardPorts []uint16
+	// allow is the operator CIDR allowlist (WithAllowCIDRs). Empty by default: nothing is exempted.
+	allow []netip.Prefix
 }
 
 // Option configures a Validator at construction.
@@ -79,16 +91,76 @@ func WithResolver(r Resolver) Option {
 
 // WithOwnListenAddrs registers switchboard's own listening address(es) so a target resolving to one
 // of them is rejected. Each addr is a listen address (host, host:port, or a bare IP); the host
-// portion is parsed as an IP and non-IP hosts (e.g. a "0.0.0.0" wildcard is an IP and is kept; a
-// "localhost" bind is already covered by the loopback rule) are skipped. A ":8080"-style
-// port-only bind contributes no specific IP (it binds all interfaces, already covered by the
-// range rules), so it is skipped without error.
+// portion is parsed as an IP (a "0.0.0.0" wildcard is an IP and is kept). A ":8080"-style port-only
+// bind contributes no specific IP (it binds all interfaces, already covered by the range rules).
+//
+// A host that is not an IP literal ("localhost:8080", "myhost:8080") names no address the guard can
+// compare against, so its port is treated like a bind on every interface: an allowlist-exempted
+// address on that port is refused. That fails closed; resolving the name here would pin whatever it
+// resolved to at startup (SPEC-0024 REQ-3: switchboard's own listen address and port stay rejected
+// even when listed).
 func WithOwnListenAddrs(addrs ...string) Option {
 	return func(v *Validator) {
 		for _, a := range addrs {
 			v.ownIPs = append(v.ownIPs, parseListenIPs(a)...)
+			ap, wildcardPort := parseListenAddrPort(a)
+			if ap.IsValid() {
+				v.ownAddrPorts = append(v.ownAddrPorts, ap)
+			}
+			if wildcardPort != 0 {
+				v.ownWildcardPorts = append(v.ownWildcardPorts, wildcardPort)
+			}
 		}
 	}
+}
+
+// WithAllowCIDRs exempts the listed ranges from the private-address rejection: the operator bound
+// for a single-tenant or homelab install whose receiver lives on the LAN (SPEC-0024 REQ-3,
+// SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS). The exemption is deliberately narrow:
+//
+//   - private (RFC 1918), unique-local (RFC 4193) and shared/CGNAT (RFC 6598) addresses are exempted
+//     by any listed range that contains them;
+//   - loopback and link-local addresses are exempted only by a range lying WHOLLY inside loopback
+//     (127.0.0.0/8, ::1/128) or link-local (169.254.0.0/16, fe80::/10), such as 127.0.0.1/32, so a
+//     broad entry like 0.0.0.0/0 never opens loopback or a link-local cloud metadata service;
+//   - the cloud metadata services outside link-local (metadataAddrs: Alibaba Cloud's
+//     100.100.100.200 in CGNAT space, AWS's IPv6 fd00:ec2::254 in ULA space) are exempted only by an
+//     entry for exactly that address (a /32 or /128), so no covering range opens them either;
+//   - unspecified and multicast addresses are never exempted;
+//   - an exempted address is still refused when it is switchboard's own listen address and port.
+//
+// Omit it (the default) and nothing is exempted.
+func WithAllowCIDRs(prefixes ...netip.Prefix) Option {
+	return func(v *Validator) {
+		for _, p := range prefixes {
+			if p.IsValid() {
+				v.allow = append(v.allow, unmapPrefix(p))
+			}
+		}
+	}
+}
+
+// ParseCIDRList parses a comma-separated CIDR list, the SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS format.
+// A bare IP is a single-address range. Empty entries are skipped; any malformed entry is an error
+// (wrapping ErrValidation) naming it, so a typo fails startup instead of silently allowing nothing.
+func ParseCIDRList(s string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(part); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		if a, err := netip.ParseAddr(part); err == nil {
+			out = append(out, netip.PrefixFrom(a, a.BitLen()))
+			continue
+		}
+		return nil, fmt.Errorf("%w: %q is not a CIDR range or IP address", ErrValidation, part)
+	}
+	return out, nil
 }
 
 // New builds a Validator. With no options it requires https, denies loopback/link-local/private/
@@ -116,59 +188,99 @@ func New(opts ...Option) *Validator {
 // It rejects if ANY resolved address is disallowed (not just the first): a host that resolves to both
 // a public and a private address must not be reachable, since Go's dialer may pick any of them.
 func (v *Validator) Validate(ctx context.Context, raw string) error {
+	_, err := v.Resolve(ctx, raw)
+	return err
+}
+
+// Target is a URL that passed the guard, with the one resolution that passed it. A caller that
+// dials must connect to one of IPs and nothing else: resolving the host again between validation
+// and dial reopens the DNS-rebinding window (SPEC-0024 REQ-3, design.md "the dial is pinned").
+type Target struct {
+	URL  *url.URL
+	Host string   // the URL's hostname: TLS ServerName and the Host header
+	Port string   // the explicit port, or the scheme default ("443" / "80")
+	IPs  []net.IP // every address the host resolved to; each passed the guard
+}
+
+// Resolve is Validate returning what it validated: the parsed URL and the addresses it resolved,
+// every one of which passed. It performs exactly one lookup (none for a literal IP). Errors are
+// Validate's.
+func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return &refusal{RefusedMalformed, fmt.Sprintf("unparseable url: %v", err)}
+		return Target{}, &refusal{RefusedMalformed, fmt.Sprintf("unparseable url: %v", err)}
 	}
 	scheme := strings.ToLower(u.Scheme)
+	defaultPort := "443"
 	switch scheme {
 	case "https":
 		// always allowed
 	case "http":
 		if !v.allowHTTP {
-			return &refusal{RefusedScheme, fmt.Sprintf("scheme %q requires https (http allowed only under the operator opt-in for non-prod)", u.Scheme)}
+			return Target{}, &refusal{RefusedScheme, fmt.Sprintf("scheme %q requires https (http allowed only under the operator opt-in for non-prod)", u.Scheme)}
 		}
+		defaultPort = "80"
 	default:
-		return &refusal{RefusedScheme, fmt.Sprintf("scheme %q not allowed (must be https)", u.Scheme)}
+		return Target{}, &refusal{RefusedScheme, fmt.Sprintf("scheme %q not allowed (must be https)", u.Scheme)}
 	}
 
 	host := u.Hostname()
 	if host == "" {
-		return &refusal{RefusedMalformed, "url has no host"}
+		return Target{}, &refusal{RefusedMalformed, "url has no host"}
 	}
+	port := u.Port()
+	if port == "" {
+		port = defaultPort
+	}
+	portN, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portN == 0 {
+		return Target{}, fmt.Errorf("%w: invalid port %q", ErrValidation, port)
+	}
+	t := Target{URL: u, Host: host, Port: port}
 
 	// If the host is a literal IP, check it directly — no DNS to resolve, and no rebinding possible.
 	if literal := net.ParseIP(host); literal != nil {
-		if err := v.checkIP(literal); err != nil {
-			return err
+		if err := v.checkIP(literal, uint16(portN)); err != nil {
+			return Target{}, err
 		}
-		return nil
+		t.IPs = []net.IP{literal}
+		return t, nil
 	}
 
 	addrs, err := v.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return &refusal{RefusedUnresolvable, fmt.Sprintf("resolve %q: %v", host, err)}
+		return Target{}, &refusal{RefusedUnresolvable, fmt.Sprintf("resolve %q: %v", host, err)}
 	}
 	if len(addrs) == 0 {
-		return &refusal{RefusedUnresolvable, fmt.Sprintf("host %q resolved to no addresses", host)}
+		return Target{}, &refusal{RefusedUnresolvable, fmt.Sprintf("host %q resolved to no addresses", host)}
 	}
 	// Fail closed if ANY resolved address is disallowed: the dialer may connect to any of them, so a
 	// single private answer among public ones is enough to reach an internal service.
 	for _, a := range addrs {
-		if err := v.checkIP(a.IP); err != nil {
-			return err
+		if err := v.checkIP(a.IP, uint16(portN)); err != nil {
+			return Target{}, err
 		}
+		t.IPs = append(t.IPs, a.IP)
 	}
-	return nil
+	return t, nil
 }
 
-// checkIP rejects an address that is not a permitted (public, routable, non-switchboard) target.
-func (v *Validator) checkIP(ip net.IP) error {
+// checkIP rejects an address that is not a permitted (public, routable, non-switchboard) target, or
+// an operator-allowlisted one that is switchboard's own listen address and port.
+func (v *Validator) checkIP(ip net.IP, port uint16) error {
 	if ip == nil {
 		return &refusal{RefusedAddress, "nil resolved address"}
 	}
 	if reason := disallowedReason(ip); reason != "" {
-		return &refusal{RefusedAddress, fmt.Sprintf("address %s is %s", ip, reason)}
+		if !v.allowlisted(ip) {
+			return &refusal{RefusedAddress, fmt.Sprintf("address %s is %s", ip, reason)}
+		}
+		// Exempted by the operator allowlist: the range rule no longer protects switchboard itself,
+		// so compare against its own listen address and port.
+		if v.isOwnAddrPort(ip, port) {
+			return &refusal{RefusedAddress, fmt.Sprintf("address %s port %d is switchboard's own listening address", ip, port)}
+		}
+		return nil
 	}
 	for _, own := range v.ownIPs {
 		if own.Equal(ip) {
@@ -176,6 +288,122 @@ func (v *Validator) checkIP(ip net.IP) error {
 		}
 	}
 	return nil
+}
+
+// Ranges an allowlist entry must lie wholly inside to exempt a loopback or link-local address.
+var (
+	loopbackRanges  = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
+	linkLocalRanges = []netip.Prefix{netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("fe80::/10")}
+)
+
+// metadataAddrs are well-known cloud instance-metadata services inside a range that a covering
+// allowlist entry would otherwise exempt (CGNAT, ULA). They hand out instance credentials, so each is
+// exempted only by an entry for exactly that address, never by 100.64.0.0/10, fc00::/7, ::/0 or the
+// like. Link-local metadata services (169.254.169.254 and friends) fall under the link-local rule.
+// Governing: SPEC-0024 REQ-3 "Target Validation (SSRF Guard)".
+var metadataAddrs = []netip.Addr{
+	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud ECS metadata (CGNAT, RFC 6598)
+	netip.MustParseAddr("fd00:ec2::254"),   // AWS EC2 IMDS over IPv6 (ULA, RFC 4193)
+}
+
+// allowlisted reports whether the operator allowlist exempts ip from the range rules (the rules are
+// on WithAllowCIDRs).
+func (v *Validator) allowlisted(ip net.IP) bool {
+	if len(v.allow) == 0 {
+		return false
+	}
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	a = a.Unmap()
+	var within []netip.Prefix // non-nil: the entry must lie wholly inside one of these
+	switch {
+	case a.IsUnspecified(), a.IsMulticast():
+		return false
+	case a.IsLoopback():
+		within = loopbackRanges
+	case a.IsLinkLocalUnicast():
+		within = linkLocalRanges
+	case slices.Contains(metadataAddrs, a):
+		within = []netip.Prefix{netip.PrefixFrom(a, a.BitLen())}
+	}
+	for _, p := range v.allow {
+		if !p.Contains(a) {
+			continue
+		}
+		if within == nil || prefixInside(p, within) {
+			return true
+		}
+	}
+	return false
+}
+
+// isOwnAddrPort reports whether ip:port is one of switchboard's own listen addresses: an exact
+// address-and-port match, a port bound on every interface, or a listen address given without a port
+// (which covers every port of that address).
+func (v *Validator) isOwnAddrPort(ip net.IP, port uint16) bool {
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	a = a.Unmap()
+	for _, ap := range v.ownAddrPorts {
+		if ap.Addr().Unmap() == a && ap.Port() == port {
+			return true
+		}
+	}
+	for _, p := range v.ownWildcardPorts {
+		if p == port {
+			return true
+		}
+	}
+	for _, own := range v.ownIPs {
+		if own.Equal(ip) && !v.ownIPHasPort(own) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownIPHasPort reports whether an own IP came from a listen address that named a port, in which
+// case the address-and-port comparison above is the precise one.
+func (v *Validator) ownIPHasPort(ip net.IP) bool {
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	a = a.Unmap()
+	for _, ap := range v.ownAddrPorts {
+		if ap.Addr().Unmap() == a {
+			return true
+		}
+	}
+	return false
+}
+
+// prefixInside reports whether p lies wholly inside one of the ranges.
+func prefixInside(p netip.Prefix, ranges []netip.Prefix) bool {
+	for _, r := range ranges {
+		if r.Contains(p.Addr()) && p.Bits() >= r.Bits() {
+			return true
+		}
+	}
+	return false
+}
+
+// unmapPrefix normalizes an IPv4-mapped IPv6 prefix (::ffff:10.0.0.0/104) to its IPv4 form, so it
+// matches the unmapped addresses allowlisted compares.
+func unmapPrefix(p netip.Prefix) netip.Prefix {
+	p = p.Masked()
+	if p.Addr().Is4In6() {
+		bits := p.Bits() - 96
+		if bits < 0 {
+			bits = 0
+		}
+		return netip.PrefixFrom(p.Addr().Unmap(), bits).Masked()
+	}
+	return p
 }
 
 // disallowedReason returns a non-empty human reason if ip falls in a range a webhook target must never
@@ -240,4 +468,31 @@ func parseListenIPs(addr string) []net.IP {
 		return []net.IP{ip}
 	}
 	return nil
+}
+
+// parseListenAddrPort extracts a listen address's specific address and port, or — for a bind on
+// every interface (":8080", "0.0.0.0:8080", "[::]:8080") or a host that is not an IP literal
+// ("localhost:8080", whose addresses the guard cannot know) — the port alone, so it fails closed. A
+// listen address with no port yields neither.
+func parseListenAddrPort(addr string) (netip.AddrPort, uint16) {
+	host, portS, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return netip.AddrPort{}, 0
+	}
+	port, err := strconv.ParseUint(portS, 10, 16)
+	if err != nil || port == 0 {
+		return netip.AddrPort{}, 0
+	}
+	if host == "" {
+		return netip.AddrPort{}, uint16(port)
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		// A hostname bind: refuse its port on every allowlisted address (fail closed).
+		return netip.AddrPort{}, uint16(port)
+	}
+	if a.IsUnspecified() {
+		return netip.AddrPort{}, uint16(port)
+	}
+	return netip.AddrPortFrom(a.Unmap(), uint16(port)), 0
 }

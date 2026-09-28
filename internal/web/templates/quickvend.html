@@ -57,6 +57,14 @@
     </div>
 
     <div class="sb-field">
+      <span class="sb-label" id="sb-quick-outbound-label">Outbound HTTP calls</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-quick-outbound-label" aria-describedby="sb-quick-outbound-help" data-sb-quickvend-outbound-verbs>
+        {{range $v.OutboundVerbOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="verbs" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+      </div>
+      <p class="sb-help" id="sb-quick-outbound-help">notify hooks · lets this agent register URLs that switchboard will POST to when its work is ready · switchboard dials a host the agent chooses · off unless you tick them</p>
+    </div>
+
+    <div class="sb-field">
       <span class="sb-label" id="sb-quick-lifetime-label">Credential lifetime</span>
       <div class="sb-wiz__choices" role="radiogroup" aria-labelledby="sb-quick-lifetime-label" data-sb-quickvend-lifetime>
         <label class="sb-wiz__choice"><input type="radio" name="lifetime" value=""{{if eq $v.LifetimePreset ""}} checked{{end}}> until revoked</label>

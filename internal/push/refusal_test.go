@@ -15,8 +15,10 @@ import (
 var ipLiteral = regexp.MustCompile(`\d+\.\d+\.\d+\.\d+|[0-9a-fA-F]*:[0-9a-fA-F]*:[0-9a-fA-F:]*`)
 
 // Every refusal maps to a fixed class phrase that names no resolved address and no resolver error,
-// while the error itself keeps the detail for the server log. Governing: SPEC-0033 REQ "Owned Replay
-// Targets" (audit F9).
+// while the error itself keeps the detail for the server log. An address refusal is sharpened from
+// the classifier's own fixed phrase ("a private address"), so the class names what was refused and
+// still never the address. Governing: SPEC-0033 REQ "Owned Replay Targets" (audit F9); SPEC-0024
+// REQ-3 "Target Validation (SSRF Guard)".
 func TestPublicReasonIsClassOnly(t *testing.T) {
 	ctx := context.Background()
 	res := &fakeResolver{byHost: map[string][]net.IPAddr{
@@ -28,11 +30,11 @@ func TestPublicReasonIsClassOnly(t *testing.T) {
 	}}
 	v := New(WithResolver(res), WithOwnListenAddrs("198.51.100.9:8080"))
 	cases := []struct{ raw, class, detail string }{
-		{"https://db.corp.internal/", RefusedAddress, "10.20.30.40"},
-		{"https://v6.corp.internal/", RefusedAddress, "fd12:3456::7"},
-		{"https://mixed.example/", RefusedAddress, "192.168.7.7"},
-		{"https://own.example/", RefusedAddress, "198.51.100.9"},
-		{"https://10.0.0.5/", RefusedAddress, "10.0.0.5"},
+		{"https://db.corp.internal/", "resolves to a private address", "10.20.30.40"},
+		{"https://v6.corp.internal/", "resolves to a private address", "fd12:3456::7"},
+		{"https://mixed.example/", "resolves to a private address", "192.168.7.7"},
+		{"https://own.example/", "resolves to switchboard's own listening address", "198.51.100.9"},
+		{"https://10.0.0.5/", "resolves to a private address", "10.0.0.5"},
 		{"https://empty.example/", RefusedUnresolvable, "empty.example"},
 		{"http://203.0.113.10/", RefusedScheme, "http"},
 		{"file:///etc/passwd", RefusedScheme, "file"},

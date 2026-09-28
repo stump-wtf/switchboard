@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
 	"github.com/stump-wtf/switchboard/internal/metrics"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/push"
 	"github.com/stump-wtf/switchboard/internal/store"
 	"github.com/stump-wtf/switchboard/internal/web"
 )
@@ -129,6 +131,30 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// in-database notification) never double-ring the same todo.
 	doorbells := newDoorbellGate(doorbellGateTTL)
 	wireDoorbells(st, doorbells, mcph.PublishTodoReady)
+	// SPEC-0024 notify hooks: the verbs validate every hook URL with the shared SSRF guard, built once
+	// here with the operator's http opt-in, CIDR allowlist and this server's own listen address, so
+	// the dispatcher can reuse the same Validator. Both risky knobs are off by default and WARN when
+	// on. Governing: SPEC-0024 REQ-1, REQ-3; design.md "Configuration".
+	hookValidator, hookAllow, err := notifyHookValidator(cfg)
+	if err != nil {
+		return err // Validate already refused a malformed list; kept for defence in depth
+	}
+	mcph.SetNotifyHooks(mcpsrv.NotifyHookConfig{Store: st, Validator: hookValidator, Max: cfg.NotifyHookMax})
+	switch {
+	case cfg.NotifyHookMax == 0:
+		log.Info("notify hooks disabled", "reason", "SWITCHBOARD_NOTIFY_HOOK_MAX=0")
+	case !encryptionEnabled:
+		log.Warn("notify hooks unavailable", "reason", "SWITCHBOARD_SECRET_ENCRYPTION_KEY is empty",
+			"impact", "create_notify_hook and rotate_notify_hook are refused; a hook secret is never stored in plaintext")
+	}
+	if len(hookAllow) > 0 {
+		log.Warn("notify hook SSRF allowlist is set", "cidrs", cfg.NotifyHookAllowCIDRs,
+			"impact", "every tenant can point a notify hook at these ranges")
+	}
+	if cfg.PushAllowHTTP {
+		log.Warn("plain http push and notify hook targets are allowed", "reason", "SWITCHBOARD_PUSH_ALLOW_HTTP=1",
+			"impact", "notifications travel unencrypted; never enable in production")
+	}
 	// Revoking an endpoint in the web UI also closes its live notification streams promptly
 	// (SPEC-0014 scenario "Revocation closes live streams").
 	webh.SetEndpointRevokedHook(mcph.CloseEndpointSessions)
@@ -669,4 +695,21 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 			}
 		}
 	}
+}
+
+// notifyHookValidator builds the SSRF guard the notify-hook verbs (and later the dispatcher) share
+// from the operator's configuration: the http opt-in, the CIDR allowlist, and this server's own
+// listen address, so an allowlisted target can never be switchboard's own port. It is a function of
+// cfg alone so a test can prove the wiring rather than a Validator it built itself.
+// Governing: SPEC-0024 REQ-3 "Target Validation (SSRF Guard)".
+func notifyHookValidator(cfg config.Config) (*push.Validator, []netip.Prefix, error) {
+	allow, err := push.ParseCIDRList(cfg.NotifyHookAllowCIDRs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return push.New(
+		push.WithAllowHTTP(cfg.PushAllowHTTP),
+		push.WithAllowCIDRs(allow...),
+		push.WithOwnListenAddrs(cfg.Addr),
+	), allow, nil
 }

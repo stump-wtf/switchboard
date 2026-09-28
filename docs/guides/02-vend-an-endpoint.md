@@ -42,6 +42,17 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
   | Fan-out routes | `add_webhook_route`, `list_webhook_routes`, `remove_webhook_route` |
   | Routing rules | `list_webhook_rules`, `set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`, `move_webhook_rule`, `remove_webhook_rule`, `test_webhook_rules` |
   | Event history | `list_webhook_events`, `get_webhook_event`, `replay_webhook_event` |
+  | Outbound HTTP calls (notify hooks) | `create_notify_hook`, `list_notify_hooks`, `rotate_notify_hook`, `delete_notify_hook` |
+
+  The web wizard pre-checks the seven todo verbs. `switchboard endpoint vend` grants every group
+  except outbound HTTP calls.
+
+  The notify-hook verbs let the agent register an HTTPS URL that Switchboard POSTs a signed
+  notification to when the endpoint's work is ready. Switchboard then dials a host the agent chose,
+  so these verbs are never part of any default grant. The wizard and quick vend list them as their
+  own "Outbound HTTP calls" group, unticked. `create_notify_hook` returns the Standard Webhooks
+  signing secret (`whsec_…`) once. `list_notify_hooks` shows each hook's health, and never a secret
+  or a URL's query string.
 
   The web wizard pre-checks the eight todo verbs. `switchboard endpoint vend` grants all of them.
   `list_todos` also grants `get_todo`, so an endpoint vended before `get_todo` existed has it.
