@@ -26,6 +26,9 @@ export SWITCHBOARD_URL=https://switchboard.example.com   # your instance, no tra
 JSON config files such as `.mcp.json` and `crush.json` can't expand a shell variable in a URL, so
 those examples write `https://<your-switchboard>` instead. Replace it with the same URL.
 
+Running your own instance? Start with [Run your own switchboard](/guides/self-hosting), then come
+back here.
+
 ## The whole path
 
 ```mermaid
