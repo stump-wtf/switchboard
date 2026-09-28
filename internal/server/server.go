@@ -128,11 +128,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// shared with the todo_ready LISTEN loop below so the two wakeup paths (in-process hook,
 	// in-database notification) never double-ring the same todo.
 	doorbells := newDoorbellGate(doorbellGateTTL)
-	st.SetTodoDoorbellHook(func(t store.Todo) {
-		if doorbells.first(t.ID) {
-			mcph.PublishTodoReady(t)
-		}
-	})
+	wireDoorbells(st, doorbells, mcph.PublishTodoReady)
 	// Revoking an endpoint in the web UI also closes its live notification streams promptly
 	// (SPEC-0014 scenario "Revocation closes live streams").
 	webh.SetEndpointRevokedHook(mcph.CloseEndpointSessions)

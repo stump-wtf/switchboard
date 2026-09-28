@@ -7,6 +7,13 @@ related: [ADR-0007, ADR-0008, ADR-0009, ADR-0011]
 
 # ADR-0010: A2A for Discovery + Human-Vended Friending; MCP for Tools; Todo-Queue for Transport
 
+> **Implementation status (partial): `create_for` is not exposed.** A store backend for it exists
+> (`internal/store/friends.go`), and an approved friendship does grant the verb (approval is the
+> vend, and it defaults to the requested scope), but no MCP tool registers it. So no vended endpoint
+> can call `create_for`, and one agent cannot hand a todo to another today. Every mention of
+> `create_for` below describes the design, not current behaviour. ADR-0007 carries the same note;
+> the [Friending guide](../guides/04-friending.md) says what works instead.
+
 ## Context and Problem Statement
 
 Switchboard has two protocols in play and they are easy to conflate. **MCP** connects an agent to *tools* (switchboard's todo/webhook verbs, [ADR-0008](ADR-0008-human-principal-vended-endpoints.md)). **[A2A](https://a2a-protocol.org/)** (Agent-to-Agent) connects an agent to *other agents* — discovery, announcement, and, in its full form, direct peer-to-peer task delegation. Personas are already published as A2A Agent Cards ([ADR-0009](ADR-0009-personas-as-scoped-agent-cards.md)). The open question: **when agent A wants agent B to do work, how does that happen — and who authorizes it?**
@@ -49,7 +56,7 @@ A2A is the **outward-facing** face (discovery/announcement). The **inward-facing
 2. **Request (a pending edge that grants nothing).** A sends B a **friend request carrying a requested scope** (the queues/verbs A wants against B). This creates a **pending edge**: it confers **no access** until approved.
 3. **Approval lands as a todo.** The approval request is delivered as a **todo in the target human's own queue** — switchboard dogfooding its own primitive ([ADR-0007](ADR-0007-todos-as-core-primitive.md)). The todo carries a crisp **who / why / requested-scope** summary.
 4. **Approval is the vend.** The target **human** approves — and may **narrow** — the requested scope. That act of approval **mints the scoped MCP endpoint** ([ADR-0008](ADR-0008-human-principal-vended-endpoints.md)) granting A the approved (possibly narrowed) access to B. Approval *is* vending; there is no separate step.
-5. **Work flows as todos.** Thereafter, A hands B work by **creating todos** in B's granted queue (`create_for`, [agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md)) — durable, owned, dedup'd, leaseable. **Not** via A2A's direct peer task transport.
+5. **Work flows as todos.** Thereafter, A hands B work by **creating todos** in B's granted queue (`create_for`, not yet exposed as an MCP tool, [agent-mcp-tools spec](../openspec/specs/agent-tools/spec.md)) — durable, owned, dedup'd, leaseable. **Not** via A2A's direct peer task transport.
 
 ### Rules on the edge
 

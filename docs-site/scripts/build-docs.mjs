@@ -36,8 +36,8 @@ const REF_SRC = join(REPO, 'docs', 'reference');
 const OUT = join(SITE, 'docs-generated');
 const STATIC_REF = join(SITE, 'static', 'reference');
 
-// The source repository is private, so the published site links to nothing in it: a repo URL is a
-// dead link (or a login wall) for every reader of the public docs.
+// Links into the repository use the public GitHub mirror (https://github.com/stump-wtf/switchboard),
+// never the maintainers' private forge, which is a login wall for every reader of the public docs.
 
 // ---- discover sources ----
 const startFiles = readdirSync(START_SRC).filter((f) => /^\d+-.*\.md$/.test(f)).sort();
@@ -74,6 +74,14 @@ function fmValue(fm, key) {
 function sanitizeMdx(s) {
   return s.replace(/<((?:https?):\/\/[^>\s]+)>/g, '[$1]($1)');
 }
+// Docusaurus compiles every emitted page through MDX even with `format: md` front matter
+// (observed on 3.10.2, PR #519: an HTML comment in a spec body failed the docs build with
+// "Unexpected character `!`" — HTML comments are not legal MDX). Comments are authoring
+// notes and render as nothing under CommonMark, so dropping them from the emitted pages
+// changes no visible output while making the content safe under the MDX parser.
+function stripHtmlComments(s) {
+  return s.replace(/<!--[\s\S]*?-->/g, '');
+}
 // docs/README.md (the design-index) has no page in the site; the Decisions index is its published
 // equivalent.
 function rewriteRepoLinks(s) {
@@ -107,7 +115,7 @@ for (const f of startFiles) {
   const raw = readFileSync(join(START_SRC, f), 'utf8');
   const { fm, body } = splitFrontmatter(raw);
   const label = fmValue(fm, 'title') || slug;
-  const content = rewriteDesignLinks(rewriteRepoLinks(body));
+  const content = stripHtmlComments(rewriteDesignLinks(rewriteRepoLinks(body)));
   writeFileSync(
     join(OUT, 'getting-started', `${slug}.md`),
     `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,
@@ -137,7 +145,7 @@ for (const f of guideFiles) {
   const raw = readFileSync(join(GUIDES_SRC, f), 'utf8');
   const { fm, body } = splitFrontmatter(raw);
   const label = fmValue(fm, 'title') || slug;
-  const content = rewriteGuideSiblingLinks(rewriteDesignLinks(rewriteRepoLinks(body)));
+  const content = stripHtmlComments(rewriteGuideSiblingLinks(rewriteDesignLinks(rewriteRepoLinks(body))));
   writeFileSync(
     join(OUT, 'guides', `${slug}.md`),
     `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,
@@ -159,7 +167,7 @@ writeFileSync(
 // ---- PRFAQ -> /prfaq ----
 {
   const raw = readFileSync(join(REPO, 'docs', 'prfaq.md'), 'utf8');
-  const content = sanitizeMdx(rewriteRepoLinks(raw));
+  const content = sanitizeMdx(stripHtmlComments(rewriteRepoLinks(raw)));
   writeFileSync(
     join(OUT, 'prfaq.md'),
     `---\nslug: /prfaq\ntitle: PRFAQ\nsidebar_label: PRFAQ\nsidebar_position: 6\n---\n\n${content}`,
@@ -187,6 +195,7 @@ for (const f of adrFiles) {
     /^(#\s+.+)$/m,
     `$1\n\n> **Status** · ${status}  ·  **Date** · ${date}  ·  **Deciders** · ${deciders}`,
   );
+  content = stripHtmlComments(content);
   content = sanitizeMdx(content);
   const outFm = `---\nsidebar_position: ${num + 1}\n---\n\n`;
   writeFileSync(join(OUT, 'decisions', f), outFm + content);
@@ -233,7 +242,7 @@ for (const cap of capDirs) {
   );
 
   // spec.md page (requirements) — format: md for safety with machine-authored <…> constructs.
-  let specBody = rewriteDesignLinks(rewriteRepoLinks(body));
+  let specBody = stripHtmlComments(rewriteDesignLinks(rewriteRepoLinks(body)));
   let meta = `> **SPEC** · ${specId}  ·  **Status** · ${status}  ·  **Date** · ${date}`;
   if (implps) meta += `  ·  **Implements** · ${implps}`;
   if (requires) meta += `  ·  **Requires** · ${requires}`;
@@ -245,7 +254,7 @@ for (const cap of capDirs) {
 
   // design.md page (architecture + mermaid)
   const designRaw = readFileSync(join(dir, 'design.md'), 'utf8');
-  const designBody = rewriteDesignLinks(rewriteRepoLinks(splitFrontmatter(designRaw).body));
+  const designBody = stripHtmlComments(rewriteDesignLinks(rewriteRepoLinks(splitFrontmatter(designRaw).body)));
   writeFileSync(
     join(OUT, 'specs', cap, 'design.md'),
     `---\nsidebar_position: 2\nsidebar_label: Design\nformat: md\n---\n\n${designBody}`,
@@ -277,7 +286,7 @@ for (const f of designFiles) {
   const raw = readFileSync(join(DESIGN_SRC, f), 'utf8');
   const { fm, body } = splitFrontmatter(raw);
   const label = fmValue(fm, 'title') || slug;
-  const content = rewriteDesignSectionLinks(rewriteDesignLinks(rewriteRepoLinks(body)));
+  const content = stripHtmlComments(rewriteDesignSectionLinks(rewriteDesignLinks(rewriteRepoLinks(body))));
   writeFileSync(
     join(OUT, 'design', `${slug}.md`),
     `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,

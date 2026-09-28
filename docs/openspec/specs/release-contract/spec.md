@@ -18,7 +18,7 @@ warning. The docs say which release they describe, and mark what is not released
 
 This spec also defines the `v0.3.0` release as the first release under the contract. It is the
 first to report its own version over MCP, and the first with a CHANGELOG and an upgrade guide for
-#291.
+the shared-receiver removal.
 
 ## Requirements
 
@@ -34,10 +34,17 @@ When no ldflags were applied, `buildinfo` MUST fall back to `runtime/debug.ReadB
 * `Commit` and `Date` MUST come from the `vcs.revision` and `vcs.time` settings when present,
   otherwise be empty.
 
+Since Go 1.24, `go build` in a git checkout sets the main module's version from VCS: the tag when
+HEAD is exactly a release tag, otherwise a pseudo-version, with `+dirty` for a modified tree. The
+fallback reports that version as it is. The goreleaser build MUST pass `-buildvcs=false`, so a
+release whose `-X` stamp is missed reports `dev` rather than the VCS-derived tag, and REQ-13's
+assertion can catch it.
+
 Packages other than `internal/buildinfo` MUST NOT hold a version literal for Switchboard itself. A test MUST fail if a string
 literal matching `^v?\d+\.\d+\.\d+` is assigned to an identifier containing `version` in
 `internal/mcp` or `internal/web`. Protocol versions, such as the A2A protocol version, are exempt
-by name.
+by name. So are versions of something other than Switchboard, such as the `version` a persona's
+A2A agent card advertises (`cardVersion`): that is the persona's version, not the build's.
 
 #### Scenario: Release build
 
@@ -53,8 +60,16 @@ by name.
 
 #### Scenario: Plain local build
 
-- **WHEN** a developer runs `go build ./cmd/switchboard` in a clean checkout
-- **THEN** `Version` is `dev` and `Commit` is the checkout's revision
+- **WHEN** a developer runs `go build ./cmd/switchboard` in a clean checkout whose HEAD is not a
+  release tag
+- **THEN** `Version` is Go's pseudo-version for that commit (for example
+  `v0.3.1-0.20260923185201-4369412033b4`), and `Commit` is the checkout's revision
+
+#### Scenario: Build without VCS information
+
+- **WHEN** a developer runs `go build -buildvcs=false ./cmd/switchboard`, or builds outside a
+  checkout with no ldflags
+- **THEN** `Version` is `dev`, and `Commit` and `Date` are empty
 
 ### REQ-2: MCP Server Version and Session Instructions
 
@@ -255,7 +270,7 @@ unaffected by this requirement.
 
 The `v0.3.0` upgrade note MUST name `SWITCHBOARD_GITHUB_SECRET`, `SWITCHBOARD_GITEA_SECRET`,
 `SWITCHBOARD_STRIPE_SECRET`, `SWITCHBOARD_SLACK_SECRET` and
-`SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`, all retired by #291.
+`SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`, all retired in `v0.3.0`.
 
 #### Scenario: Old secret still set
 
@@ -318,7 +333,7 @@ A release MUST be cut within 48 hours of merging any `sec` change, and SHOULD be
 `v0.3.0` MUST be the first release under this contract. It MUST include:
 
 * `CHANGELOG.md`, with `v0.1.0`, `v0.2.0` and `v0.3.0` sections;
-* #291 under Breaking;
+* the shared-receiver removal under Breaking;
 * the ring-on-connect, delivery-id and board fixes under Added and Fixed;
 * a `docs/guides/15-upgrading.md` section for `v0.3.0` covering:
   * the four ignored `SWITCHBOARD_*_SECRET` variables and `SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID`;

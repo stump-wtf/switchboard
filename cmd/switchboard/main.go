@@ -33,9 +33,6 @@ import (
 	"github.com/stump-wtf/switchboard/internal/server"
 )
 
-// version is stamped at build time (go build -ldflags "-X main.version=…"); "dev" otherwise.
-var version = "dev"
-
 func main() {
 	// Routing rules evaluate in a re-executed child of this binary (internal/routing/sandbox.go). The
 	// hook must run before anything else: the child has no environment, no config, and no business

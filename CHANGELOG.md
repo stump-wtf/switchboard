@@ -13,6 +13,115 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+**Read the [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md#upgrading-to-unreleased)
+before upgrading**: migration `0025_friend_edges_own_authority` narrows existing friend
+endpoints in place, and the verbs it removes cannot be restored.
+
+### Breaking
+
+- **A webhook's rules and routes are managed only from the endpoint that owns it.** The
+  ten rule and route verbs called from any other endpoint, including another endpoint of
+  the same person, now answer `not_found`. Use the owning endpoint's credential. (#420)
+- **Existing friend endpoints are narrowed on upgrade.** Migration
+  `0025_friend_edges_own_authority` removes every verb except `create_for` and the drain
+  verbs from endpoints minted by approving a friend request, and from their recorded
+  grant. It cannot be reversed; back up first. (#420)
+- **A friend request that asks only for verbs a friend can never be granted is refused**
+  with a 400, over A2A and from the Friends page, instead of being stored. (#420)
+
+### Security
+
+- **Friend endpoints act with their own authority.** A friend endpoint runs on the
+  approver's agent, and friend intake accepted any requested tools, so a friend could be
+  granted webhook, rule and event-history tools and use them with the approver's authority.
+  Friend grants are now limited to `create_for` and the drain verbs, at request and at
+  approval, and existing friend endpoints are narrowed to that set on upgrade. A route a
+  friend endpoint added before the upgrade is left in place and keeps delivering to it;
+  the upgrade note has the query that lists such routes for review. (#420)
+- **A webhook's routes and rules are managed only from its own endpoint.** The rule and
+  route verbs used to accept any endpoint of the webhook owner's human. Another endpoint's
+  webhook now answers `not_found`. To edit a webhook's rules, use the endpoint that owns it.
+  (#420)
+- Friend requests from two different users' same-named personas no longer collide. (#420)
+
+## [0.4.0] - 2026-09-27
+
+Routing rules now fail closed, replay targets belong to their endpoint and every replay
+passes the SSRF guard, event history is scoped to its owner, and workers can fence their
+leases and read a todo's attempt history with `get_todo`. **Read the
+[upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md)
+before upgrading**: two changes are breaking, and the replay-target migration cannot be
+reversed.
+
+### Breaking
+
+- **Routing rules fail closed.** A rule that errors, times out, runs out of memory or
+  budget, or no longer compiles no longer counts as a no-match: evaluation stops there,
+  and the delivery is recorded as `faulted` (a new `events.disposition` column) and routed
+  nowhere. A webhook with rules answers `503 routing unavailable` when the rule sandbox
+  cannot run, instead of routing by default. Rule saves that would fault on the webhook's
+  recent deliveries are refused, and `params` values must be strings, numbers, booleans or
+  homogeneous lists. There is no switch. Run the query in the
+  [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md#routing-rules-fail-closed)
+  before upgrading to find webhooks whose rules fault today. (#212)
+- **Replay targets belong to the endpoint, and every replay passes the SSRF guard.** The
+  instance settings `replay_default_target` and `replay_allowed_targets` are gone: the
+  migration deletes both rows and nothing reads or warns about them. They used to exempt
+  their targets from the SSRF checks for every tenant's replay. An endpoint now owns its
+  replay targets, named at vend time (`replay_targets` on `POST /api/v1/endpoints`) and
+  checked by the shared SSRF guard; the first is the default when `replay_webhook_event`
+  names no `target_url`. With neither, the call fails with the new code
+  `replay_target_required`. Every target, owned or not, must be `https` on a public
+  address, checked when the call is made and again when it connects, so replaying to
+  localhost, a private network or plain `http` no longer works. See the upgrade note. (#421)
+
+### Fixed
+
+- **Switchboard now reports its real version over MCP.** `serverInfo.version` was the
+  hard-coded `0.1.0` on every build; it now carries the build's own version, and every
+  session's instructions open with a `switchboard <version> (built <date>)` line. The
+  version, commit and commit date come from one place, `internal/buildinfo`, which also
+  fills in the version and commit of a `go install …@vX.Y.Z` build that no release
+  pipeline stamped.
+- **Release binaries report the full tag.** `switchboard version` on a release prints
+  `switchboard v0.3.0` rather than `switchboard 0.3.0`, matching a `go install` build, and
+  the CLI's `User-Agent` changes the same way. Release container images report the tag
+  too, and images built from `main` report a `git describe` version instead of a bare
+  commit hash.
+
+### Security
+
+- **Event history is scoped to its owner.** `list_webhook_events`, `get_webhook_event`,
+  `replay_webhook_event` and the `switchboard://events/recent` resource could read and
+  replay every tenant's deliveries. Each event now records the endpoint that owns it, and
+  every history read and replay returns only the caller's own events; another tenant's
+  event id answers `not_found`, like an id that does not exist. Event deduplication is
+  keyed per owner as well. Existing events are backfilled from their webhook. Events whose
+  owner can no longer be established (their webhook was deleted before this release) stay
+  invisible, to the tools and to the board, and age out through retention. (#194)
+- **Friend-approved endpoints read no event history.** A friend endpoint is minted on one of
+  the approver's agents, so owner scoping alone would have let a friend request that asked for
+  the event-history tools read and replay all of the approver's deliveries. A friend endpoint
+  now lists nothing and every event id answers `not_found`, whatever it was granted, until
+  friend endpoints get their own authority (#420). (#194)
+- **The board's dedup markers stay within one owner.** The feed's `deduped` stage, the LIVE
+  rate and the todo dedup badge no longer match another owner's delivery that shares an
+  external id. (#194)
+- Permanently deleting an endpoint now also deletes the deliveries it owns. Todos those
+  deliveries created on a friend's endpoint keep their payload but lose the event link, so they
+  read as trust `queue` and no longer ring as verified. (#194)
+
+### Added
+
+- **Lease-token fence.** `claim` and `claim_next` take `require_fence`; a fenced claim returns a
+  one-time `lease_token` that `heartbeat`, `complete` and `fail` must then present, so another
+  worker on the same endpoint, or a stale one, gets `conflict` instead of closing the attempt.
+  Only the token's SHA-256 is stored. (#325)
+- **`get_todo`.** Reads one todo with its `result`, `next_retry_at`, `dead_letter` and its attempt
+  history, newest first (`attempts_limit`, default 20, maximum 50). `list_todos` implies it, so
+  existing endpoints get it without a re-vend. A foreign todo, or one outside the granted queues,
+  answers `not_found` exactly as an unknown id does. (#326)
+
 ## [0.3.0] - 2026-09-22
 
 The first release since `v0.2.0`, and the first release under

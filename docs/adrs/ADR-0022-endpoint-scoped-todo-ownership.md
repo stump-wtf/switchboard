@@ -13,7 +13,7 @@ A bug report from a switchboard tester surfaced an **architectural isolation hol
 deliveries to one user's webhook were visible to other users' agents. Investigation
 showed the hole is not local to the push path — it is the todo model itself.
 
-The `todos` table ([0001_init.sql](../../internal/db/migrations/0001_init.sql)) carries a
+The `todos` table ([0001_init.sql](https://github.com/stump-wtf/switchboard/blob/main/internal/db/migrations/0001_init.sql)) carries a
 free-form `queue` text column but **no foreign key to `endpoints`, `agents`, or
 `humans`**. Queue names are global strings (`"reviews"`, `"github"`). Every consumer of
 todos — `ListTodos`, `ClaimTodo`, `GetTodo`, `CompleteTodo`, `FailTodo`, `Heartbeat`, and
@@ -145,7 +145,7 @@ secret and carry an owner endpoint. The provider registry
 ([ADR-0020](ADR-0020-runtime-provider-registry.md)) is unaffected — it sources signing
 secrets for self-managed signed webhooks, not for the retired operator receivers.
 
-> **Amended 2026-09-21 (#181).** The last sentence did not hold: the provider registry was
+> **Amended 2026-09-21, with the shared-receiver removal.** The last sentence did not hold: the provider registry was
 > instance-wide too, and it was removed with the receivers. A self-managed webhook's signing secret
 > is minted at `create_webhook` and held on its own `endpoint_webhooks` row; nothing sources it
 > from a registry.

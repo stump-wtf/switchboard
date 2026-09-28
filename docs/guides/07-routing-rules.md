@@ -76,13 +76,28 @@ them clears them.
 Rules are sandboxed. `env`/`$ENV`, `input`/`inputs`, `input_filename`, `debug`, `stderr`, `halt`,
 `halt_error`, `now`, `localtime`, `strflocaltime`, and `import`/`include` are refused at save time.
 Each rule gets 50 ms and a delivery's whole rule list 250 ms; evaluation runs in a separate,
-memory-capped process. A rule that errors, times out, or blows its budget is treated as no-match
-and recorded on the trace — it never fails the delivery. Limits: 32 rules, 4096-byte expressions.
+memory-capped process. Limits: 32 rules, 4096-byte expressions.
+
+**Routing fails closed.** A rule that errors, times out, runs out of budget, or no longer compiles
+**stops evaluation**. No later rule runs, and the default does not apply. The delivery is recorded
+with `disposition: "faulted"` and its trace, and it creates no todo. It spends its dedup slot as a
+drop does, so a redelivery stays faulted. Every faulted delivery increments
+`switchboard_routing_faults_total{cause}` and logs one warning. Find them with
+`list_webhook_events {"disposition": "faulted"}`. If the evaluator itself cannot run (the sandbox
+failed to start, is saturated, or died), a webhook with rules answers `503 routing unavailable`,
+persists nothing, and lets the producer retry. A webhook with no rules is unaffected.
+
+To catch faults before they reach live traffic, `set_webhook_rules`, `add_webhook_rule`,
+`update_webhook_rule` and `move_webhook_rule` dry-run the resulting rules against the webhook's 50
+most recent deliveries. If any rule faults on any of them, the save is refused, naming the rule,
+the event ids and the cause. `params` values must be a string, a number, a boolean, or a list of
+all strings or all numbers (`invalid_params` otherwise).
 
 ## The tools
 
 All seven are webhook self-management verbs on your vended endpoint, gated by scope and by owning
-the webhook (any endpoint of the same human may manage it).
+the webhook: only the endpoint that owns a webhook may manage its rules. Your other endpoints get
+`not_found`, exactly as for a webhook that does not exist.
 
 | Tool | Does |
 |---|---|
@@ -129,7 +144,7 @@ every lane pool, and rules that pick the pool. A handoff is an artifact tagged `
    revealed `signing_secret` for cairn's `CAIRN_OUTBOUND_WEBHOOK_SECRET`, and the `ingest_url` for
    `CAIRN_OUTBOUND_WEBHOOK_URLS`.
 2. `add_webhook_route` from that webhook to each lane pool endpoint.
-3. `set_webhook_rules` — in full, that is the [fleet pack](../routing/rule-packs/README.md); its cairn
+3. `set_webhook_rules` — in full, that is the [fleet pack](https://github.com/stump-wtf/switchboard/blob/main/docs/routing/rule-packs/README.md); its cairn
    half looks like this:
 
 ```json
