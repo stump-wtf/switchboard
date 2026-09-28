@@ -13,7 +13,7 @@ The binary already knows its version. The release workflow asserts that
 passed. But `main.version` is read only by the `version` verb. MCP sends a hardcoded `"0.1.0"`
 (`internal/mcp/mcp.go`), `/healthz` answers `ok`, and the footer shows a tagline.
 
-`v0.2.0` was 22 commits behind `main` on 2026-09-22. The commits in between include #291, which removed the
+`v0.2.0` was 22 commits behind `main` on 2026-09-22. The commits in between include the shared-receiver removal, which took out the
 environment-seeded receivers and ran the irreversible migration `0021_drop_adapters`, with no
 CHANGELOG and no upgrade note. Nothing on `main` reads the retired `SWITCHBOARD_*_SECRET`
 variables, so a customer who still sets them gets silence.
@@ -125,8 +125,8 @@ the version. The docs build fails on a tagged commit that still contains `:::unr
 one script. Readers see at a glance what they cannot use yet.
 
 **Coupled fix**: `docs.yaml` has no `pull_request` trigger and skips every step when
-`REGISTRY_TOKEN` is unset (#245). REQ-12 needs a PR-time build, so the story that implements the
-banner also closes #245.
+`REGISTRY_TOKEN` is unset. REQ-12 needs a PR-time build, so the story that implements the
+banner also fixes the docs workflow.
 
 ### Release check against public tags
 
@@ -180,7 +180,7 @@ Todos routed to you arrive as <channel source="switchboard"> doorbell events …
 
 ## Upgrading to v0.3.0
 
-### Breaking: environment-seeded receivers removed (#291)
+### Breaking: environment-seeded receivers removed
 **Who is affected:** any deployment that set SWITCHBOARD_{GITHUB,GITEA,STRIPE,SLACK}_SECRET or
 SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID, or that delivers to POST /webhooks/<provider>.
 **What happens if you do nothing:** those variables are ignored, with no warning, and deliveries
@@ -213,7 +213,7 @@ prints nothing.
 1. `internal/buildinfo`, the stamps and the assertion script (smallest change, fixes MCP at once).
 2. Surfaces: `/healthz`, the footer, the instructions line, the CLI and the metric.
 3. CHANGELOG back-fill, and the `changelog` and `upgrade-note` CI jobs made required.
-4. Docs banner, `:::unreleased`, and the PR-time docs build (closes #245).
+4. Docs banner, `:::unreleased`, and the PR-time docs build.
 5. Cut `v0.3.0`: move `[Unreleased]`, write the upgrade section, tag, and verify every surface
    reports `v0.3.0`.
 6. The staleness warning and the opt-in release check.

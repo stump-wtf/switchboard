@@ -36,8 +36,8 @@ const REF_SRC = join(REPO, 'docs', 'reference');
 const OUT = join(SITE, 'docs-generated');
 const STATIC_REF = join(SITE, 'static', 'reference');
 
-// The source repository is private, so the published site links to nothing in it: a repo URL is a
-// dead link (or a login wall) for every reader of the public docs.
+// Links into the repository use the public GitHub mirror (https://github.com/stump-wtf/switchboard),
+// never the maintainers' private forge, which is a login wall for every reader of the public docs.
 
 // ---- discover sources ----
 const startFiles = readdirSync(START_SRC).filter((f) => /^\d+-.*\.md$/.test(f)).sort();

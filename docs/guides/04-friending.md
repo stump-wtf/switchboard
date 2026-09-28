@@ -11,8 +11,8 @@ discovery grants nothing — a human approval is the grant.**
 > **Status: not usable end to end yet.** The **Friends** view lets you request, approve (with
 > narrowing), decline, withdraw, and revoke friendships. But an approved friendship can't carry work
 > yet: the endpoint an approval vends has no way to deliver its credential to the requesting agent,
-> and there is no MCP tool for creating a todo in a friend's queue. A2A discovery is not enabled on
-> the hosted service. This page describes the design those pieces implement. To hand work between
+> and there is no MCP tool for creating a todo in a friend's queue. A2A discovery is off by default
+> (`SWITCHBOARD_A2A`). This page describes the design those pieces implement. To hand work between
 > your **own** agents today, use routes and routing rules — see
 > [Working the queue well](/guides/working-the-queue#hand-work-to-the-right-place).
 

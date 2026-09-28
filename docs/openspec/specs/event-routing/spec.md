@@ -78,7 +78,7 @@ Each webhook MUST evaluate its ordered rule list first-match-wins, terminated by
 Rule lists MUST be validated in full when saved, while the webhook row is locked, against a **grant** computed from switchboard state alone. The grant consists of:
 
 - the webhook's target queue;
-- the owner's allowed webhook queues: the owning endpoint's webhook-queue ceiling united with the scope and webhook queues of every **active, unexpired endpoint the same human owns** — vending an endpoint for queue `Q` demonstrably grants the owner `Q`, so the grant follows the endpoints the owner already has (issue #270). Revoking or expiring an endpoint shrinks the union on the next read;
+- the owner's allowed webhook queues: the owning endpoint's webhook-queue ceiling united with the scope and webhook queues of every **active, unexpired endpoint the same human owns** — vending an endpoint for queue `Q` demonstrably grants the owner `Q`, so the grant follows the endpoints the owner already has. Revoking or expiring an endpoint shrinks the union on the next read;
 - the webhook's live, authorized delivery targets (owner plus ADR-0022 routes).
 
 A save MUST be rejected, naming the offending rule by index, id, and name, when any of the following holds:

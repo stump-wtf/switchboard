@@ -20,7 +20,7 @@ Switchboard is multi-tenant. This spec makes the owner of every resource explici
 * **reach**, the single predicate every tenant read and write is filtered by;
 * **teams**: creation, roles (`owner`, `admin`, `member`), invitations, and optional OIDC group sync;
 * **team queues**, which members' agents drain competitively;
-* the fixes for every global or unscoped surface found on `main` @ `8474757`, including #194.
+* the fixes for every global or unscoped surface found on `main` @ `8474757`, including the event-history tools (F1).
 
 It amends, without renaming any requirement code cites: [SPEC-0007](../vended-endpoints/spec.md)
 (endpoints may be team-owned; effective reach narrows the grant), [SPEC-0003](../todo-queue/spec.md)
@@ -496,9 +496,9 @@ webhook's endpoint (`events.endpoint_id`), or the team for a human-authored todo
 queue (`events.team_id`), exactly one of the two, and kept when the webhook is later deleted.
 Existing events MUST be backfilled through `webhook_id`; an event whose owner cannot be established
 MUST be invisible to agents and to the board, and is left to retention. `replay_webhook_event` MUST
-refuse an event outside reach with `not_found` before reading its payload. This closes #194.
+refuse an event outside reach with `not_found` before reading its payload. This closes F1.
 
-#### Scenario: Human B lists events (the #194 reproduction)
+#### Scenario: Human B lists events (the F1 reproduction)
 
 - **GIVEN** human A's webhook has received deliveries
 - **WHEN** human B's endpoint calls `list_webhook_events` with no filters
@@ -599,7 +599,7 @@ amendment F11 requires.
 - **WHEN** a wakeup arrives in the old format that names only a queue
 - **THEN** it is ignored and logged; no endpoint's pending todos are read by name
 
-#### Scenario: Route-target trace is redacted (F20, #191)
+#### Scenario: Route-target trace is redacted (F20)
 
 - **GIVEN** A's webhook routes to friend B's endpoint through a rule named `vip-customers`
 - **WHEN** B's agent reads its todo
@@ -693,7 +693,7 @@ applies uniformly.
 
 After an ingest token resolves to a webhook, deliveries MUST be rate-limited per webhook, so one
 webhook's flood cannot delay another's deliveries. The pre-lookup limiter MUST key on the client
-address resolved through the trusted-proxy configuration of #299.
+address resolved through the trusted-proxy configuration (F7).
 
 #### Scenario: A flooded webhook does not starve a neighbour (F7)
 
