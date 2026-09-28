@@ -128,7 +128,7 @@ encode four properties that this spec must honour:
 - a `webhook-id` that is stable across retries;
 - a fresh `webhook-timestamp` on each attempt, within a 5-minute tolerance.
 
-It also filters on the body's top-level `type`. The F-X2 webhook path is blocked on #466. Switchboard does not add a
+It also filters on the body's top-level `type`. The F-X2 webhook path is blocked until Harness verifies these signed hooks. Switchboard does not add a
 second, body-only signature to paper over the gap: that would drop timestamp replay protection for
 every receiver, to save one receiver a story.
 

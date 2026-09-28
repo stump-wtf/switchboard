@@ -28,7 +28,7 @@
     "sass": "^1.101.3"
   },
   "overrides": {
-    "webpack": "5.110.1"
+    "webpack": "5.110.2"
   },
   "browserslist": {
     "production": [

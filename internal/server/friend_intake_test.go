@@ -279,6 +279,33 @@ func TestFriendIntakeEmptyScopeRejected(t *testing.T) {
 	}
 }
 
+// F3: a friend edge can only grant create_for and the drain verbs. Other requested verbs are dropped
+// before the request is stored, and a request asking only for them asks for nothing grantable (400).
+// Governing: ADR-0038, SPEC-0033 REQ "Closing the Audited Surfaces" (F3).
+func TestFriendIntakeDropsVerbsAFriendCannotHold(t *testing.T) {
+	fs := okStore()
+	r := friendRouter(t, fs, fakeVerifier{subject: "pocket|alice"})
+	body := `{"to_persona":"11111111-1111-1111-1111-111111111111","from_persona":"peer://a",` +
+		`"requested_verbs":["set_webhook_rules","create_for","list_webhook_events","claim"],"reason":"x","provenance":"tok"}`
+	if rec := postIntake(t, r, body); rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if fs.created == nil || strings.Join(fs.created.RequestedVerbs, ",") != "create_for,claim" {
+		t.Fatalf("stored requested verbs = %+v, want [create_for claim]", fs.created)
+	}
+
+	fs = okStore()
+	r = friendRouter(t, fs, fakeVerifier{subject: "pocket|alice"})
+	body = `{"to_persona":"11111111-1111-1111-1111-111111111111","from_persona":"peer://a",` +
+		`"requested_verbs":["set_webhook_rules","replay_webhook_event"],"reason":"x","provenance":"tok"}`
+	if rec := postIntake(t, r, body); rec.Code != http.StatusBadRequest {
+		t.Fatalf("webhook-only request status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if fs.created != nil {
+		t.Error("a request with nothing grantable must create no edge")
+	}
+}
+
 // Unpublished/unknown target persona → 404, no edge (discovery bounded to advertised personas).
 func TestFriendIntakeUnpublishedPersona(t *testing.T) {
 	fs := okStore()

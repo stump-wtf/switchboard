@@ -3,7 +3,7 @@
 *Many lines come in. The operator verifies each caller, and patches it through.*
 
 Switchboard is the operator's board for your inbound webhooks. It receives events from external
-providers (GitHub, Stripe, Slack, Docker Hub, and self-hosted/homelab senders), verifies and
+providers (GitHub, Gitea, Cairn, Docker Hub, and self-hosted/homelab senders), verifies and
 normalizes each one, stores them in PostgreSQL, and patches them through to **two consumers of the same
 backend**:
 
@@ -47,7 +47,7 @@ were the same thing. See [ADR-0003](docs/adrs/ADR-0003-per-provider-ingestion-an
 ## Architecture
 
 ```
-Producer (GitHub/Gitea/Stripe/Slack/Cairn/your script)
+Producer (GitHub/Gitea/Cairn/your script)
       │  HTTPS POST + signature header (or the unguessable URL alone, for `generic`)
       ▼
 [Go app: POST /webhooks/w/{token}]   one ingest URL per webhook; each webhook belongs to an endpoint
@@ -78,7 +78,7 @@ cannot downgrade it — and every event's trust level is explicit and shown.
 
 | `trust_mode` | Source types | How it's trusted | On failure |
 |--------------|--------------|------------------|-----------|
-| **signed** | `github`, `gitea`, `stripe`, `slack`, `cairn` | Mandatory HMAC-SHA256 verification of the raw body against the secret switchboard minted (constant-time; Stripe, Slack and Cairn also enforce a timestamp window). Integrity + authenticity. | **401, payload NOT persisted**, redacted rejection logged |
+| **signed** | `github`, `gitea`, `cairn` (`stripe` and `slack` are accepted source types but [not usable yet](docs/adrs/ADR-0037-provider-issued-signing-secrets.md): those providers issue their own secret) | Mandatory HMAC-SHA256 verification of the raw body against the secret switchboard minted (constant-time; Stripe, Slack and Cairn also enforce a timestamp window). Integrity + authenticity. | **401, payload NOT persisted**, redacted rejection logged |
 | **token** | `generic` (Docker Hub, homelab/self-hosted senders) | **No signing scheme exists.** The unguessable token in the ingest URL authenticates the *caller*, **not** the body; no replay protection. Persisted honestly as `verified=false`. | 404 on an unknown token |
 
 Docker Hub has no native webhook signing, so it is a **token** webhook rather than a faked
@@ -101,6 +101,7 @@ the caller knows a secret, but unlike HMAC it can't attest the payload.
 | [SPEC-0005 mcp-tools](docs/openspec/specs/mcp-tools/spec.md) | MCP tool + resource contract & JSON Schemas |
 | [SPEC-0014 mcp-transport](docs/openspec/specs/mcp-transport/spec.md) | Vended MCP endpoints served over Streamable HTTP (`/mcp/{endpoint}`) |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each release, and every breaking change |
+| [Run your own switchboard](docs/guides/14-self-hosting.md) | **Self-hosting:** the published image and compose file, configuration, reverse proxy, sign-in |
 | [Upgrading](docs/guides/15-upgrading.md) | **Read before upgrading.** The breaking changes, who they affect, and what a release cannot undo |
 
 Released builds are published to `ghcr.io/stump-wtf/switchboard`, tagged `latest` and by
@@ -150,44 +151,32 @@ remains gated by `SWITCHBOARD_FRIENDING=1`. See ADR-0023.
 
 ## Running it
 
-Switchboard needs PostgreSQL. Point it at a database and run the service:
+Run your own instance from the published image, `ghcr.io/stump-wtf/switchboard` (multi-arch, built
+on every `v*` tag), with the compose file in [`deploy/docker/compose.yaml`](deploy/docker/compose.yaml),
+which brings its own PostgreSQL:
 
 ```bash
-make build                                   # compile ./bin/switchboard (assets embedded)
-export SWITCHBOARD_DATABASE_URL='postgres://user@127.0.0.1:5432/switchboard?sslmode=disable'
-export SWITCHBOARD_OIDC_ISSUER=https://pocket-id.example \
-       SWITCHBOARD_OIDC_CLIENT_ID=… SWITCHBOARD_OIDC_CLIENT_SECRET=…
-./bin/switchboard serve                      # web UI + /webhooks/w/{token} + /mcp/{endpoint} on 127.0.0.1:8080
+curl -fsSL -o compose.yaml https://raw.githubusercontent.com/stump-wtf/switchboard/main/deploy/docker/compose.yaml
+docker compose up -d
 ```
 
-Migrations apply on startup. For a local spin without a real Pocket ID, set `SWITCHBOARD_DEV_LOGIN=1`
-(loud, dev-only) to log in and vend.
+Before real use, set three things (the compose file reads each from your shell): `SWITCHBOARD_BASE_URL`
+(the externally reachable `https://` URL), the `SWITCHBOARD_OIDC_*` issuer, client ID and client
+secret, and `SWITCHBOARD_SECRET_ENCRYPTION_KEY`. **[Run your own switchboard](docs/guides/14-self-hosting.md)**
+is the full guide: configuration, the binary path, TLS, sign-in, and verifying the loop.
 
-**The vend → work loop (the MVP):**
-
-1. Log in, register an agent, and **vend a scoped endpoint** (queues + verbs). The vend page shows the
-   credential once, plus a ready-to-paste `.mcp.json` — a Streamable-HTTP MCP server block, no local
-   command:
-   ```json
-   {"mcpServers":{"switchboard":{"type":"http","url":"https://<host>/mcp/<slug>","headers":{"Authorization":"Bearer <credential>"}}}}
-   ```
-2. Drop that `.mcp.json` into your project and start your MCP client (e.g. Claude Code). The client
-   connects **directly over HTTP/S** to `/mcp/<slug>` — there is no binary to install or put on PATH.
-   The endpoint serves the work tools (`list_todos` / `claim` / `complete` / `fail` / `heartbeat`) and
-   pushes new todos into the session as `notifications/claude/channel` doorbells on the notification
-   stream (ADR-0017; SPEC-0014).
-3. Have the agent call `create_webhook`, then POST a delivery to the returned `ingest_url` — or, in
-   dev mode, `POST /dev/todos` — and the todo arrives in your session.
-
-The service is **loopback-bound by default and ships no in-app auth**. If you ever expose it on the
-homelab LAN it **must** sit behind Caddy `forward_auth`, like everything else in the stack — auth is
-the reverse proxy's job, not this app's (ADR-0001, brief §8).
+Switchboard has its own login: it is a complete OIDC relying party (plus an optional GitHub
+provider), so **don't put forward-auth in front of it**. Behind a reverse proxy, **don't buffer
+`/mcp/*`**, whose `GET` is a long-lived notification stream, and pass a trusted `X-Forwarded-For`.
+See [Behind a reverse proxy](docs/guides/14-self-hosting.md#behind-a-reverse-proxy).
 
 Deployment secrets (the Postgres DSN, the OIDC/GitHub client secrets, the secret-encryption key) are
 injected via **environment/deployment config** — never committed. Switchboard-*minted* secrets live in
 PostgreSQL: agent credentials are stored **hashed**; webhook signing secrets must stay recoverable to
 recompute the HMAC, so they are **encrypted at rest** under `SWITCHBOARD_SECRET_ENCRYPTION_KEY` —
 and sit in plaintext if that key is unset.
+
+To build and run from a clone instead, see [Development](#development).
 
 ### Pointing a provider at this service (for testing)
 
@@ -196,8 +185,8 @@ Because the service is localhost-bound, expose it to a provider during testing w
 `SWITCHBOARD_BASE_URL` to the tunnel's public URL, so the `ingest_url` that `create_webhook` returns
 is reachable. Then, from an agent connected to your endpoint:
 
-1. `create_webhook` with `{"source_type": "github", "target_queue": "inbox"}` (or `gitea`, `stripe`,
-   `slack`, `cairn`, `generic`).
+1. `create_webhook` with `{"source_type": "github", "target_queue": "inbox"}` (or `gitea`, `cairn`,
+   `generic`).
 2. Paste the returned `ingest_url` (`https://<tunnel>/webhooks/w/<token>`) into the provider's webhook
    config, along with the `signing_secret` — shown **once** — for a signed source type.
 
@@ -219,12 +208,27 @@ The trust mode is always fixed per source type and shown in the UI — never sil
 
 ## Development
 
+Switchboard needs PostgreSQL. Point it at a database and run the service:
+
 ```bash
-make ci     # the gate: go vet + go test ./... + go build — the local mirror of CI
+make build                                   # compile ./bin/switchboard (assets embedded)
+export SWITCHBOARD_DATABASE_URL='postgres://user@127.0.0.1:5432/switchboard?sslmode=disable'
+export SWITCHBOARD_OIDC_ISSUER=https://pocket-id.example \
+       SWITCHBOARD_OIDC_CLIENT_ID=… SWITCHBOARD_OIDC_CLIENT_SECRET=…
+./bin/switchboard serve                      # web UI + /webhooks/w/{token} + /mcp/{endpoint} on 127.0.0.1:8080
+```
+
+Migrations apply on startup. For a local spin without a real OIDC provider, set
+`SWITCHBOARD_DEV_LOGIN=1` (loud, dev-only) to log in and vend. [Getting started](docs/getting-started/01-concepts.md)
+walks the vend → connect → webhook loop from there.
+
+```bash
+make check  # everything CI gates: golangci-lint + go vet + go test ./... + go build
+make ci     # the gate minus lint: go vet + go test ./... + go build
 make fmt    # gofmt -w .
 make vet    # go vet ./...
 make test   # go test ./...
-make lint   # golangci-lint (optional; not part of `make ci`)
+make lint   # golangci-lint (part of `make check`, not `make ci`)
 ```
 
 ### Database-backed tests
@@ -260,11 +264,12 @@ The docs site builds with Docusaurus and ships as the `switchboard-docs` image v
 
 ## Repository hosting
 
-- **Source:** <https://gitea.stump.rocks/stump.wtf/switchboard> — the origin of truth.
-  `github.com/stump-wtf/switchboard` is the push mirror; the old `github.com/joestump/switchboard`
-  is retired. The Go module path is `github.com/stump-wtf/switchboard`, because a module path must
+- **Source:** <https://github.com/stump-wtf/switchboard>, MIT licensed. It is a read-only mirror of
+  the maintainers' own forge, where development and review happen, so pull requests opened on
+  GitHub can't be merged there; report bugs and requests as GitHub Issues instead. The old
+  `github.com/joestump/switchboard` is retired. The Go module path is `github.com/stump-wtf/switchboard`, because a module path must
   be publicly fetchable — it names where the module can be resolved, not where development happens.
-- **Docs:** built with Docusaurus and served as a compiled static site at <https://switchboard.stump.wtf/docs/> — the front Caddy routes `/docs/*` to the `switchboard-docs` container (built + pushed by `.gitea/workflows/docs.yaml`). GitHub Pages was retired: a private org repo on the Team plan cannot serve Pages.
+- **Docs:** built with Docusaurus and served as a compiled static site at <https://switchboard.stump.wtf/docs/> — the front Caddy routes `/docs/*` to the `switchboard-docs` container (built + pushed by `.gitea/workflows/docs.yaml`), rather than from GitHub Pages.
 
 ## License
 
