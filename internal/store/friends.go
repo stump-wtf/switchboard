@@ -37,7 +37,7 @@ var ErrScopeExceedsRequest = errors.New("store: granted scope exceeds requested 
 // therefore never grantable to a friend, whatever was requested and whatever the approver ticks.
 // Governing: ADR-0038, SPEC-0033 REQ "Closing the Audited Surfaces" (F3), scenario "Friend grant
 // cannot carry webhook verbs".
-var friendGrantableVerbs = []string{"create_for", "list_todos", "get_todo", "claim", "claim_next", "complete", "fail", "heartbeat"}
+var friendGrantableVerbs = []string{"create_for", "list_todos", "get_todo", "claim", "claim_next", "complete", "fail", "release", "heartbeat"}
 
 // FriendGrantableVerbs returns a copy of the verbs a friend edge may grant, in display order.
 func FriendGrantableVerbs() []string { return append([]string(nil), friendGrantableVerbs...) }
