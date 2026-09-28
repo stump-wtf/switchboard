@@ -5,7 +5,7 @@ title: Overview
 # Switchboard, in one page
 
 Switchboard is the operator's board for inbound events. Many lines come in — webhooks from
-GitHub, Gitea, Stripe, Slack, Cairn, your own scripts — and switchboard does three things
+GitHub, Gitea, Cairn, your own scripts — and switchboard does three things
 with each one:
 
 1. **Receive** it on a scoped line (a *webhook* an endpoint owns).
@@ -33,8 +33,7 @@ You configure and operate switchboard through five kinds of object. Each has its
 webhook ───receive──▶ verify ──patch through──▶ todo ──claim(lease)──▶ agent ──complete──▶ done
    │                    │                          │                                        │
  GitHub/Gitea/      signed / token            durable, deduped,                     acked; retained
- Stripe/Slack/                                at-least-once                          as an audit record
- Cairn/generic
+ Cairn/generic                                at-least-once                          as an audit record
 ```
 
 Everything downstream of "verify" is the same regardless of which source the event came from: it

@@ -46,7 +46,8 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
   The web wizard pre-checks the seven todo verbs. `switchboard endpoint vend` grants all of them.
   `list_todos` also grants `get_todo`, so an endpoint vended before `get_todo` existed has it.
 - **A webhook ceiling** — how many webhooks the endpoint may create, which source types (`github`,
-  `gitea`, `cairn`, `generic`, `stripe`, `slack`), and which queues those webhooks and their routing
+  `gitea`, `cairn`, `generic`; `stripe` and `slack` exist but
+  [aren't usable yet](/getting-started/first-webhook#1-create-a-webhook)), and which queues those webhooks and their routing
   rules may target. A ceiling of 0 disables webhooks.
 - **A lifetime** — until revoked, or a duration after which the endpoint expires on its own.
 
