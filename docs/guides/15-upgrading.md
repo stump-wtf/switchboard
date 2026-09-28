@@ -35,9 +35,8 @@ removes cannot be put back from the database. Back up first.
 
 The migration's own narrowing list predates the `release` verb (#507) and does not carry
 it, so a friend endpoint that holds `release` loses it on upgrade. The list below is the
-correct one, and the verification query says what to expect; see
-[issue #538](https://gitea.stump.rocks/stump.wtf/switchboard/issues/538) for the migration
-fix. Re-grant `release` to such an endpoint after upgrading if its agent needs it.
+correct one, and the verification query says what to expect; the migration fix is tracked
+as #538. Re-grant `release` to such an endpoint after upgrading if its agent needs it.
 
 ### What breaks, and who is affected
 
