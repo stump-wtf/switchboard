@@ -222,19 +222,21 @@ func validIntakeFields(b *friendRequestBody) bool {
 	if len(b.Reason) > intakeMaxReasonLen {
 		return false
 	}
-	// A request must ask for SOMETHING to hand off; an empty scope grants nothing to approve.
-	if len(b.RequestedVerbs) == 0 {
-		return false
-	}
 	if !validScopeList(b.RequestedVerbs) || !validScopeList(b.RequestedQueues) {
 		return false
 	}
+	// A friend edge can only ever grant create_for and the drain verbs: any other requested verb
+	// would act with the approver's authority, so it is dropped before the request is stored (the
+	// store drops it again, for every other caller). Governing: ADR-0038, SPEC-0033 REQ "Closing
+	// the Audited Surfaces" (F3).
+	b.RequestedVerbs = store.FriendGrantable(b.RequestedVerbs)
 	// The reserved quarantine queue can never be granted, so asking for it is refused at intake rather
 	// than failing at approval. Governing: SPEC-0026 REQ-6 (reserved name).
 	if store.CheckQueueNames(b.RequestedQueues...) != nil {
 		return false
 	}
-	return true
+	// A request must ask for SOMETHING to hand off; an empty scope grants nothing to approve.
+	return len(b.RequestedVerbs) > 0
 }
 
 // validScopeList bounds the count and per-item length of a queue/verb list and rejects empty items.

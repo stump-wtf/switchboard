@@ -87,6 +87,10 @@ func TestHostileValuesAreEscaped(t *testing.T) {
 		}(),
 		"revoke": renderPage(t, h, "revoke", view{Title: "Revoke endpoint", Human: human, CSRF: "tok",
 			Shell: sh, PersonasEnabled: true, RevokeConfirm: &revokeConfirmView{Card: card}}),
+		// Attempt history is written by agents: claimant, summary and artifact (SPEC-0034 REQ-13).
+		"todo-drawer-attempts": renderFrag(t, h, "drawer", drawerView{Row: todoRow{ID: "td_1", State: "failed"},
+			Attempts: attemptList{TodoID: "td_1", Rows: attemptRows([]store.Attempt{{Seq: 1, Claimant: payload,
+				ClaimedAt: time.Now(), Outcome: "failed", Summary: payload, Artifact: payload}})}}),
 		"reveal": renderFrag(t, h, "vend_reveal", revealView{AgentName: payload, Slug: payload,
 			URL:   payload,
 			Token: `</pre><script>steal()</script>`, MCPJSON: `{"x":"</pre><script>steal()</script>"}`,

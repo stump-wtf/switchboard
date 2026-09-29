@@ -311,7 +311,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/VendEndpointOut' }
         '400':
-          description: Invalid body or missing name.
+          description: Invalid body, missing name, or a replay target the SSRF guard refuses.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -346,7 +346,7 @@ paths:
       operationId: pushTodo
       summary: Hand an endpoint you own a todo and ring its doorbell
       description: |
-        The operator's hand (ADR-0026): mints one todo on the named endpoint and rings its
+        The operator's hand (ADR-0040): mints one todo on the named endpoint and rings its
         doorbell exactly as a verified delivery does. The hand-off is recorded as a delivery event
         of source, family and trust mode `operator`, verified, whose `verify_detail` names the
         authenticated human — so history and the board show who asked. Only the endpoint's owner
@@ -394,6 +394,168 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/webhooks:
+    get:
+      tags: [operator-api]
+      operationId: listWebhooks
+      summary: List the webhooks your endpoints own (never ingest URLs or secrets)
+      description: |
+        Every webhook whose owning endpoint belongs to the authenticated human, active endpoints
+        first, a revoked endpoint's included (SPEC-0035). Ingest URLs and signing secrets are never
+        returned: they are revealed once, to the owning endpoint, at create or rotate.
+      security:
+        - operatorOAuth: []
+      responses:
+        '200':
+          description: The webhooks in the caller's reach.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhooks]
+                properties:
+                  webhooks:
+                    type: array
+                    items: { $ref: '#/components/schemas/WebhookListOut' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer (an sbk_ endpoint credential included).
+        '429':
+          description: The caller's per-human read budget is spent; see Retry-After.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
+  /api/v1/webhooks/{webhook_id}/rules:
+    parameters:
+      - name: webhook_id
+        in: path
+        required: true
+        description: A webhook whose owning endpoint belongs to the caller (see listWebhooks).
+        schema: { type: string, format: uuid }
+    get:
+      tags: [operator-api]
+      operationId: getWebhookRules
+      summary: Read a webhook's routing rules, default, params and grant
+      description: |
+        The shape `list_webhook_rules` returns (ADR-0024, SPEC-0020), from the same code. The
+        response is also a valid body for putWebhookRules.
+      security:
+        - operatorOAuth: []
+      responses:
+        '200':
+          description: The webhook's routing configuration and what its actions may reach.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookRules' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+        '404':
+          description: No such webhook in the caller's reach (another human's and an unknown id are the same answer).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+    put:
+      tags: [operator-api]
+      operationId: putWebhookRules
+      summary: Replace a webhook's routing configuration
+      description: |
+        `set_webhook_rules` through the same save path: validation against the grant, a dry run
+        against the webhook's 50 latest deliveries, and a row-locked write that answers conflict if
+        the stored rules changed meanwhile. Any failure keeps the previous configuration. A body
+        without a `params` key KEEPS the stored params; `"params": null` clears them (the MCP
+        `set_webhook_rules` now gives an omitted `params` the same keep answer, and clears only on
+        an explicit `"params": {}`). Read-only fields of a GET response
+        are ignored.
+      security:
+        - operatorOAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookRulesIn' }
+      responses:
+        '200':
+          description: Saved; the stored configuration.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookRules' }
+        '400':
+          description: |
+            The body does not decode or has no `rules`, a rule is invalid (`invalid_rule`,
+            `invalid_expression`, `forbidden_function`, `too_many_rules`, `invalid_params`), or a rule
+            faults on a recent delivery (`invalid_argument`, naming the rule and the events).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+        '403':
+          description: An action names a queue or endpoint outside the grant (`forbidden`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '404':
+          description: No such webhook in the caller's reach.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '409':
+          description: The webhook's endpoint is revoked (`state` names it), or the rules changed while the save was being checked (`conflict`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '413':
+          description: The body exceeds 256 KiB.
+        '429':
+          description: The caller's per-human write budget is spent; see Retry-After.
+        '503':
+          description: The rule evaluator is unavailable, so the save could not be checked (`unavailable`); retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
+  /api/v1/webhooks/{webhook_id}/rules/test:
+    parameters:
+      - name: webhook_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [operator-api]
+      operationId: testWebhookRules
+      summary: Dry-run routing against a stored delivery or a sample payload
+      description: |
+        `test_webhook_rules`: evaluates the saved rules, or candidate `rules`/`default_action`/
+        `params`, against one of THIS webhook's stored deliveries (`event_id`) or a sample `payload`,
+        through the evaluator the receiver uses. Saves nothing. Candidates are validated like a save.
+      security:
+        - operatorOAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookRulesTestIn' }
+      responses:
+        '200':
+          description: Where the delivery would go, the trace, and (unless omitted) the envelope the rules saw.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookRulesTestOut' }
+        '400':
+          description: Not exactly one of event_id or payload, or an invalid candidate.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+        '403':
+          description: A candidate action names a queue or endpoint outside the grant.
+        '404':
+          description: No such webhook in the caller's reach, or the event is not one of this webhook's deliveries.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
 
   /healthz:
     get:
@@ -542,10 +704,6 @@ components:
         retention_max_age_days: { type: integer, minimum: 0, default: 30 }
         retention_max_rows: { type: integer, minimum: 0, default: 50000 }
         sse_retry_ms: { type: integer, minimum: 250, default: 3000 }
-        replay_default_target:
-          type: [string, "null"]
-          format: uri
-          description: Default target for MCP `replay_webhook_event` when no target_url is given.
 
     Health:
       type: object
@@ -579,6 +737,16 @@ components:
           default: inbox
           description: The single scoped queue the endpoint drains and the webhook routes to.
           example: inbox
+        replay_targets:
+          type: array
+          maxItems: 10
+          items: { type: string, format: uri }
+          description: >-
+            Replay destinations the endpoint owns (SPEC-0033 REQ "Owned Replay Targets"). The first
+            is the default for a `replay_webhook_event` that names no `target_url`. Each must be
+            https on a public address; a target the SSRF guard refuses fails the vend with 400 and
+            mints nothing.
+          example: ['https://consumer.example.com/hook']
 
     VendEndpointOut:
       type: object
@@ -595,6 +763,10 @@ components:
           type: array
           items: { type: string }
           description: The endpoint's verb allowlist (drain + webhook + event verbs).
+        replay_targets:
+          type: array
+          items: { type: string, format: uri }
+          description: The replay targets the endpoint owns, trimmed and de-duplicated, in order.
         webhook: { $ref: '#/components/schemas/VendWebhookOut' }
         mcp_json:
           type: object
@@ -676,7 +848,117 @@ components:
         state: { type: string, enum: [active, revoked], example: active }
         queues: { type: array, items: { type: string } }
         verbs: { type: array, items: { type: string } }
+        replay_targets:
+          type: array
+          items: { type: string, format: uri }
+          description: The endpoint's owned replay targets, returned only to its owner.
         expires_at: { type: [string, "null"], format: date-time }
+
+    APIError:
+      type: object
+      description: The human API's error shape (SPEC-0035). `code` is the code the matching MCP verb returns.
+      required: [error, code]
+      properties:
+        error: { type: string, description: 'Human-readable; names the offending rule where there is one.' }
+        code: { type: string, example: not_found }
+        state: { type: string, description: 'On a 409 for a revoked endpoint: its state.', example: revoked }
+
+    WebhookListOut:
+      type: object
+      required: [webhook_id, endpoint_id, endpoint_slug, endpoint_state, agent_name, source_type, target_queue, trust_mode, rule_count, has_default_action, has_params, created_at]
+      properties:
+        webhook_id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        endpoint_slug: { type: string, example: forge-router-ab12cd34 }
+        endpoint_state: { type: string, enum: [active, revoked] }
+        agent_name: { type: string }
+        source_type: { type: string, example: gitea }
+        target_queue: { type: string, example: triage }
+        trust_mode: { type: string, enum: [signed, token] }
+        rule_count: { type: integer }
+        has_default_action: { type: boolean }
+        has_params: { type: boolean }
+        created_at: { type: string, format: date-time }
+        rotated_at: { type: string, format: date-time }
+
+    RuleAction:
+      type: object
+      description: Exactly one of queue or drop. The queue-only flags are ADR-0025's.
+      properties:
+        queue: { type: string }
+        drop: { type: boolean }
+        endpoints: { type: array, items: { type: string } }
+        exclusive: { type: boolean }
+        once: { type: boolean }
+        work_order: { type: boolean, description: 'Attach a switchboard-authored work order. Only the flag is input; the contents are computed at ingest.' }
+
+    Rule:
+      type: object
+      required: [expr, action]
+      properties:
+        id: { type: string, description: Minted when omitted. }
+        name: { type: string }
+        expr: { type: string, description: 'jq over the routing envelope; the first output decides.' }
+        action: { $ref: '#/components/schemas/RuleAction' }
+
+    WebhookRules:
+      type: object
+      required: [webhook_id, source_type, target_queue, rules, grant]
+      properties:
+        webhook_id: { type: string, format: uuid }
+        source_type: { type: string }
+        target_queue: { type: string }
+        default_action: { $ref: '#/components/schemas/RuleAction' }
+        rules: { type: array, items: { $ref: '#/components/schemas/Rule' } }
+        params: { type: object, additionalProperties: true, description: 'Bound as $params in every rule.' }
+        grant:
+          type: object
+          properties:
+            queues: { type: array, items: { type: string } }
+            endpoints: { type: array, items: { type: string } }
+
+    WebhookRulesIn:
+      type: object
+      required: [rules]
+      description: A whole configuration. A GET response is accepted as it stands (read-only fields are ignored).
+      properties:
+        rules: { type: array, items: { $ref: '#/components/schemas/Rule' }, description: 'The complete ordered list; [] removes every rule.' }
+        default_action: { $ref: '#/components/schemas/RuleAction' }
+        params:
+          type: [object, "null"]
+          additionalProperties: true
+          description: Omit to keep the stored params; null clears them.
+
+    WebhookRulesTestIn:
+      type: object
+      description: Exactly one of event_id or payload.
+      properties:
+        event_id: { type: integer }
+        payload: { description: Any JSON, routed as if it had just arrived and verified. }
+        headers: { type: object, additionalProperties: { type: string } }
+        rules: { type: array, items: { $ref: '#/components/schemas/Rule' } }
+        default_action: { $ref: '#/components/schemas/RuleAction' }
+        params: { type: object, additionalProperties: true }
+        omit_envelope: { type: boolean }
+
+    WebhookRulesTestOut:
+      type: object
+      required: [decision, trace]
+      properties:
+        decision:
+          type: object
+          properties:
+            drop: { type: boolean }
+            queue: { type: string }
+            endpoints: { type: array, items: { type: string } }
+            disposition: { type: string, enum: [routed, dropped, faulted] }
+            faulted: { type: boolean, description: 'Blocking: the delivery would be recorded and routed nowhere.' }
+            unavailable: { type: boolean }
+            fault: { type: object, additionalProperties: true }
+        trace: { type: object, additionalProperties: true }
+        once_key: { type: string }
+        work_order: { type: object, additionalProperties: true }
+        envelope: { type: object, additionalProperties: true }
 
   securitySchemes:
     # Documented for clarity only — these are per-provider signature headers, verified by the app

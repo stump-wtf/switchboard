@@ -1,6 +1,6 @@
 # switchboard container image — a single static binary (assets + migrations embedded via embed.FS).
 # Published to ghcr.io/stump-wtf/switchboard on v* tags (.github/workflows/release.yml); internal
-# registry builds happen via .gitea/workflows/build.yaml.
+# registry builds happen via the image job in .gitea/workflows/ci.yaml (after lint + tests pass).
 # Self-hosting? Pull the published image, or build this yourself — docs/guides/14-self-hosting.md.
 #
 # Runtime needs: PostgreSQL (SWITCHBOARD_DATABASE_URL) and, for real login, a Pocket ID OIDC client
@@ -21,8 +21,17 @@
 FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY . .
+# The build identity (internal/buildinfo, SPEC-0027 REQ-1). .git is not in the build context
+# (.dockerignore), so the binary has no embedded VCS info to fall back on: pass COMMIT and DATE
+# (git log -1 --format=%cI) or the image reports them as unknown.
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/switchboard ./cmd/switchboard
+ARG COMMIT=
+ARG DATE=
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags "-s -w \
+      -X github.com/stump-wtf/switchboard/internal/buildinfo.Version=${VERSION} \
+      -X github.com/stump-wtf/switchboard/internal/buildinfo.Commit=${COMMIT} \
+      -X github.com/stump-wtf/switchboard/internal/buildinfo.Date=${DATE}" \
+    -o /out/switchboard ./cmd/switchboard
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/switchboard /usr/local/bin/switchboard

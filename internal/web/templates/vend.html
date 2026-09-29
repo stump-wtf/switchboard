@@ -66,6 +66,13 @@
       </div>
       <p class="sb-help">allowed MCP tools · at least one required · the drain verbs start checked; wider grants are a deliberate toggle</p>
     </div>
+    <div class="sb-field">
+      <span class="sb-label" id="sb-vend-outbound-label">Outbound HTTP calls</span>
+      <div class="sb-chipset" role="group" aria-labelledby="sb-vend-outbound-label" aria-describedby="sb-vend-outbound-help" data-sb-vend-outbound-verbs>
+        {{range $v.OutboundVerbOptions}}<label class="sb-chip sb-chip--verb sb-chip--toggle"><input type="checkbox" name="verbs" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>{{end}}
+      </div>
+      <p class="sb-help" id="sb-vend-outbound-help">notify hooks · lets this agent register URLs that switchboard will POST to when its work is ready · switchboard dials a host the agent chooses · off unless you tick them</p>
+    </div>
 
     {{else if eq $v.Step "webhooks"}}
     {{/* Webhook ceiling (ADR-0012): optional — leaving max at 0/empty disables self-managed

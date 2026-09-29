@@ -32,12 +32,12 @@ Verified against `origin/main` at `8474757`:
 * So the HMAC Switchboard recomputes (`verifyStripe`, `verifySlack` in `internal/ingest/verify.go`) can
   never match, and every delivery to a self-managed `stripe` or `slack` webhook is refused `401
   signature verification failed` by `SelfManaged` (`internal/ingest/selfmanaged.go`).
-* Before #291 an operator could paste the provider's secret into `SWITCHBOARD_STRIPE_SECRET` or
+* Before the shared-receiver removal an operator could paste the provider's secret into `SWITCHBOARD_STRIPE_SECRET` or
   `SWITCHBOARD_SLACK_SECRET` (read in `internal/server/server.go` at the parent of `b9b6ed7`) for the
-  instance-wide receivers `/webhooks/stripe` and `/webhooks/slack`. #291 removed those receivers, rightly:
+  instance-wide receivers `/webhooks/stripe` and `/webhooks/slack`. The shared-receiver removal took those out, rightly:
   they belonged to no tenant. It also removed the only path that accepted a provider-issued secret.
 
-**Since #291, signed Stripe and Slack are unusable.** `docs/getting-started/04-first-webhook.md` still
+**Since the shared-receiver removal, signed Stripe and Slack are unusable.** `docs/getting-started/04-first-webhook.md` still
 lists both as supported and tells the reader to paste the minted secret into the producer, which
 neither provider allows.
 
@@ -65,7 +65,7 @@ anything instance-wide, and which such providers should Switchboard verify nativ
 ## Decision Drivers
 
 * **Stay self-managed only.** No env secrets, no instance-wide receivers: every webhook belongs to one
-  owner (#291, [ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md)).
+  owner (the shared-receiver removal, [ADR-0022](ADR-0022-endpoint-scoped-todo-ownership.md)).
 * **No trust downgrade.** A delivery verified with a provider-issued secret is `verified = true`
   exactly as a minted one is ([ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md)).
 * **A vendor secret is a credential.** Stored encrypted, write-only (never echoed or returned),
@@ -244,9 +244,9 @@ Plain thread subjects, and their reply addresses (ADR-0033), follow with the kin
 
 ### (B) Restore env-configured provider secrets
 
-* Good, because it is what worked before #291, and it is trivial.
+* Good, because it is what worked before the shared-receiver removal, and it is trivial.
 * Bad, because an env secret belongs to the deployment, not a tenant: every tenant's Stripe events would
-  verify against one operator's secret, into one receiver. That is the cross-tenant shape #291 removed
+  verify against one operator's secret, into one receiver. That is the cross-tenant shape the shared-receiver removal took out
   for good reason.
 
 ### (C) Declare Stripe and Slack unsupported; use `generic`
@@ -299,5 +299,5 @@ flowchart TD
 * Companion records, accepted together on 2026-09-22 and linked as front-matter edges: ADR-0033 and SPEC-0028 (reply to source, which
   consumes Slack deliveries and will add Linear and Plain reply addresses); ADR-0038 and SPEC-0033
   (Teams and tenancy: who may set a team webhook's secret).
-* The open decision on plaintext minted secrets when no encryption key is set (#234) is unaffected:
+* The open decision on plaintext minted secrets when no encryption key is set is unaffected:
   this ADR requires encryption only for provider-issued secrets.

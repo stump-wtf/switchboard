@@ -16,8 +16,13 @@ a credential and leave it running.
   To it, that todo doesn't exist (`not_found`). That holds for your own endpoints too.
 - **Scope is enforced on every call.** A tool the endpoint wasn't granted, or a queue outside its
   scope, is refused. Scope never changes after vend; to change it, vend a new endpoint.
-- **Webhooks, routes, and rules belong to you.** Any of your endpoints with the right tools may
-  manage your webhooks' routes and rules. No one else's endpoint can.
+- **A webhook's routes and rules belong to its endpoint.** Only the endpoint that owns a webhook,
+  with the right tools, may manage its routes and rules. Your other endpoints can't, and neither can
+  anyone else's: to them the webhook doesn't exist (`not_found`).
+- **A friend endpoint carries only hand-off and drain tools.** Approving a friend request grants at
+  most `create_for` and the drain verbs (`list_todos`, `get_todo`, `claim`, `claim_next`, `complete`,
+  `fail`, `heartbeat`), whatever was requested. A friend endpoint runs on your agent, so webhook, rule, and
+  event-history tools on it would act with your authority; switchboard never grants them to a friend.
 - **The instance operator can see everything.** Payloads are stored in the service's database. Don't
   route anything through a webhook that you wouldn't show the person running the service.
 
@@ -52,7 +57,11 @@ The event history keeps it for later inspection and replay. So treat a payload a
 - Deliveries recorded before owners existed, whose webhook was already deleted, have no provable
   owner, so no one can read them, on the board or through the tools. They age out through retention.
 - **`replay_webhook_event` sends a stored payload back out** to a target, so treat it as a
-  data-forwarding tool, not just a debugging one.
+  data-forwarding tool, not just a debugging one. The target is the one the call names or one
+  the calling endpoint owns (`replay_targets`, set when it is vended); there is no instance-wide
+  default. Every target must be `https` on a public address, checked when the call is made and
+  again when it connects, so a replay cannot reach localhost, a private network or a cloud
+  metadata service.
 
 ## Where a delivery can go
 
@@ -83,18 +92,23 @@ Whoever owns a webhook decides where its deliveries land, within limits switchbo
   compromised. Revoke first, then vend a replacement.
 - **Prefer signed sources over `generic`.** A signature proves the body wasn't altered and binds it
   to a secret the URL doesn't reveal. A `generic` webhook only proves the caller knew the URL.
+- **Provider-issued secrets aren't accepted yet.** Switchboard verifies only against a signing
+  secret it minted, and there is no way to give it one a provider generated. Providers that issue
+  their own secrets, Stripe and Slack among them, therefore can't be used as signed sources today:
+  their deliveries fail with `401`. See [ADR-0037](/decisions/ADR-0037-provider-issued-signing-secrets).
 
 ## Secrets at rest
 
-Switchboard stores two kinds of secret it mints, and protects them differently:
+Switchboard stores three kinds of secret it mints, and protects them differently:
 
 | Secret | At rest |
 |---|---|
 | Endpoint credentials (`sbk_…`) | **Hashed.** They can't be recovered from the database, only revoked. |
 | Webhook signing secrets (`whsec_…`) | Switchboard must recompute the HMAC on every delivery, so it keeps the secret recoverable: **AES-256-GCM encrypted** under `SWITCHBOARD_SECRET_ENCRYPTION_KEY` when that key is set, and **plaintext** when it's empty. |
+| Notify hook signing secrets (`whsec_…`) | Switchboard signs every outbound notification with them, so they're recoverable too, but **always AES-256-GCM encrypted**. There is no plaintext fallback: with no `SWITCHBOARD_SECRET_ENCRYPTION_KEY`, no notify hook can be created, and a stored hook secret that isn't ciphertext is refused rather than used. |
 
-**An empty `SWITCHBOARD_SECRET_ENCRYPTION_KEY` is allowed, and it stores every signing secret in
-plaintext.** Anyone who can read the database, or a backup of it, can then forge signed
+**An empty `SWITCHBOARD_SECRET_ENCRYPTION_KEY` is allowed, and it stores every inbound webhook
+signing secret in plaintext.** (Notify hooks fail closed instead, as above.) Anyone who can read the database, or a backup of it, can then forge signed
 deliveries to your webhooks. Switchboard warns rather than refusing to start, in two places:
 
 - **At startup**, if signed webhooks already exist:

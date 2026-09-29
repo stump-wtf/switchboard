@@ -2,9 +2,9 @@ package main
 
 // A fake switchboard deployment for the CLI tests: the RFC 9728 / 8414 discovery documents, RFC
 // 7591 registration, an authorize endpoint that redirects straight back with a code (the human
-// said yes), a token endpoint that verifies PKCE and rotates refresh tokens, and the three
-// /api/v1 verbs behind a bearer check. It records what the CLI sent so tests can assert the
-// wire shape (resource = <base>/api, S256, exact redirect URI) rather than only the outcome.
+// said yes), a token endpoint that verifies PKCE and rotates refresh tokens, and the /api/v1
+// routes the CLI drives, behind a bearer check. It records what the CLI sent so tests can assert
+// the wire shape (resource = <base>/api, S256, exact redirect URI) rather than only the outcome.
 
 import (
 	"crypto/sha256"
@@ -41,6 +41,11 @@ type fakeDeployment struct {
 	revokeStatus int                 // when non-zero, the status the revoke route answers with
 	endpointRows []map[string]any    // GET /api/v1/endpoints answer
 	agentRows    []map[string]any    // GET /api/v1/agents answer
+	webhookRows  []map[string]any    // GET /api/v1/webhooks answer
+	rulesDocs    map[string]any      // GET /api/v1/webhooks/{id}/rules answers, by webhook id
+	ruleSets     []map[string]any    // PUT /api/v1/webhooks/{id}/rules bodies seen, "webhook" added
+	ruleTests    []map[string]any    // POST /api/v1/webhooks/{id}/rules/test bodies seen, "webhook" added
+	testAnswer   map[string]any      // the rules/test answer
 }
 
 func newFakeDeployment(t *testing.T) *fakeDeployment {
@@ -138,6 +143,9 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if f.serveWebhooks(w, r) {
+			return
+		}
 		switch r.Method + " " + r.URL.Path {
 		case "POST /api/v1/endpoints":
 			var in map[string]string
@@ -223,4 +231,82 @@ func writeJSONResponse(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// serveWebhooks answers the human API's webhook routes the way the real handlers do: the rules
+// document shape, SPEC-0035's {"error", "code"} errors, and a PUT that keeps params when the body has
+// no params key. It reports whether it handled the request.
+func (f *fakeDeployment) serveWebhooks(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet && r.URL.Path == "/api/v1/webhooks" {
+		rows := f.webhookRows
+		if rows == nil {
+			rows = []map[string]any{}
+		}
+		writeJSONResponse(w, 200, map[string]any{"webhooks": rows})
+		return true
+	}
+	rest, ok := strings.CutPrefix(r.URL.Path, "/api/v1/webhooks/")
+	if !ok {
+		return false
+	}
+	id, verb, _ := strings.Cut(rest, "/")
+	notFound := func() { writeJSONResponse(w, 404, map[string]any{"error": "webhook not found", "code": "not_found"}) }
+	decode := func() (map[string]any, bool) {
+		var in map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeJSONResponse(w, 400, map[string]any{"error": "invalid JSON body", "code": "invalid_argument"})
+			return nil, false
+		}
+		return in, true
+	}
+	switch r.Method + " " + verb {
+	case "GET rules":
+		doc, ok := f.rulesDocs[id]
+		if !ok {
+			notFound()
+			return true
+		}
+		writeJSONResponse(w, 200, doc)
+	case "PUT rules":
+		prev, ok := f.rulesDocs[id].(map[string]any)
+		if !ok {
+			notFound()
+			return true
+		}
+		in, ok := decode()
+		if !ok {
+			return true
+		}
+		saved := map[string]any{"webhook_id": id, "source_type": prev["source_type"], "target_queue": prev["target_queue"],
+			"rules": in["rules"], "grant": prev["grant"]}
+		if d, has := in["default_action"]; has && d != nil {
+			saved["default_action"] = d
+		}
+		params, has := in["params"]
+		if !has {
+			params = prev["params"]
+		}
+		if params != nil {
+			saved["params"] = params
+		}
+		f.rulesDocs[id] = saved
+		in["webhook"] = id
+		f.ruleSets = append(f.ruleSets, in)
+		writeJSONResponse(w, 200, saved)
+	case "POST rules/test":
+		if _, ok := f.rulesDocs[id]; !ok {
+			notFound()
+			return true
+		}
+		in, ok := decode()
+		if !ok {
+			return true
+		}
+		in["webhook"] = id
+		f.ruleTests = append(f.ruleTests, in)
+		writeJSONResponse(w, 200, f.testAnswer)
+	default:
+		http.NotFound(w, r)
+	}
+	return true
 }

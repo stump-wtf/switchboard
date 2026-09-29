@@ -21,6 +21,8 @@ var ErrNotFound = errors.New("store: not found")
 // (pending = a retry/requeue/reaper re-surface). Implementations MUST NOT block: delivery is
 // presentation only — PostgreSQL remains the source of truth and a missed call costs nothing but a
 // UI refresh. Governing: SPEC-0012 REQ "Live Updates via SSE" (best-effort presentation).
+// A dead-letter transition's t carries FinalAttempt (SPEC-0034 REQ-15); consumers that do not
+// render it ignore it.
 type TodoTransitionHook func(verb string, t Todo)
 
 // TodoDoorbellHook observes committed todo creations that are eligible for a channel push. The
@@ -81,6 +83,11 @@ type Store struct {
 	endpointSeenHook atomic.Pointer[EndpointSeenHook]
 	// doorbellHook mirrors todoHook for push-eligible creations (the MCP channel doorbell).
 	doorbellHook atomic.Pointer[TodoDoorbellHook]
+	// requeuedHook observes retries the scheduler re-queued, before their wakeup (todos.go).
+	requeuedHook atomic.Pointer[TodoRequeuedHook]
+	// readyHook observes push-eligible transitions into pending — creations AND requeues — for the
+	// SPEC-0024 notify-hook dispatcher (SetTodoReadyHook).
+	readyHook atomic.Pointer[TodoReadyHook]
 	// metricsSink receives the SPEC-0023 REQ-3 lifecycle counters (metrics.go). Nil = no-op.
 	metricsSink atomic.Pointer[Metrics]
 }
@@ -156,6 +163,43 @@ func (s *Store) SetTodoDoorbellHook(fn TodoDoorbellHook) {
 		return
 	}
 	s.doorbellHook.Store(&fn)
+}
+
+// Reasons a TodoReadyHook is told why a todo became ready (SPEC-0024 REQ-6).
+const (
+	ReadyCreated  = "created"
+	ReadyRequeued = "requeued"
+)
+
+// TodoReadyHook observes a push-eligible todo entering `pending` after its statement committed:
+// reason is ReadyCreated for a new todo and ReadyRequeued when the lease reaper or the retry
+// scheduler returns one to pending. It fires once per transition, on the instance whose statement
+// performed it; never for a redelivery that dedups, a heartbeat re-ring or a todo leaving pending.
+// Same contract as TodoDoorbellHook: never block, never authoritative.
+// Governing: SPEC-0024 REQ-6 "Trigger and Sender Gate", SPEC-0011 REQ "Sender Gate and Injection
+// Safety".
+type TodoReadyHook func(t Todo, reason string)
+
+// SetTodoReadyHook registers fn (nil clears it). It is separate from the doorbell hook so a
+// subscriber is not subject to the doorbell's re-ring suppression (SPEC-0024 REQ-6).
+func (s *Store) SetTodoReadyHook(fn TodoReadyHook) {
+	if fn == nil {
+		s.readyHook.Store(nil)
+		return
+	}
+	s.readyHook.Store(&fn)
+}
+
+func (s *Store) fireReady(t Todo, reason string) {
+	// A quarantined todo never signals readiness, whatever path reaches here: the SPEC-0011 sender
+	// gate is amended by SPEC-0026 REQ-6, and a held intake fires no ready hook. A release fires it
+	// once the row has left the quarantine queue (ApplyQuarantineRelease).
+	if t.Queue == QueueQuarantine {
+		return
+	}
+	if fn := s.readyHook.Load(); fn != nil {
+		(*fn)(t, reason)
+	}
 }
 
 // fireDoorbell invokes the registered doorbell hook, if any. Callers fire it only after a durable

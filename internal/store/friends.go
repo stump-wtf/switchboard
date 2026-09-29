@@ -24,8 +24,43 @@ import (
 var ErrInvalidTransition = errors.New("store: invalid friend-edge transition")
 
 // ErrScopeExceedsRequest is returned when an approval's granted_scope is not a subset of the
-// requested_scope — narrow-only approval forbids granting more than was asked for (SPEC-0010).
+// requested_scope — narrow-only approval forbids granting more than was asked for (SPEC-0010) — or
+// names a verb no friend edge may carry (F3, friendGrantableVerbs).
 var ErrScopeExceedsRequest = errors.New("store: granted scope exceeds requested scope")
+
+// friendGrantableVerbs is everything a friend edge may ever grant: the SPEC-0007 work-handoff verb
+// and the SPEC-0006 drain verbs (mirrors mcp.DrainVerbs, pinned by a test there). get_todo is one
+// of those drain verbs, and list_todos already implies it (SPEC-0034 REQ-8), so granting it reaches
+// nothing a list_todos grant does not. A friend endpoint is vended on the APPROVER's agent, so any
+// webhook, rule, route or event verb on it would act with the approver's authority: rewrite their
+// rules, read their payloads through test_webhook_rules or the history tools. Those verbs are
+// therefore never grantable to a friend, whatever was requested and whatever the approver ticks.
+// Governing: ADR-0038, SPEC-0033 REQ "Closing the Audited Surfaces" (F3), scenario "Friend grant
+// cannot carry webhook verbs".
+var friendGrantableVerbs = []string{"create_for", "list_todos", "get_todo", "claim", "claim_next", "complete", "fail", "release", "heartbeat"}
+
+// FriendGrantableVerbs returns a copy of the verbs a friend edge may grant, in display order.
+func FriendGrantableVerbs() []string { return append([]string(nil), friendGrantableVerbs...) }
+
+// FriendGrantable returns the members of verbs a friend edge may grant, in their original order,
+// dropping every other verb.
+func FriendGrantable(verbs []string) []string {
+	var out []string
+	for _, v := range verbs {
+		for _, g := range friendGrantableVerbs {
+			if v == g {
+				out = append(out, v)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// ErrNothingGrantable is returned when a friend request names verbs and none of them is one a friend
+// edge may carry (FriendGrantable leaves nothing). Storing it would record a live edge that asks for
+// nothing yet occupies the pair's unique key, so it is refused, matching the A2A intake's 400. F3.
+var ErrNothingGrantable = errors.New("store: no requested verb may be granted to a friend")
 
 // ErrFriendshipInactive is returned when a cross-agent work handoff is attempted against an edge
 // that is not an active friendship — the edge is not approved, or its vended endpoint has been
@@ -103,9 +138,19 @@ type CreateFriendRequestParams struct {
 
 // CreateFriendRequest records a PENDING friend edge that confers no access until a human approves
 // (SPEC-0010 "Pending edge grants nothing"). A second live (pending/approved) request for the same
-// (from_persona, to_persona, direction) collides on the partial unique index and returns
-// ErrConflict — the pending-edge-grants-nothing / anti-flood invariant.
+// (from_human, to_human, from_persona, to_persona, direction) collides on the partial unique index
+// and returns ErrConflict — the pending-edge-grants-nothing / anti-flood invariant. The humans are
+// in the key so two tenants' personas sharing a name never collide or learn of each other (F13).
+//
+// Requested verbs a friend edge can never grant are dropped here, so the approver is never shown a
+// webhook or event verb they might believe they are granting (F3). A request whose verbs are all
+// non-grantable is refused with ErrNothingGrantable rather than stored empty.
 func (s *Store) CreateFriendRequest(ctx context.Context, p CreateFriendRequestParams) (FriendEdge, error) {
+	asked := len(p.RequestedVerbs)
+	p.RequestedVerbs = FriendGrantable(p.RequestedVerbs)
+	if asked > 0 && len(p.RequestedVerbs) == 0 {
+		return FriendEdge{}, ErrNothingGrantable
+	}
 	direction := p.Direction
 	if direction == "" {
 		direction = "outbound"
@@ -180,11 +225,16 @@ func (s *Store) ApproveFriendRequest(ctx context.Context, p ApproveFriendRequest
 	}
 
 	// Narrow-only: default to the requested scope, else validate the human's narrowing is a subset.
+	// Either way the grant is bounded by what a friend edge may carry at all: a default grant keeps
+	// only the grantable verbs (a pending edge recorded before F3 may still request others), and an
+	// explicit grant naming any other verb is refused. Governing: SPEC-0033 REQ "Closing the Audited
+	// Surfaces" (F3).
 	grantedQueues, grantedVerbs := p.GrantedQueues, p.GrantedVerbs
 	if len(grantedQueues) == 0 && len(grantedVerbs) == 0 {
-		grantedQueues, grantedVerbs = edge.RequestedQueues, edge.RequestedVerbs
+		grantedQueues, grantedVerbs = edge.RequestedQueues, FriendGrantable(edge.RequestedVerbs)
 	}
-	if !isSubset(grantedQueues, edge.RequestedQueues) || !isSubset(grantedVerbs, edge.RequestedVerbs) {
+	if !isSubset(grantedQueues, edge.RequestedQueues) || !isSubset(grantedVerbs, edge.RequestedVerbs) ||
+		len(FriendGrantable(grantedVerbs)) != len(grantedVerbs) {
 		return FriendEdge{}, Endpoint{}, ErrScopeExceedsRequest
 	}
 
@@ -250,13 +300,14 @@ func (s *Store) RevokeFriendEdge(ctx context.Context, edgeID, ownerHumanID strin
 	// force-expired — mirroring RevokeEndpoint and ExpireEndpoints so friend-edge revocation is
 	// instant and total from every credential's point of view. Governing: SPEC-0016 REQ
 	// "Revocation Cascade", SPEC-0007 REQ "Instant, Total Revocation".
+	var closed []string
 	if edge.EndpointID != "" {
 		if _, err := tx.Exec(ctx,
 			`UPDATE endpoints SET state = 'revoked', revoked_at = now() WHERE id = $1 AND state = 'active'`,
 			edge.EndpointID); err != nil {
 			return FriendEdge{}, err
 		}
-		if err := deadLetterEndpointTodos(ctx, tx, []string{edge.EndpointID}); err != nil {
+		if closed, err = deadLetterEndpointTodos(ctx, tx, []string{edge.EndpointID}); err != nil {
 			return FriendEdge{}, err
 		}
 		if err := revokeEndpointOAuth(ctx, tx, []string{edge.EndpointID}); err != nil {
@@ -273,6 +324,7 @@ func (s *Store) RevokeFriendEdge(ctx context.Context, edgeID, ownerHumanID strin
 	if err := tx.Commit(ctx); err != nil {
 		return FriendEdge{}, err
 	}
+	s.countRevokedAttempts(closed)
 	return edge, nil
 }
 

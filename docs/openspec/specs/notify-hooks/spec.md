@@ -152,9 +152,12 @@ The operator MAY permit specific ranges instance-wide with an explicit CIDR allo
 installs. The default MUST be empty. A listed range MUST exempt the private, unique-local and
 carrier-grade NAT addresses it covers. Loopback and link-local addresses MUST be exempted only by an
 entry that lies wholly inside those ranges (for example `127.0.0.1/32`), never by a broader entry
-such as `0.0.0.0/0`. Switchboard's own listen address and port MUST stay rejected even when listed.
-The self-hosting guide MUST say that the allowlist exposes those ranges to every tenant, and that
-exempting link-local exposes cloud metadata services.
+such as `0.0.0.0/0`. Well-known cloud metadata addresses outside link-local (Alibaba Cloud's
+`100.100.100.200`, AWS's IPv6 `fd00:ec2::254`) MUST be exempted only by an entry for exactly that
+address, never by a covering range. Switchboard's own listen address and port MUST stay rejected
+even when listed; when the listen host is a name rather than an IP, its port MUST be rejected on
+every allowlisted address. The self-hosting guide MUST say that the allowlist exposes those ranges
+to every tenant, and that exempting link-local exposes cloud metadata services.
 
 The connection MUST be made to an IP address from the **same** resolution that passed validation.
 A second, unvalidated lookup between validation and dial MUST NOT be possible. TLS MUST verify the
@@ -181,6 +184,12 @@ the status code, and its `Location` MUST NOT be dialled.
 - **GIVEN** `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS=0.0.0.0/0`
 - **WHEN** a hook's host resolves to `169.254.169.254` or to `127.0.0.1`
 - **THEN** the call fails with `invalid_argument`
+
+#### Scenario: A covering range does not open a metadata service
+
+- **GIVEN** `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS=100.64.0.0/10,fc00::/7`
+- **WHEN** a hook's host resolves to `100.100.100.200` or to `fd00:ec2::254`
+- **THEN** the call fails with `invalid_argument`, while `100.100.100.201` is accepted
 
 #### Scenario: DNS rebinding between create and delivery
 
@@ -262,12 +271,15 @@ notification MUST carry exactly these fields:
 
 ```json
 {"type": "todo.ready", "reason": "created", "todo_id": "td_…", "queue": "inbox",
- "kind": "pull_request", "source": "gitea", "summary": "PR #482 opened in …",
- "endpoint": "<slug>", "attempt": 1, "created_at": "2026-09-22T14:03:11Z"}
+"kind": "pull_request", "source": "gitea", "summary": "PR 482 opened in …",
+ "endpoint": "<slug>", "attempt": 0, "created_at": "2026-09-22T14:03:11Z"}
 ```
 
 `reason` MUST be `created` or `requeued` (REQ-6). `attempt` MUST be the todo's current attempt
-number. `summary` MUST be the todo's title after the neutralization the channel doorbell applies,
+count: the number of times it has been claimed so far, so `0` on a `created` notification and at
+least `1` on a `requeued` one after a lease expiry. `created_at` MUST be the time this notification
+was made, not the time the todo was created, so each requeue carries a fresh time; a receiver
+deduplicates on `webhook-id`, never on `created_at`. `summary` MUST be the todo's title after the neutralization the channel doorbell applies,
 truncated to 200 characters. `kind` and `source` MUST be omitted when the todo has none.
 
 The body MUST NOT contain any field of the todo's payload, any request headers, the routing trace,
@@ -363,7 +375,10 @@ Switchboard MUST read at most 64 KiB of the response body and then discard it. A
 count as delivered.
 
 A notification MUST have at most 3 attempts, with backoff of about 1 second and then about 5
-seconds, jittered. A network error, a timeout, `408`, `429` or a `5xx` MUST be retried. Any other
+seconds, jittered. A network error, a timeout, `408`, `429` or a `5xx` MUST be retried. A hook host
+that fails to resolve at attempt time is a network error (or a timeout, when the lookup times out)
+and nothing is dialled; only an address the SSRF guard rejects is `rejected_ssrf`, and that is
+never retried. Any other
 status, including every `3xx` and every `4xx` except `408` and `429`, MUST end the notification
 without retry.
 
@@ -386,8 +401,12 @@ The ADR-0013 contract holds: the todo stays `pending` and claimable.
 
 - **GIVEN** the delivery queue on an instance is full
 - **WHEN** another notification is produced
-- **THEN** it is dropped, one warning is logged with the hook id and not the URL, the dropped
-  counter increments, and no todo changes state
+- **THEN** it is dropped, one warning is logged with the hook id (or, when it is dropped before any
+  hook is matched, the endpoint and todo ids) and never the URL, the dropped counter increments,
+  and no todo changes state
+
+A sustained overflow MAY coalesce these warnings to one line per reason per short window, provided
+the line reports how many drops it stands for and every drop is still counted.
 
 ### REQ-8: Hook Health and Auto-Disable
 

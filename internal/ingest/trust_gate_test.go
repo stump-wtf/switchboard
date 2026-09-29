@@ -59,12 +59,12 @@ func TestTrustGateHoldsUntrustedAndPromotesOnMaintainerLabel(t *testing.T) {
 	ing.SetRouter(routing.InProcess{})
 	st := store.New(pool)
 	const secret = "whsec_trustgate"
-	h, owner := seedEndpoint(t, st, ctx, "trust-gate", []string{"reviews"})
+	_, owner := seedEndpoint(t, st, ctx, "trust-gate", []string{"reviews"})
 	wh, err := st.CreateWebhook(ctx, owner.ID, "github", "reviews", "signed", "tok-trust-gate", secret, 3) // no list: fail closed
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{
+	setRules(t, ctx, st, wh.ID, routing.Config{
 		Rules: []routing.Rule{{ID: "outsider-text", Expr: `.issue.label_event and .actor.author_trusted == false`,
 			Action: routing.Action{Queue: "reviews", WorkOrder: true}}},
 		Default: &routing.Action{Drop: true},

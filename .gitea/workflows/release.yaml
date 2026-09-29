@@ -1,9 +1,10 @@
 # Gitea Actions: cut a release from a v* tag.
 #
 # Until this file existed, switchboard had NO tag-triggered workflow at all —
-# aibot fires on PRs, build.yaml/ci.yaml/gitleaks on push-to-main, docs.yaml on
-# paths. So a .goreleaser.yaml on its own would never have been invoked: pushing
-# a tag would have done nothing, silently, and looked like success.
+# aibot fires on PRs, ci.yaml (gate + image + deploy) and gitleaks on
+# push-to-main, docs.yaml on paths. So a .goreleaser.yaml on its own would never
+# have been invoked: pushing a tag would have done nothing, silently, and looked
+# like success.
 #
 # Runs on Gitea rather than the GitHub mirror because this runner is the only
 # host that reaches both sides — Gitea over the LAN and github.com outbound.
@@ -40,8 +41,8 @@ jobs:
       # DELIBERATELY FATAL, and deliberately not a job-level `if:` — secrets are
       # not available there, so the env indirection is the only way to test one.
       #
-      # build.yaml skips quietly when REGISTRY_TOKEN is missing, which is right
-      # for an image that rebuilds on the next push. It is WRONG for a release: a
+      # ci.yaml's image job skips quietly when REGISTRY_TOKEN is missing, which is
+      # right for an image that rebuilds on the next push. It is WRONG for a release: a
       # tag that publishes nothing and still reports green is what leaves `brew
       # upgrade` serving a stale version for weeks while every run looks fine.
       #
@@ -87,9 +88,9 @@ jobs:
       # evidence the version was stamped. Assert it, rather than remember to
       # check. Only the linux/amd64 artifact is executed — the runner cannot run
       # the darwin or windows builds, so this is the one that can be proven here.
-      # POSITIVE control. The pass condition is "the output contains the tag",
-      # never "the output lacks the word dev" — an absence check passes on any
-      # unexpected string, including an error.
+      # POSITIVE control. The pass condition is "the output is exactly
+      # `switchboard <tag>`", never "the output lacks the word dev" — an
+      # absence check passes on any unexpected string, including an error.
       #
       # Written the wrong way first and caught locally: on a darwin host the
       # linux binary cannot execute, `version` returned "exec format error",
@@ -108,14 +109,20 @@ jobs:
           fi
           echo "version output: $got"
 
-          want="${GITEA_REF_NAME#v}"
-          case "$got" in
-            *"$want"*) echo "stamped version contains the tag ($want)" ;;
-            *)
-              echo "::error::binary reports '$got', expected it to contain '$want'." \
-                   "A wrong -X path injects nothing and still exits 0."
-              exit 1
-              ;;
-          esac
+          # The full tag, "v" included: goreleaser stamps {{.Tag}} into
+          # internal/buildinfo.Version (SPEC-0027 REQ-1), so a v0.3.0 release
+          # reports exactly "switchboard v0.3.0". Exact equality, not a
+          # substring: a substring match on the tag without its "v" would pass
+          # a build still stamped with {{.Version}}, and one on the tag would
+          # pass "v0.3.0+dirty". goreleaser builds with -buildvcs=false, so a
+          # missed stamp reports "dev" here instead of the VCS tag.
+          want="switchboard ${GITEA_REF_NAME}"
+          if [ "$got" = "$want" ]; then
+            echo "stamped version is the tag ($want)"
+          else
+            echo "::error::binary reports '$got', expected exactly '$want'." \
+                 "A wrong -X path injects nothing and still exits 0."
+            exit 1
+          fi
         env:
           GITEA_REF_NAME: ${{ gitea.ref_name }}

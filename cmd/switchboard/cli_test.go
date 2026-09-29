@@ -12,15 +12,18 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stump-wtf/switchboard/internal/buildinfo"
 )
 
 // testCLI is a cli with every edge captured: buffered output, a private environment, a stubbed
 // serve, no browser, and a fixed clock.
 type testCLI struct {
 	*cli
-	stdout, stderr *bytes.Buffer
+	stdout, stderr *lockedBuffer
 	env            map[string]string
 	serveCalls     [][]string
 	clock          time.Time
@@ -30,8 +33,8 @@ func newTestCLI(t *testing.T) *testCLI {
 	t.Helper()
 	tc := &testCLI{
 		cli:    newCLI(),
-		stdout: &bytes.Buffer{},
-		stderr: &bytes.Buffer{},
+		stdout: &lockedBuffer{},
+		stderr: &lockedBuffer{},
 		env:    map[string]string{"SWITCHBOARD_CREDENTIALS": filepath.Join(t.TempDir(), "creds", "credentials.json")},
 		clock:  time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC),
 	}
@@ -42,6 +45,45 @@ func newTestCLI(t *testing.T) *testCLI {
 	tc.now = func() time.Time { return tc.clock }
 	tc.loginTimeout = 5 * time.Second
 	return tc
+}
+
+// lockedBuffer is a bytes.Buffer safe to read while a verb running on another goroutine writes it:
+// TestLoginNoBrowserPrintsTheURL polls stdout for the authorize URL while login blocks on the
+// loopback callback, and a bare bytes.Buffer there is a data race under -race.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Bytes returns a copy, so the caller never aliases memory a later Write may change.
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return bytes.Clone(b.buf.Bytes())
+}
+
+func (b *lockedBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *lockedBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
 }
 
 // loggedIn seeds a credentials file that matches the fake deployment's current pair.
@@ -127,7 +169,7 @@ func TestDispatchHelpAndVersion(t *testing.T) {
 		mustContain(t, "vend help", tc.stdout.String(), "usage: switchboard endpoint vend [flags] NAME", "-queue", "-json")
 	}
 	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
-		if code := tc.run(t, args...); code != exitOK || strings.TrimSpace(tc.stdout.String()) != "switchboard "+version {
+		if code := tc.run(t, args...); code != exitOK || strings.TrimSpace(tc.stdout.String()) != "switchboard "+buildinfo.Get().Version {
 			t.Fatalf("%v: code %d, stdout %q", args, code, tc.stdout.String())
 		}
 	}
