@@ -14,8 +14,8 @@ related: [SPEC-0024, SPEC-0025, SPEC-0029, SPEC-0031, SPEC-0033]
 This spec makes Switchboard's intake gate fail closed. It has four parts:
 
 * **Fail-closed routing.** A faulting rule stops evaluation, and the delivery is quarantined
-  instead of falling through (#212).
-* **Params survive omission.** Omitting `params` never clears them (#213).
+  instead of falling through.
+* **Params survive omission.** Omitting `params` never clears them.
 * **First-class trusted actors.** A per-webhook `trusted_actors` field is evaluated in Go from
   verified fields.
 * **Quarantine.** A reserved queue that no tool-bearing agent is ever pushed or handed, drained by

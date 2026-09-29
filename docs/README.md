@@ -27,8 +27,8 @@ Two layers:
 | [ADR-0000](adrs/ADR-0000-project-naming-and-scope.md) | Project naming & scope | The project is `switchboard`; MVP scope ratified. |
 | [ADR-0001](adrs/ADR-0001-web-stack-go-htmx-pico.md) | Web stack | Go `net/http` + chi, `html/template`, HTMX; assets embedded via `embed.FS` (CSS layer amended by ADR-0016). |
 | [ADR-0002](adrs/ADR-0002-postgres-persistence-and-retention.md) | PostgreSQL persistence & retention | Postgres queue store: SKIP LOCKED claims, ON CONFLICT dedup, partial pending index, age + row-cap pruning. |
-| [ADR-0003](adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types & trust | Per-provider verification and the trust model. *Amended (#181):* reached only through self-managed webhooks (`signed`/`token`); the `queue` family and operator-configured receivers are gone. |
-| [ADR-0005](adrs/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay` + recent-events resource. *Amended (#181):* `list_providers` removed. |
+| [ADR-0003](adrs/ADR-0003-per-provider-ingestion-and-trust-model.md) | Ingestion provider types & trust | Per-provider verification and the trust model. *Amended (shared receivers removed):* reached only through self-managed webhooks (`signed`/`token`); the `queue` family and operator-configured receivers are gone. |
+| [ADR-0005](adrs/ADR-0005-mcp-tool-and-resource-contract.md) | MCP tool/resource contract | `list`/`get`/`replay` + recent-events resource. *Amended (shared receivers removed):* `list_providers` removed. |
 | [ADR-0007](adrs/ADR-0007-todos-as-core-primitive.md) | **Todos as the core primitive** | Durable work-items (lease/ack/idempotency), not a message inbox. |
 | [ADR-0008](adrs/ADR-0008-human-principal-vended-endpoints.md) | **Human principal + vended endpoints** | Humans authenticate; agents get vended scoped MCP endpoints; IdP holds humans only. |
 | [ADR-0009](adrs/ADR-0009-personas-as-scoped-agent-cards.md) | **Personas as scoped Agent Cards** | One agent → many personas; a persona is a verb-subset, advertised as an A2A card. |
@@ -36,14 +36,24 @@ Two layers:
 | [ADR-0011](adrs/ADR-0011-identity-assurance-oidc-passkey-deferred.md) | **Identity & assurance** | Simple OIDC (Pocket ID) now; passkey `amr`/`acr` step-up deferred. |
 | [ADR-0012](adrs/ADR-0012-agents-self-manage-webhooks.md) | **Agents self-manage webhooks** | Webhook CRUD within a human-vended ceiling; switchboard owns verification. |
 | [ADR-0013](adrs/ADR-0013-channels-push-delivery.md) | **Channels push-delivery** | Claude Code Channels pushes into a live session as a notify layer; the durable todo queue stays the ledger. |
-| [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) | ~~Ingestion adapters (push/pull)~~ | **Superseded (#181).** Push + pull adapter families; the pull family and the operator-configured receivers were removed — self-managed webhooks (ADR-0012) are the only ingestion surface. |
+| [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) | ~~Ingestion adapters (push/pull)~~ | **Superseded (shared receivers removed).** Push + pull adapter families; the pull family and the operator-configured receivers were removed — self-managed webhooks (ADR-0012) are the only ingestion surface. |
 | [ADR-0015](adrs/ADR-0015-implementation-language-go.md) | **Implementation language = Go** | Go for the concurrent queue service: goroutine workers, single static binary, official Go MCP/A2A SDKs, `pgx` + `SKIP LOCKED`. |
 | [ADR-0016](adrs/ADR-0016-operator-design-language.md) | **Operator design language** | Direction 1a "Operator" (brass & bakelite) is canonical; owned `tokens.css` + `.sb-*` layer replaces the never-shipped Pico.css; fonts vendored. |
 | [ADR-0017](adrs/ADR-0017-mcp-streamable-http-only.md) | **MCP over Streamable HTTP only** | Vended endpoints served HTTP/S-direct from the central service; URL + bearer credential is the whole client; stdio adapter retired. |
+| [ADR-0018](adrs/ADR-0018-charm-web-design-language.md) | **Charm-web design language** | Day/night, monospace-first, keyboard-first; supersedes ADR-0016's brass system as the design language. |
+| [ADR-0019](adrs/ADR-0019-mcp-oauth-authorization-server.md) | **MCP OAuth authorization server** | OAuth is a second way to hold a credential to the same vended endpoint, not a second capability model. |
+| [ADR-0020](adrs/ADR-0020-runtime-provider-registry.md) | ~~Runtime provider registry~~ | **Superseded.** DB-backed providers with a connect wizard; removed with the shared receivers. |
+| [ADR-0021](adrs/ADR-0021-a2a-task-delegation-transport.md) | A2A task delegation (proposed) | A2A task RPCs as a first-class transport, gated by the vended-endpoint grant. `create_for` is not exposed yet. |
+| [ADR-0022](adrs/ADR-0022-endpoint-scoped-todo-ownership.md) | **Endpoint-scoped todo ownership** | Todos belong to one endpoint; webhook routes fan out deterministically to other endpoints. |
+| [ADR-0023](adrs/ADR-0023-mvp-mcp-api-first-basics.md) | **MVP is MCP/API-first** | Webhook → todo → doorbell basics first; advanced features behind default-off flags. |
+| [ADR-0024](adrs/ADR-0024-event-routing-deterministic-and-llm.md) | **Event routing** | Deterministic jq rules first, with an optional bounded LLM router as fallback. |
+| [ADR-0025](adrs/ADR-0025-handoff-work-orders-and-difficulty-lanes.md) | **Handoff work orders + lanes** | Router-written work orders carry verified provenance; difficulty lanes route handoffs by size. |
+| [ADR-0026](adrs/ADR-0026-github-second-human-login-provider.md) | GitHub login (proposed) | GitHub as a second human login provider; consent actions stay behind the passkey issuer. |
+| [ADR-0027](adrs/ADR-0027-endpoint-presence-clock-in-clock-out.md) | **Endpoint presence** | Agents clock in and out; doorbells are held while out and summarized in one digest on return. |
+| [ADR-0028](adrs/ADR-0028-prometheus-metrics-endpoint.md) | **Prometheus metrics** | A token-gated `/metrics` endpoint, led by queue liveness. |
+| [ADR-0029](adrs/ADR-0029-outbound-todo-webhooks.md) | **Outbound notify hooks** | Per-endpoint, signed, payload-free HTTPS wake-ups for consumers with no live session. |
 
 ### Operation Stumply (accepted 2026-09-22)
-
-ADR-0018 to ADR-0029 are not indexed here yet; browse [`adrs/`](adrs/) for them.
 
 | ADR | Title | One-line |
 |-----|-------|----------|
@@ -57,6 +67,13 @@ ADR-0018 to ADR-0029 are not indexed here yet; browse [`adrs/`](adrs/) for them.
 | [ADR-0037](adrs/ADR-0037-provider-issued-signing-secrets.md) | **Provider-issued signing secrets** | `awaiting_secret`, the write-only `set_webhook_secret` verb, Slack URL verification, Linear and Plain kinds. |
 | [ADR-0038](adrs/ADR-0038-teams-and-tenancy.md) | **Teams and tenancy** | Every resource has one user or team owner; the operator bounds tenant data and never reads it. |
 | [ADR-0039](adrs/ADR-0039-attempt-history-on-todos.md) | **Attempt history on todos** | Every committed claim opens an attempt record; `get_todo`, `release` and an opt-in lease-token fence. |
+| [ADR-0042](adrs/ADR-0042-agent-activity-and-todo-audit-trail.md) | **Agent activity + todo audit trail** | OTLP/HTTP trace ingest bound to todos, heartbeat notes, a `todo_activity` log, the todo page and the Activity feed. |
+
+### Later records
+
+| ADR | Title | One-line |
+|-----|-------|----------|
+| [ADR-0040](adrs/ADR-0040-operator-authored-todos.md) | **Operator-authored todos** | `switchboard todo push` mints a todo on an endpoint you own and rings its doorbell. First filed as a second ADR-0026. |
 
 ## OpenSpec Specifications
 
@@ -68,7 +85,7 @@ rationale). Grouped by layer, in dependency order.
 | [SPEC-0004](openspec/specs/persistence/spec.md) | Persistence | ADR-0002 | PostgreSQL as sole ledger, pgx pool lifecycle, migrations, schema/indexes, LISTEN/NOTIFY, retention. |
 | [SPEC-0003](openspec/specs/todo-queue/spec.md) | Todo work-queue | ADR-0007 | Four-state lifecycle, SKIP LOCKED claim, visibility window + heartbeat, lease reaper, idempotent enqueue. |
 | [SPEC-0001](openspec/specs/webhook-ingestion/spec.md) | Webhook ingestion | ADR-0003, 0012 | Signed/token verification on self-managed webhooks, replay window, idempotency-key extraction, enqueue-as-todo. |
-| [SPEC-0002](openspec/specs/queue-adapters/spec.md) | ~~Queue adapters (pull)~~ | ADR-0014, 0003 | **Retired (#181).** Pull adapters were removed with ADR-0014; kept as history. |
+| [SPEC-0002](openspec/specs/queue-adapters/spec.md) | ~~Queue adapters (pull)~~ | ADR-0014, 0003 | **Retired (shared receivers removed).** Pull adapters were removed with ADR-0014; kept as history. |
 | [SPEC-0005](openspec/specs/mcp-tools/spec.md) | MCP tool contract | ADR-0005 | Tool/resource shape, JSON schemas, transport, event-history surface. |
 | [SPEC-0006](openspec/specs/agent-tools/spec.md) | Agent-facing MCP tools | ADR-0012, 0005 | Todo drain (claim/complete/fail/heartbeat) + webhook self-management within a vended ceiling. |
 | [SPEC-0007](openspec/specs/vended-endpoints/spec.md) | Vended MCP endpoints | ADR-0008 | (URL + credential) = scoped capability, hashed at rest, immutable scope, revoke = kill. |
@@ -79,10 +96,17 @@ rationale). Grouped by layer, in dependency order.
 | [SPEC-0012](openspec/specs/web-ui/spec.md) | Web UI | ADR-0001 | Baseline web surface: embedded templates, sessions, SSE, security & a11y (screen set refined by SPEC-0013). |
 | [SPEC-0013](openspec/specs/operator-board/spec.md) | Operator board | ADR-0016, 0001 | Five-view operator UI (Board/Todos/Endpoints/Personas/Friends), drawer + modals, live SSE, design-language conformance. |
 | [SPEC-0014](openspec/specs/mcp-transport/spec.md) | MCP Streamable HTTP transport | ADR-0017 | `/mcp/{endpoint}` HTTP-only MCP: bearer auth, scoped tools incl. heartbeat, channels doorbells, stdio retirement. |
+| [SPEC-0015](openspec/specs/operator-board-v2/spec.md) | Operator board v2 (charm-web) | ADR-0018 | Five-view board in the charm-web language: live three-lane board, full-page wizards, keyboard map, day/night themes. Supersedes SPEC-0013. |
+| [SPEC-0016](openspec/specs/mcp-oauth/spec.md) | MCP OAuth for vended endpoints | ADR-0019 | Authorization-server metadata, dynamic client registration, consent, endpoint-scoped tokens. |
+| [SPEC-0017](openspec/specs/providers-view/spec.md) | ~~Providers view~~ | ADR-0020 | **Retired** with the provider registry; kept as history. |
+| [SPEC-0018](openspec/specs/a2a-tasks/spec.md) | A2A task delegation | ADR-0021 | A2A task RPCs over the todo table (draft, with ADR-0021 proposed). |
+| [SPEC-0019](openspec/specs/a2a-push-notifications/spec.md) | A2A push notification webhooks | ADR-0021 | A2A `PushNotificationConfig` delivery (draft). |
+| [SPEC-0020](openspec/specs/event-routing/spec.md) | Event routing | ADR-0024, 0025 | jq rules, routes, work orders, dry-runs, the routing trace. |
+| [SPEC-0021](openspec/specs/github-login/spec.md) | GitHub login | ADR-0026 | GitHub OAuth for the web UI, session provenance, passkey-issuer gate on consent. |
+| [SPEC-0022](openspec/specs/endpoint-presence/spec.md) | Endpoint presence | ADR-0027 | Presence, shifts, clock-in/out verbs, held doorbells, the clock-in digest (draft). |
+| [SPEC-0023](openspec/specs/metrics/spec.md) | Prometheus metrics | ADR-0028 | `/metrics` auth, queue liveness gauges, ingest and routing counters. |
 
 ### Operation Stumply specifications (approved 2026-09-22)
-
-SPEC-0015 to SPEC-0023 are not indexed here yet; browse [`openspec/specs/`](openspec/specs/) for them.
 
 | SPEC | Capability | Realizes | Covers |
 |------|-----------|----------|--------|
@@ -97,6 +121,7 @@ SPEC-0015 to SPEC-0023 are not indexed here yet; browse [`openspec/specs/`](open
 | [SPEC-0032](openspec/specs/provider-signing-secrets/spec.md) | Provider-issued signing secrets | ADR-0037 | Secret origin, `awaiting_secret`, `set_webhook_secret`, rotation, replay guard, Slack handshake, Linear and Plain. |
 | [SPEC-0033](openspec/specs/teams-tenancy/spec.md) | Teams and tenancy | ADR-0038 | Owner model, reach, team roles and invites, team queues, operator surfaces, enrollment, the audit fixes. |
 | [SPEC-0034](openspec/specs/todo-attempts/spec.md) | Attempt history | ADR-0039 | Attempt records, died-versus-failed, prior attempts on claim, `get_todo`, `release`, the lease-token fence. |
+| [SPEC-0036](openspec/specs/agent-activity/spec.md) | Agent activity + audit trail | ADR-0042 | `/otlp/{endpoint}/v1/traces`, span binding, masking, heartbeat notes, `todo_activity`, the todo page, waterfall and Activity feed. |
 
 ## Reference Contracts
 
@@ -142,7 +167,7 @@ open to confirmation and is also tracked in the relevant spec's `design.md` **Op
    Streamable HTTP ([SPEC-0014](openspec/specs/mcp-transport/spec.md)); the stdio adapter is retired.
 
 7. **Pull-adapter ack timing: ack-on-store vs. ack-on-complete** — **Moot: pull adapters were
-   removed (#181).** [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) is superseded and
+   removed with the shared receivers.** [ADR-0014](adrs/ADR-0014-ingestion-adapters-push-pull.md) is superseded and
    [SPEC-0002](openspec/specs/queue-adapters/spec.md) retired.
 
 ## Conventions

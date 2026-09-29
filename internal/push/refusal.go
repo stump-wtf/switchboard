@@ -10,7 +10,10 @@ package push
 // Governing: ADR-0038, SPEC-0033 REQ "Owned Replay Targets" (audit F9); SPEC-0019 REQ "Webhook
 // Target Validation (SSRF Guard)".
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // Refusal classes: fixed, caller-safe phrases. None of them names a resolved address or quotes a
 // resolver error.
@@ -21,9 +24,17 @@ const (
 	RefusedScheme = "must use https"
 	// RefusedUnresolvable is a host whose lookup failed or returned no addresses.
 	RefusedUnresolvable = "host could not be resolved"
-	// RefusedAddress is a host (or IP literal) that resolves to an address the guard refuses.
+	// RefusedAddress is a host (or IP literal) that resolves to an address the guard refuses, where
+	// the classifier named no more specific class.
 	RefusedAddress = "resolves to a disallowed address"
 )
+
+// addressClassPrefix lends these phrases to an address-class refusal. "resolves to a private
+// address" names the class and nothing else, which is what a caller-facing surface wants: the class
+// is the caller's own input's shape, never the address it resolved to (SPEC-0024 REQ-3, SPEC-0033
+// REQ "Owned Replay Targets"). Each phrase is a disallowedReason return, which is fixed prose and
+// never carries an address.
+const addressClassPrefix = "resolves to "
 
 // refusal is a Validate rejection: class is the caller-safe phrase, detail the log-only text. Its
 // Error() text is exactly what the guard returned before classes existed, "<ErrValidation>: <detail>".
@@ -40,8 +51,18 @@ func (e *refusal) Unwrap() error { return ErrValidation }
 // one that is not a refusal at all) reads as RefusedAddress, the most conservative phrase.
 func PublicReason(err error) string {
 	var r *refusal
-	if errors.As(err, &r) {
-		return r.class
+	if !errors.As(err, &r) {
+		return RefusedAddress
 	}
-	return RefusedAddress
+	// An address refusal carries the classifier's own fixed phrase as its detail ("a private
+	// address"), which is a class and not an address. Lending it through names the class precisely
+	// rather than collapsing every one of them to the generic phrase above.
+	if r.class == RefusedAddress {
+		if class, ok := strings.CutPrefix(r.detail, "address "); ok {
+			if _, reason, found := strings.Cut(class, " is "); found && reason != "" {
+				return addressClassPrefix + reason
+			}
+		}
+	}
+	return r.class
 }

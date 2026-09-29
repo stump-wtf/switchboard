@@ -40,7 +40,7 @@ func TestMain(m *testing.M) {
 // Like the route stubs (webhook_routes_test.go), these model nothing: rule authorization is joins,
 // and every rule assertion below runs against the real store.
 
-func (f *fakeStore) WebhookRoutingForHuman(_ context.Context, _, _ string) (store.WebhookRouting, error) {
+func (f *fakeStore) WebhookRoutingForEndpoint(_ context.Context, _, _ string) (store.WebhookRouting, error) {
 	return store.WebhookRouting{}, store.ErrNotFound
 }
 
@@ -66,23 +66,31 @@ var allRuleVerbs = []string{
 }
 
 // ruleSessions extends the route fixture with rule-capable sessions for human A (driving webhookA)
-// and human B, and gives webhookA's owning endpoint a two-queue ceiling.
+// and human B (driving webhookB), and gives webhookA's owning endpoint a two-queue ceiling. Each
+// session is the webhook's OWN endpoint, widened to the rule verbs: a webhook's rules are configured
+// by its endpoint and no other (SPEC-0033 F19), so a sibling endpoint could not drive them.
 func ruleSessions(t *testing.T) (context.Context, *routeFixture, func(human string) (*sdk.ClientSession, string)) {
 	t.Helper()
 	pool, ctx := routeTestPool(t)
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	// One deadline covers the whole test, so it is a hang guard, not a latency budget: a rule
+	// test makes a dozen tool calls, each dry-running rules through the sandbox, and under -race
+	// on a busy runner that took 103s against the old 90s (main run 14523, 2026-09-27).
+	//
+	// @joestump 09/27/2026 - Raised from 90s to 5m after the flake on main.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	t.Cleanup(cancel)
 	f := newRouteFixture(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `UPDATE endpoints SET webhook_queues = ARRAY['reviews','forge'] WHERE id = $1`, f.epA1); err != nil {
 		t.Fatalf("set ceiling: %v", err)
 	}
 	verbs := append(append(append([]string{}, allRuleVerbs...), allRouteVerbs...), "get_webhook_event", "list_webhook_events")
+	grantVerbs(t, ctx, pool, f.epA1, verbs)
+	grantVerbs(t, ctx, pool, f.epB, verbs)
 	open := func(human string) (*sdk.ClientSession, string) {
-		agent, slug := f.agentA1, "rules-a-44444444"
+		slug, token := f.slugA1, f.tokenA1
 		if human == "B" {
-			agent, slug = f.agentB, "rules-b-55555555"
+			slug, token = f.slugB, f.tokenB
 		}
-		_, token := mustEndpoint(t, ctx, f.st, agent, slug, verbs)
 		return ruleSession(t, ctx, f.st, slug, token), slug
 	}
 	return ctx, f, open
@@ -120,6 +128,15 @@ func ruleSessionWithRouter(t *testing.T, ctx context.Context, st *store.Store, s
 	}
 	t.Cleanup(func() { _ = cs.Close() })
 	return cs
+}
+
+// grantVerbs sets an existing endpoint's verb scope in place, so a test can drive a webhook from its
+// owning endpoint with whatever verbs the case needs.
+func grantVerbs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, endpointID string, verbs []string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `UPDATE endpoints SET scope_verbs = $2 WHERE id = $1`, endpointID, verbs); err != nil {
+		t.Fatalf("grant verbs to %s: %v", endpointID, err)
+	}
 }
 
 func ruleIDs(out webhookRulesOut) []string {
@@ -353,8 +370,8 @@ func TestWebhookRuleMutationFitsOneConnection(t *testing.T) {
 	}
 	t.Cleanup(one.Close)
 	st := store.New(one)
-	_, token := mustEndpoint(t, ctx, st, f.agentA1, "rules-one-66666666", allRuleVerbs)
-	cs := ruleSession(t, ctx, st, "rules-one-66666666", token)
+	grantVerbs(t, ctx, pool, f.epA1, allRuleVerbs)
+	cs := ruleSession(t, ctx, st, f.slugA1, f.tokenA1)
 
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

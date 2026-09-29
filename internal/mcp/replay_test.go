@@ -238,8 +238,8 @@ func TestReplayRefusalNamesNoResolvedAddress(t *testing.T) {
 		"v6.corp.internal": {{"fd12:3456::7"}},
 	})
 	cases := []struct{ target, want string }{
-		{"https://db.corp.internal/", "target_url resolves to a disallowed address"},
-		{"https://v6.corp.internal/", "target_url resolves to a disallowed address"},
+		{"https://db.corp.internal/", "target_url resolves to a private address"},
+		{"https://v6.corp.internal/", "target_url resolves to a private address"},
 		{"https://nowhere.corp.internal/", "target_url host could not be resolved"},
 	}
 	for _, tc := range cases {

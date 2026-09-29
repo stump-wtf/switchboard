@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
 	"github.com/stump-wtf/switchboard/internal/metrics"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/push"
+	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 	"github.com/stump-wtf/switchboard/internal/web"
 )
@@ -131,6 +134,30 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// in-database notification) never double-ring the same todo.
 	doorbells := newDoorbellGate(doorbellGateTTL)
 	wireDoorbells(st, doorbells, mcph.PublishTodoReady)
+	// SPEC-0024 notify hooks: the verbs validate every hook URL with the shared SSRF guard, built once
+	// here with the operator's http opt-in, CIDR allowlist and this server's own listen address, so
+	// the dispatcher can reuse the same Validator. Both risky knobs are off by default and WARN when
+	// on. Governing: SPEC-0024 REQ-1, REQ-3; design.md "Configuration".
+	hookValidator, hookAllow, err := notifyHookValidator(cfg)
+	if err != nil {
+		return err // Validate already refused a malformed list; kept for defence in depth
+	}
+	mcph.SetNotifyHooks(mcpsrv.NotifyHookConfig{Store: st, Validator: hookValidator, Max: cfg.NotifyHookMax})
+	switch {
+	case cfg.NotifyHookMax == 0:
+		log.Info("notify hooks disabled", "reason", "SWITCHBOARD_NOTIFY_HOOK_MAX=0")
+	case !encryptionEnabled:
+		log.Warn("notify hooks unavailable", "reason", "SWITCHBOARD_SECRET_ENCRYPTION_KEY is empty",
+			"impact", "create_notify_hook and rotate_notify_hook are refused; a hook secret is never stored in plaintext")
+	}
+	if len(hookAllow) > 0 {
+		log.Warn("notify hook SSRF allowlist is set", "cidrs", cfg.NotifyHookAllowCIDRs,
+			"impact", "every tenant can point a notify hook at these ranges")
+	}
+	if cfg.PushAllowHTTP {
+		log.Warn("plain http push and notify hook targets are allowed", "reason", "SWITCHBOARD_PUSH_ALLOW_HTTP=1",
+			"impact", "notifications travel unencrypted; never enable in production")
+	}
 	// Revoking an endpoint in the web UI also closes its live notification streams promptly
 	// (SPEC-0014 scenario "Revocation closes live streams").
 	webh.SetEndpointRevokedHook(mcph.CloseEndpointSessions)
@@ -230,6 +257,9 @@ type routerDeps struct {
 	metrics *metrics.Metrics            // SPEC-0023 metric surface; nil leaves GET /metrics closed (401)
 	ping    func(context.Context) error // /healthz DB probe
 	log     *slog.Logger
+	// rulesRouter overrides the evaluator the human API's rule routes use (tests install
+	// routing.InProcess); nil shares the MCP handler's sandbox. See apiRulesRouter.
+	rulesRouter routing.Router
 }
 
 // newRouter builds the full switchboard route table. Route grouping is the security baseline:
@@ -334,7 +364,9 @@ func newRouter(d routerDeps) chi.Router {
 	// everything else: its bearer is an operator OAuth grant (resource = base + "/api") resolved
 	// to the signed-in human. No static token — the CLI performs the OAuth flow gh-style.
 	// Governing: ADR-0023 REQ "Registration Vends the Whole Happy Path"; ADR-0019.
-	r.Mount("/api/v1", newAPIHandler(d.st, d.cfg.BaseURL, d.log, apiRevokeHook(d)).Routes())
+	api := newAPIHandler(d.st, d.cfg.BaseURL, d.log, apiRevokeHook(d))
+	api.rules.Router = apiRulesRouter(d)
+	r.Mount("/api/v1", api.Routes())
 
 	// Native A2A task RPC surface (ADR-0021; SPEC-0018) mounted per vended endpoint at
 	// /a2a/{endpoint}. A2A-flag-gated (ADR-0023): hidden unless SWITCHBOARD_A2A=1. It is a SECOND wire protocol over the same authorized relationship the MCP
@@ -520,6 +552,21 @@ func apiRevokeHook(d routerDeps) func(string) {
 	return d.mcp.CloseEndpointSessions
 }
 
+// apiRulesRouter gives the human API's rule routes the evaluator the MCP rule verbs use, so a dry run
+// or a save-time check runs through the same sandbox on either surface. routerDeps.rulesRouter
+// overrides it (tests); with neither, dry runs report unavailable and saves that need one are refused.
+func apiRulesRouter(d routerDeps) func() routing.Router {
+	switch {
+	case d.rulesRouter != nil:
+		rt := d.rulesRouter
+		return func() routing.Router { return rt }
+	case d.mcp != nil:
+		return d.mcp.RulesRouter
+	default:
+		return nil
+	}
+}
+
 // secureHeaders sets defensive response headers on every route (SPEC-0001/0005/0006/0007/0008/0012).
 // The policy itself and its rationale live on web.ContentSecurityPolicy, because the OAuth consent
 // screen widens one of its directives per-response (web.CSPAllowingFormActionTo) and two copies of a
@@ -671,4 +718,21 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 			}
 		}
 	}
+}
+
+// notifyHookValidator builds the SSRF guard the notify-hook verbs (and later the dispatcher) share
+// from the operator's configuration: the http opt-in, the CIDR allowlist, and this server's own
+// listen address, so an allowlisted target can never be switchboard's own port. It is a function of
+// cfg alone so a test can prove the wiring rather than a Validator it built itself.
+// Governing: SPEC-0024 REQ-3 "Target Validation (SSRF Guard)".
+func notifyHookValidator(cfg config.Config) (*push.Validator, []netip.Prefix, error) {
+	allow, err := push.ParseCIDRList(cfg.NotifyHookAllowCIDRs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return push.New(
+		push.WithAllowHTTP(cfg.PushAllowHTTP),
+		push.WithAllowCIDRs(allow...),
+		push.WithOwnListenAddrs(cfg.Addr),
+	), allow, nil
 }

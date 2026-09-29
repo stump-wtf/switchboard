@@ -137,14 +137,14 @@ type ToolStore interface {
 	AddWebhookRoute(ctx context.Context, webhookID, targetEndpointID, grantedByHumanID string) error
 	RemoveWebhookRoute(ctx context.Context, webhookID, targetEndpointID string) error
 	ListWebhookRoutes(ctx context.Context, webhookID string) ([]store.WebhookRoute, error)
-	WebhookOwnerEndpointForHuman(ctx context.Context, webhookID, ownerHumanID string) (string, error)
+	WebhookOwnerEndpointFor(ctx context.Context, webhookID, callerEndpointID string) (string, error)
 	EndpointOwnerHuman(ctx context.Context, endpointID string) (string, error)
 	FriendEdgeAuthorizesDelivery(ctx context.Context, fromHumanID, toHumanID string) (bool, error)
 	// ADR-0024 routing rules (webhook_rules.go): read and read-modify-write a webhook's jq rules under
 	// human ownership, compute the grant from its live delivery targets, and scope a dry-run's stored
 	// event to the webhook it arrived on. Governing: ADR-0024, SPEC-0020.
-	WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHumanID string) (store.WebhookRouting, error)
-	UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
+	WebhookRoutingForEndpoint(ctx context.Context, webhookID, endpointID string) (store.WebhookRouting, error)
+	UpdateWebhookRouting(ctx context.Context, webhookID, endpointID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
 	ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error)
 	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
 	// RecentWebhookEvents feeds the save-time dry-run (SPEC-0026 REQ-3): the webhook's latest
@@ -195,6 +195,10 @@ type Handler struct {
 	// router evaluates rules for test_webhook_rules — the same out-of-process sandbox the receiver
 	// uses (New installs it; tests swap in routing.InProcess). Governing: ADR-0024, SPEC-0020.
 	router atomic.Pointer[routing.Router]
+
+	// notifyHooks carries the SPEC-0024 notify-hook verbs' store, SSRF validator and ceiling
+	// (SetNotifyHooks). Nil until wired: a granted notify-hook verb then answers unavailable.
+	notifyHooks atomic.Pointer[NotifyHookConfig]
 
 	idleTimeout time.Duration
 
@@ -461,6 +465,8 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	// the same allowlist-filtered registration (webhook_routes.go).
 	h.registerWebhookRouteTools(srv, ep)
 	h.registerWebhookRuleTools(srv, ep)
+	// The SPEC-0024 notify-hook verbs (notify_hooks.go): granted separately, never by default.
+	h.registerNotifyHookTools(srv, ep)
 	h.registerEventResources(srv, ep)
 	// The #102 A2UI resource surface (a2ui.go): queue and todo detail rendered as
 	// application/a2ui+json for A2UI-capable hosts.

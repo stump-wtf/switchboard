@@ -90,7 +90,9 @@ validator stays the single source of truth for "allowed", as ADR-0021 intended.
 **Choice**: `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` (comma-separated CIDRs) exempts listed ranges
 from the private-address rejection. Loopback and link-local (including cloud metadata addresses) are
 exempted only by an entry lying wholly inside them, such as `127.0.0.1/32` for a Harness listener on
-the same host; a broad entry like `0.0.0.0/0` never opens them. Switchboard's own listen address and
+the same host; a broad entry like `0.0.0.0/0` never opens them. The metadata services that sit in
+CGNAT or ULA space (`100.100.100.200`, `fd00:ec2::254`) are held to the same bar: only an entry for
+exactly that address opens one. Switchboard's own listen address and
 port stay rejected even when listed, compared as address plus port. Today `WithOwnListenAddrs` in
 `internal/push/ssrf.go` records IPs only and leaves loopback binds to the loopback rule, so the story
 extends it to ports.
@@ -128,7 +130,7 @@ encode four properties that this spec must honour:
 - a `webhook-id` that is stable across retries;
 - a fresh `webhook-timestamp` on each attempt, within a 5-minute tolerance.
 
-It also filters on the body's top-level `type`. The F-X2 webhook path is blocked on #466. Switchboard does not add a
+It also filters on the body's top-level `type`. The F-X2 webhook path is blocked until Harness verifies these signed hooks. Switchboard does not add a
 second, body-only signature to paper over the gap: that would drop timestamp replay protection for
 every receiver, to save one receiver a story.
 
@@ -286,7 +288,7 @@ CREATE TABLE notify_hooks (
     id                     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     endpoint_id            uuid NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
     url                    text NOT NULL CHECK (length(url) <= 2048),
-    secret                 text NOT NULL,          -- internal/cred envelope, never plaintext when a key is set
+    secret                 text NOT NULL,          -- internal/cred envelope, always; no key = no hook (fail closed)
     prev_secret            text,                   -- dual-sign grace after rotation
     prev_secret_expires_at timestamptz,
     queues                 text[] NOT NULL DEFAULT '{}',
@@ -301,8 +303,14 @@ CREATE TABLE notify_hooks (
     created_at             timestamptz NOT NULL DEFAULT now(),
     rotated_at             timestamptz
 );
-CREATE INDEX idx_notify_hooks_endpoint ON notify_hooks (endpoint_id) WHERE enabled;
+CREATE INDEX idx_notify_hooks_endpoint ON notify_hooks (endpoint_id);
 ```
+
+Unlike the inbound webhook secret, a hook secret has no plaintext fallback: the store refuses to
+create or rotate a hook without `SWITCHBOARD_SECRET_ENCRYPTION_KEY`, and refuses to sign with a
+stored value that is not envelope ciphertext. The index is not partial, because Postgres does not
+index a foreign key's referencing column and the list, the ceiling count and the endpoint cascade
+all filter on `endpoint_id` alone.
 
 The migration is additive. Rolling it back means dropping the table, which loses only hook
 registrations.

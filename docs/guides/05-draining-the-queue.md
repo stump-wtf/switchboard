@@ -73,6 +73,15 @@ that `get_todo` shows. Any other `artifact` is refused with `invalid` and the to
 Only the holder can release: anyone else gets `conflict`, and another endpoint's todo is
 `not_found`. `release` is its own grant, and no other verb implies it.
 
+To stop without a verdict, because the daemon is shutting down, an operator stopped the run, or the
+agent hit a usage limit, call **`release`** with the todo's `id`. The todo goes straight back to
+**pending** for the next claimer: no backoff, no failure, and the attempt counter is unchanged. It
+takes an optional `summary` (why it stopped, cut to 2048 bytes) and `artifact` (an
+`mcp://cairn/<id>` handle or an absolute `https` URL, at most 512 bytes), both kept on the attempt
+that `get_todo` shows. Any other `artifact` is refused with `invalid` and the todo stays claimed.
+Only the holder can release: anyone else gets `conflict`, and another endpoint's todo is
+`not_found`. `release` is its own grant, and no other verb implies it.
+
 To read one todo in full, call **`get_todo`** with its `id`. It returns the todo as `claim` does,
 `payload` and `routing` included, plus its stored `result`, `next_retry_at`, `dead_letter` (true
 when the todo failed and nothing will re-queue it), and its **attempts**, newest first and including the open one: who claimed it, when, how each
@@ -125,7 +134,9 @@ Pulling with `list_todos` is always correct on its own. Where a client supports 
 vended MCP endpoint, as a `notifications/claude/channel` event. Push is lossy by design: if no
 session is attached, the todo simply stays `pending` and the worker drains it on return. Unclaimed
 todos are rung again after 5 minutes, 20 minutes, 1 hour, and 6 hours, and a session that opens its
-notification stream is rung at once for the oldest few still waiting in its scope. **The durable
+notification stream is rung at once for the oldest few still waiting in its scope: at most 3 per
+attach, no todo more than once a minute, charged to the same 5-ring re-ring budget (see
+[Reconnecting](/getting-started/connect-an-agent#reconnecting)). **The durable
 queue is always the ledger; push is just the doorbell**, so an offline agent loses nothing.
 
 The doorbell rings one worker per todo rather than the whole pool, rotating between them, and

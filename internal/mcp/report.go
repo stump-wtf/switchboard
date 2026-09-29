@@ -2,9 +2,9 @@ package mcp
 
 // Attempt report inputs
 //
-// The summary and artifact a lease-ending verb (complete, fail and release) closes its attempt
-// with. attemptReport is the one place they are checked, so every verb accepts and refuses
-// exactly the same values: a malformed artifact is an invalid call naming the argument,
+// The summary and artifact a lease-ending verb (release today; complete and fail with #321) closes
+// its attempt with. attemptReport is the one place they are checked, so every verb accepts and
+// refuses exactly the same values: a malformed artifact is an invalid call naming the argument,
 // refused before the store is touched, while a long summary is only long and the store cuts it
 // (store.ClipSummary, in reportArgs) and sets summary_truncated on the attempt. The MCP layer does
 // not pre-clip, because the store can only report the cut it makes itself. Neither value is ever
@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"regexp"
+	"strings"
 
 	"github.com/stump-wtf/switchboard/internal/store"
 )
@@ -79,14 +80,23 @@ func summaryJSON(result any, marshaled []byte) string {
 }
 
 // validArtifact reports whether s is an mcp://cairn handle or an absolute https URL with a host,
-// within AttemptArtifactMax bytes.
+// no userinfo, and no surrounding whitespace, within AttemptArtifactMax bytes.
+//
+// The userinfo rule is not cosmetic: an artifact is stored on the attempt and handed to later
+// claimers, and the Board renders it as a link when it is an https URL (SPEC-0034 REQ-13). A URL
+// like https://user:token@host/ would publish a credential to every subsequent claimer. Switchboard
+// never dials an artifact, so no receiver needs userinfo here (SPEC-0024 REQ-3 refuses it for the
+// URLs Switchboard does dial).
 func validArtifact(s string) bool {
 	if len(s) > store.AttemptArtifactMax {
+		return false
+	}
+	if strings.TrimSpace(s) != s {
 		return false
 	}
 	if cairnHandle.MatchString(s) {
 		return true
 	}
 	u, err := url.Parse(s)
-	return err == nil && u.Scheme == "https" && u.Host != "" && u.Hostname() != ""
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.Hostname() != "" && u.User == nil
 }

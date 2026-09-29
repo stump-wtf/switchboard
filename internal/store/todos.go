@@ -57,6 +57,10 @@ type Todo struct {
 	// WorkOrder is the switchboard-authored work order (routing.WorkOrder JSON) when a work_order
 	// routing action minted this todo, nil otherwise. Governing: ADR-0025, SPEC-0020 REQ "Work Orders".
 	WorkOrder []byte
+	// FinalAttempt is the attempt a dead-letter transition closed, set only on the Todo that
+	// transition returns and hands to the transition hook; nil everywhere else.
+	// Governing: SPEC-0034 REQ-15 "Dead-Letter Context for Notifications".
+	FinalAttempt *FinalAttempt
 }
 
 // DeadLetter reports whether the todo is a dead letter: failed with no scheduled retry, so nothing
@@ -712,8 +716,10 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 	var takeover bool
 	var ca ClaimedAttempt
 	var closedOld bool
+	// cand is MATERIALIZED explicitly: claimTail reads it three times, which already forces one
+	// evaluation, but a LIMIT ... SKIP LOCKED pick must never depend on that (see RingOnAttach).
 	row := s.pool.QueryRow(ctx, `
-		WITH cand AS (
+		WITH cand AS MATERIALIZED (
 			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
 			WHERE endpoint_id=$1 AND queue = ANY($2) AND (assignee IS NULL OR assignee=$3)
 				AND (state='pending'
@@ -844,14 +850,15 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 			RETURNING todos.*
 		),
 		`+closedArm("failed", failDisposition, "NULLIF($7::text, '')", "$8::boolean", "NULLIF($9::text, '')")+`
-		`+closedSelect, endpointID, id, owner, r.Result,
+		`+closedSelectFinal, endpointID, id, owner, r.Result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact, r.TokenHash)
-	var closed bool
-	t, err := scanTodo(row, &closed)
+	var f finalScan
+	t, err := scanTodo(row, f.dest()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
 	}
-	if err == nil && closed {
+	f.attach(&t) // at the cap, the hook payload carries the final attempt (SPEC-0034 REQ-15)
+	if err == nil && f.closed {
 		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
@@ -1277,14 +1284,15 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("failed", failDisposition)+`
-		`+closedSelect, id, owner, result,
+		`+closedSelectFinal, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), ownerHumanID)
-	var closed bool
-	t, err := scanTodo(row, &closed)
+	var f finalScan
+	t, err := scanTodo(row, f.dest()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
-	if err == nil && closed {
+	f.attach(&t) // at the cap, the hook payload carries the final attempt (SPEC-0034 REQ-15)
+	if err == nil && f.closed {
 		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
@@ -1333,7 +1341,7 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
-		`+closedSelect)
+		`+closedSelectFinal)
 	if err != nil {
 		return 0, err
 	}
@@ -1341,13 +1349,14 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 	var reaped []Todo
 	var closed []bool
 	for rows.Next() {
-		var c bool
-		t, err := scanTodo(rows, &c)
+		var f finalScan
+		t, err := scanTodo(rows, f.dest()...)
 		if err != nil {
 			return 0, err
 		}
+		f.attach(&t) // a reap at the cap carries its final attempt (SPEC-0034 REQ-15)
 		reaped = append(reaped, t)
-		closed = append(closed, c)
+		closed = append(closed, f.closed)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
@@ -1650,20 +1659,24 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			    )
 			  )
 		),
-		picked AS (
+		-- Both CTEs are MATERIALIZED so each runs exactly once. Inlined as IN-subqueries they can
+		-- land on the inner side of a nested loop and be rescanned per updated row; the cap then
+		-- holds only because the window sort happens to replay the same ids (see RingOnAttach).
+		picked AS MATERIALIZED (
 			SELECT id FROM ranked
 			ORDER BY rn, last_ringed_at NULLS FIRST, created_at
 			LIMIT $7
-		)
-		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
-		WHERE id IN (
-			-- Re-select through a plain scan so SKIP LOCKED still applies: a window function
-			-- cannot be combined with FOR UPDATE, and dropping the lock would let two sweeps
-			-- (or two instances) ring the same todo twice. Re-check the claim guard at lock
-			-- time so a todo claimed between the pick and the lock is not rung anyway.
-			SELECT id FROM todos WHERE id IN (SELECT id FROM picked) AND state = 'pending'
+		),
+		-- Re-select through a plain scan so SKIP LOCKED still applies: a window function cannot
+		-- be combined with FOR UPDATE, and dropping the lock would let two sweeps (or two
+		-- instances) ring the same todo twice. Re-check the claim guard at lock time so a todo
+		-- claimed between the pick and the lock is not rung anyway.
+		locked AS MATERIALIZED (
+			SELECT id AS lock_id FROM todos WHERE id IN (SELECT id FROM picked) AND state = 'pending'
 			FOR UPDATE SKIP LOCKED
 		)
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		FROM locked WHERE todos.id = locked.lock_id
 		RETURNING `+todoCols,
 		ringMaxAttempts,
 		ringBackoff(1), ringBackoff(2), ringBackoff(3), ringBackoff(4), ringBackoff(5),
@@ -1716,10 +1729,13 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 	if endpointScope(endpointID) != nil || len(queues) == 0 {
 		return nil, nil
 	}
+	// The pick is a MATERIALIZED CTE joined by FROM, never `WHERE id IN (... LIMIT ... SKIP
+	// LOCKED)`: as an IN-subquery the planner may put it on the inner side of a nested loop and
+	// rescan it per outer row, SKIP LOCKED then drops the rows this UPDATE already changed, and each
+	// rescan's LIMIT reaches further — ringing the whole backlog. MATERIALIZED runs it exactly once.
 	rows, err := s.pool.Query(ctx, `
-		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
-		WHERE id IN (
-			SELECT t.id FROM todos t
+		WITH picked AS MATERIALIZED (
+			SELECT t.id AS pick_id FROM todos t
 			WHERE t.endpoint_id = $1
 			  AND t.queue = ANY($2)
 			  AND t.state = 'pending'
@@ -1732,6 +1748,8 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 			LIMIT $5
 			FOR UPDATE SKIP LOCKED
 		)
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		FROM picked WHERE todos.id = picked.pick_id
 		RETURNING `+todoCols,
 		endpointID, queues, ringMaxAttempts, attachRingCooldown, attachRingLimit)
 	if err != nil {
