@@ -235,6 +235,11 @@ func validIntakeFields(b *friendRequestBody) bool {
 	// store drops it again, for every other caller). Governing: ADR-0038, SPEC-0033 REQ "Closing
 	// the Audited Surfaces" (F3).
 	b.RequestedVerbs = store.FriendGrantable(b.RequestedVerbs)
+	// The reserved quarantine queue can never be granted, so asking for it is refused at intake rather
+	// than failing at approval. Governing: SPEC-0026 REQ-6 (reserved name).
+	if store.CheckQueueNames(b.RequestedQueues...) != nil {
+		return false
+	}
 	// A request must ask for SOMETHING to hand off; an empty scope grants nothing to approve.
 	return len(b.RequestedVerbs) > 0
 }

@@ -764,23 +764,6 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 	}
 }
 
-// notifyHookValidator builds the SSRF guard the notify-hook verbs (and later the dispatcher) share
-// from the operator's configuration: the http opt-in, the CIDR allowlist, and this server's own
-// listen address, so an allowlisted target can never be switchboard's own port. It is a function of
-// cfg alone so a test can prove the wiring rather than a Validator it built itself.
-// Governing: SPEC-0024 REQ-3 "Target Validation (SSRF Guard)".
-func notifyHookValidator(cfg config.Config) (*push.Validator, []netip.Prefix, error) {
-	allow, err := push.ParseCIDRList(cfg.NotifyHookAllowCIDRs)
-	if err != nil {
-		return nil, nil, err
-	}
-	return push.New(
-		push.WithAllowHTTP(cfg.PushAllowHTTP),
-		push.WithAllowCIDRs(allow...),
-		push.WithOwnListenAddrs(cfg.Addr),
-	), allow, nil
-}
-
 // notifyDispatchStore is the store surface the dispatcher wiring needs: the dispatcher's reads plus
 // the ready hook it subscribes to. *store.Store satisfies it.
 type notifyDispatchStore interface {
@@ -803,4 +786,21 @@ func startNotifyDispatcher(ctx context.Context, st notifyDispatchStore, v *push.
 	st.SetTodoReadyHook(d.Enqueue)
 	go d.Run(ctx)
 	return d
+}
+
+// notifyHookValidator builds the SSRF guard the notify-hook verbs (and later the dispatcher) share
+// from the operator's configuration: the http opt-in, the CIDR allowlist, and this server's own
+// listen address, so an allowlisted target can never be switchboard's own port. It is a function of
+// cfg alone so a test can prove the wiring rather than a Validator it built itself.
+// Governing: SPEC-0024 REQ-3 "Target Validation (SSRF Guard)".
+func notifyHookValidator(cfg config.Config) (*push.Validator, []netip.Prefix, error) {
+	allow, err := push.ParseCIDRList(cfg.NotifyHookAllowCIDRs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return push.New(
+		push.WithAllowHTTP(cfg.PushAllowHTTP),
+		push.WithAllowCIDRs(allow...),
+		push.WithOwnListenAddrs(cfg.Addr),
+	), allow, nil
 }

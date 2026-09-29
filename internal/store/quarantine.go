@@ -183,17 +183,20 @@ func (s *Store) ApplyQuarantineRelease(ctx context.Context, plan ReleasePlan) ([
 			continue
 		}
 		verb := "created"
+		reason := ReadyCreated
 		if i == 0 {
 			verb = "pending" // the held row re-surfaced, as a re-queue does
+			reason = ReadyRequeued
 		}
 		s.fireTodoHook(verb, ct.Todo)
 		s.metricsOrNop().TodoCreated(ct.Todo.Queue, todoMetricSource(CreateTodoParams{Source: ct.Todo.Source}))
 		s.notifyTodoReady(ctx, ct.Todo.EndpointID, ct.Todo.Queue)
 		// Every after-commit "work is ready" signal a freshly routed todo gets, under the same
-		// sender gate: the doorbell and the SPEC-0024 ready hook (fireReady, #358) fire together.
+		// sender gate: the SPEC-0024 ready hook (fireReady, #358) fires here too — the re-surfaced
+		// held row as a re-queue, every new row as a creation.
 		if plan.Verified || plan.TrustMode == "token" {
 			s.fireDoorbell(ct.Todo)
-			s.fireReady(ct.Todo, ReadyCreated) // SPEC-0026 REQ-7, SPEC-0024 REQ-6: same gate, same commit
+			s.fireReady(ct.Todo, reason) // SPEC-0024 REQ-6: same gate, same commit
 		}
 	}
 	return out, nil
@@ -251,8 +254,8 @@ func (s *Store) ExpireQuarantine(ctx context.Context) (int64, error) {
 	}
 	for _, t := range expired {
 		s.fireTodoHook("done", t)
-		s.metricsOrNop().QuarantineResolved("expired", "system") // Governing: SPEC-0026 REQ-11
 	}
+	s.metricsOrNop().QuarantineResolved("expired", "system") // Governing: SPEC-0026 REQ-11
 	return int64(len(expired)), nil
 }
 

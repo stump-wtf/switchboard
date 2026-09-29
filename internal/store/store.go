@@ -83,11 +83,11 @@ type Store struct {
 	endpointSeenHook atomic.Pointer[EndpointSeenHook]
 	// doorbellHook mirrors todoHook for push-eligible creations (the MCP channel doorbell).
 	doorbellHook atomic.Pointer[TodoDoorbellHook]
-	// requeuedHook observes retries the scheduler re-queued, before their wakeup (todos.go).
-	requeuedHook atomic.Pointer[TodoRequeuedHook]
 	// readyHook observes push-eligible transitions into pending — creations AND requeues — for the
 	// SPEC-0024 notify-hook dispatcher (SetTodoReadyHook).
 	readyHook atomic.Pointer[TodoReadyHook]
+	// requeuedHook observes retries the scheduler re-queued, before their wakeup (todos.go).
+	requeuedHook atomic.Pointer[TodoRequeuedHook]
 	// metricsSink receives the SPEC-0023 REQ-3 lifecycle counters (metrics.go). Nil = no-op.
 	metricsSink atomic.Pointer[Metrics]
 }
@@ -191,9 +191,9 @@ func (s *Store) SetTodoReadyHook(fn TodoReadyHook) {
 }
 
 func (s *Store) fireReady(t Todo, reason string) {
-	// A held todo is not ready work, whatever path reaches here: fireDoorbell refuses the quarantine
-	// queue for the same reason (SPEC-0026 REQ-6). A release fires it on the released row, whose
-	// queue is a working one by then (ApplyQuarantineRelease).
+	// A quarantined todo never signals readiness, whatever path reaches here: the SPEC-0011 sender
+	// gate is amended by SPEC-0026 REQ-6, and a held intake fires no ready hook. A release fires it
+	// once the row has left the quarantine queue (ApplyQuarantineRelease).
 	if t.Queue == QueueQuarantine {
 		return
 	}

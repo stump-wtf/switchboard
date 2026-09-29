@@ -968,7 +968,7 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 			UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, next_retry_at=NULL,
 				updated_at=now()
 			WHERE state='failed' AND queue <> 'quarantine' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
-			RETURNING *
+				RETURNING *
 		)
 		SELECT `+todoCols+`, `+movedPushEligible+` FROM upd`)
 	if err != nil {
@@ -1018,14 +1018,15 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 // CTE moved: the todo's delivery event exists and either verified or arrived on a token-trust
 // self-managed webhook. The requeue UPDATEs carry no gate of their own, so without this an
 // unverified todo that someone claimed by id and abandoned would reach the notify-hook dispatcher
-// on its way back to pending. Governing: SPEC-0024 REQ-6 ("Requeue re-applies the sender gate"),
-// design.md "Fire from the existing doorbell hook, plus the requeue paths".
+// on its way back to pending. Governing: SPEC-0024 REQ-6 ("Requeue re-applies the sender gate"), design.md "Fire from
+// the existing doorbell hook, plus the requeue paths".
 const movedPushEligible = `EXISTS (SELECT 1 FROM events ev WHERE ev.id = upd.event_id AND (ev.verified OR ev.trust_mode = 'token'))`
 
-// closedSelectFinalGate is closedSelectFinal with the sender gate appended as one more column, so
-// the requeue statement that can also dead-letter (ReapExpired) re-applies the gate in the same
-// read instead of a second round trip. Scan the extra column after finalScan.dest().
-const closedSelectFinalGate = `SELECT ` + todoCols + `, c.todo_id IS NOT NULL,
+// reapedSelect is closedSelectFinal with the SPEC-0024 sender gate (movedPushEligible) as a final
+// select item: the reaper hands the notify-hook ready hook only rows that re-entered pending AND
+// pass the gate, while keeping main's attempt-closing columns for the REQ-15 fields and the
+// attempts-closed counter.
+const reapedSelect = `SELECT ` + todoCols + `, c.todo_id IS NOT NULL,
 			c.fa_disposition IS NOT DISTINCT FROM 'dead_lettered', c.fa_seq, c.fa_outcome,
 			COALESCE(c.fa_outcome IN ('lease_expired', 'reaped'), false), c.fa_summary, c.fa_artifact,
 			upd.attempts_total, ` + movedPushEligible + `
@@ -1448,7 +1449,7 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
-		`+closedSelectFinalGate)
+		`+reapedSelect)
 	if err != nil {
 		return 0, err
 	}

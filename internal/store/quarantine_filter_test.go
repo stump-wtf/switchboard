@@ -27,7 +27,6 @@ var quarantineAllowlist = map[string]string{
 	"GetTodoOperatorOwned":      "the owner's todo detail on the Board",
 	"TodoCounts":                "the owner's Board counts group every queue",
 	"ListTodoItems":             "the owner's todo list",
-	"ListLaneItems":             "the owner's Board lanes",
 	"GetTodoItem":               "the owner's todo detail",
 	"QuarantinedForHuman":       "the quarantine read itself",
 	"ApplyQuarantineRelease":    "release: the only way out besides discard and expiry",
@@ -44,7 +43,8 @@ var quarantineAllowlist = map[string]string{
 	"SetTodoTransitionHook":     "hook registration, no todo access",
 	"SetTodoReadyHook":          "hook registration, no todo access (fireReady refuses quarantine itself)",
 	"SetTodoRequeuedHook":       "hook registration, no todo access",
-	"TodoAttemptsOperatorOwned": "the operator's attempt history: a held todo is never claimed, so it has no attempts",
+	"ListLaneItems":             "the owner's Board lanes",
+	"TodoAttemptsOperatorOwned": "the owner's attempt history read",
 }
 
 type heldFixture struct {

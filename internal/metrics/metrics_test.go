@@ -395,6 +395,7 @@ func TestAttemptClosedOutcomeIsBounded(t *testing.T) {
 	if got[Other] != 1 {
 		t.Errorf("an unknown outcome counted %v under %s, want 1", got[Other], Other)
 	}
+
 }
 
 // TestNotifyHookSeries pins SPEC-0024 REQ-11: the three families exist at zero once initialised
@@ -429,7 +430,6 @@ func TestNotifyHookSeries(t *testing.T) {
 			}
 		}
 	}
-
 	var nilM *Metrics
 	nilM.InitNotifyHookSeries()
 	nilM.NotifyHookNotification(NotifyTypeReady, NotifyDelivered)
