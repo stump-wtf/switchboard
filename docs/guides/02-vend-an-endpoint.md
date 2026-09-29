@@ -87,6 +87,32 @@ queues outside the grant are denied.
 
 The agent can now drain its queues with `list_todos` / `claim` / `complete`.
 
+## Store the credential without printing it
+
+The CLI can vend the same thing without the credential ever reaching the screen or a terminal
+scrollback. `--json` prints the raw API response — the credential inside it — so capture it
+straight into a file only you can read:
+
+```sh
+umask 077
+switchboard endpoint vend my-agent --queue inbox --json > vend.json    # created 0600
+jq -r .mcp_json vend.json      # the client wiring block, still containing the token
+```
+
+Then move the credential where your secrets live — pass it to `op` / `pass` / your secret store
+from the file, never as a shell argument or an `echo` — and delete `vend.json`:
+
+```sh
+op item create --category=password --title switchboard-my-agent \
+  --password "$(jq -r .token vend.json)" && rm -f vend.json
+```
+
+Nothing in this path prints the token: `vend --json` writes to the file, the store reads the file,
+and `endpoint list` never shows credentials at all. If a credential does end up somewhere it
+should not be — a log, a transcript, a shared paste — the credential is compromised: revoke the
+endpoint and vend a fresh one
+([Operator CLI and API](/guides/operator-cli#revoking-an-endpoint)).
+
 ## What you use an endpoint for
 
 - **Give an agent least-privilege access** to exactly the queues and verbs its job needs — nothing
