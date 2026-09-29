@@ -93,7 +93,7 @@ type setWebhookRulesIn struct {
 	WebhookID     string         `json:"webhook_id" jsonschema:"a webhook this endpoint's human owns"`
 	Rules         []ruleIO       `json:"rules" jsonschema:"the complete ordered rule list; replaces the current one atomically"`
 	DefaultAction *actionIO      `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omit for the webhook's target queue"`
-	Params        map[string]any `json:"params,omitempty" jsonschema:"values bound as $params in every rule; replaces the current params (omit to clear)"`
+	Params        map[string]any `json:"params,omitempty" jsonschema:"values bound as $params in every rule; replaces the current params when present. Omit to keep the current params unchanged; pass {} to clear them"`
 }
 
 type addWebhookRuleIn struct {
@@ -144,7 +144,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "set_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "set_webhook_rules",
-			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins, and a rule that errors or times out stops evaluation: the delivery is recorded and routed nowhere. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries."},
+			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params when params is present. Omitting params keeps the saved params; params: {} clears them. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins, and a rule that errors or times out stops evaluation: the delivery is recorded and routed nowhere. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries."},
 			h.setWebhookRulesTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
@@ -192,12 +192,13 @@ func (h *Handler) listWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 	}
 }
 
-// setWebhookRulesTool keeps today's MCP semantics: an omitted params clears them. The human API
-// keeps them instead (SPEC-0035 REQ "Rule Management"), as SPEC-0026 REQ-4 will require here too.
+// setWebhookRulesTool keeps REQ-4's keep-on-omit semantics (SPEC-0026): an omitted params keeps
+// the saved ones and only an explicit {} clears them, the same answer the human API gives an
+// omitted params.
 func (h *Handler) setWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[setWebhookRulesIn, webhookRulesOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in setWebhookRulesIn) (*sdk.CallToolResult, webhookRulesOut, error) {
 		out, _, err := h.ruleSvc().Replace(ctx, manage.EndpointPrincipal(ep.ID), in.WebhookID,
-			manage.Replacement{Rules: in.Rules, DefaultAction: in.DefaultAction, Params: in.Params})
+			manage.Replacement{Rules: in.Rules, DefaultAction: in.DefaultAction, Params: in.Params, KeepParams: in.Params == nil})
 		return h.ruleResult(ep, "set_webhook_rules", out, err)
 	}
 }

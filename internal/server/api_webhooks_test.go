@@ -338,10 +338,13 @@ func TestAPIWebhookRulesOmittedParamsArePreserved(t *testing.T) {
 		t.Fatalf("stored after put without params = %+v, want rule two with the params kept", cfg)
 	}
 
-	// An explicit clear is the only way to drop them.
+	// An explicit clear is the only way to drop them. Every rules verb echoes the params in
+	// force, so a cleared webhook answers {} rather than an absent key.
 	clearParams := map[string]any{"rules": []any{}, "params": nil}
-	if code, doc, raw := ruleAPICall(t, f.r, f.bearerA, http.MethodPut, rulesPath(f.whA), clearParams); code != http.StatusOK || doc["params"] != nil {
-		t.Fatalf("put params:null: %d %s, want params cleared", code, raw)
+	code, doc, raw = ruleAPICall(t, f.r, f.bearerA, http.MethodPut, rulesPath(f.whA), clearParams)
+	cleared, _ := doc["params"].(map[string]any)
+	if code != http.StatusOK || doc["params"] == nil || len(cleared) != 0 {
+		t.Fatalf("put params:null: %d %s, want params cleared and echoed as {}", code, raw)
 	}
 	if cfg := f.storedConfig(t, f.whA); len(cfg.Params) != 0 || len(cfg.Rules) != 0 {
 		t.Fatalf("stored after clear = %+v, want no rules and no params", cfg)

@@ -463,8 +463,9 @@ paths:
         `set_webhook_rules` through the same save path: validation against the grant, a dry run
         against the webhook's 50 latest deliveries, and a row-locked write that answers conflict if
         the stored rules changed meanwhile. Any failure keeps the previous configuration. A body
-        without a `params` key KEEPS the stored params; `"params": null` clears them (unlike
-        `set_webhook_rules`, where omitting params clears them). Read-only fields of a GET response
+        without a `params` key KEEPS the stored params; `"params": null` clears them (the MCP
+        `set_webhook_rules` now gives an omitted `params` the same keep answer, and clears only on
+        an explicit `"params": {}`). Read-only fields of a GET response
         are ignored.
       security:
         - operatorOAuth: []

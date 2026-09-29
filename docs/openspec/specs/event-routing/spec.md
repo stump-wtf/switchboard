@@ -165,7 +165,7 @@ The agent surface MUST expose `list_webhook_rules`, `set_webhook_rules`, `add_we
 - Rule ids MUST be minted when omitted.
 - Every mutation MUST be a read-modify-validate-write under a row lock.
 - Every result MUST return the full rule list, the default, the params, and the current grant (`queues`, `endpoints`).
-- `set_webhook_rules` MUST replace rules, default, and params together; omitting `params` clears them. The other mutations MUST preserve the stored params.
+- `set_webhook_rules` MUST replace the rules and the default together. It MUST replace params only when the request carries `params`: omitting them MUST keep the stored params, and only an explicit `params: {}` clears them (SPEC-0026 REQ-4, ADR-0031). The other mutations MUST preserve the stored params.
 
 #### Scenario: Another human's webhook is opaque
 

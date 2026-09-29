@@ -21,6 +21,15 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   CLI, routing), and the connect page gains a **Paste this to your agent** block that
   points the agent at it. (#340)
 
+### Fixed
+
+- **`set_webhook_rules` no longer wipes a webhook's params when the call omits them.**
+  Omitting `params` now keeps the saved ones; pass `params: {}` to clear them. An
+  explicit `params: null` is rejected by input validation rather than treated as either.
+  `list_webhook_rules`, `set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`,
+  `move_webhook_rule` and `remove_webhook_rule` now always return a `params` object,
+  `{}` when none are set (SPEC-0026 REQ-4, #213).
+
 ## [0.5.0] - 2026-09-28
 
 Friend-vended endpoints stop acting with the approver's authority, and a worker can end
@@ -154,6 +163,15 @@ reversed.
   handle or an absolute `https` URL; anything else is `invalid` and changes nothing). It honours the
   lease-token fence. It is its own grant, listed by the vend wizard and the consent screen, and no
   other verb implies it. (#328)
+
+### Fixed
+
+- **`set_webhook_rules` no longer wipes a webhook's params when the call omits them.**
+  Omitting `params` now keeps the saved ones; pass `params: {}` to clear them. An
+  explicit `params: null` is rejected by input validation rather than treated as either.
+  `list_webhook_rules`, `set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`,
+  `move_webhook_rule` and `remove_webhook_rule` now always return a `params` object,
+  `{}` when none are set (SPEC-0026 REQ-4, #213).
 
 ## [0.3.0] - 2026-09-22
 

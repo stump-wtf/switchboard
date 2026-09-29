@@ -167,7 +167,7 @@ type RulesOut struct {
 	TargetQueue   string         `json:"target_queue" jsonschema:"the webhook's target queue"`
 	DefaultAction *ActionIO      `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omitted means the target queue on every target"`
 	Rules         []RuleIO       `json:"rules" jsonschema:"the rules, in evaluation order (first match wins)"`
-	Params        map[string]any `json:"params,omitempty" jsonschema:"owner-set values rules read as $params (e.g. trusted-actor allowlists)"`
+	Params        map[string]any `json:"params" jsonschema:"owner-set values rules read as $params (e.g. trusted-actor allowlists); {} when none are set"`
 	Grant         GrantOut       `json:"grant" jsonschema:"what actions may reach right now"`
 }
 
@@ -680,6 +680,9 @@ func Out(wr store.WebhookRouting, g routing.Grant) RulesOut {
 		if !slices.Contains(out.Grant.Queues, q) {
 			out.Grant.Queues = append(out.Grant.Queues, q)
 		}
+	}
+	if out.Params == nil {
+		out.Params = map[string]any{} // echo {} rather than omit, so a caller sees the params it left in force
 	}
 	if wr.Config.Default != nil {
 		a := toActionIO(*wr.Config.Default)
