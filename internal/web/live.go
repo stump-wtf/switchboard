@@ -127,11 +127,15 @@ type toastMsg struct {
 
 // lanesView feeds the "board_lanes" fragment: the server-rendered three-lane panel. Received is
 // empty on every full render (ephemeral, SSE-only); verified/patched render from the durable queue.
+// Failed marks the durable-lane READ as failed: the two lanes then render a failed-to-load label
+// instead of their empty states, which would lie ("nothing claimed yet") about work the queue
+// verifiably holds while the header counts — a separate read — keep telling the truth (#31).
 type lanesView struct {
 	Received []laneCard
 	Verified []laneCard
 	Patched  []laneCard
 	Counts   laneCounts
+	Failed   bool
 }
 
 // bar is one throughput-tile activity bar.

@@ -36,7 +36,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/manage"
 	"github.com/stump-wtf/switchboard/internal/mcp"
+	"github.com/stump-wtf/switchboard/internal/push"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -50,10 +52,25 @@ type apiHandler struct {
 	// holding an open stream on a credential that no longer exists. Nil is tolerated (tests that
 	// build the API without an MCP handler) and simply skips the teardown.
 	endpointRevoked func(endpointID string)
+	// replayGuard validates the replay targets a vend names (api_replay_targets.go): the shared SSRF
+	// guard's defaults, the same rules replay_webhook_event applies. Governing: SPEC-0033 REQ "Owned
+	// Replay Targets".
+	replayGuard *push.Validator
+	// rules is the rule-management code the MCP rule verbs also run (internal/manage), driven here by
+	// the calling human (api_webhooks.go). Its Router is the MCP handler's sandbox when one is wired
+	// (newRouter), and unavailable otherwise. Governing: SPEC-0035 REQ "Shared Implementation With MCP".
+	rules manage.Rules
+	// readRL and writeRL are the per-human buckets on the webhook routes (SPEC-0035 "Rate Limiting").
+	readRL, writeRL *rateLimiter
 }
 
 func newAPIHandler(st *store.Store, baseURL string, log *slog.Logger, onEndpointRevoked func(string)) *apiHandler {
-	return &apiHandler{st: st, base: strings.TrimRight(baseURL, "/"), log: log, endpointRevoked: onEndpointRevoked}
+	return &apiHandler{st: st, base: strings.TrimRight(baseURL, "/"), log: log, endpointRevoked: onEndpointRevoked,
+		replayGuard: push.New(),
+		rules:       manage.Rules{Store: st, Humans: st},
+		readRL:      newRateLimiter(20, 40),
+		writeRL:     newRateLimiter(5, 20),
+	}
 }
 
 // operatorKey is the API context key carrying the resolved operator principal.
@@ -96,15 +113,20 @@ func (a *apiHandler) oauthGuard(next http.Handler) http.Handler {
 	})
 }
 
-// Routes mounts the operator API. Every route requires a live operator OAuth bearer.
+// Routes mounts the operator API. Every route requires a live operator OAuth bearer. Body caps are
+// per group because a cap can only narrow: the rule routes need more than the usual 64 KiB.
 func (a *apiHandler) Routes() chi.Router {
 	r := chi.NewRouter()
-	r.Use(a.oauthGuard, maxBytes(64<<10))
-	r.Post("/endpoints", a.VendEndpoint)
-	r.Get("/endpoints", a.ListEndpoints)
-	r.Post("/endpoints/{ref}/revoke", a.RevokeEndpoint)
-	r.Post("/endpoints/{ref}/todos", a.PushTodo)
-	r.Get("/agents", a.ListAgents)
+	r.Use(a.oauthGuard)
+	r.Group(func(r chi.Router) {
+		r.Use(maxBytes(64 << 10))
+		r.Post("/endpoints", a.VendEndpoint)
+		r.Get("/endpoints", a.ListEndpoints)
+		r.Post("/endpoints/{ref}/revoke", a.RevokeEndpoint)
+		r.Post("/endpoints/{ref}/todos", a.PushTodo)
+		r.Get("/agents", a.ListAgents)
+	})
+	a.webhookRoutes(r)
 	return r
 }
 
@@ -116,6 +138,10 @@ type vendEndpointIn struct {
 	// Queue is the single scoped queue the endpoint drains and the webhook routes to.
 	// Defaults to "inbox".
 	Queue string `json:"queue,omitempty"`
+	// ReplayTargets are the replay destinations the endpoint owns (first = default for a replay that
+	// names none). Optional; each must pass the SSRF guard. Governing: SPEC-0033 REQ "Owned Replay
+	// Targets".
+	ReplayTargets []string `json:"replay_targets,omitempty"`
 }
 
 type vendWebhookOut struct {
@@ -127,13 +153,14 @@ type vendWebhookOut struct {
 }
 
 type vendEndpointOut struct {
-	AgentName string         `json:"agent_name"`
-	Slug      string         `json:"slug"`
-	MCPURL    string         `json:"mcp_url"`
-	Token     string         `json:"token"`
-	Queue     string         `json:"queue"`
-	Verbs     []string       `json:"verbs"`
-	Webhook   vendWebhookOut `json:"webhook"`
+	AgentName     string         `json:"agent_name"`
+	Slug          string         `json:"slug"`
+	MCPURL        string         `json:"mcp_url"`
+	Token         string         `json:"token"`
+	Queue         string         `json:"queue"`
+	Verbs         []string       `json:"verbs"`
+	ReplayTargets []string       `json:"replay_targets"`
+	Webhook       vendWebhookOut `json:"webhook"`
 	// MCPJSON is the ready-to-paste .mcp.json stanza wiring an MCP client to the endpoint with the
 	// credential embedded — byte-identical to the web reveal's wiring (internal/mcp).
 	MCPJSON   json.RawMessage `json:"mcp_json,omitempty"`
@@ -155,7 +182,9 @@ type endpointOut struct {
 	State     string   `json:"state"`
 	Queues    []string `json:"queues"`
 	Verbs     []string `json:"verbs"`
-	ExpiresAt *string  `json:"expires_at,omitempty"`
+	// ReplayTargets are the endpoint's owned replay destinations, shown only to its owner.
+	ReplayTargets []string `json:"replay_targets"`
+	ExpiresAt     *string  `json:"expires_at,omitempty"`
 }
 
 // VendEndpoint is the one-call mint: agent + endpoint + queue + webhook. Every default is chosen so
@@ -178,6 +207,13 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Queue == "" {
 		in.Queue = "inbox"
+	}
+	// Owned replay targets are checked by the SSRF guard BEFORE anything is minted, so a refused
+	// target leaves no agent and no endpoint. Governing: SPEC-0033 REQ "Owned Replay Targets".
+	replayTargets, err := normalizeReplayTargets(r.Context(), a.replayGuard, in.ReplayTargets)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// The basics scope: mcp.AllVerbs() — the full todo-drain surface (the core scope an endpoint
@@ -206,6 +242,7 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		WebhookMax:         whMax,
 		WebhookSourceTypes: whSources,
 		WebhookQueues:      whQueues,
+		ReplayTargets:      replayTargets,
 	})
 	if err != nil {
 		a.fail(w, "vend endpoint", err)
@@ -228,7 +265,7 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, vendEndpointOut{
 			AgentName: res.AgentName, Slug: ep.Slug,
 			MCPURL: mcp.EndpointURL(a.base, ep.Slug),
-			Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs,
+			Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs, ReplayTargets: replayTargets,
 			MCPJSON: json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
 		})
 		return
@@ -242,7 +279,7 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, vendEndpointOut{
 		AgentName: res.AgentName, Slug: ep.Slug,
 		MCPURL: mcp.EndpointURL(a.base, ep.Slug),
-		Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs,
+		Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs, ReplayTargets: replayTargets,
 		Webhook:   vendWebhookOut{WebhookID: webhook.ID, IngestURL: a.base + "/webhooks/w/" + ingestToken, TrustMode: "token"},
 		MCPJSON:   json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
 		ExpiresAt: expiresAt,
@@ -262,7 +299,7 @@ func (a *apiHandler) ListEndpoints(w http.ResponseWriter, r *http.Request) {
 	for _, c := range cards {
 		e := endpointOut{
 			ID: c.ID, Slug: c.Slug, AgentName: c.AgentName, State: c.State,
-			Queues: c.ScopeQueues, Verbs: c.ScopeVerbs,
+			Queues: c.ScopeQueues, Verbs: c.ScopeVerbs, ReplayTargets: nonNilStrings(c.ReplayTargets),
 		}
 		if c.ExpiresAt != nil {
 			s := c.ExpiresAt.UTC().Format(time.RFC3339)
@@ -344,7 +381,7 @@ func (a *apiHandler) ownedEndpoint(w http.ResponseWriter, r *http.Request, what 
 	return store.EndpointCard{}, false
 }
 
-// --- operator hand-off (ADR-0026) ---
+// --- operator hand-off (ADR-0040) ---
 
 const (
 	// pushSource is the source, family and trust mode of an operator hand-off's delivery event.
@@ -390,7 +427,7 @@ type pushTodoOut struct {
 // special-cased: the store's doorbell hook fires because the event is verified (SPEC-0011 sender
 // gate), the heartbeat sweep and the pull path apply their existing predicates, the board shows an
 // operator badge, and history shows who handed the work over. The title and payload are the
-// agent's untrusted input like any todo's. Governing: ADR-0026; SPEC-0011 scenario
+// agent's untrusted input like any todo's. Governing: ADR-0040; SPEC-0011 scenario
 // "Operator-authored todo is pushed"; ADR-0022 (owner-only, queue inside the vended scope).
 //
 // @justinabrahms 09/13/2026 - Added: the only way for a human to hand their own agent a todo was
@@ -464,6 +501,7 @@ func (a *apiHandler) PushTodo(w http.ResponseWriter, r *http.Request) {
 		TrustMode: pushSource, Verified: true,
 		VerifyDetail: "operator-authored over /api/v1 by " + operatorName(human) + " (" + human.ID + ")",
 		ContentType:  "application/json", Headers: []byte(`{}`), Payload: payload, SourceIP: remoteIP(r),
+		EndpointID: found.ID,
 	}, []string{found.ID}, store.CreateTodoParams{
 		Queue: in.Queue, Source: pushSource, Kind: in.Kind, Title: in.Title,
 		Payload: payload, IdempotencyKey: key,

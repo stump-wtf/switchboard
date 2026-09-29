@@ -27,6 +27,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/notifyhook"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
 	"github.com/stump-wtf/switchboard/internal/push"
+	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 	"github.com/stump-wtf/switchboard/internal/web"
 )
@@ -131,11 +132,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// shared with the todo_ready LISTEN loop below so the two wakeup paths (in-process hook,
 	// in-database notification) never double-ring the same todo.
 	doorbells := newDoorbellGate(doorbellGateTTL)
-	st.SetTodoDoorbellHook(func(t store.Todo) {
-		if doorbells.first(t.ID) {
-			mcph.PublishTodoReady(t)
-		}
-	})
+	wireDoorbells(st, doorbells, mcph.PublishTodoReady)
 	// SPEC-0024 notify hooks: the verbs validate every hook URL with the shared SSRF guard, built once
 	// here with the operator's http opt-in, CIDR allowlist and this server's own listen address, so
 	// the dispatcher can reuse the same Validator. Both risky knobs are off by default and WARN when
@@ -267,6 +264,9 @@ type routerDeps struct {
 	metrics *metrics.Metrics            // SPEC-0023 metric surface; nil leaves GET /metrics closed (401)
 	ping    func(context.Context) error // /healthz DB probe
 	log     *slog.Logger
+	// rulesRouter overrides the evaluator the human API's rule routes use (tests install
+	// routing.InProcess); nil shares the MCP handler's sandbox. See apiRulesRouter.
+	rulesRouter routing.Router
 }
 
 // newRouter builds the full switchboard route table. Route grouping is the security baseline:
@@ -371,7 +371,9 @@ func newRouter(d routerDeps) chi.Router {
 	// everything else: its bearer is an operator OAuth grant (resource = base + "/api") resolved
 	// to the signed-in human. No static token — the CLI performs the OAuth flow gh-style.
 	// Governing: ADR-0023 REQ "Registration Vends the Whole Happy Path"; ADR-0019.
-	r.Mount("/api/v1", newAPIHandler(d.st, d.cfg.BaseURL, d.log, apiRevokeHook(d)).Routes())
+	api := newAPIHandler(d.st, d.cfg.BaseURL, d.log, apiRevokeHook(d))
+	api.rules.Router = apiRulesRouter(d)
+	r.Mount("/api/v1", api.Routes())
 
 	// Native A2A task RPC surface (ADR-0021; SPEC-0018) mounted per vended endpoint at
 	// /a2a/{endpoint}. A2A-flag-gated (ADR-0023): hidden unless SWITCHBOARD_A2A=1. It is a SECOND wire protocol over the same authorized relationship the MCP
@@ -555,6 +557,21 @@ func apiRevokeHook(d routerDeps) func(string) {
 		return nil
 	}
 	return d.mcp.CloseEndpointSessions
+}
+
+// apiRulesRouter gives the human API's rule routes the evaluator the MCP rule verbs use, so a dry run
+// or a save-time check runs through the same sandbox on either surface. routerDeps.rulesRouter
+// overrides it (tests); with neither, dry runs report unavailable and saves that need one are refused.
+func apiRulesRouter(d routerDeps) func() routing.Router {
+	switch {
+	case d.rulesRouter != nil:
+		rt := d.rulesRouter
+		return func() routing.Router { return rt }
+	case d.mcp != nil:
+		return d.mcp.RulesRouter
+	default:
+		return nil
+	}
 }
 
 // secureHeaders sets defensive response headers on every route (SPEC-0001/0005/0006/0007/0008/0012).

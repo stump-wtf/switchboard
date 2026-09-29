@@ -415,7 +415,7 @@ func cmdEndpointRevoke(c *cli, args []string) int {
 
 // cmdTodoPush hands a todo to an endpoint you own and rings its doorbell — the operator's front
 // door, recorded with the operator's name rather than smuggled in through the ingest URL as an
-// anonymous producer. Governing: ADR-0026; SPEC-0011 scenario "Operator-authored todo is pushed".
+// anonymous producer. Governing: ADR-0040; SPEC-0011 scenario "Operator-authored todo is pushed".
 func cmdTodoPush(c *cli, args []string) int {
 	fs := c.flagSet("todo push", "ENDPOINT TITLE",
 		"Hand a todo to an endpoint you own and ring its doorbell, the way a verified delivery does.\n"+

@@ -133,6 +133,34 @@ func (g *doorbellGate) firstAt(id string, now time.Time) bool {
 	return true
 }
 
+// forget drops id from the gate, so its next ring passes even inside the TTL. The retry scheduler's
+// re-queue calls it: a re-queued retry is a new wakeup, not an echo of the ring that announced the
+// todo's creation (SPEC-0034 REQ-16).
+func (g *doorbellGate) forget(id string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.seen, id)
+}
+
+// doorbellHookStore is the store seam wireDoorbells needs; *store.Store satisfies it.
+type doorbellHookStore interface {
+	SetTodoDoorbellHook(store.TodoDoorbellHook)
+	SetTodoRequeuedHook(store.TodoRequeuedHook)
+}
+
+// wireDoorbells connects the store's committed-transition hooks to the doorbell gate. A verified
+// creation rings through the gate, which the todo_ready LISTEN loop shares so the two wakeup paths
+// never double-ring one todo; a retry re-queue clears the todo's gate entry first, so the wakeup
+// that follows it rings even within a minute of the creation ring (SPEC-0034 REQ-16).
+func wireDoorbells(st doorbellHookStore, gate *doorbellGate, publish func(store.Todo)) {
+	st.SetTodoDoorbellHook(func(t store.Todo) {
+		if gate.first(t.ID) {
+			publish(t)
+		}
+	})
+	st.SetTodoRequeuedHook(func(t store.Todo) { gate.forget(t.ID) })
+}
+
 // doorbellStore is the single store seam the notification-driven doorbell nudge needs;
 // *store.Store satisfies it. Narrowed to an interface so the nudge is unit-testable without a
 // database.

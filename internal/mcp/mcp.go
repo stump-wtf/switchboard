@@ -104,8 +104,23 @@ type ToolStore interface {
 	HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error)
 	CompleteTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
 	FailTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
-	ListEventHistory(ctx context.Context, f store.EventHistoryFilter) ([]store.EventHistoryItem, error)
-	EventHistoryByID(ctx context.Context, id int64) (store.EventHistoryDetail, error)
+	// The attempt-aware lifecycle the drain verbs call (SPEC-0034): claim options (the lease-token
+	// fence) in, the report and presented token hash out.
+	ClaimTodoWith(ctx context.Context, endpointID, id, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error)
+	ClaimNextWith(ctx context.Context, endpointID string, queues []string, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error)
+	HeartbeatTodoWith(ctx context.Context, endpointID, id, owner string, ttl time.Duration, tokenHash []byte) (store.Todo, error)
+	CompleteTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error)
+	FailTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error)
+	// ReleaseTodoWith is release's transition (SPEC-0034 REQ-9): back to pending, attempt unchanged.
+	ReleaseTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error)
+	// TodoAttempts is get_todo's history read (SPEC-0034 REQ-8, REQ-10): endpoint-scoped, newest first.
+	TodoAttempts(ctx context.Context, endpointID, id string, limit int) ([]store.Attempt, int, int, error)
+	// The event-history reads are scoped to the calling endpoint, a required argument, so no tool
+	// can compile an unscoped history read. The store resolves the reach from it: the endpoint's
+	// owner's events, and nothing at all for a friend-vended endpoint. Governing: SPEC-0033 REQ
+	// "Owner-Scoped History Reads", REQ "Closing the Audited Surfaces" (F3).
+	ListEventHistory(ctx context.Context, caller store.AuthEndpoint, f store.EventHistoryFilter) ([]store.EventHistoryItem, error)
+	EventHistoryByID(ctx context.Context, caller store.AuthEndpoint, id int64) (store.EventHistoryDetail, error)
 	// SPEC-0006 webhook self-management (webhooks.go): switchboard mints and HOLDS the signing
 	// secret so it can HMAC-verify inbound deliveries per SPEC-0003; the plaintext secret is
 	// persisted server-side and revealed exactly once at create/rotate time.
@@ -122,21 +137,25 @@ type ToolStore interface {
 	AddWebhookRoute(ctx context.Context, webhookID, targetEndpointID, grantedByHumanID string) error
 	RemoveWebhookRoute(ctx context.Context, webhookID, targetEndpointID string) error
 	ListWebhookRoutes(ctx context.Context, webhookID string) ([]store.WebhookRoute, error)
-	WebhookOwnerEndpointForHuman(ctx context.Context, webhookID, ownerHumanID string) (string, error)
+	WebhookOwnerEndpointFor(ctx context.Context, webhookID, callerEndpointID string) (string, error)
 	EndpointOwnerHuman(ctx context.Context, endpointID string) (string, error)
 	FriendEdgeAuthorizesDelivery(ctx context.Context, fromHumanID, toHumanID string) (bool, error)
 	// ADR-0024 routing rules (webhook_rules.go): read and read-modify-write a webhook's jq rules under
 	// human ownership, compute the grant from its live delivery targets, and scope a dry-run's stored
 	// event to the webhook it arrived on. Governing: ADR-0024, SPEC-0020.
-	WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHumanID string) (store.WebhookRouting, error)
-	UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
+	WebhookRoutingForEndpoint(ctx context.Context, webhookID, endpointID string) (store.WebhookRouting, error)
+	UpdateWebhookRouting(ctx context.Context, webhookID, endpointID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
 	ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error)
 	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
+	// RecentWebhookEvents feeds the save-time dry-run (SPEC-0026 REQ-3): the webhook's latest
+	// deliveries, read before the routing row lock.
+	RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]store.EventHistoryDetail, error)
 	// EndpointScopeQueues feeds the grant's per-target scopes for exclusive delivery (ADR-0025).
 	EndpointScopeQueues(ctx context.Context, endpointIDs []string) (map[string][]string, error)
-	// SettingString backs replay target resolution (SPEC-0005 REQ "Replay Safety"): the
-	// `replay_default_target` fallback and the `replay_allowed_targets` allowlist both read here.
-	SettingString(ctx context.Context, key, def string) (string, error)
+	// EndpointReplayTargets backs replay target resolution: the calling endpoint's OWN replay
+	// targets, the first of which is the default when a replay names none. Always called with the
+	// authenticated endpoint's id. Governing: SPEC-0033 REQ "Owned Replay Targets".
+	EndpointReplayTargets(ctx context.Context, endpointID string) ([]string, error)
 }
 
 // Handler mounts the per-endpoint Streamable HTTP MCP sessions, their scope-filtered tool
@@ -154,6 +173,9 @@ type Handler struct {
 	preRL    *rateLimiter
 	rl       *rateLimiter
 	replayRL *rateLimiter
+	// replayGuard is the shared SSRF guard every replay is validated and dialed through (replay.go).
+	// Governing: SPEC-0033 REQ "Owned Replay Targets".
+	replayGuard *replayGuard
 
 	// baseURL is the externally-reachable origin used to build the ingest_url returned by
 	// create_webhook/rotate_webhook (SPEC-0006). Installed at wiring time via SetBaseURL; read
@@ -207,6 +229,7 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 		// Replay is bounded well under the read budget (5 rps / 20 burst vs. 20 / 40): enough for
 		// interactive local-consumer testing, far too little for amplification or SSRF sweeps.
 		replayRL:    newRateLimiter(5, 20),
+		replayGuard: newReplayGuard(nil),
 		idleTimeout: sessionIdleTimeout,
 		sessions:    map[string]*mcpSession{},
 		doorbellRR:  map[string]uint64{},
@@ -215,7 +238,7 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 	if sb, err := routing.NewSandbox(""); err == nil {
 		h.SetRouter(sb)
 	} else if log != nil {
-		log.Error("routing sandbox unavailable; test_webhook_rules will route by default", "err", err)
+		log.Error("routing sandbox unavailable; test_webhook_rules reports unavailable and rule saves that need a dry-run are refused", "err", err)
 	}
 	h.wg.Add(1)
 	go h.janitor()

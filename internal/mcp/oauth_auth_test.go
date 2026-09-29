@@ -71,7 +71,8 @@ func TestTwoCredentialShapesOneCapability(t *testing.T) {
 	if !slices.Equal(staticTools, oauthTools) {
 		t.Fatalf("tool surfaces differ: static=%v oauth=%v", staticTools, oauthTools)
 	}
-	if want := []string{"claim", "complete", "list_todos"}; !slices.Equal(oauthTools, want) {
+	// list_todos implies get_todo (SPEC-0034 REQ-8).
+	if want := []string{"claim", "complete", "get_todo", "list_todos"}; !slices.Equal(oauthTools, want) {
 		t.Fatalf("advertised tools = %v, want %v", oauthTools, want)
 	}
 }

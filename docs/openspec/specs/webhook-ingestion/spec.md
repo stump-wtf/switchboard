@@ -31,7 +31,7 @@ exactly one vended MCP endpoint, and every todo produced by a delivery is pinned
 creates the webhook; switchboard derives the trust mode from the source type and mints and holds the
 HMAC secret.
 
-> **Amended 2026-09-21 (#181).** The operator-configured receivers (`/webhooks/{provider}`,
+> **Amended 2026-09-21, with the shared-receiver removal.** The operator-configured receivers (`/webhooks/{provider}`,
 > `/webhooks/generic/{name}`), their env-configured secrets and tokens, and the `open` trust mode
 > they alone could produce were removed, along with pull ingestion
 > ([SPEC-0002](../queue-adapters/spec.md), retired): instance-wide ingestion belongs to no tenant, so
@@ -196,8 +196,9 @@ otherwise fall back to the body hash. A sender-asserted id is trusted exactly as
 travels with: it MUST be scoped to the self-managed webhook it arrived on, so a sender
 can only ever collapse its own deliveries. If a non-terminal todo already exists
 in the target queue for the derived key, ingestion MUST return the existing todo and create nothing
-new. Events MUST additionally dedup on `(source, external_id)` so a duplicate delivery does not
-create a second event row.
+new. Events MUST additionally dedup on `(endpoint_id, source, external_id)`, the owning endpoint
+included (SPEC-0033 F14), so a duplicate delivery does not create a second event row and one owner's
+delivery never collapses onto another owner's event.
 
 #### Scenario: Redelivery of the same webhook creates one todo
 

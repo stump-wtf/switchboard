@@ -43,20 +43,22 @@ var ErrValidation = errors.New("push: webhook target validation failed")
 // must not be recorded as an SSRF rejection).
 var ErrResolve = errors.New("push: webhook target host did not resolve")
 
-// resolveError keeps Resolve's established message ("<ErrValidation>: resolve ...") while
-// unwrapping to ErrValidation, ErrResolve and the lookup error.
-type resolveError struct {
-	msg   string
-	cause error
+// lookupFailure is a RefusedUnresolvable refusal that also wraps ErrResolve and the lookup error,
+// so a delivery-time caller can retry a resolver outage without retrying an address-policy
+// rejection. Error() and PublicReason behave exactly as the bare refusal's.
+type lookupFailure struct {
+	refusal *refusal
+	cause   error
 }
 
-func (e *resolveError) Error() string { return e.msg }
+func (e *lookupFailure) Error() string { return e.refusal.Error() }
 
-func (e *resolveError) Unwrap() []error {
-	if e.cause == nil {
-		return []error{ErrValidation, ErrResolve}
+func (e *lookupFailure) Unwrap() []error {
+	errs := []error{error(e.refusal), ErrResolve}
+	if e.cause != nil {
+		errs = append(errs, e.cause)
 	}
-	return []error{ErrValidation, ErrResolve, e.cause}
+	return errs
 }
 
 // Resolver resolves a host to its IP addresses. It is injected so tests can drive the DNS-rebinding
@@ -208,7 +210,9 @@ func New(opts ...Option) *Validator {
 // permitted (public) address that is not one of switchboard's own listening addresses. It resolves
 // the host on each call, so calling it immediately before a delivery attempt re-checks the current
 // DNS answer and catches a rebind to a disallowed range. Any non-nil error wraps ErrValidation and
-// carries context; the delivery path MUST treat a non-nil error as fail-closed (do not connect).
+// carries context for the server log; the delivery path MUST treat a non-nil error as fail-closed (do
+// not connect). The context can name a resolved address, so a caller-facing message uses
+// PublicReason(err), never err.Error().
 //
 // It rejects if ANY resolved address is disallowed (not just the first): a host that resolves to both
 // a public and a private address must not be reachable, since Go's dialer may pick any of them.
@@ -233,7 +237,7 @@ type Target struct {
 func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return Target{}, fmt.Errorf("%w: unparseable url: %v", ErrValidation, err)
+		return Target{}, &refusal{RefusedMalformed, fmt.Sprintf("unparseable url: %v", err)}
 	}
 	scheme := strings.ToLower(u.Scheme)
 	defaultPort := "443"
@@ -242,16 +246,16 @@ func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 		// always allowed
 	case "http":
 		if !v.allowHTTP {
-			return Target{}, fmt.Errorf("%w: scheme %q requires https (http allowed only under the operator opt-in for non-prod)", ErrValidation, u.Scheme)
+			return Target{}, &refusal{RefusedScheme, fmt.Sprintf("scheme %q requires https (http allowed only under the operator opt-in for non-prod)", u.Scheme)}
 		}
 		defaultPort = "80"
 	default:
-		return Target{}, fmt.Errorf("%w: scheme %q not allowed (must be https)", ErrValidation, u.Scheme)
+		return Target{}, &refusal{RefusedScheme, fmt.Sprintf("scheme %q not allowed (must be https)", u.Scheme)}
 	}
 
 	host := u.Hostname()
 	if host == "" {
-		return Target{}, fmt.Errorf("%w: url has no host", ErrValidation)
+		return Target{}, &refusal{RefusedMalformed, "url has no host"}
 	}
 	port := u.Port()
 	if port == "" {
@@ -265,7 +269,7 @@ func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 
 	// If the host is a literal IP, check it directly — no DNS to resolve, and no rebinding possible.
 	if literal := net.ParseIP(host); literal != nil {
-		if err := v.checkIP(literal, uint16(portN), "address is"); err != nil {
+		if err := v.checkIP(literal, uint16(portN)); err != nil {
 			return Target{}, err
 		}
 		t.IPs = []net.IP{literal}
@@ -274,17 +278,20 @@ func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 
 	addrs, err := v.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return Target{}, &Rejection{Summary: "host did not resolve",
-			err: &resolveError{msg: fmt.Sprintf("%s: resolve %q: %v", ErrValidation, host, err), cause: err}}
+		return Target{}, &lookupFailure{
+			refusal: &refusal{RefusedUnresolvable, fmt.Sprintf("resolve %q: %v", host, err)},
+			cause:   err,
+		}
 	}
 	if len(addrs) == 0 {
-		return Target{}, &Rejection{Summary: "host did not resolve",
-			err: &resolveError{msg: fmt.Sprintf("%s: host %q resolved to no addresses", ErrValidation, host)}}
+		return Target{}, &lookupFailure{
+			refusal: &refusal{RefusedUnresolvable, fmt.Sprintf("host %q resolved to no addresses", host)},
+		}
 	}
 	// Fail closed if ANY resolved address is disallowed: the dialer may connect to any of them, so a
 	// single private answer among public ones is enough to reach an internal service.
 	for _, a := range addrs {
-		if err := v.checkIP(a.IP, uint16(portN), "host resolves to"); err != nil {
+		if err := v.checkIP(a.IP, uint16(portN)); err != nil {
 			return Target{}, err
 		}
 		t.IPs = append(t.IPs, a.IP)
@@ -292,44 +299,26 @@ func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 	return t, nil
 }
 
-// Rejection is a refusal that depends on what the host resolved to. Error() names the address (and,
-// for a failed lookup, the resolver's own error) for the server log and the A2A path; Summary names
-// only the rule and the address class ("host resolves to a private address", "host did not
-// resolve"). A tenant-facing surface returns Summary, so the guard cannot be used as an oracle for
-// internal name-to-address mappings or the resolver's address: SPEC-0024 REQ-3 asks a refusal to
-// name the address class, nothing more. errors.Is(err, ErrValidation) holds through it.
-type Rejection struct {
-	Summary string
-	err     error
-}
-
-func (r *Rejection) Error() string { return r.err.Error() }
-func (r *Rejection) Unwrap() error { return r.err }
-
 // checkIP rejects an address that is not a permitted (public, routable, non-switchboard) target, or
-// an operator-allowlisted one that is switchboard's own listen address and port. subject leads the
-// tenant-safe Summary: "address is" for a literal, "host resolves to" for a lookup.
-func (v *Validator) checkIP(ip net.IP, port uint16, subject string) error {
-	reject := func(class string, format string, args ...any) error {
-		return &Rejection{Summary: subject + " " + class, err: fmt.Errorf("%w: "+format, append([]any{ErrValidation}, args...)...)}
-	}
+// an operator-allowlisted one that is switchboard's own listen address and port.
+func (v *Validator) checkIP(ip net.IP, port uint16) error {
 	if ip == nil {
-		return &Rejection{Summary: "host did not resolve", err: fmt.Errorf("%w: nil resolved address", ErrValidation)}
+		return &refusal{RefusedAddress, "nil resolved address"}
 	}
 	if reason := disallowedReason(ip); reason != "" {
 		if !v.allowlisted(ip) {
-			return reject(reason, "address %s is %s", ip, reason)
+			return &refusal{RefusedAddress, fmt.Sprintf("address %s is %s", ip, reason)}
 		}
 		// Exempted by the operator allowlist: the range rule no longer protects switchboard itself,
 		// so compare against its own listen address and port.
 		if v.isOwnAddrPort(ip, port) {
-			return reject("switchboard's own listening address", "address %s port %d is switchboard's own listening address", ip, port)
+			return &refusal{RefusedAddress, fmt.Sprintf("address %s port %d is switchboard's own listening address", ip, port)}
 		}
 		return nil
 	}
 	for _, own := range v.ownIPs {
 		if own.Equal(ip) {
-			return reject("switchboard's own listening address", "address %s is switchboard's own listening address", ip)
+			return &refusal{RefusedAddress, fmt.Sprintf("address %s is switchboard's own listening address", ip)}
 		}
 	}
 	return nil

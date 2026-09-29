@@ -1,6 +1,6 @@
 package server
 
-// Operator hand-off over the API: POST /api/v1/endpoints/{ref}/todos (ADR-0026). Skipped without
+// Operator hand-off over the API: POST /api/v1/endpoints/{ref}/todos (ADR-0040). Skipped without
 // SWITCHBOARD_TEST_DATABASE_URL like every DB-backed suite. Governing: SPEC-0011 scenario
 // "Operator-authored todo is pushed"; ADR-0022 (owner-only, queue inside the vended scope).
 
@@ -81,7 +81,7 @@ func TestAPIPushTodoMintsAVerifiedOperatorTodoAndRings(t *testing.T) {
 	if td.EventID == nil {
 		t.Fatal("operator todo must be backed by a delivery event")
 	}
-	ev, err := st.EventHistoryByID(ctx, *td.EventID)
+	ev, err := st.EventHistoryByID(ctx, store.AuthEndpoint{ID: ep.ID, OwnerHumanID: human.ID}, *td.EventID) // owner-scoped: the push wrote its owner
 	if err != nil {
 		t.Fatalf("event: %v", err)
 	}

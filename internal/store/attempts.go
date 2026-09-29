@@ -17,6 +17,7 @@ package store
 // Bounds", REQ-18 "Database Operation Standards".
 //
 // @joestump-agent 09/23/2026 - Added for #315 (epic #313).
+// @joestump-agent 09/25/2026 - Added FinalAttempt, the dead-letter hook context, for #330.
 
 import (
 	"context"
@@ -82,10 +83,14 @@ type ClaimedAttempt struct {
 // before) and the attempt's summary and artifact. Summary is clipped, never rejected (REQ-5).
 // Artifact is stored as given; validating its shape is the caller's job, because a malformed handle
 // is a caller bug that deserves an `invalid` error rather than silent truncation.
+//
+// TokenHash is the SHA-256 of the lease token the caller presented, or nil when it presented none.
+// It is checked against the open attempt's fence (leaseFence) and never stored.
 type Report struct {
-	Result   []byte
-	Summary  string
-	Artifact string
+	Result    []byte
+	Summary   string
+	Artifact  string
+	TokenHash []byte
 }
 
 // ClipSummary cuts s to AttemptSummaryMax bytes at the last complete UTF-8 rune, reporting whether
@@ -165,7 +170,8 @@ var claimTail = `,
 			FROM upd
 			RETURNING seq
 		)
-		SELECT ` + todoCols + `, prior_state = 'claimed', (SELECT seq FROM opened), attempts_total FROM upd`
+		SELECT ` + todoCols + `, prior_state = 'claimed', (SELECT seq FROM opened), attempts_total,
+			EXISTS (SELECT 1 FROM closed) FROM upd`
 
 // claimArgs returns the claimTail parameters $3..$9 for a claim by owner.
 func claimArgs(owner string, o ClaimOpts, kind, claimerEndpointID string) []any {
@@ -183,8 +189,64 @@ func closedArm(outcome, disposition, summary, truncated, artifact string) string
 				summary_truncated = ` + truncated + `, artifact = ` + artifact + `
 			FROM upd
 			WHERE a.todo_id = upd.id AND a.ended_at IS NULL
-			RETURNING a.todo_id
+			RETURNING a.todo_id, a.seq AS fa_seq, a.outcome AS fa_outcome,
+				a.disposition AS fa_disposition, a.summary AS fa_summary, a.artifact AS fa_artifact
 		)`
+}
+
+// closedSelect ends a statement that spliced a closedArm: the todo row, then whether this row's
+// attempt actually closed. The flag, not the transition, is what the attempts-closed counter counts
+// (SPEC-0034 REQ-14), so a todo that somehow had no open attempt is never counted as a close.
+const closedSelect = `SELECT ` + todoCols + `, EXISTS (SELECT 1 FROM closed c WHERE c.todo_id = upd.id) FROM upd`
+
+// FinalAttempt is the attempt a dead-letter transition closed, plus the todo's attempts_total. It
+// rides on the Todo that transition hands to the committed-transition hook, so SPEC-0029's
+// notification sinks can say what was tried rather than only that it failed. It is set by fail at
+// the cap (agent and Board) and by the reaper at the cap, and only when an attempt actually closed
+// dead_lettered; every other Todo, including a fail below the cap, leaves it nil. The revocation
+// cascade fires no transition hook, so it never builds one.
+//
+// Summary and Artifact are nil when nobody reported one: a reap, or the Board's fail.
+//
+// Governing: SPEC-0034 REQ-15 "Dead-Letter Context for Notifications".
+type FinalAttempt struct {
+	Seq           int
+	Outcome       string // failed | reaped
+	Died          bool   // derived as on Attempt: outcome is lease_expired or reaped (REQ-4)
+	Summary       *string
+	Artifact      *string
+	AttemptsTotal int
+}
+
+// closedSelectFinal is closedSelect for the statements that can dead-letter: after the closed flag
+// it returns whether the close dead-lettered the todo and that attempt's REQ-15 fields, read from
+// the closing CTE's RETURNING, so the payload costs no second round trip. Scan it with finalScan.
+// At most one attempt is open per todo, so the join yields at most one closed row per upd row.
+const closedSelectFinal = `SELECT ` + todoCols + `, c.todo_id IS NOT NULL,
+			c.fa_disposition IS NOT DISTINCT FROM 'dead_lettered', c.fa_seq, c.fa_outcome,
+			COALESCE(c.fa_outcome IN ('lease_expired', 'reaped'), false), c.fa_summary, c.fa_artifact,
+			upd.attempts_total
+		FROM upd LEFT JOIN closed c ON c.todo_id = upd.id`
+
+// finalScan receives the columns closedSelectFinal returns after todoCols.
+type finalScan struct {
+	closed, dead, died         bool
+	seq                        *int
+	outcome, summary, artifact *string
+	total                      int
+}
+
+func (f *finalScan) dest() []any {
+	return []any{&f.closed, &f.dead, &f.seq, &f.outcome, &f.died, &f.summary, &f.artifact, &f.total}
+}
+
+// attach sets t.FinalAttempt when the scanned close dead-lettered the todo.
+func (f *finalScan) attach(t *Todo) {
+	if !f.dead || f.seq == nil || f.outcome == nil {
+		return
+	}
+	t.FinalAttempt = &FinalAttempt{Seq: *f.seq, Outcome: *f.outcome, Died: f.died,
+		Summary: f.summary, Artifact: f.artifact, AttemptsTotal: f.total}
 }
 
 // closedArmUnreported closes with no summary or artifact: deaths, cancels, revocations, and the
@@ -197,6 +259,25 @@ func closedArmUnreported(outcome, disposition string) string {
 // scheduled retry on a failed row means it dead-lettered.
 const failDisposition = `CASE WHEN upd.state = 'failed' AND upd.next_retry_at IS NULL
 				THEN 'dead_lettered' ELSE 'retry_scheduled' END`
+
+// leaseFence is the lease-token predicate on the agent's heartbeat, complete, fail and release
+// statements. param is the bound lease-token hash ($N, nil for no token). The statement applies only
+// when the todo's open attempt carries exactly that hash: a matching token on a fenced attempt, or no
+// token on an unfenced one. A token on an unfenced attempt, no token on a fenced one, or another
+// attempt's token all make the UPDATE miss, and classifyMiss reports the row that is still there as
+// ErrConflict: the same answer as "not the owner", so a mismatch never reveals that a fence exists.
+// The hashes are fixed-length digests compared in SQL, so timing reveals nothing about the token.
+// The Board's ...OperatorOwned statements omit it, so the owning human can always recover a stuck
+// attempt.
+//
+// Governing: SPEC-0034 REQ-6 "Lease Token Fence", REQ-19 "Error Handling Standards"; design.md
+// "The fence is a hash on the open attempt".
+func leaseFence(param string) string {
+	return `
+			AND NOT EXISTS (SELECT 1 FROM todo_attempts a
+				WHERE a.todo_id = todos.id AND a.ended_at IS NULL
+					AND a.lease_token_hash IS DISTINCT FROM ` + param + `::bytea)`
+}
 
 // reportArgs returns the bound summary, truncated flag and artifact for a report.
 func reportArgs(r Report) (summary string, truncated bool, artifact string) {
@@ -272,4 +353,19 @@ func (s *Store) todoAttempts(ctx context.Context, scope, id string, limit int, s
 		return nil, 0, 0, ErrNotFound
 	}
 	return out, total, pruned, nil
+}
+
+// AttemptMetrics is the optional sink for switchboard_todo_attempts_closed_total (SPEC-0034 REQ-14).
+// It is separate from Metrics so the lifecycle seam keeps its shape: a sink that also implements
+// this receives one call per closed attempt, after commit; one that does not is simply not asked.
+// *metrics.Metrics implements both. outcome is one of the REQ-3 outcomes.
+type AttemptMetrics interface {
+	AttemptClosed(queue, outcome string)
+}
+
+// countAttemptClosed reports one committed attempt close to the sink, when it takes them.
+func (s *Store) countAttemptClosed(queue, outcome string) {
+	if m, ok := s.metricsOrNop().(AttemptMetrics); ok {
+		m.AttemptClosed(queue, outcome)
+	}
 }

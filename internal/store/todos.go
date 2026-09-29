@@ -57,7 +57,17 @@ type Todo struct {
 	// WorkOrder is the switchboard-authored work order (routing.WorkOrder JSON) when a work_order
 	// routing action minted this todo, nil otherwise. Governing: ADR-0025, SPEC-0020 REQ "Work Orders".
 	WorkOrder []byte
+	// FinalAttempt is the attempt a dead-letter transition closed, set only on the Todo that
+	// transition returns and hands to the transition hook; nil everywhere else.
+	// Governing: SPEC-0034 REQ-15 "Dead-Letter Context for Notifications".
+	FinalAttempt *FinalAttempt
 }
+
+// DeadLetter reports whether the todo is a dead letter: failed with no scheduled retry, so nothing
+// will re-queue it (FailTodo at the attempt cap, the reaper at the cap, revocation). This is the one
+// place the rule lives; every read that reports it calls this rather than re-deriving it from
+// attempt and max_attempts. Governing: SPEC-0034 REQ-8 (`dead_letter`), issue #214.
+func (t Todo) DeadLetter() bool { return t.State == "failed" && t.NextRetryAt == nil }
 
 const todoCols = `id, endpoint_id::text, queue, COALESCE(source,''), COALESCE(kind,''), title, payload, event_id,
 	COALESCE(idempotency_key,''), COALESCE(assignee,''), state, COALESCE(owner,''),
@@ -201,7 +211,14 @@ func (s *Store) CreateTodo(ctx context.Context, p CreateTodoParams) (Todo, bool,
 // onto the todo. On success it returns the event id, the todo, and whether a NEW todo was created
 // (false = idempotent duplicate). Governing: SPEC-0002/0004 REQ atomic ingestion — event and todo
 // commit together or not at all.
+//
+// A delivery with no webhook and no explicit owner is owned by its one target endpoint, exactly as
+// an operator push records it, so it never lands owner-less (and invisible) by omission.
+// Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History Reads".
 func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoParams) (int64, Todo, bool, error) {
+	if e.EndpointID == "" && e.WebhookID == "" {
+		e.EndpointID = p.EndpointID
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, Todo{}, false, err
@@ -292,44 +309,120 @@ func (s *Store) CreateEventTodos(ctx context.Context, e EventInput, targetEndpoi
 	return id, out, err
 }
 
-// CreateRoutedEventTodos is CreateEventTodos with the routing stage's outcome applied (SPEC-0020).
-// When drop is true — or when this delivery is a redelivery of one that was ALREADY dropped — the
-// event row is recorded (with its routing trace, spending its (source, external_id) dedup slot) and
-// the transaction commits with no todo, no todo hook, and no doorbell. The stickiness is what keeps
-// the dedup contract routing-independent: a producer redelivering a dropped event after the owner
-// edited the rules does not get it re-processed into work. The returned bool reports that outcome.
-// Governing: SPEC-0020 REQ "Drop Action Semantics", design "Drop semantics: spend the dedup slot,
-// keep the receipt"; ADR-0024.
+// CreateRoutedEventTodos is CreateIntakeEventTodos with a drop flag: drop true records the delivery
+// as dropped unless e.Disposition already names a withheld outcome. The returned bool reports that
+// the delivery was withheld (dropped or faulted, now or by its original delivery), so no todo was
+// minted. Governing: SPEC-0020 REQ "Drop Action Semantics", design "Drop semantics: spend the dedup
+// slot, keep the receipt"; ADR-0024.
 func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop bool, targetEndpointIDs []string, p CreateTodoParams) (int64, []CreatedTodo, bool, error) {
-	if !drop && len(targetEndpointIDs) == 0 {
-		return 0, nil, false, fmt.Errorf("store: CreateEventTodos requires at least one target endpoint")
+	if drop && e.Disposition == "" {
+		e.Disposition = DispositionDropped
+	}
+	id, out, disp, err := s.CreateIntakeEventTodos(ctx, e, targetEndpointIDs, p)
+	return id, out, withheld(disp), err
+}
+
+// Event dispositions (events.disposition, migration 0022). Governing: SPEC-0026 "Disposition".
+const (
+	DispositionRouted      = "routed"
+	DispositionDropped     = "dropped"
+	DispositionFaulted     = "faulted"
+	DispositionQuarantined = "quarantined"
+)
+
+// withheld reports whether a disposition records the delivery without minting work.
+func withheld(disposition string) bool {
+	return disposition == DispositionDropped || disposition == DispositionFaulted
+}
+
+// CreateIntakeEventTodos records a verified delivery with the outcome intake decided for it,
+// e.Disposition (empty means routed), and mints its todos when that outcome is routed. It returns
+// the disposition that actually applies, which is the one on the event row. For a redelivery that is
+// always the disposition the ORIGINAL delivery recorded.
+//
+// A dropped or faulted delivery is recorded (with its trace, spending its
+// (endpoint_id, source, external_id) dedup slot) and commits with no todo, no todo hook and no
+// doorbell. A fault spends the slot
+// exactly as a drop does (SPEC-0026 REQ-1). The stickiness keeps the dedup contract independent of
+// routing: a producer redelivering a withheld event after the owner edited the rules does not get it
+// re-processed into work.
+// Governing: SPEC-0020 REQ "Drop Action Semantics"; SPEC-0026 REQ-1 "Faults Stop Evaluation";
+// ADR-0024, ADR-0031.
+func (s *Store) CreateIntakeEventTodos(ctx context.Context, e EventInput, targetEndpointIDs []string, p CreateTodoParams) (int64, []CreatedTodo, string, error) {
+	r, err := s.RecordIntake(ctx, e, targetEndpointIDs, p)
+	return r.EventID, r.Todos, r.Disposition, err
+}
+
+// IntakeResult is what recording one delivery did.
+type IntakeResult struct {
+	EventID int64
+	Todos   []CreatedTodo
+	// Disposition is the outcome recorded on the event row, which is the one that applies. For a
+	// redelivery that is always the ORIGINAL delivery's: a withheld original stays withheld, and a
+	// routed original stays routed (reporting its existing todos) even when today's rules would
+	// withhold it.
+	Disposition string
+	// Inserted reports that this call recorded the event. It is false for a redelivery, so a caller
+	// counts and logs an outcome once per delivery rather than once per retry.
+	Inserted bool
+}
+
+// RecordIntake is CreateIntakeEventTodos with the whole result, including whether this call
+// recorded the event. See CreateIntakeEventTodos for the semantics.
+// Governing: SPEC-0026 REQ-1 (each faulted delivery counted and logged once).
+func (s *Store) RecordIntake(ctx context.Context, e EventInput, targetEndpointIDs []string, p CreateTodoParams) (IntakeResult, error) {
+	if e.Disposition == "" {
+		e.Disposition = DispositionRouted
+	}
+	disp := e.Disposition
+	if disp != DispositionRouted && !withheld(disp) {
+		return IntakeResult{}, fmt.Errorf("store: unsupported intake disposition %q", disp)
+	}
+	if !withheld(disp) && len(targetEndpointIDs) == 0 {
+		return IntakeResult{}, fmt.Errorf("store: CreateEventTodos requires at least one target endpoint")
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, nil, false, err
+		return IntakeResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed; rolls back on any early return
 
 	ev, inserted, err := insertEvent(ctx, tx, e)
 	if err != nil {
-		return 0, nil, false, err
+		return IntakeResult{}, err
 	}
-	if !inserted && !drop {
-		// The first routing decision recorded for a delivery is the one that counts for a drop.
-		if err := tx.QueryRow(ctx,
-			`SELECT COALESCE((routing_trace->'action'->>'drop')::boolean, false) FROM events WHERE id = $1`, ev.ID,
-		).Scan(&drop); err != nil {
-			return 0, nil, false, fmt.Errorf("store: read prior routing: %w", err)
+	if !inserted {
+		// The first intake outcome recorded for a delivery is the one that applies to every
+		// redelivery of it. A withheld original stays withheld. A routed original stays routed even
+		// when today's rules would withhold it: its todos already exist, so they are reported as the
+		// idempotent redelivery they are, and nothing claims a fault or a drop the event row does not
+		// record.
+		var prior string
+		if err := tx.QueryRow(ctx, `SELECT disposition FROM events WHERE id = $1`, ev.ID).Scan(&prior); err != nil {
+			return IntakeResult{}, fmt.Errorf("store: read prior disposition: %w", err)
+		}
+		if !withheld(prior) && withheld(disp) {
+			out, err := eventTodos(ctx, tx, ev.ID)
+			if err != nil {
+				return IntakeResult{}, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return IntakeResult{}, err
+			}
+			return IntakeResult{EventID: ev.ID, Todos: out, Disposition: prior}, nil
+		}
+		if withheld(prior) {
+			disp = prior
 		}
 	}
-	if drop {
+	if withheld(disp) {
 		if err := tx.Commit(ctx); err != nil {
-			return 0, nil, false, err
+			return IntakeResult{}, err
 		}
 		if inserted {
 			s.fireEventHook(ev)
 		}
-		return ev.ID, nil, true, nil
+		return IntakeResult{EventID: ev.ID, Disposition: disp, Inserted: inserted}, nil
 	}
 	if p.OnceKey != "" {
 		// At-most-once work orders (ADR-0025). The first delivery to claim (webhook, key) mints the
@@ -339,7 +432,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 		// re-mints them, even after they are done. The conflict update is a no-op that lets RETURNING
 		// hand back the claiming event either way.
 		if e.WebhookID == "" {
-			return 0, nil, false, fmt.Errorf("store: a once key needs the delivery's webhook")
+			return IntakeResult{}, fmt.Errorf("store: a once key needs the delivery's webhook")
 		}
 		// A redelivery must claim with the key its ORIGINAL delivery claimed, recorded in the
 		// event's routing trace — never the freshly-evaluated one. Between the two arrivals the
@@ -354,7 +447,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 			if err := tx.QueryRow(ctx,
 				`SELECT COALESCE(routing_trace->>'once_key', '') FROM events WHERE id = $1`, ev.ID,
 			).Scan(&stored); err != nil {
-				return 0, nil, false, fmt.Errorf("store: read prior once key: %w", err)
+				return IntakeResult{}, fmt.Errorf("store: read prior once key: %w", err)
 			}
 			if stored == "" {
 				stored = p.OnceKey
@@ -368,7 +461,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 				INSERT INTO routing_once (webhook_id, once_key, event_id) VALUES ($1, $2, $3)
 				ON CONFLICT (webhook_id, once_key) DO UPDATE SET once_key = EXCLUDED.once_key
 				RETURNING event_id`, e.WebhookID, claimKey, ev.ID).Scan(&claimedBy); err != nil {
-				return 0, nil, false, fmt.Errorf("store: claim once key: %w", err)
+				return IntakeResult{}, fmt.Errorf("store: claim once key: %w", err)
 			}
 			switch {
 			case claimedBy == nil || *claimedBy != ev.ID:
@@ -376,25 +469,25 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 					if _, err := tx.Exec(ctx, `UPDATE events
 						SET routing_trace = COALESCE(routing_trace, '{}'::jsonb) || '{"once":"repeat"}'::jsonb
 						WHERE id = $1`, ev.ID); err != nil {
-						return 0, nil, false, fmt.Errorf("store: mark once repeat: %w", err)
+						return IntakeResult{}, fmt.Errorf("store: mark once repeat: %w", err)
 					}
 				}
 				if err := tx.Commit(ctx); err != nil {
-					return 0, nil, false, err
+					return IntakeResult{}, err
 				}
 				if inserted {
 					s.fireEventHook(ev)
 				}
-				return ev.ID, nil, false, nil
+				return IntakeResult{EventID: ev.ID, Disposition: DispositionRouted, Inserted: inserted}, nil
 			case !inserted:
 				out, err := eventTodos(ctx, tx, ev.ID)
 				if err != nil {
-					return 0, nil, false, err
+					return IntakeResult{}, err
 				}
 				if err := tx.Commit(ctx); err != nil {
-					return 0, nil, false, err
+					return IntakeResult{}, err
 				}
-				return ev.ID, out, false, nil
+				return IntakeResult{EventID: ev.ID, Todos: out, Disposition: DispositionRouted}, nil
 			}
 		}
 		// A redelivery whose original delivery never claimed (p.OnceKey cleared above) falls
@@ -418,12 +511,12 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 		tp.EndpointID = epID
 		t, wasNew, err := createTodo(ctx, tx, tp)
 		if err != nil {
-			return 0, nil, false, err
+			return IntakeResult{}, err
 		}
 		out = append(out, CreatedTodo{Todo: t, New: wasNew})
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, nil, false, err
+		return IntakeResult{}, err
 	}
 	// Hooks fire only after the durable commit, event before todos, mirroring the Board's
 	// lifecycle order. Governing: SPEC-0015 REQ "Patch Panel Board".
@@ -450,7 +543,7 @@ func (s *Store) CreateRoutedEventTodos(ctx context.Context, e EventInput, drop b
 			s.fireReady(ct.Todo, ReadyCreated) // SPEC-0024 REQ-6: same gate, same commit
 		}
 	}
-	return ev.ID, out, false, nil
+	return IntakeResult{EventID: ev.ID, Todos: out, Disposition: DispositionRouted, Inserted: inserted}, nil
 }
 
 // createTodo is the querier-based core of CreateTodo: it runs on either the pool or a transaction and
@@ -550,6 +643,7 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 	// its prior state can ride into RETURNING — see countClaim.
 	var takeover bool
 	var ca ClaimedAttempt
+	var closedOld bool
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
 			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
@@ -560,7 +654,7 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 						AND attempt < max_attempts))
 			FOR UPDATE
 		)`+claimTail, append([]any{endpointID, id}, claimArgs(owner, o, "endpoint", endpointID)...)...)
-	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal)
+	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal, &closedOld)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ClaimedAttempt{}, s.classifyMiss(ctx, endpointID, id)
 	}
@@ -568,7 +662,7 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 		return Todo{}, ClaimedAttempt{}, fmt.Errorf("store: claim %s: %w", id, err)
 	}
 	s.fireTodoHook("claimed", t)
-	s.countClaim(t, takeover)
+	s.countClaim(t, takeover, closedOld)
 	return t, ca, nil
 }
 
@@ -586,10 +680,16 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 // cannot both count one lapse: whichever locks the row first changes it, and the other's predicate
 // no longer matches.
 // Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028.
-func (s *Store) countClaim(t Todo, takeover bool) {
+//
+// closedOld reports that the takeover closed the lapsed lease's attempt as lease_expired, which is
+// the same event the lease-expiry counter just counted (SPEC-0034 REQ-14: one each).
+func (s *Store) countClaim(t Todo, takeover, closedOld bool) {
 	m := s.metricsOrNop()
 	if takeover {
 		m.LeaseExpired(t.Queue)
+	}
+	if closedOld {
+		s.countAttemptClosed(t.Queue, "lease_expired")
 	}
 	m.TodoClaimed(t.Queue, t.Attempt)
 }
@@ -615,8 +715,11 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 	// takeover, see countClaim); predicate, order and SKIP LOCKED are unchanged.
 	var takeover bool
 	var ca ClaimedAttempt
+	var closedOld bool
+	// cand is MATERIALIZED explicitly: claimTail reads it three times, which already forces one
+	// evaluation, but a LIMIT ... SKIP LOCKED pick must never depend on that (see RingOnAttach).
 	row := s.pool.QueryRow(ctx, `
-		WITH cand AS (
+		WITH cand AS MATERIALIZED (
 			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
 			WHERE endpoint_id=$1 AND queue = ANY($2) AND (assignee IS NULL OR assignee=$3)
 				AND (state='pending'
@@ -627,7 +730,7 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)`+claimTail, append([]any{endpointID, queues}, claimArgs(owner, o, "endpoint", endpointID)...)...)
-	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal)
+	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal, &closedOld)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, ClaimedAttempt{}, ErrNotFound
 	}
@@ -635,7 +738,7 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 		return Todo{}, ClaimedAttempt{}, fmt.Errorf("store: claim next: %w", err)
 	}
 	s.fireTodoHook("claimed", t)
-	s.countClaim(t, takeover)
+	s.countClaim(t, takeover, closedOld)
 	return t, ca, nil
 }
 
@@ -655,15 +758,22 @@ const heartbeatTail = `,
 // last_heartbeat_at and lease_expires_at move in the same statement (SPEC-0034 REQ-4). Governing:
 // SPEC-0003 REQ "Visibility Window, Lease, Heartbeat".
 func (s *Store) HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (Todo, error) {
+	return s.HeartbeatTodoWith(ctx, endpointID, id, owner, ttl, nil)
+}
+
+// HeartbeatTodoWith is HeartbeatTodo with the lease-token fence: tokenHash is the SHA-256 of the
+// token the caller presented, nil for none, and a mismatch with the open attempt is ErrConflict.
+// Governing: SPEC-0034 REQ-6 "Lease Token Fence", REQ-19.
+func (s *Store) HeartbeatTodoWith(ctx context.Context, endpointID, id, owner string, ttl time.Duration, tokenHash []byte) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
 	}
 	row := s.pool.QueryRow(ctx, `
 		WITH upd AS (
 			UPDATE todos SET lease_expires_at=now()+$3::interval, updated_at=now()
-			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$4
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$4`+leaseFence("$5")+`
 			RETURNING todos.*
-		)`+heartbeatTail, endpointID, id, ttl.String(), owner)
+		)`+heartbeatTail, endpointID, id, ttl.String(), owner, tokenHash)
 	t, err := scanTodo(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
@@ -678,7 +788,8 @@ func (s *Store) CompleteTodo(ctx context.Context, endpointID, id, owner string, 
 }
 
 // CompleteTodoWith is CompleteTodo with the attempt report: the open attempt closes
-// completed/done with the report's summary and artifact (SPEC-0034 REQ-3).
+// completed/done with the report's summary and artifact (SPEC-0034 REQ-3), and r.TokenHash must
+// match the attempt's lease-token fence (REQ-6).
 func (s *Store) CompleteTodoWith(ctx context.Context, endpointID, id, owner string, r Report) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
@@ -687,14 +798,18 @@ func (s *Store) CompleteTodoWith(ctx context.Context, endpointID, id, owner stri
 	row := s.pool.QueryRow(ctx, `
 		WITH upd AS (
 			UPDATE todos SET state='done', result=$4, completed_at=now(), updated_at=now()
-			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3`+leaseFence("$8")+`
 			RETURNING todos.*
 		),
 		`+closedArm("completed", "'done'", "NULLIF($5::text, '')", "$6::boolean", "NULLIF($7::text, '')")+`
-		SELECT `+todoCols+` FROM upd`, endpointID, id, owner, r.Result, summary, truncated, artifact)
-	t, err := scanTodo(row)
+		`+closedSelect, endpointID, id, owner, r.Result, summary, truncated, artifact, r.TokenHash)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "completed")
 	}
 	if err == nil {
 		s.fireTodoHook("done", t)
@@ -715,7 +830,8 @@ func (s *Store) FailTodo(ctx context.Context, endpointID, id, owner string, resu
 }
 
 // FailTodoWith is FailTodo with the attempt report: the open attempt closes failed, with
-// disposition retry_scheduled below the cap and dead_lettered at it (SPEC-0034 REQ-3).
+// disposition retry_scheduled below the cap and dead_lettered at it (SPEC-0034 REQ-3), and
+// r.TokenHash must match the attempt's lease-token fence (REQ-6).
 func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, r Report) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
@@ -729,15 +845,20 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 					ELSE now() + make_interval(secs =>
 						LEAST($5::float8 * power(2, GREATEST(attempt, 1) - 1), $6::float8)) END,
 				lease_expires_at = NULL, result = $4, updated_at = now()
-			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3`+leaseFence("$10")+`
 			RETURNING todos.*
 		),
 		`+closedArm("failed", failDisposition, "NULLIF($7::text, '')", "$8::boolean", "NULLIF($9::text, '')")+`
-		SELECT `+todoCols+` FROM upd`, endpointID, id, owner, r.Result,
-		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact)
-	t, err := scanTodo(row)
+		`+closedSelectFinal, endpointID, id, owner, r.Result,
+		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact, r.TokenHash)
+	var f finalScan
+	t, err := scanTodo(row, f.dest()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
+	}
+	f.attach(&t) // at the cap, the hook payload carries the final attempt (SPEC-0034 REQ-15)
+	if err == nil && f.closed {
+		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
 		// Both outcomes commit as 'failed'; the hook payload's NextRetryAt distinguishes a
@@ -799,6 +920,14 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 	// (TodoReadyPayload), so collapsing on queue alone would emit a single notification naming
 	// whichever endpoint happened to come first and silently strand every other tenant re-queued in
 	// the same sweep. Governing: ADR-0022, SPEC-0004 REQ "In-Database Wakeups via LISTEN/NOTIFY".
+	// The re-queue hook runs for every row before any wakeup is sent, so the server's doorbell gate
+	// has forgotten these ids by the time the todo_ready notification reaches the LISTEN loop.
+	// Governing: SPEC-0034 REQ-16.
+	if fn := s.requeuedHook.Load(); fn != nil {
+		for _, t := range requeued {
+			(*fn)(t)
+		}
+	}
 	nudged := map[string]bool{}
 	for _, t := range requeued {
 		s.fireTodoHook(t.State, t)
@@ -827,6 +956,24 @@ func (s *Store) fireRequeued(moved []Todo, eligible []bool) {
 			s.fireReady(t, ReadyRequeued)
 		}
 	}
+}
+
+// TodoRequeuedHook observes each todo the retry scheduler re-queued, after the commit and before
+// the todo_ready wakeup for it is sent. The server uses it to clear the todo from its doorbell gate:
+// the gate suppresses a second ring of one id for a minute, so an attempt that failed within about
+// thirty seconds of its first ring would otherwise re-queue unrung and wait for the doorbell
+// heartbeat, stalling a relay consumer's next attempt. Same contract as the other hooks: never
+// block, never authoritative. Governing: SPEC-0034 REQ-16 "Re-Queue Wake-Up Interface".
+type TodoRequeuedHook func(t Todo)
+
+// SetTodoRequeuedHook registers fn to observe re-queued retries. Safe to call concurrently with
+// store use; passing nil clears the hook.
+func (s *Store) SetTodoRequeuedHook(fn TodoRequeuedHook) {
+	if fn == nil {
+		s.requeuedHook.Store(nil)
+		return
+	}
+	s.requeuedHook.Store(&fn)
 }
 
 // RetryTodo re-enqueues a failed todo immediately: the explicit agent "Retry now" that re-queues a
@@ -906,8 +1053,9 @@ func (s *Store) ReleaseTodo(ctx context.Context, endpointID, id, owner string) (
 }
 
 // ReleaseTodoWith is ReleaseTodo with the attempt report: the open attempt closes
-// released/requeued with the report's summary and artifact (SPEC-0034 REQ-3, REQ-9). A release
-// has no result, so r.Result is ignored.
+// released/requeued with the report's summary and artifact (SPEC-0034 REQ-3, REQ-9), and
+// r.TokenHash must match the attempt's lease-token fence (REQ-6). A release has no result, so
+// r.Result is ignored.
 func (s *Store) ReleaseTodoWith(ctx context.Context, endpointID, id, owner string, r Report) (Todo, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, err
@@ -916,14 +1064,18 @@ func (s *Store) ReleaseTodoWith(ctx context.Context, endpointID, id, owner strin
 	row := s.pool.QueryRow(ctx, `
 		WITH upd AS (
 			UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, updated_at=now()
-			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3
+			WHERE id=$2 AND endpoint_id=$1 AND state='claimed' AND owner=$3`+leaseFence("$7")+`
 			RETURNING todos.*
 		),
 		`+closedArm("released", "'requeued'", "NULLIF($4::text, '')", "$5::boolean", "NULLIF($6::text, '')")+`
-		SELECT `+todoCols+` FROM upd`, endpointID, id, owner, summary, truncated, artifact)
-	t, err := scanTodo(row)
+		`+closedSelect, endpointID, id, owner, summary, truncated, artifact, r.TokenHash)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "released")
 	}
 	if err == nil {
 		s.fireTodoHook("pending", t)
@@ -942,10 +1094,14 @@ func (s *Store) ReleaseTodoOperatorOwned(ctx context.Context, ownerHumanID, id, 
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("released", "'requeued'")+`
-		SELECT `+todoCols+` FROM upd`, id, owner, ownerHumanID)
-	t, err := scanTodo(row)
+		`+closedSelect, id, owner, ownerHumanID)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "released")
 	}
 	if err == nil {
 		s.fireTodoHook("pending", t)
@@ -1088,6 +1244,7 @@ func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, ow
 	// human, not an endpoint credential, holds it (SPEC-0034 REQ-1, REQ-2).
 	var takeover bool
 	var ca ClaimedAttempt
+	var closedOld bool
 	row := s.pool.QueryRow(ctx, `
 		WITH cand AS (
 			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
@@ -1098,7 +1255,7 @@ func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, ow
 						AND attempt < max_attempts))`+operatorOwns+`$1)
 			FOR UPDATE
 		)`+claimTail, append([]any{ownerHumanID, id}, claimArgs(owner, ClaimOpts{TTL: ttl}, "owner", "")...)...)
-	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal)
+	t, err := scanTodo(row, &takeover, &ca.Seq, &ca.AttemptsTotal, &closedOld)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
@@ -1106,7 +1263,7 @@ func (s *Store) ClaimTodoOperatorOwned(ctx context.Context, ownerHumanID, id, ow
 		return Todo{}, fmt.Errorf("store: board claim %s: %w", id, err)
 	}
 	s.fireTodoHook("claimed", t)
-	s.countClaim(t, takeover)
+	s.countClaim(t, takeover, closedOld)
 	return t, nil
 }
 
@@ -1120,10 +1277,14 @@ func (s *Store) CompleteTodoOperatorOwned(ctx context.Context, ownerHumanID, id,
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("completed", "'done'")+`
-		SELECT `+todoCols+` FROM upd`, id, owner, result, ownerHumanID)
-	t, err := scanTodo(row)
+		`+closedSelect, id, owner, result, ownerHumanID)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "completed")
 	}
 	if err == nil {
 		s.fireTodoHook("done", t)
@@ -1147,11 +1308,16 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("failed", failDisposition)+`
-		SELECT `+todoCols+` FROM upd`, id, owner, result,
+		`+closedSelectFinal, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), ownerHumanID)
-	t, err := scanTodo(row)
+	var f finalScan
+	t, err := scanTodo(row, f.dest()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
+	}
+	f.attach(&t) // at the cap, the hook payload carries the final attempt (SPEC-0034 REQ-15)
+	if err == nil && f.closed {
+		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
 		s.fireTodoHook(t.State, t)
@@ -1199,20 +1365,24 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
-		SELECT `+todoCols+`, `+movedPushEligible+` FROM upd`)
+		SELECT `+closedSelectFinal+`, `+movedPushEligible)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 	var reaped []Todo
+	var closed []bool
 	var eligible []bool
 	for rows.Next() {
+		var f finalScan
 		var pushEligible bool
-		t, err := scanTodo(rows, &pushEligible)
+		t, err := scanTodo(rows, append(f.dest(), &pushEligible)...)
 		if err != nil {
 			return 0, err
 		}
+		f.attach(&t) // a reap at the cap carries its final attempt (SPEC-0034 REQ-15)
 		reaped = append(reaped, t)
+		closed = append(closed, f.closed)
 		eligible = append(eligible, pushEligible)
 	}
 	if err := rows.Err(); err != nil {
@@ -1223,10 +1393,14 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 	// dead-letter here deliberately does NOT also count TodoFinished(outcome="fail"): that counter
 	// is claimant-reported outcomes, and nobody reported this one. Lease expiry is its own signal, and
 	// counting it twice would inflate the failure rate with the very stall it already measures.
+	// Each reaped attempt close is counted beside its lease expiry, one each (SPEC-0034 REQ-14).
 	// Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028.
-	for _, t := range reaped {
+	for i, t := range reaped {
 		s.fireTodoHook(t.State, t)
 		s.metricsOrNop().LeaseExpired(t.Queue)
+		if closed[i] {
+			s.countAttemptClosed(t.Queue, "reaped")
+		}
 	}
 	return int64(len(reaped)), nil
 }
@@ -1315,9 +1489,20 @@ type EventInput struct {
 	// Governing: SPEC-0020 REQ "Routing Trace", REQ "Drop Action Semantics".
 	WebhookID    string
 	RoutingTrace []byte
+	// EndpointID is the endpoint that OWNS the delivery: the resolved webhook's endpoint for a
+	// self-managed delivery, the target endpoint for an operator push. It is written once and kept
+	// when the webhook is later deleted; every history read filters on it, and it is part of the
+	// dedup key so one owner's delivery is never answered with another's event. Left empty with a
+	// WebhookID set, it is resolved from the webhook; left empty without one, the event has no
+	// owner and no agent can ever read it. Governing: ADR-0038, SPEC-0033 REQ "Owner-Scoped History
+	// Reads", REQ "Closing the Audited Surfaces" (F14).
+	EndpointID string
+	// Disposition is the intake outcome (DispositionRouted and friends); empty records routed.
+	// Governing: SPEC-0026 REQ-1.
+	Disposition string
 }
 
-// InsertEvent records an accepted delivery, deduping on (source, external_id). Returns the event id
+// InsertEvent records an accepted delivery, deduping on (endpoint_id, source, external_id). Returns the event id
 // (existing id on a duplicate delivery). Newly inserted events fire the event hook.
 func (s *Store) InsertEvent(ctx context.Context, e EventInput) (int64, error) {
 	ev, inserted, err := insertEvent(ctx, s.pool, e)
@@ -1335,19 +1520,34 @@ func (s *Store) InsertEvent(ctx context.Context, e EventInput) (int64, error) {
 // delivery, existing row returned). The EventSummary carries the fields the Board feed renders.
 func insertEvent(ctx context.Context, q querier, e EventInput) (EventSummary, bool, error) {
 	ev := EventSummary{Source: e.Source, EventType: e.EventType, TrustMode: e.TrustMode}
+	if e.EndpointID == "" && e.WebhookID != "" {
+		// The owner of a webhook delivery is the webhook's endpoint by definition; resolve it here
+		// so no caller can record a webhook delivery without one.
+		if err := q.QueryRow(ctx, `SELECT endpoint_id::text FROM endpoint_webhooks WHERE id = $1::uuid`,
+			e.WebhookID).Scan(&e.EndpointID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return EventSummary{}, false, fmt.Errorf("store: resolve event owner: %w", err)
+		}
+	}
+	disposition := e.Disposition
+	if disposition == "" {
+		disposition = DispositionRouted
+	}
 	err := q.QueryRow(ctx, `
 		INSERT INTO events (source, family, event_type, external_id, trust_mode, verified, verify_detail,
-			content_type, headers, payload, payload_size, source_ip, webhook_id, routing_trace)
+			content_type, headers, payload, payload_size, source_ip, webhook_id, routing_trace, disposition, endpoint_id)
 		VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,NULLIF($12,'')::inet,
-			NULLIF($13,'')::uuid, $14)
-		ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL DO NOTHING
+			NULLIF($13,'')::uuid, $14, $15, NULLIF($16,'')::uuid)
+		ON CONFLICT (endpoint_id, source, external_id) WHERE external_id IS NOT NULL DO NOTHING
 		RETURNING id, received_at`,
 		e.Source, e.Family, e.EventType, e.ExternalID, e.TrustMode, e.Verified, e.VerifyDetail,
-		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP, e.WebhookID, e.RoutingTrace).Scan(&ev.ID, &ev.ReceivedAt)
+		e.ContentType, e.Headers, e.Payload, len(e.Payload), e.SourceIP, e.WebhookID, e.RoutingTrace,
+		disposition, e.EndpointID).Scan(&ev.ID, &ev.ReceivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Duplicate delivery — fetch the existing row.
-		if err2 := q.QueryRow(ctx,
-			`SELECT id, received_at FROM events WHERE source=$1 AND external_id=$2`, e.Source, e.ExternalID,
+		// Duplicate delivery — fetch the existing row, and only within the same owner (F14).
+		if err2 := q.QueryRow(ctx, `
+			SELECT id, received_at FROM events
+			WHERE endpoint_id IS NOT DISTINCT FROM NULLIF($3,'')::uuid AND source = $1 AND external_id = $2`,
+			e.Source, e.ExternalID, e.EndpointID,
 		).Scan(&ev.ID, &ev.ReceivedAt); err2 != nil {
 			return EventSummary{}, false, err2
 		}
@@ -1487,20 +1687,24 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			    )
 			  )
 		),
-		picked AS (
+		-- Both CTEs are MATERIALIZED so each runs exactly once. Inlined as IN-subqueries they can
+		-- land on the inner side of a nested loop and be rescanned per updated row; the cap then
+		-- holds only because the window sort happens to replay the same ids (see RingOnAttach).
+		picked AS MATERIALIZED (
 			SELECT id FROM ranked
 			ORDER BY rn, last_ringed_at NULLS FIRST, created_at
 			LIMIT $7
-		)
-		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
-		WHERE id IN (
-			-- Re-select through a plain scan so SKIP LOCKED still applies: a window function
-			-- cannot be combined with FOR UPDATE, and dropping the lock would let two sweeps
-			-- (or two instances) ring the same todo twice. Re-check the claim guard at lock
-			-- time so a todo claimed between the pick and the lock is not rung anyway.
-			SELECT id FROM todos WHERE id IN (SELECT id FROM picked) AND state = 'pending'
+		),
+		-- Re-select through a plain scan so SKIP LOCKED still applies: a window function cannot
+		-- be combined with FOR UPDATE, and dropping the lock would let two sweeps (or two
+		-- instances) ring the same todo twice. Re-check the claim guard at lock time so a todo
+		-- claimed between the pick and the lock is not rung anyway.
+		locked AS MATERIALIZED (
+			SELECT id AS lock_id FROM todos WHERE id IN (SELECT id FROM picked) AND state = 'pending'
 			FOR UPDATE SKIP LOCKED
 		)
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		FROM locked WHERE todos.id = locked.lock_id
 		RETURNING `+todoCols,
 		ringMaxAttempts,
 		ringBackoff(1), ringBackoff(2), ringBackoff(3), ringBackoff(4), ringBackoff(5),
@@ -1553,10 +1757,13 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 	if endpointScope(endpointID) != nil || len(queues) == 0 {
 		return nil, nil
 	}
+	// The pick is a MATERIALIZED CTE joined by FROM, never `WHERE id IN (... LIMIT ... SKIP
+	// LOCKED)`: as an IN-subquery the planner may put it on the inner side of a nested loop and
+	// rescan it per outer row, SKIP LOCKED then drops the rows this UPDATE already changed, and each
+	// rescan's LIMIT reaches further — ringing the whole backlog. MATERIALIZED runs it exactly once.
 	rows, err := s.pool.Query(ctx, `
-		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
-		WHERE id IN (
-			SELECT t.id FROM todos t
+		WITH picked AS MATERIALIZED (
+			SELECT t.id AS pick_id FROM todos t
 			WHERE t.endpoint_id = $1
 			  AND t.queue = ANY($2)
 			  AND t.state = 'pending'
@@ -1569,6 +1776,8 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 			LIMIT $5
 			FOR UPDATE SKIP LOCKED
 		)
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		FROM picked WHERE todos.id = picked.pick_id
 		RETURNING `+todoCols,
 		endpointID, queues, ringMaxAttempts, attachRingCooldown, attachRingLimit)
 	if err != nil {
@@ -1600,13 +1809,13 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 // They dead-letter rather than retry: next_retry_at stays NULL because there is no future in which
 // this endpoint drains them. The result records why, so the row explains itself to whoever finds it.
 // Governing: SPEC-0007 REQ "Instant, Total Revocation"; SPEC-0016 REQ "Revocation Cascade".
-func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []string) error {
+func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []string) (closedQueues []string, err error) {
 	if len(endpointIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	// A claimed or interrupted todo's open attempt closes revoked/dead_lettered in the same
 	// statement (SPEC-0034 REQ-3); a pending todo has none.
-	if _, err := q.Exec(ctx, `
+	rows, err := q.Query(ctx, `
 		WITH upd AS (
 			UPDATE todos SET
 				state = 'failed',
@@ -1623,9 +1832,28 @@ func deadLetterEndpointTodos(ctx context.Context, q querier, endpointIDs []strin
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("revoked", "'dead_lettered'")+`
-		SELECT count(*) FROM upd`,
-		endpointIDs); err != nil {
-		return fmt.Errorf("store: dead-letter endpoint todos: %w", err)
+		SELECT upd.queue FROM upd JOIN closed c ON c.todo_id = upd.id`,
+		endpointIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: dead-letter endpoint todos: %w", err)
 	}
-	return nil
+	defer rows.Close()
+	for rows.Next() {
+		var queue string
+		if err := rows.Scan(&queue); err != nil {
+			return nil, fmt.Errorf("store: dead-letter endpoint todos: %w", err)
+		}
+		closedQueues = append(closedQueues, queue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: dead-letter endpoint todos: %w", err)
+	}
+	return closedQueues, nil
+}
+
+// countRevokedAttempts counts the attempts a committed revocation cascade closed.
+func (s *Store) countRevokedAttempts(queues []string) {
+	for _, q := range queues {
+		s.countAttemptClosed(q, "revoked")
+	}
 }

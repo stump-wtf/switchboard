@@ -16,8 +16,13 @@ a credential and leave it running.
   To it, that todo doesn't exist (`not_found`). That holds for your own endpoints too.
 - **Scope is enforced on every call.** A tool the endpoint wasn't granted, or a queue outside its
   scope, is refused. Scope never changes after vend; to change it, vend a new endpoint.
-- **Webhooks, routes, and rules belong to you.** Any of your endpoints with the right tools may
-  manage your webhooks' routes and rules. No one else's endpoint can.
+- **A webhook's routes and rules belong to its endpoint.** Only the endpoint that owns a webhook,
+  with the right tools, may manage its routes and rules. Your other endpoints can't, and neither can
+  anyone else's: to them the webhook doesn't exist (`not_found`).
+- **A friend endpoint carries only hand-off and drain tools.** Approving a friend request grants at
+  most `create_for` and the drain verbs (`list_todos`, `get_todo`, `claim`, `claim_next`, `complete`,
+  `fail`, `heartbeat`), whatever was requested. A friend endpoint runs on your agent, so webhook, rule, and
+  event-history tools on it would act with your authority; switchboard never grants them to a friend.
 - **The instance operator can see everything.** Payloads are stored in the service's database. Don't
   route anything through a webhook that you wouldn't show the person running the service.
 
@@ -32,22 +37,31 @@ The event history keeps it for later inspection and replay. So treat a payload a
 - **Grant the event-history tools only where the job needs them** (`list_webhook_events`,
   `get_webhook_event`, `replay_webhook_event`). The web wizard leaves them unchecked; a CLI vend
   includes them.
-
-:::warning Known limitation: event history is not per-user yet
-
-The event-history tools and the recent-events resource read the **whole instance's** deliveries,
-not only the caller's. `list_webhook_events` filters by provider, event type, and time but not by
-owner; `get_webhook_event` returns any event by id; and `replay_webhook_event` can re-send any of
-them. On an instance with more than one user, an endpoint granted these tools can read, and replay,
-every other user's deliveries.
-
-Until this is fixed, **don't grant `list_webhook_events`, `get_webhook_event`, or
-`replay_webhook_event` to any endpoint whose holder shouldn't see every user's deliveries.** A fix
-that scopes event history to its owner is planned, and this note goes away when it ships.
-
-:::
+- **Event history is scoped to you, not to one endpoint.** Every stored delivery records the
+  endpoint that owns it: the webhook's endpoint, or the endpoint an operator pushed to. The
+  event-history tools and the `switchboard://events/recent` resource return only deliveries owned by
+  one of your endpoints, and another user's event id answers `not_found`, exactly like an id that
+  doesn't exist. But **any of your own endpoints granted these tools reads all of your deliveries**,
+  on every webhook, whatever queues it was vended for. The grant is the boundary, so leave the tools
+  off an endpoint that should only see its own queue.
+- **A friend-approved endpoint reads none of your history.** Approving a friend request mints the
+  friend's endpoint on one of your agents. Even if the request asked for the event-history tools and
+  you approved it unchanged, that endpoint lists nothing, and every event id answers `not_found`.
+  Uncheck those tools when you approve anyway: they grant a friend nothing today, and a friend
+  endpoint's own authority is still being designed.
+- **Deleting a webhook keeps its deliveries** in your history. **Permanently deleting an endpoint
+  deletes the deliveries it owns**, including ones its webhooks routed to a friend. The friend's
+  todos keep their payload but lose the link to the delivery, so they show trust `queue` and no
+  longer count as verified for channel pushes. Keep a revoked endpoint, rather than deleting it, while
+  anyone still has work from it.
+- Deliveries recorded before owners existed, whose webhook was already deleted, have no provable
+  owner, so no one can read them, on the board or through the tools. They age out through retention.
 - **`replay_webhook_event` sends a stored payload back out** to a target, so treat it as a
-  data-forwarding tool, not just a debugging one.
+  data-forwarding tool, not just a debugging one. The target is the one the call names or one
+  the calling endpoint owns (`replay_targets`, set when it is vended); there is no instance-wide
+  default. Every target must be `https` on a public address, checked when the call is made and
+  again when it connects, so a replay cannot reach localhost, a private network or a cloud
+  metadata service.
 
 ## Where a delivery can go
 
@@ -78,6 +92,10 @@ Whoever owns a webhook decides where its deliveries land, within limits switchbo
   compromised. Revoke first, then vend a replacement.
 - **Prefer signed sources over `generic`.** A signature proves the body wasn't altered and binds it
   to a secret the URL doesn't reveal. A `generic` webhook only proves the caller knew the URL.
+- **Provider-issued secrets aren't accepted yet.** Switchboard verifies only against a signing
+  secret it minted, and there is no way to give it one a provider generated. Providers that issue
+  their own secrets, Stripe and Slack among them, therefore can't be used as signed sources today:
+  their deliveries fail with `401`. See [ADR-0037](/decisions/ADR-0037-provider-issued-signing-secrets).
 
 ## Secrets at rest
 
@@ -140,9 +158,13 @@ What's on you:
 - **Labels, tags, and `on_behalf_of` are not provenance.** Anyone who can label an issue or tag an
   artifact controls them. They can choose a queue among deliveries you already trust, never decide
   that a delivery is trusted. Cairn's `on_behalf_of` is the sharing client's self-reported name.
-- **Write allowlists to fail closed.** Parameters aren't type-checked, and an erroring rule counts
-  as no match, so a mistyped allowlist in a "drop the untrusted" rule would let everyone through.
-  Read lists with `arrays`, as the cookbook does.
+- **Routing fails closed.** A rule that errors, times out, or runs out of budget stops
+  evaluation, and the delivery is recorded as `faulted` and routed nowhere. A mistyped allowlist
+  in a "drop the untrusted" rule therefore admits no one rather than everyone. `params` are
+  type-checked, and a save whose rules fault on the webhook's recent deliveries is refused. A
+  sandbox that cannot run at all refuses deliveries with `503` instead of routing them by
+  default. Still read lists with `arrays`, as the cookbook does, so a missing list evaluates
+  cleanly instead of faulting.
 - **A work order grants nothing.** `work_order` on a todo records the verified provenance that made
   it eligible. A worker should refuse a todo routed with work orders that has none, or whose
   `work_order.verified` isn't `true`, and still treat the task itself as untrusted.

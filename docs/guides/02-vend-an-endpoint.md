@@ -37,14 +37,14 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
 
   | Group | Verbs |
   |------|------|
-  | Todos | `list_todos`, `claim`, `claim_next`, `complete`, `fail`, `heartbeat` |
+  | Todos | `list_todos`, `get_todo`, `claim`, `claim_next`, `complete`, `fail`, `release`, `heartbeat` |
   | Webhooks | `create_webhook`, `list_webhooks`, `rotate_webhook`, `delete_webhook` |
   | Fan-out routes | `add_webhook_route`, `list_webhook_routes`, `remove_webhook_route` |
   | Routing rules | `list_webhook_rules`, `set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`, `move_webhook_rule`, `remove_webhook_rule`, `test_webhook_rules` |
   | Event history | `list_webhook_events`, `get_webhook_event`, `replay_webhook_event` |
   | Outbound HTTP calls (notify hooks) | `create_notify_hook`, `list_notify_hooks`, `rotate_notify_hook`, `delete_notify_hook` |
 
-  The web wizard pre-checks the six todo verbs. `switchboard endpoint vend` grants every group
+  The web wizard pre-checks the seven todo verbs. `switchboard endpoint vend` grants every group
   except outbound HTTP calls.
 
   The notify-hook verbs let the agent register an HTTPS URL that Switchboard POSTs a signed
@@ -53,8 +53,13 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
   own "Outbound HTTP calls" group, unticked. `create_notify_hook` returns the Standard Webhooks
   signing secret (`whsec_…`) once. `list_notify_hooks` shows each hook's health, and never a secret
   or a URL's query string.
+
+  The web wizard pre-checks the eight todo verbs. `switchboard endpoint vend` grants all of them.
+  `list_todos` also grants `get_todo`, so an endpoint vended before `get_todo` existed has it.
+  `release` changes state, so no other verb grants it: an older endpoint needs a re-vend to get it.
 - **A webhook ceiling** — how many webhooks the endpoint may create, which source types (`github`,
-  `gitea`, `cairn`, `generic`, `stripe`, `slack`), and which queues those webhooks and their routing
+  `gitea`, `cairn`, `generic`; `stripe` and `slack` exist but
+  [aren't usable yet](/getting-started/first-webhook#1-create-a-webhook)), and which queues those webhooks and their routing
   rules may target. A ceiling of 0 disables webhooks.
 - **A lifetime** — until revoked, or a duration after which the endpoint expires on its own.
 

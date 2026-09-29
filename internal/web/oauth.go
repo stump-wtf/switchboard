@@ -395,12 +395,14 @@ func scopeBullets(queues, verbs []string) []string {
 	}
 
 	var bullets []string
-	if has("list_todos") {
+	// get_todo reads the same rows list_todos lists (SPEC-0034 REQ-8), so either earns the read line.
+	if has("list_todos") || has("get_todo") {
 		bullets = append(bullets, "read todos on "+strings.Join(queues, " · "))
 	}
 	// The lease-bound lifecycle verbs (everything on the drain surface past reading).
 	var lease []string
-	for _, v := range []string{"claim", "complete", "fail", "heartbeat"} {
+	// release ends the holder's own lease, so it belongs on this line (SPEC-0034 REQ-9).
+	for _, v := range []string{"claim", "complete", "fail", "release", "heartbeat"} {
 		if has(v) {
 			lease = append(lease, v)
 		}

@@ -87,7 +87,7 @@ write-only, fingerprint, test, audit. Writing them twice is how one copy ends up
 - Credentials on the endpoint: rejected, because endpoints are immutable grants (ADR-0008) and a
   credential shared by all of an owner's endpoints would have to be copied into each.
 - Credentials in the operator's environment: rejected, because they would belong to no tenant, which is
-  the shape #291 removed.
+  the shape the shared-receiver removal took out.
 
 ### Resolution by exact account key, not by best match
 

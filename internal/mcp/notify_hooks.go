@@ -310,15 +310,14 @@ func hookID(raw string) (string, error) {
 }
 
 // hookURLRejection is the invalid_argument message for a refused URL. A refusal that depends on what
-// the host resolved to answers with its push.Rejection Summary, which names the address class but
-// never the resolved address or the resolver's error, so a tenant cannot map internal names to
-// addresses through it. The remaining messages describe only the caller's own input (scheme, port,
-// length, userinfo) and never the query string (ValidateURL parses first and reports a parse
-// failure generically), so they are returned with the sentinel prefixes trimmed.
+// the host resolved to answers with push.PublicReason, the caller-safe class (#500): it names the
+// address class but never the resolved address or the resolver's error, so a tenant cannot map
+// internal names to addresses through it. The remaining messages describe only the caller's own
+// input (scheme, port, length, userinfo) and never the query string (ValidateURL parses first and
+// reports a parse failure generically), so they are returned with the sentinel prefixes trimmed.
 func hookURLRejection(err error) string {
-	var rej *push.Rejection
-	if errors.As(err, &rej) {
-		return "url refused: " + rej.Summary
+	if errors.Is(err, push.ErrValidation) {
+		return "url refused: " + push.PublicReason(err)
 	}
 	msg := err.Error()
 	for _, prefix := range []string{push.ErrValidation.Error() + ": ", notifyhook.ErrInvalidURL.Error() + ": "} {
@@ -345,13 +344,4 @@ func (h *Handler) mapNotifyHookErr(ep store.AuthEndpoint, tool, hookID string, e
 			"err", fmt.Errorf("tools/call %s: %w", tool, err))
 		return &toolError{codeInternal, "internal error"}
 	}
-}
-
-// rfc3339 renders an optional timestamp, or nil.
-func rfc3339(t *time.Time) *string {
-	if t == nil {
-		return nil
-	}
-	s := t.UTC().Format(time.RFC3339)
-	return &s
 }

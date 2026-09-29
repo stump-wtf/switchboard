@@ -78,7 +78,11 @@ func (s *Store) TodoCounts(ctx context.Context, ownerHumanID string) (TodoCounts
 
 // TodoItem is one enriched row of the Todos view table and the detail drawer: the durable todo plus
 // its originating event's trust mode ("queue" for event-less todos) and the count of deliveries its
-// idempotency key collapsed (≥1; the badge shows only when >1).
+// idempotency key collapsed (≥1; the badge shows only when >1). The count is bounded to events with
+// the same owner as the todo's own event: since 0024 another owner can hold an event with the same
+// external id, and counting it would leak that owner's delivery into this badge (F14). A todo with
+// no event, or whose event has no owner, counts 0. Governing: ADR-0038, SPEC-0033 REQ "Closing the
+// Audited Surfaces" (F14).
 type TodoItem struct {
 	Todo
 	TrustMode  string
@@ -105,6 +109,32 @@ func scanTodoItem(row pgx.Row) (TodoItem, error) {
 	return it, err
 }
 
+// laneCols is the enriched column list the Todos listing and the Board lane reads share: todoColsT
+// plus the joined trust mode and dedup count.
+const laneCols = todoColsT + `,
+		COALESCE(e.trust_mode, 'queue') AS trust_mode,
+		(SELECT count(*) FROM events ev
+		   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key
+		     AND ev.endpoint_id = e.endpoint_id)::int AS dedup_count`
+
+// scanTodoItems drains an enriched listing (laneCols shape) into the read model the Todos table
+// and the Board lane cards both render.
+func scanTodoItems(rows pgx.Rows) ([]TodoItem, error) {
+	defer rows.Close()
+	var out []TodoItem
+	for rows.Next() {
+		it, err := scanTodoItem(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan todo items: %w", err)
+		}
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("todo items rows: %w", err)
+	}
+	return out, nil
+}
+
 // ListTodoItems lists todos for the operator Todos view, newest first, optionally scoped to one
 // state (filter pill) and/or a case-insensitive substring over id, source, and kind (search). An
 // empty filter lists all states; an empty query applies no text filter. The limit is clamped.
@@ -114,10 +144,7 @@ func (s *Store) ListTodoItems(ctx context.Context, ownerHumanID, filter, query s
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT `+todoColsT+`,
-			COALESCE(e.trust_mode, 'queue') AS trust_mode,
-			(SELECT count(*) FROM events ev
-			   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key)::int AS dedup_count
+		SELECT `+laneCols+`
 		FROM todos t`+ownedByHuman+`$1
 		LEFT JOIN events e ON e.id = t.event_id
 		WHERE ($2 = '' OR t.state = $2)
@@ -130,19 +157,7 @@ func (s *Store) ListTodoItems(ctx context.Context, ownerHumanID, filter, query s
 	if err != nil {
 		return nil, fmt.Errorf("list todo items: %w", err)
 	}
-	defer rows.Close()
-	var out []TodoItem
-	for rows.Next() {
-		it, err := scanTodoItem(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list todo items scan: %w", err)
-		}
-		out = append(out, it)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list todo items rows: %w", err)
-	}
-	return out, nil
+	return scanTodoItems(rows)
 }
 
 // GetTodoItem returns one enriched todo (trust mode + dedup count) for the detail drawer, scoped to
@@ -158,7 +173,8 @@ func (s *Store) GetTodoItem(ctx context.Context, ownerHumanID, id string) (TodoI
 		SELECT `+todoColsT+`,
 			COALESCE(e.trust_mode, 'queue') AS trust_mode,
 			(SELECT count(*) FROM events ev
-			   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key)::int AS dedup_count
+			   WHERE t.idempotency_key IS NOT NULL AND ev.external_id = t.idempotency_key
+			     AND ev.endpoint_id = e.endpoint_id)::int AS dedup_count
 		FROM todos t`+ownedByHuman+`$1
 		LEFT JOIN events e ON e.id = t.event_id
 		WHERE t.id = $2`, ownerHumanID, id)
@@ -170,4 +186,46 @@ func (s *Store) GetTodoItem(ctx context.Context, ownerHumanID, id string) (TodoI
 		return TodoItem{}, fmt.Errorf("get todo item: %w", err)
 	}
 	return it, nil
+}
+
+// ListLaneItems reads the Board's two durable lanes independently: verified holds the pending
+// todos, patched through everything claimed or beyond (every non-pending state — the same set
+// laneForState routes to the patched lane, including the A2A interrupt states), each newest first
+// and independently capped.
+//
+// The Board used to read ONE newest-first window (60 rows) and partition it into the two lanes
+// afterwards. That made the patched lane lie: a burst of pending intake pushed every
+// claimed-and-beyond todo out of the window, so "patched through" rendered its empty state next to
+// a stable, non-zero header count, then repopulated as the mix shifted — the intermittent empty
+// card list reported on the public mirror (stump-wtf/switchboard#31). Per-lane reads make a lane
+// empty only when the queue itself says it is. The rows are the enriched Todos read model, so the
+// server-rendered lane cards are pixel-identical to the cards the SSE frames later move.
+// Governing: SPEC-0015 REQ "Patch Panel Board".
+func (s *Store) ListLaneItems(ctx context.Context, ownerHumanID string, verifiedLimit, patchedLimit int) (verified, patched []TodoItem, err error) {
+	if verified, err = s.listLaneItems(ctx, ownerHumanID, `t.state = 'pending'`, verifiedLimit); err != nil {
+		return nil, nil, fmt.Errorf("list verified lane: %w", err)
+	}
+	if patched, err = s.listLaneItems(ctx, ownerHumanID, `t.state <> 'pending'`, patchedLimit); err != nil {
+		return nil, nil, fmt.Errorf("list patched lane: %w", err)
+	}
+	return verified, patched, nil
+}
+
+// listLaneItems reads one board lane: the enriched listing scoped to a state predicate, newest
+// first, capped. The predicate is a compile-time constant per call site, never user input.
+func (s *Store) listLaneItems(ctx context.Context, ownerHumanID, statePredicate string, limit int) ([]TodoItem, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+laneCols+`
+		FROM todos t`+ownedByHuman+`$1
+		LEFT JOIN events e ON e.id = t.event_id
+		WHERE `+statePredicate+`
+		ORDER BY t.created_at DESC
+		LIMIT $2`, ownerHumanID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list lane items: %w", err)
+	}
+	return scanTodoItems(rows)
 }

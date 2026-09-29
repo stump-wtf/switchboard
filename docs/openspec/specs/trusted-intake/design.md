@@ -10,7 +10,7 @@ implements: [ADR-0031]
 
 Routing ([SPEC-0020](../event-routing/spec.md)) is first-match-wins, and a faulting rule is
 treated as no-match (`internal/routing/routing.go`). `internal/ingest/selfmanaged.go` logs the
-fault (#226) and routes anyway. A failed sandbox makes rules route by default
+fault as a warning and routes anyway. A failed sandbox makes rules route by default
 (`internal/ingest/ingest.go`). `set_webhook_rules` rebuilds `Params` from the request, so omitting
 it clears allowlists (`internal/mcp/webhook_rules.go`). Trust exists only as jq over `.issue.author`
 and `.artifact.actor_id`.
@@ -46,7 +46,7 @@ sender gate.
 
 **Choice**: `Evaluate` returns `Decision{Disposition: Faulted, Fault: …}` as soon as a rule faults,
 instead of appending to `Trace.Faults` and continuing. The receiver maps `Faulted` to
-"persist the event and no todo" (#212 story), and later to "quarantine" (quarantine story).
+"persist the event and no todo" (the fail-closed story), and later to "quarantine" (quarantine story).
 `test_webhook_rules` reports `faulted` as a blocking outcome.
 
 **Rationale**: putting fail-closed in the pure evaluator means the live receiver, the dry-run and
@@ -54,7 +54,7 @@ the save-time check all inherit it, and cannot disagree. The fleet pack's hand-w
 guards stay harmless and become belt-and-braces.
 
 **Alternatives considered**:
-- Fail closed only for `drop` rules and rules followed by a `queue` (#212 option 1): whether a
+- Fail closed only for `drop` rules and rules followed by a `queue` (option 1 for fail-open rules): whether a
   fault is dangerous depends on everything after it, so the classification is itself error-prone.
   Every rule is simpler and safe.
 
@@ -62,10 +62,22 @@ guards stay harmless and become belt-and-braces.
 
 **Choice**: when the sandbox is unavailable, the receiver answers `503` and persists nothing.
 
-**Rationale**: a sandbox outage is a server fault, not a property of the delivery. Producers retry
-5xx (GitHub, Gitea and Cairn all do), so the delivery arrives again once the instance is healthy
-and routes normally. Quarantining would bury a transient outage under many items that each need
-releasing by hand.
+**Rationale**: a sandbox outage is a server fault, not a property of the delivery. The delivery can
+arrive again once the instance is healthy and route normally, and quarantining would bury a
+transient outage under many items that each need releasing by hand.
+
+The 503 is confined to real outages (no sandbox, no free slot, a child that never reached a rule,
+untrustworthy output). A child killed at its memory limit, or at its deadline after a rule overran
+the whole event budget, is a property of that rule and that payload: it would fail identically on
+every retry. It is therefore a fault of the rule (REQ-1), recorded and counted, and the save-time
+dry-run names it. Two further limits keep the 503 honest:
+
+- **Not every producer retries.** Gitea and Cairn retry a 5xx, but GitHub does not redeliver a
+  failed delivery on its own; its owner redelivers it from the hook's recent deliveries or the
+  API. A 503 on a GitHub webhook is only as good as that follow-up.
+- **One tenant cannot cause another's 503s.** The sandbox's slots are shared per owner (ADR-0038
+  F5): an owner holds at most all but one, so a slow or flooded owner makes only its own deliveries
+  wait.
 
 ### Save-time dry-run over recorded deliveries
 
@@ -92,7 +104,7 @@ the webhook's identity, and must survive rule edits, including an agent's
 
 **Alternatives considered**:
 - A `$params.trusted_*` convention checked by a built-in rule: it keeps trust inside the rule list,
-  where #213-style edits can remove it.
+  where an omitted-params edit can remove it.
 
 ### Quarantine is a reserved queue on the owner endpoint
 
@@ -257,14 +269,14 @@ default and waits in quarantine.
   sender text, and released items that keep `author_trusted = false`. The owner's rules can send
   classifier releases to a cautious lane.
 - **Rollout breaks an existing rule set that faulted quietly.** → Before upgrading, operators run a
-  one-off report that lists every webhook whose last 7 days of traces contain faults. The #212 story
+  one-off report that lists every webhook whose last 7 days of traces contain faults. The fail-closed story
   ships it as a CLI subcommand, and the upgrade note makes running it a step. Nothing defers
   fail-closed: there is no switch to turn it on later.
 
 ## Migration Plan
 
-1. **#213**: omitted params are unchanged. Independent, safe, first.
-2. **#212**: fault stops evaluation, faulted disposition, 503 on a dead sandbox, save-time dry-run,
+1. **Params survive omission**: omitted params are unchanged. Independent, safe, first.
+2. **Rules fail closed**: fault stops evaluation, faulted disposition, 503 on a dead sandbox, save-time dry-run,
    param typing, and the fault report. Release-noted as behaviour-changing.
 3. `trusted_actors`: the column, verbs, actor projection, `.actor` envelope, and `author_trusted`
    in work orders.
