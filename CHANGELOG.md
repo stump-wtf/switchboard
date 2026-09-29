@@ -169,6 +169,9 @@ reversed.
   handle or an absolute `https` URL; anything else is `invalid` and changes nothing). It honours the
   lease-token fence. It is its own grant, listed by the vend wizard and the consent screen, and no
   other verb implies it. (#328)
+- **Attempt history on the Board.** The todo drawer lists each attempt, newest first: who claimed
+  it, when, how it ended, and a "died" marker with the last heartbeat when the lease lapsed with
+  no report. It updates live while open. The A2UI todo detail lists the same history. (#329)
 
 ### Fixed
 

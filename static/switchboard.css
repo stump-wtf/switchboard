@@ -1584,6 +1584,73 @@ pre code {
   color: var(--sb-mint);
 }
 
+/* Attempt history (SPEC-0034 REQ-13): one mono block per attempt, newest first. A died attempt
+   gets a glyph-and-word marker and a failed-tinted rule; the colour only repeats what the text
+   already says. */
+.sb-attempts {
+  margin: 0 0 16px;
+}
+.sb-attempts__heading {
+  margin: 0 0 6px;
+}
+.sb-attempts__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sb-attempt {
+  padding: 6px 0 6px 10px;
+  border-left: 2px solid var(--sb-divider);
+  font-family: var(--sb-font-mono);
+  font-size: 11.5px;
+  color: var(--sb-body);
+}
+.sb-attempt + .sb-attempt {
+  margin-top: 6px;
+}
+.sb-attempt--died {
+  border-left-color: var(--sb-status-failed);
+}
+.sb-attempt__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+.sb-attempt__seq,
+.sb-attempt__times,
+.sb-attempts__none,
+.sb-attempts__more {
+  color: var(--sb-faint-2);
+}
+.sb-attempt__who {
+  word-break: break-all;
+}
+.sb-attempt__died {
+  color: var(--sb-status-failed);
+  font-weight: 600;
+}
+.sb-attempt__times {
+  margin-top: 2px;
+  font-size: 10.5px;
+}
+.sb-attempt__summary {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.sb-attempt__artifact {
+  display: inline-block;
+  margin-top: 4px;
+  word-break: break-all;
+}
+.sb-attempts__none,
+.sb-attempts__more {
+  margin: 0;
+  font-family: var(--sb-font-mono);
+  font-size: 11px;
+}
+
 .sb-drawer__foot {
   display: flex;
   flex-wrap: wrap;
