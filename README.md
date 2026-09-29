@@ -103,6 +103,8 @@ the caller knows a secret, but unlike HMAC it can't attest the payload.
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each release, and every breaking change |
 | [Run your own switchboard](docs/guides/14-self-hosting.md) | **Self-hosting:** the published image and compose file, configuration, reverse proxy, sign-in |
 | [Upgrading](docs/guides/15-upgrading.md) | **Read before upgrading.** The breaking changes, who they affect, and what a release cannot undo |
+| [Operator CLI reference](docs/guides/16-cli-reference.md) | Every `switchboard` subcommand and flag, as the binary prints it |
+| [Change webhook routing safely](docs/guides/17-webhook-routing-safely.md) | The backup → dry-run → apply → verify → roll-back loop for a webhook's routing rules |
 
 Released builds are published to `ghcr.io/stump-wtf/switchboard`, tagged `latest` and by
 version. Tag `latest` by digest, not by name: it moves only when a `v*` tag is pushed, so
