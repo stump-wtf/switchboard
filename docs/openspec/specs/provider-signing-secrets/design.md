@@ -8,7 +8,7 @@ implements: [ADR-0037]
 
 ## Context
 
-[SPEC-0032](spec.md) fixes a gap #291 left: with the instance-wide receivers gone, the only ingestion
+[SPEC-0032](spec.md) fixes a gap the shared-receiver removal left: with the instance-wide receivers gone, the only ingestion
 path is `create_webhook`, which mints every signed secret, and Stripe, Slack, Linear and Plain issue
 their own. The code this touches:
 

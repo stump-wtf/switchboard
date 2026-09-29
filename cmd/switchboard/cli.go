@@ -19,6 +19,10 @@ package main
 // second thing can be revoked — `revoke` alone would have to mean endpoints by fiat, and the next
 // resource has nowhere to go. The pre-grouping spellings (`endpoints`, `agents`, `vend`) still
 // work as hidden aliases so anything already scripted keeps running.
+//
+// @joestump-agent 09/29/2026 - A group may nest one more group (`webhook rules get`), so a
+// resource's sub-resource gets the same verb-listing usage and help as a top-level one. Added the
+// `webhook` group: list, and rules get/set/test (SPEC-0035).
 
 import (
 	"bufio"
@@ -108,6 +112,14 @@ func commands() []command {
 		{name: "todo", args: "<verb>", summary: "hand work to your agents", subs: []command{
 			{name: "push", args: "ENDPOINT TITLE", summary: "mint a todo on an endpoint you own and ring its doorbell", run: cmdTodoPush},
 		}},
+		{name: "webhook", args: "<verb>", summary: "manage your webhooks and their routing rules", subs: []command{
+			{name: "list", summary: "list the webhooks your endpoints own (never their ingest URLs)", run: cmdWebhookList},
+			{name: "rules", args: "<verb>", summary: "read, test and replace a webhook's routing rules", subs: []command{
+				{name: "get", args: "WEBHOOK_ID", summary: "show a webhook's rules, default, params and grant", run: cmdWebhookRulesGet},
+				{name: "test", args: "WEBHOOK_ID", summary: "dry-run rules against a stored event or a sample payload; saves nothing", run: cmdWebhookRulesTest},
+				{name: "set", args: "WEBHOOK_ID", summary: "replace a webhook's rules from a file (the get --json shape)", run: cmdWebhookRulesSet},
+			}},
+		}},
 		{name: "login", args: "[URL]", summary: "sign in to a deployment over OAuth (opens your browser)", run: cmdLogin},
 		{name: "status", summary: "show where you are logged in and whether the credentials are live", run: cmdStatus},
 		{name: "logout", summary: "forget the local credentials", run: cmdLogout},
@@ -146,6 +158,9 @@ func (c *cli) runGroup(group command, args []string) int {
 	}
 	for _, sub := range group.subs {
 		if sub.name == args[0] {
+			if len(sub.subs) > 0 {
+				return c.runGroup(nested(group, sub), args[1:])
+			}
 			return sub.run(c, args[1:])
 		}
 	}
@@ -154,14 +169,40 @@ func (c *cli) runGroup(group command, args []string) int {
 	return exitUsage
 }
 
-func (c *cli) groupUsage(group command, w io.Writer) {
-	fmt.Fprintf(w, "usage: switchboard %s <verb> [flags]\n\n%s\n\nverbs:\n", group.name, group.summary)
+// nested is a group's sub-group named by its full path ("webhook rules"), so its usage and errors
+// print the command a person actually types.
+func nested(group, sub command) command {
+	sub.name = group.name + " " + sub.name
+	return sub
+}
+
+// groupLines lists a group's verbs as "<path> <verb> ARGS" synopses, descending into a sub-group so
+// every runnable verb appears with its full path.
+func groupLines(group command) (synopses, summaries []string) {
 	for _, sub := range group.subs {
-		synopsis := sub.name
+		if len(sub.subs) > 0 {
+			s, m := groupLines(nested(group, sub))
+			synopses, summaries = append(synopses, s...), append(summaries, m...)
+			continue
+		}
+		synopsis := group.name + " " + sub.name
 		if sub.args != "" {
 			synopsis += " " + sub.args
 		}
-		fmt.Fprintf(w, "  switchboard %s %-18s %s\n", group.name, synopsis, sub.summary)
+		synopses, summaries = append(synopses, synopsis), append(summaries, sub.summary)
+	}
+	return synopses, summaries
+}
+
+func (c *cli) groupUsage(group command, w io.Writer) {
+	fmt.Fprintf(w, "usage: switchboard %s <verb> [flags]\n\n%s\n\nverbs:\n", group.name, group.summary)
+	synopses, summaries := groupLines(group)
+	width := 18 + len(group.name) + 1
+	for _, s := range synopses {
+		width = max(width, len(s))
+	}
+	for i, s := range synopses {
+		fmt.Fprintf(w, "  switchboard %-*s %s\n", width, s, summaries[i])
 	}
 	fmt.Fprintf(w, "\nRun \"switchboard %s <verb> -h\" for that verb's flags.\n", group.name)
 }
@@ -199,6 +240,7 @@ func (c *cli) usage(w io.Writer) {
 	fmt.Fprintln(w, "switchboard — the switchboard server and its operator CLI")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "usage:")
+	var synopses, summaries []string
 	for _, cmd := range commands() {
 		if cmd.hidden {
 			continue
@@ -207,14 +249,16 @@ func (c *cli) usage(w io.Writer) {
 		if cmd.args != "" {
 			synopsis += " " + cmd.args
 		}
-		fmt.Fprintf(w, "  switchboard %-22s %s\n", synopsis, cmd.summary)
-		for _, sub := range cmd.subs {
-			subSyn := cmd.name + " " + sub.name
-			if sub.args != "" {
-				subSyn += " " + sub.args
-			}
-			fmt.Fprintf(w, "  switchboard %-22s %s\n", subSyn, sub.summary)
-		}
+		subSyn, subSum := groupLines(cmd)
+		synopses = append(append(synopses, synopsis), subSyn...)
+		summaries = append(append(summaries, cmd.summary), subSum...)
+	}
+	width := 22
+	for _, s := range synopses {
+		width = max(width, len(s))
+	}
+	for i, s := range synopses {
+		fmt.Fprintf(w, "  switchboard %-*s %s\n", width, s, summaries[i])
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, `Run "switchboard <command> -h" for that command's flags.`)
@@ -234,18 +278,30 @@ func cmdHelp(c *cli, args []string) int {
 	if len(cmd.subs) == 0 {
 		return cmd.run(c, []string{"-h"})
 	}
-	if len(args) == 1 {
-		c.groupUsage(cmd, c.stdout)
-		return exitOK
+	for _, word := range args[1:] {
+		next, ok := findSub(cmd, word)
+		if !ok {
+			fmt.Fprintf(c.stderr, "switchboard %s: unknown verb %q\n\n", cmd.name, word)
+			c.groupUsage(cmd, c.stderr)
+			return exitUsage
+		}
+		if len(next.subs) == 0 {
+			return next.run(c, []string{"-h"})
+		}
+		cmd = nested(cmd, next)
 	}
-	for _, sub := range cmd.subs {
-		if sub.name == args[1] {
-			return sub.run(c, []string{"-h"})
+	c.groupUsage(cmd, c.stdout)
+	return exitOK
+}
+
+// findSub resolves one verb of a group.
+func findSub(group command, name string) (command, bool) {
+	for _, sub := range group.subs {
+		if sub.name == name {
+			return sub, true
 		}
 	}
-	fmt.Fprintf(c.stderr, "switchboard %s: unknown verb %q\n\n", cmd.name, args[1])
-	c.groupUsage(cmd, c.stderr)
-	return exitUsage
+	return command{}, false
 }
 
 func cmdVersion(c *cli, _ []string) int {

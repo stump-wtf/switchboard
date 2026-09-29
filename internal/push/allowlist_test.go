@@ -167,27 +167,28 @@ func TestAllowlistHostnameListenAddrFailsClosed(t *testing.T) {
 	}
 }
 
-// A resolution-dependent refusal is a *Rejection: Error() keeps the address for logs, Summary names
-// only the class, and errors.Is(err, ErrValidation) still holds.
+// A resolution-dependent refusal answers PublicReason with its class and never the address, while
+// Error() keeps the address for the server log and errors.Is(err, ErrValidation) still holds.
+// #500 replaced this branch's own Rejection type with refusal/PublicReason; the invariant is the
+// same, asserted against the API that actually ships.
 func TestRejectionSummaryOmitsAddress(t *testing.T) {
 	ctx := context.Background()
 	v := New(WithResolver(&fakeResolver{byHost: map[string][]net.IPAddr{"svc": ipAddrs("172.18.0.5")}}))
 	cases := map[string]string{
-		"https://svc/":        "host resolves to a private address",
-		"https://172.18.0.5/": "address is a private address",
-		"https://nohost/":     "host did not resolve",
+		"https://svc/":        "resolves to a private address",
+		"https://172.18.0.5/": "resolves to a private address",
+		"https://nohost/":     RefusedUnresolvable,
 	}
 	for u, want := range cases {
 		err := v.Validate(ctx, u)
-		var rej *Rejection
-		if !errors.Is(err, ErrValidation) || !errors.As(err, &rej) {
-			t.Fatalf("%s: want a *Rejection wrapping ErrValidation, got %v", u, err)
+		if !errors.Is(err, ErrValidation) {
+			t.Fatalf("%s: want an error wrapping ErrValidation, got %v", u, err)
 		}
-		if rej.Summary != want {
-			t.Errorf("%s: Summary %q, want %q", u, rej.Summary, want)
+		if got := PublicReason(err); got != want {
+			t.Errorf("%s: PublicReason %q, want %q", u, got, want)
 		}
-		if strings.Contains(rej.Summary, "172.18.0.5") {
-			t.Errorf("%s: Summary %q names the address", u, rej.Summary)
+		if strings.Contains(PublicReason(err), "172.18.0.5") {
+			t.Errorf("%s: PublicReason %q names the address", u, PublicReason(err))
 		}
 	}
 	if err := v.Validate(ctx, "https://svc/"); !strings.Contains(err.Error(), "172.18.0.5") {

@@ -6,6 +6,7 @@ package store
 // resolution, and the RecentEvents "deduped" flag.
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -151,6 +152,100 @@ func TestTodoItemTrustModeAndDedupCount(t *testing.T) {
 	pit, _ := s.GetTodoItem(ctx, ownerOf(t, s, ctx, ep), plain.ID)
 	if pit.TrustMode != "queue" {
 		t.Fatalf("event-less trust mode = %q, want queue", pit.TrustMode)
+	}
+}
+
+// The Board's per-lane read must not let a burst of pending intake hide the patched-through lane:
+// the old board fetch read ONE newest-60 window and partitioned it into the lanes, so 65 newer
+// pending todos pushed every claimed-and-beyond todo out of the window and the patched lane
+// rendered its empty state next to a stable non-zero header count, recovering only when the mix
+// shifted (stump-wtf/switchboard#31 — the intermittent empty PATCHED THROUGH list). Per-lane reads
+// return a lane's own rows regardless of what the other lane is doing.
+func TestListLaneItemsSurvivesPendingBurst(t *testing.T) {
+	s, ctx := testStore(t)
+
+	ep := seedEndpoint(t, s, ctx, "lane-burst", "q")
+	owner := ownerOf(t, s, ctx, ep)
+
+	mk := func(key string) Todo {
+		td, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: ep, Queue: "q", Source: "github", Kind: "push", Title: "t", IdempotencyKey: key})
+		if err != nil {
+			t.Fatalf("create %s: %v", key, err)
+		}
+		return td
+	}
+
+	// Two patched-through todos (one done, one failed) that are HOURS older than the pending burst.
+	oldDone := mk("lane-burst-done")
+	dc, _ := s.ClaimTodo(ctx, ep, oldDone.ID, "op:h", time.Hour)
+	if _, err := s.CompleteTodo(ctx, ep, dc.ID, "op:h", []byte(`{}`)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	oldFailed := mk("lane-burst-failed")
+	if _, err := s.pool.Exec(ctx, `UPDATE todos SET max_attempts=1 WHERE id=$1`, oldFailed.ID); err != nil {
+		t.Fatalf("cap attempts: %v", err)
+	}
+	fc, _ := s.ClaimTodo(ctx, ep, oldFailed.ID, "op:h", time.Hour)
+	if _, err := s.FailTodo(ctx, ep, fc.ID, "op:h", []byte(`{}`)); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE todos SET created_at = now() - interval '2 hours' WHERE id = ANY($1)`,
+		[]string{oldDone.ID, oldFailed.ID}); err != nil {
+		t.Fatalf("age patched todos: %v", err)
+	}
+
+	// A pending burst NEWER than both: more rows than the old 60-row window could hold, so under
+	// the old fetch the window held pending rows only.
+	const burst = 65
+	for i := 0; i < burst; i++ {
+		mk(fmt.Sprintf("lane-burst-pending-%d", i))
+	}
+
+	verified, patched, err := s.ListLaneItems(ctx, owner, 8, 8)
+	if err != nil {
+		t.Fatalf("list lanes: %v", err)
+	}
+	if len(verified) != 8 {
+		t.Fatalf("verified lane = %d rows, want the 8-row cap", len(verified))
+	}
+	for _, it := range verified {
+		if it.State != "pending" {
+			t.Fatalf("verified lane carries %q state %q", it.ID, it.State)
+		}
+	}
+	if len(patched) != 2 {
+		t.Fatalf("patched lane = %d rows, want the 2 done/failed todos the old window would have hidden: %+v", len(patched), patched)
+	}
+	got := map[string]bool{}
+	for _, it := range patched {
+		if it.State != "done" && it.State != "failed" {
+			t.Fatalf("patched lane carries %q state %q", it.ID, it.State)
+		}
+		got[it.ID] = true
+	}
+	if !got[oldDone.ID] || !got[oldFailed.ID] {
+		t.Fatalf("patched lane missing its rows: got %v, want %s and %s", got, oldDone.ID, oldFailed.ID)
+	}
+
+	// The read is as tenant-scoped as the table it summarises: a second human's patched rows are
+	// invisible. Asserted on ids, never a count (the tenancy_isolation_test.go convention).
+	epB := seedEndpoint(t, s, ctx, "lane-burst-other", "q")
+	other, _, err := s.CreateTodo(ctx, CreateTodoParams{EndpointID: epB, Queue: "q", Source: "github", Kind: "push", Title: "t", IdempotencyKey: "lane-burst-other-claimed"})
+	if err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+	if _, err := s.ClaimTodo(ctx, epB, other.ID, "op:other", time.Hour); err != nil {
+		t.Fatalf("claim other: %v", err)
+	}
+	_, patchedB, err := s.ListLaneItems(ctx, owner, 8, 8)
+	if err != nil {
+		t.Fatalf("list lanes for A: %v", err)
+	}
+	for _, it := range patchedB {
+		if it.ID == other.ID {
+			t.Fatalf("patched lane leaked tenant B's todo %s", other.ID)
+		}
 	}
 }
 

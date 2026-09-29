@@ -70,24 +70,40 @@ The first output of your filter decides the match with jq truthiness: anything e
 Rules can also read **`$params`**, an object you save alongside the rules (`set_webhook_rules`'s
 `params`, up to 16 KiB). Keep allowlists there instead of splicing names into every expression:
 `.issue.author as $a | any($params.trusted_humans[]; . == $a)`. Only the webhook owner's verbs
-change params — a delivery cannot. `set_webhook_rules` replaces params with the rules; omitting
-them clears them.
+change params — a delivery cannot. `set_webhook_rules` replaces params when you send them; omitting
+`params` keeps the saved ones, and only an explicit `"params": {}` clears them. Every rules verb
+echoes the params in force.
 
 Rules are sandboxed. `env`/`$ENV`, `input`/`inputs`, `input_filename`, `debug`, `stderr`, `halt`,
 `halt_error`, `now`, `localtime`, `strflocaltime`, and `import`/`include` are refused at save time.
 Each rule gets 50 ms and a delivery's whole rule list 250 ms; evaluation runs in a separate,
-memory-capped process. A rule that errors, times out, or blows its budget is treated as no-match
-and recorded on the trace — it never fails the delivery. Limits: 32 rules, 4096-byte expressions.
+memory-capped process. Limits: 32 rules, 4096-byte expressions.
+
+**Routing fails closed.** A rule that errors, times out, runs out of budget, or no longer compiles
+**stops evaluation**. No later rule runs, and the default does not apply. The delivery is recorded
+with `disposition: "faulted"` and its trace, and it creates no todo. It spends its dedup slot as a
+drop does, so a redelivery stays faulted. Every faulted delivery increments
+`switchboard_routing_faults_total{cause}` and logs one warning. Find them with
+`list_webhook_events {"disposition": "faulted"}`. If the evaluator itself cannot run (the sandbox
+failed to start, is saturated, or died), a webhook with rules answers `503 routing unavailable`,
+persists nothing, and lets the producer retry. A webhook with no rules is unaffected.
+
+To catch faults before they reach live traffic, `set_webhook_rules`, `add_webhook_rule`,
+`update_webhook_rule` and `move_webhook_rule` dry-run the resulting rules against the webhook's 50
+most recent deliveries. If any rule faults on any of them, the save is refused, naming the rule,
+the event ids and the cause. `params` values must be a string, a number, a boolean, or a list of
+all strings or all numbers (`invalid_params` otherwise).
 
 ## The tools
 
 All seven are webhook self-management verbs on your vended endpoint, gated by scope and by owning
-the webhook (any endpoint of the same human may manage it).
+the webhook: only the endpoint that owns a webhook may manage its rules. Your other endpoints get
+`not_found`, exactly as for a webhook that does not exist.
 
 | Tool | Does |
 |---|---|
 | `list_webhook_rules` | the rules in order, the default, and the queues/endpoints actions may reach (`grant`) |
-| `set_webhook_rules` | replace the whole list (and default) atomically |
+| `set_webhook_rules` | replace the whole list (and default) atomically; `params` only when sent |
 | `add_webhook_rule` | insert one rule at a `position` (default: last) |
 | `update_webhook_rule` | change a rule's name, expression, or action |
 | `move_webhook_rule` | reorder — order is precedence |
@@ -96,6 +112,13 @@ the webhook (any endpoint of the same human may manage it).
 
 A save that fails — a typo, a forbidden function, a queue or endpoint the webhook cannot reach —
 names the offending rule and leaves the previous rules in force.
+
+The human who owns the endpoint can do the same from the CLI or the API, whatever the endpoint's
+scope: `switchboard webhook rules get|test|set` over `/api/v1/webhooks/{id}/rules`, running the same
+validation, dry run and save as the tools above. See
+[Managing webhook routing rules](06-operator-cli.md#managing-webhook-routing-rules). One difference:
+there, a replace without `params` keeps the stored params, where `set_webhook_rules` currently
+clears them.
 
 ## Authoring loop
 
@@ -170,9 +193,10 @@ disagrees with the body is a 401 and nothing is stored.
 
 Endpoints vended before routing shipped were granted the verb list of their day: they lack the seven
 rule verbs in their scope and `cairn` in their allowed source types. Endpoint scope is immutable
-([SPEC-0007](/specs/identity/spec)) and there is no verb that widens it: re-vend the endpoint, rotate
-its consumer's credential, and revoke the old one. Guide 08 covers the operator-only interim of
-writing validated rules directly.
+([SPEC-0007](/specs/identity/spec)) and there is no verb that widens it, so the endpoint itself can
+never manage its webhook's rules over MCP. Its human can: `switchboard webhook rules set` (guide 06)
+edits the rules of any webhook your endpoints own, validated and dry-run exactly like the MCP verb.
+Re-vend only when the agent itself must manage its rules, or needs a source type its ceiling lacks.
 
 > Deeper detail: [ADR-0024 — Event routing](/decisions/ADR-0024-event-routing-deterministic-and-llm),
 > [ADR-0025 — Handoff work orders and difficulty lanes](/decisions/ADR-0025-handoff-work-orders-and-difficulty-lanes),

@@ -9,7 +9,9 @@ create a webhook, send a test delivery, watch it become a todo, and claim it. Th
 GitHub, Gitea, your own signed producer, and Cairn.
 
 You need an endpoint vended with a webhook allowance (the wizard's webhooks step) and an agent
-connected to it. See [Sign in and vend your first endpoint](/getting-started/first-endpoint).
+connected to it. See [Sign in and vend your first endpoint](/getting-started/first-endpoint). The
+`curl` examples read your instance from `$SWITCHBOARD_URL` (see
+[Your instance URL](/getting-started/concepts#your-instance-url)).
 
 ## 1. Create a webhook
 
@@ -22,7 +24,7 @@ Ask your agent to call `create_webhook`, or call it yourself from any MCP client
 ```json
 {
   "webhook_id": "6aa636e3-…",
-  "ingest_url": "https://switchboard.stump.wtf/webhooks/w/<token>",
+  "ingest_url": "https://<your-switchboard>/webhooks/w/<token>",
   "source_type": "generic",
   "target_queue": "inbox",
   "trust_mode": "token"
@@ -36,7 +38,7 @@ The source type decides how deliveries are checked:
 | `github` | signed | `X-Hub-Signature-256: sha256=<hex>`, an HMAC-SHA256 of the raw body |
 | `gitea` | signed | `X-Gitea-Signature: <hex>` (no prefix), or the GitHub-style header |
 | `cairn` | signed | `X-Cairn-Signature: sha256=<hex>`, plus a signed `event_id` and a `created_at` within 5 minutes |
-| `stripe`, `slack` | signed | their providers' own signature schemes |
+| `stripe`, `slack` | signed | **Not usable yet: the provider issues the secret.** Stripe and Slack sign with a secret they generate, and switchboard only verifies against the one it minted, so every delivery fails with `401`. Slack's Events API can't save the URL either, because switchboard doesn't answer its `url_verification` challenge. See [ADR-0037](/decisions/ADR-0037-provider-issued-signing-secrets) |
 | `generic` | token | nothing: the unguessable URL is the credential |
 
 A **signed** webhook's result also includes a `signing_secret` (`whsec_…`). **It is shown once**,
@@ -48,7 +50,7 @@ returns it again.
 A `generic` webhook accepts any POST to its URL:
 
 ```bash
-curl -sS -X POST "https://switchboard.stump.wtf/webhooks/w/<token>" \
+curl -sS -X POST "$SWITCHBOARD_URL/webhooks/w/<token>" \
   -H 'Content-Type: application/json' \
   -d '{"hello": "switchboard"}'
 ```
@@ -82,10 +84,15 @@ If your agent is channel-connected, a doorbell arrives now. Either way, the queu
 {"todos": [{
   "id": "td_69315ae1-…", "queue": "inbox", "source": "generic", "kind": "webhook",
   "title": "self-managed generic delivery", "state": "pending", "attempt": 0, "max_attempts": 5,
-  "payload": {"hello": "switchboard"},
-  "routing": {"stage": "default", "cause": "no_match_default", "action": {"queue": "inbox"}}
+  "next_retry_at": null, "dead_letter": false,
+  "created_at": "…", "payload_size": 24
 }]}
 ```
+
+A listing carries compact rows: `payload_size` says what claiming will return, and the `payload` and
+`routing` trace arrive with the `claim`. `next_retry_at` is the time a failed todo re-enters
+`pending`, or `null` when no retry is scheduled; `dead_letter` is `true` when it failed and nothing
+will re-queue it.
 
 Work it:
 

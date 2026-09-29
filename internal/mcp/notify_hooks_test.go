@@ -378,13 +378,13 @@ func TestCreateNotifyHookRefusalDoesNotLeakResolution(t *testing.T) {
 		leakers []string
 	}{
 		{name: "private resolution", res: newHookResolver(), url: "https://internal.example.com/sb",
-			want: "url refused: host resolves to a private address", leakers: []string{"10.0.0.5"}},
+			want: "url refused: resolves to a private address", leakers: []string{"10.0.0.5"}},
 		{name: "loopback resolution", res: newHookResolver(), url: "https://harness.local/sb",
-			want: "url refused: host resolves to a loopback address", leakers: []string{"127.0.0.1"}},
+			want: "url refused: resolves to a loopback address", leakers: []string{"127.0.0.1"}},
 		{name: "empty answer", res: newHookResolver(), url: "https://unknown.example.com/sb",
-			want: "url refused: host did not resolve"},
+			want: "url refused: host could not be resolved"},
 		{name: "resolver error", res: failingResolver{}, url: "https://db.internal/sb",
-			want: "url refused: host did not resolve", leakers: []string{"127.0.0.11", "no such host", "lookup"}},
+			want: "url refused: host could not be resolved", leakers: []string{"127.0.0.11", "no such host", "lookup"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

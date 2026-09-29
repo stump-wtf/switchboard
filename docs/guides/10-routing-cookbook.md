@@ -76,14 +76,15 @@ previous rules in force:
 | Functions | `env`, `$ENV`, `input`, `inputs`, `input_filename`, `debug`, `stderr`, `halt`, `halt_error`, `now`, `localtime`, `strflocaltime`, `import`, `include` are refused |
 
 At delivery time each rule gets 50 ms and the whole list 250 ms, in a separate, memory-capped
-process. A rule that errors, times out, or runs out of budget counts as **no match** and is
-recorded on the trace. It never fails the delivery.
+process. A rule that errors, times out, or runs out of budget **faults**. Evaluation stops there, no
+later rule or default applies, and the delivery is recorded as `faulted` with no todo. Rules
+fail closed.
 
-> **Allowlists must fail closed.** Save-time validation doesn't type-check `params`, and a rule that
-> errors counts as no match. A drop rule like "drop if the sender isn't trusted" that errors because
-> `trusted` was saved as a string instead of a list therefore lets **everyone** through. Read list
-> params through `arrays` (`($params.trusted | arrays) // []`), so a missing or mistyped list trusts
-> no one. Every allowlist on this page does.
+> **Guard allowlists anyway.** The engine no longer lets a faulting trust rule wave a delivery
+> through, and `params` are type-checked at save time. But a faulting rule still means that
+> delivery routes **nowhere**, which quietly starves the lane behind it. Read list params through
+> `arrays` (`($params.trusted | arrays) // []`), so a missing list evaluates cleanly and trusts no
+> one. Every allowlist on this page does.
 
 > **Grant queues twice.** A rule can only name a queue the endpoint was granted as a *webhook
 > queue* (the vend wizard's webhooks step). The endpoint's worker only sees todos on its *scoped
@@ -133,11 +134,12 @@ Every todo a routed delivery creates carries a `routing` trace, and so does the 
 | `default` | `no_match_default` | No rule matched; the default action applied. |
 | `default` | `rule_not_granted` | A rule matched, but its queue or endpoint is no longer reachable (a route was removed, the endpoint revoked). The default applied instead, and later rules were **not** tried. `rule_id` names the rule. |
 | `default` | `default_not_granted` | The default itself is unreachable, so the delivery fell back to the webhook's target queue on every target. |
+| `fault` | `error`, `timeout`, `compile_error`, `budget_exhausted` | A rule could not be evaluated. Evaluation stopped at `rule_index` / `rule_id`, and the delivery was recorded as `faulted` with no todo. `faults` carries the detail. |
 
-A `faults` list rides alongside when a rule could not be evaluated: `error`, `timeout`,
-`compile_error`, or `budget_exhausted` for one rule, and `sandbox_failure` or `sandbox_busy`
-(with `rule_index: -1`) when the evaluator itself could not run. A dropped delivery, or a `once`
-repeat, creates no todo, so its trace lives on the event only.
+When the evaluator itself cannot run (`sandbox_failure`, `sandbox_busy`), nothing is recorded: the
+producer gets `503 routing unavailable` and retries. A dropped or faulted delivery, or a `once`
+repeat, creates no todo, so its trace lives on the event only. Filter for them with
+`list_webhook_events {"disposition": "faulted"}` (or `"dropped"`).
 
 ## Recipes
 
@@ -232,9 +234,9 @@ route it:
 `sender` is whoever caused *this* delivery (the labeler, the commenter); the issue or pull request
 `user` is its author. Checking both stops a stranger from steering work by labeling a trusted
 issue, and stops a trusted labeler from promoting a stranger's issue into work. To trust someone
-new, save the same rules with a longer `trusted` list. `set_webhook_rules` replaces rules, default,
-and params together, and omitting `params` clears them, which (by design) makes this rule drop
-everyone.
+new, save the same rules with a longer `trusted` list. `set_webhook_rules` replaces rules and
+default, and replaces params only when you send them: omitting `params` keeps the saved list, and
+an explicit `"params": {}` clears it, which (by design) makes this rule drop everyone.
 
 This is provenance switchboard can check: the sender and author come from a delivery whose
 signature verified. The issue *text* is a different matter: it is still whatever the author typed.

@@ -29,12 +29,13 @@ type recMetrics struct {
 	claims   map[string][]int // queue -> attempt numbers, in claim order
 	finished map[string]int   // "queue/outcome"
 	expired  map[string]int   // queue
+	closed   map[string]int   // "queue/outcome" (SPEC-0034 REQ-14, the optional AttemptMetrics sink)
 }
 
 func newRecMetrics() *recMetrics {
 	return &recMetrics{
 		created: map[string]int{}, claims: map[string][]int{},
-		finished: map[string]int{}, expired: map[string]int{},
+		finished: map[string]int{}, expired: map[string]int{}, closed: map[string]int{},
 	}
 }
 
@@ -60,6 +61,23 @@ func (r *recMetrics) LeaseExpired(queue string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.expired[queue]++
+}
+
+func (r *recMetrics) AttemptClosed(queue, outcome string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed[queue+"/"+outcome]++
+}
+
+// closedSnapshot returns a copy of the attempts-closed counts.
+func (r *recMetrics) closedSnapshot() map[string]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]int{}
+	for k, v := range r.closed {
+		out[k] = v
+	}
+	return out
 }
 
 // snapshot returns a copy of every map, so assertions never race a late increment.

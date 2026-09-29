@@ -72,7 +72,8 @@ When orchestrating multiple SDD plugin skills in a single session (e.g., running
 - **Base URL**: https://gitea.stump.rocks
 - **Owner**: stump.wtf
 - **Repo**: switchboard
-- **Note**: origin of truth is https://gitea.stump.rocks/stump.wtf/switchboard; GitHub (github.com/stump-wtf/switchboard) is the push mirror, so open pull requests and issues against the Gitea copy — branches on the mirror are force-replaced by the next sync. Docs are published at https://switchboard.stump.wtf/docs/: a push to `main` runs `.gitea/workflows/docs.yaml`, which builds the site into the `switchboard-docs` image, and the live site changes when that container is redeployed and pulls it.
+- **Note (outside readers)**: the Gitea host above is private. If you are reading this from the public mirror, https://github.com/stump-wtf/switchboard, report bugs and requests as GitHub Issues there; pull requests opened on the mirror can't be merged, because the mirror is overwritten by each sync.
+- **Note (our agents)**: origin of truth is https://gitea.stump.rocks/stump.wtf/switchboard; GitHub (github.com/stump-wtf/switchboard) is the push mirror, so open pull requests and issues against the Gitea copy — branches on the mirror are force-replaced by the next sync. Docs are published at https://switchboard.stump.wtf/docs/: a push to `main` runs `.gitea/workflows/docs.yaml`, which builds the site into the `switchboard-docs` image, and the live site changes when that container is redeployed and pulls it.
 
 #### Branch Conventions
 

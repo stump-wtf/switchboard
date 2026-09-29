@@ -4,7 +4,10 @@ name: Secret scan (gitleaks)
 
 on:
   push:
-    branches: [main]
+    # train/** is the merge train (ADR-0032): a train commit is main plus one
+    # PR, and it must pass the same secret scan a PR does. The scan stays
+    # comment-only (publish: false), so a train run publishes nothing.
+    branches: [main, 'train/**']
   pull_request:
   workflow_dispatch:
 

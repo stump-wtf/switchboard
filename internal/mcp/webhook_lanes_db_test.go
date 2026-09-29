@@ -21,7 +21,7 @@ func TestFleetPackInstallsAndDryRuns(t *testing.T) {
 	f := newRouteFixture(t, ctx, pool)
 	verbs := append(append([]string{}, allRuleVerbs...), allRouteVerbs...)
 
-	_, hash, prefix, err := cred.Mint()
+	token, hash, prefix, err := cred.Mint()
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -33,19 +33,13 @@ func TestFleetPackInstallsAndDryRuns(t *testing.T) {
 		[]string{"triage", "lane-s", "lane-m", "lane-l", "lane-vision", "hold"}); err != nil {
 		t.Fatalf("ceiling: %v", err)
 	}
-	token, hash2, prefix2, err := cred.Mint()
-	if err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	session, err := f.st.CreateEndpoint(ctx, f.agentA1, hash2, prefix2, "lanes-admin-88888888", []string{"router"}, verbs)
-	if err != nil {
-		t.Fatalf("session endpoint: %v", err)
-	}
 	wh, err := f.st.CreateWebhook(ctx, router.ID, "gitea", "triage", "signed", "tok-lanes-mcp", "whsec", 5)
 	if err != nil {
 		t.Fatalf("webhook: %v", err)
 	}
-	cs := ruleSession(t, ctx, f.st, session.Slug, token)
+	// The router's rules are configured from the router itself: a webhook acts with its own
+	// endpoint's authority and no sibling's (SPEC-0033 F19).
+	cs := ruleSession(t, ctx, f.st, router.Slug, token)
 
 	raw, err := os.ReadFile("../../docs/routing/rule-packs/fleet.json")
 	if err != nil {
