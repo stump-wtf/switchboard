@@ -948,6 +948,16 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 // the existing doorbell hook, plus the requeue paths".
 const movedPushEligible = `EXISTS (SELECT 1 FROM events ev WHERE ev.id = upd.event_id AND (ev.verified OR ev.trust_mode = 'token'))`
 
+// reapedSelect is closedSelectFinal with the SPEC-0024 sender gate (movedPushEligible) as a final
+// select item: the reaper hands the notify-hook ready hook only rows that re-entered pending AND
+// pass the gate, while keeping main's attempt-closing columns for the REQ-15 fields and the
+// attempts-closed counter.
+const reapedSelect = `SELECT ` + todoCols + `, c.todo_id IS NOT NULL,
+			c.fa_disposition IS NOT DISTINCT FROM 'dead_lettered', c.fa_seq, c.fa_outcome,
+			COALESCE(c.fa_outcome IN ('lease_expired', 'reaped'), false), c.fa_summary, c.fa_artifact,
+			upd.attempts_total, ` + movedPushEligible + `
+		FROM upd LEFT JOIN closed c ON c.todo_id = upd.id`
+
 // fireRequeued tells the ready hook about every moved row that landed back in pending and passes
 // the sender gate. A reaped row that dead-lettered (failed) is not ready and fires nothing.
 func (s *Store) fireRequeued(moved []Todo, eligible []bool) {
@@ -1365,7 +1375,7 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
-		SELECT `+closedSelectFinal+`, `+movedPushEligible)
+		`+reapedSelect)
 	if err != nil {
 		return 0, err
 	}
