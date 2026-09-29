@@ -74,7 +74,7 @@ func (internalResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAd
 func TestNormalizeReplayTargetsNamesNoResolvedAddress(t *testing.T) {
 	v := push.New(push.WithResolver(internalResolver{}))
 	for target, want := range map[string]string{
-		"https://db.corp.internal/":      `replay target "https://db.corp.internal/" resolves to a disallowed address`,
+		"https://db.corp.internal/":      `replay target "https://db.corp.internal/" resolves to a private address`,
 		"https://nowhere.corp.internal/": `replay target "https://nowhere.corp.internal/" host could not be resolved`,
 		"http://203.0.113.10/":           `replay target "http://203.0.113.10/" must use https`,
 	} {

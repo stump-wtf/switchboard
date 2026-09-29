@@ -127,11 +127,15 @@ type toastMsg struct {
 
 // lanesView feeds the "board_lanes" fragment: the server-rendered three-lane panel. Received is
 // empty on every full render (ephemeral, SSE-only); verified/patched render from the durable queue.
+// Failed marks the durable-lane READ as failed: the two lanes then render a failed-to-load label
+// instead of their empty states, which would lie ("nothing claimed yet") about work the queue
+// verifiably holds while the header counts — a separate read — keep telling the truth (#31).
 type lanesView struct {
 	Received []laneCard
 	Verified []laneCard
 	Patched  []laneCard
 	Counts   laneCounts
+	Failed   bool
 }
 
 // bar is one throughput-tile activity bar.
@@ -321,6 +325,19 @@ func (h *Handler) PublishTodoTransition(verb string, t store.Todo) {
 				}
 			} else {
 				h.log.Warn("live todo_row lookup", "todo", t.ID, "err", err)
+			}
+			// An open drawer's attempt history follows the same transition: a claim opens an
+			// attempt and every lease-ending verb closes one. The swap lands in the drawer's
+			// aria-live region and no-ops when no drawer for this todo is open. The read carries
+			// the owner the frame is routed to, so it can hold nothing that owner could not open.
+			// A failed read skips the swap; the drawer keeps its last render until reopened.
+			// Governing: SPEC-0034 REQ-13, Accessibility Requirements "Dynamic Content Regions".
+			if al := h.loadAttempts(ctx, owner, t.ID); !al.Unavailable {
+				if frag, err := h.renderFragment("attempts_oob", al); err == nil {
+					payload.WriteString(frag)
+				} else {
+					h.log.Error("render attempts_oob fragment", "todo", t.ID, "err", err)
+				}
 			}
 		}
 		// Background transitions surface as transient toasts announced with the todo id.

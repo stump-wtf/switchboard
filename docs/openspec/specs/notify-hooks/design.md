@@ -90,7 +90,9 @@ validator stays the single source of truth for "allowed", as ADR-0021 intended.
 **Choice**: `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` (comma-separated CIDRs) exempts listed ranges
 from the private-address rejection. Loopback and link-local (including cloud metadata addresses) are
 exempted only by an entry lying wholly inside them, such as `127.0.0.1/32` for a Harness listener on
-the same host; a broad entry like `0.0.0.0/0` never opens them. Switchboard's own listen address and
+the same host; a broad entry like `0.0.0.0/0` never opens them. The metadata services that sit in
+CGNAT or ULA space (`100.100.100.200`, `fd00:ec2::254`) are held to the same bar: only an entry for
+exactly that address opens one. Switchboard's own listen address and
 port stay rejected even when listed, compared as address plus port. Today `WithOwnListenAddrs` in
 `internal/push/ssrf.go` records IPs only and leaves loopback binds to the loopback rule, so the story
 extends it to ports.
@@ -128,7 +130,7 @@ encode four properties that this spec must honour:
 - a `webhook-id` that is stable across retries;
 - a fresh `webhook-timestamp` on each attempt, within a 5-minute tolerance.
 
-It also filters on the body's top-level `type`. The F-X2 webhook path is blocked on #466. Switchboard does not add a
+It also filters on the body's top-level `type`. The F-X2 webhook path is blocked until Harness verifies these signed hooks. Switchboard does not add a
 second, body-only signature to paper over the gap: that would drop timestamp replay protection for
 every receiver, to save one receiver a story.
 
@@ -162,10 +164,14 @@ Switchboard ADR-0039 (attempt history, F-X3) builds its relay loop on.
 
 ### A per-instance bounded queue, with no persistence
 
-**Choice**: a buffered channel of 1024 notifications per instance, drained by a worker pool of 8
-goroutines. Each notification carries its hook row snapshot, which is re-read before each attempt
-so that delete and disable take effect. Retries run inside the worker with `time.Timer`, not by
-re-enqueueing.
+**Choice**: two buffered channels of 1024 per instance, drained by one worker pool of 8
+goroutines. The first holds ready todos waiting to be matched; each carries only the ids, queue,
+attempt, reason and the sender text already cut to its body limit, never the payload, so a full
+queue pins kilobytes rather than the todos' multi-megabyte payloads. Matching turns each todo into
+one delivery job per matching hook on the second channel, so one hook's timeouts and retries never
+hold back a sibling hook's first attempt. The endpoint, its scope, the hook and its secrets are
+re-read before each attempt, so a revoke, a scope shrink, a delete and a disable all stop the next
+attempt. Retries run inside the worker with `time.Timer`, not by re-enqueueing.
 
 **Rationale**: the ADR-0013 contract is that a restart loses hints and nothing else. A persistent
 outbox would turn a hint into a delivery guarantee we have promised no one. It would also add a
@@ -286,7 +292,7 @@ CREATE TABLE notify_hooks (
     id                     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     endpoint_id            uuid NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
     url                    text NOT NULL CHECK (length(url) <= 2048),
-    secret                 text NOT NULL,          -- internal/cred envelope, never plaintext when a key is set
+    secret                 text NOT NULL,          -- internal/cred envelope, always; no key = no hook (fail closed)
     prev_secret            text,                   -- dual-sign grace after rotation
     prev_secret_expires_at timestamptz,
     queues                 text[] NOT NULL DEFAULT '{}',
@@ -301,8 +307,14 @@ CREATE TABLE notify_hooks (
     created_at             timestamptz NOT NULL DEFAULT now(),
     rotated_at             timestamptz
 );
-CREATE INDEX idx_notify_hooks_endpoint ON notify_hooks (endpoint_id) WHERE enabled;
+CREATE INDEX idx_notify_hooks_endpoint ON notify_hooks (endpoint_id);
 ```
+
+Unlike the inbound webhook secret, a hook secret has no plaintext fallback: the store refuses to
+create or rotate a hook without `SWITCHBOARD_SECRET_ENCRYPTION_KEY`, and refuses to sign with a
+stored value that is not envelope ciphertext. The index is not partial, because Postgres does not
+index a foreign key's referencing column and the list, the ceiling count and the endpoint cascade
+all filter on `endpoint_id` alone.
 
 The migration is additive. Rolling it back means dropping the table, which loses only hook
 registrations.

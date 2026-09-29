@@ -20,12 +20,12 @@ the two they have:
   the release workflow asserts it. But only `switchboard version` reads it. The web UI, `/healthz`
   (which answers `ok`) and the MCP session instructions report nothing.
 * **Customers hit the skew.** A self-hosting customer was told in chat, "you're on an older version
-  that doesn't send doorbells on connection". Ring-on-connect (#276) landed after `v0.2.0`, and
+  that doesn't send doorbells on connection". Ring-on-connect landed after `v0.2.0`, and
   nothing they could query would have told them. Three of their five reported bugs are fixed on
   `main` and not shipped. The public image they pull, `ghcr.io/stump-wtf/switchboard:latest`,
   moves only on `v*` tags. On 2026-09-22 its digest equals `:0.2.0`'s. (The internal Gitea-registry
   `:latest` tracks `main`, but self-hosters do not pull it.)
-* **A breaking change shipped with no note.** #291 (`sec!:`) removed the environment-seeded
+* **A breaking change shipped with no note.** The shared-receiver removal (`sec!:`) took out the environment-seeded
   receivers. After it:
   * `SWITCHBOARD_{GITHUB,GITEA,STRIPE,SLACK}_SECRET` are **silently ignored**. Nothing on `main`
     reads them, and nothing warns.
@@ -142,7 +142,7 @@ they are authenticated.
   environment variable is simply no longer read; the upgrade note names it and its replacement.
   Migrating existing *data* to the new shape (backfilling rows, moving webhooks to a new state) is
   not deprecation, and stays.
-* **What #291 got wrong was the silence, not the removal.** The four `SWITCHBOARD_*_SECRET`
+* **What that change got wrong was the silence, not the removal.** The four `SWITCHBOARD_*_SECRET`
   variables and `SWITCHBOARD_LEGACY_RECEIVER_ENDPOINT_ID` stay unread. The `v0.3.0` upgrade note
   names each of them, and that is the fix.
 
@@ -173,7 +173,7 @@ they are authenticated.
 
 * Cut a release whenever `main` holds a user-visible change and the last release is more than 14
   days old, and within 48 hours of any merged `sec` fix.
-* `v0.3.0` is cut now. It includes the CHANGELOG back-fill and the #291 upgrade guide.
+* `v0.3.0` is cut now. It includes the CHANGELOG back-fill and the upgrade guide for the shared-receiver removal.
 
 ### Consequences
 
@@ -209,7 +209,7 @@ they are authenticated.
 * A PR titled `feat: …` that does not touch `CHANGELOG.md` fails the `changelog` check. A PR titled
   `sec!: …` without an `upgrading.md` section fails the `upgrade-note` check.
 * A tagged docs build with a leftover `:::unreleased` fails.
-* `v0.3.0` exists, its CHANGELOG section lists #291 under Breaking, and `docs/guides/15-upgrading.md`
+* `v0.3.0` exists, its CHANGELOG section lists the shared-receiver removal under Breaking, and `docs/guides/15-upgrading.md`
   has a `v0.3.0` section that covers the four ignored secrets, migration 0021, and moving to
   `create_webhook`.
 
@@ -265,7 +265,7 @@ flowchart LR
 * The hardcoded literal: `internal/mcp/mcp.go` (`serverVersion = "0.1.0"`). The existing stamp and
   its release assertion: `cmd/switchboard/main.go`, `.goreleaser.yaml`,
   `.gitea/workflows/release.yaml`.
-* The breaking change with no note: #291 and migration `0021_drop_adapters.sql`.
+* The breaking change with no note: the shared-receiver removal and migration `0021_drop_adapters.sql`.
 * MCP contract context: [ADR-0005](ADR-0005-mcp-tool-and-resource-contract.md). The MVP surface:
   [ADR-0023](ADR-0023-mvp-mcp-api-first-basics.md). The metrics endpoint, which gains a
   `switchboard_build_info{version,commit}` gauge under this ADR:

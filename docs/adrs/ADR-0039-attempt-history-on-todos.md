@@ -15,8 +15,8 @@ A todo is a dispatch lease ([ADR-0007](ADR-0007-todos-as-core-primitive.md)): it
 * **One `result`, overwritten.** `todos.result` is a single `jsonb` column. `CompleteTodo` and `FailTodo` each replace it, and `RetryTodo` sets it to `NULL` (`internal/store/todos.go`). After three failed attempts, the row holds the third attempt's result and nothing about the first two.
 * **A counter, not a history.** `todos.attempt` is incremented by every claim and reset to `0` by a manual retry. It says *how many*, never *who*, *when* or *how it ended*.
 * **Deaths leave no trace.** `ReapExpired` returns an expired lease to `pending` (or dead-letters it at the cap) and clears `owner` and `lease_expires_at`. A claim that takes over a lapsed lease does the same in its `cand.prior_state = 'claimed'` arm. Neither records that an attempt died, so the next claimer cannot tell a worker that crashed from one that tried and failed. [SPEC-0023](../openspec/specs/metrics/spec.md) REQ-3 counts these expiries (`switchboard_lease_expired_total`), but a counter cannot say which todo, which worker or when.
-* **Every worker on an endpoint looks the same.** `owner` is `agent:<agent_id>`, shared by every session on an endpoint (issue #160, item 2). A stale worker whose lease lapsed can still `complete` a todo a newer worker on the same endpoint has claimed.
-* **Nothing reads it back.** `todoOut` carries neither `result` nor `next_retry_at`, and there is no single-todo read verb, only `list_todos` (issue #214).
+* **Every worker on an endpoint looks the same.** `owner` is `agent:<agent_id>`, shared by every session on an endpoint (per-session owner identity is deferred). A stale worker whose lease lapsed can still `complete` a todo a newer worker on the same endpoint has claimed.
+* **Nothing reads it back.** `todoOut` carries neither `result` nor `next_retry_at`, and there is no single-todo read verb, only `list_todos`.
 
 There is no attempt or result history anywhere in the schema: no table in migrations `0001`–`0021` records a claim.
 
@@ -36,7 +36,7 @@ Three consumers need it now:
 * **Bounded.** Per-attempt text is capped, attempts per todo are capped, and history ages out with its todo under the existing retention policy ([ADR-0002](ADR-0002-postgres-persistence-and-retention.md)).
 * **Additive.** Every new argument is optional and every new response field is additive. Nothing is renamed or superseded, so existing clients keep working unchanged, and `result` keeps its meaning.
 * **Text is data.** Attempt summaries are written by agents that read attacker-reachable input. Switchboard stores and returns them as data, and never interprets them.
-* **Minimal verb surface.** Endpoints are frozen at their vend-time verb set (issue #163), so history should reach existing endpoints without re-vending.
+* **Minimal verb surface.** Endpoints are frozen at their vend-time verb set, so history should reach existing endpoints without re-vending.
 
 ## Considered Options
 
@@ -88,12 +88,12 @@ Tenancy is not a column on the row. An attempt is reachable only through its tod
 ### Summaries, artifacts and the fence
 
 * `complete`, `fail` and `release` accept an optional `summary` and `artifact`. A missing `summary` is stored as null. An operator can set `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT=true` to derive it from `result` instead (compact JSON, truncated). That is off by default, because it would replay what existing clients wrote to `result`, which no read returns today, to later claimers and to notification sinks (Joe, 2026-09-22: risky options are fine when configurable and off by default). `result` itself keeps its meaning on the todo.
-* **The lease-token fence.** `claim` and `claim_next` accept `require_fence`. With it, the response carries an opaque `lease_token`, returned once and stored only as a hash. `heartbeat`, `complete`, `fail` and `release` accept `lease_token`. A token that does not match the todo's open attempt is `conflict`. On a fenced attempt, a call with no token is `conflict` too. This lets Harness hold an attempt that an agent holding the same endpoint credential cannot close. It also fixes #160's stale-worker case for any client that opts in, without changing `owner`.
+* **The lease-token fence.** `claim` and `claim_next` accept `require_fence`. With it, the response carries an opaque `lease_token`, returned once and stored only as a hash. `heartbeat`, `complete`, `fail` and `release` accept `lease_token`. A token that does not match the todo's open attempt is `conflict`. On a fenced attempt, a call with no token is `conflict` too. This lets Harness hold an attempt that an agent holding the same endpoint credential cannot close. It also fixes the stale-worker case for any client that opts in, without changing `owner`.
 
 ### Reading it back
 
 * **On claim.** `claim` and `claim_next` responses carry `attempt_seq`, the `lease_token` when fenced, and `prior_attempts`: the five most recent closed attempts, newest first. That is everything a relay consumer needs, in the response it already receives.
-* **`get_todo`** returns one todo with its `result`, `next_retry_at`, a derived `dead_letter`, and up to 50 attempts (default 20), plus `attempts_total` and `attempts_pruned`. Any endpoint that holds `list_todos` or `get_todo` may call it, because it reads only the endpoint's own todos, which `list_todos` already enumerates, and the attempt text on them was written through the endpoint's own credential. It is the #163 "no new power" argument applied to one read verb.
+* **`get_todo`** returns one todo with its `result`, `next_retry_at`, a derived `dead_letter`, and up to 50 attempts (default 20), plus `attempts_total` and `attempts_pruned`. Any endpoint that holds `list_todos` or `get_todo` may call it, because it reads only the endpoint's own todos, which `list_todos` already enumerates, and the attempt text on them was written through the endpoint's own credential. It is the frozen-verb-set "no new power" argument applied to one read verb.
 * **`release`** joins the drain verbs. The store has had an endpoint-scoped `ReleaseTodo` since the Board shipped, and SPEC-0006 anticipated it ("MAY expose `release`"). A supervisor needs it to end an attempt without passing a verdict on the work, for example on shutdown or a usage limit.
 * **The Board's todo drawer** and the A2UI todo detail list attempts.
 
@@ -123,8 +123,8 @@ Tenancy is not a column on the row. An attempt is reachable only through its tod
 
 * Good, because a relay's next attempt starts with what the last ones tried, and knows which of them died.
 * Good, because a dead letter explains itself: every attempt, with its claimant, outcome and summary.
-* Good, because the fence gives any client a per-attempt identity, so a stale worker cannot complete a newer worker's attempt, and #160's owner string does not have to change.
-* Good, because `get_todo` also delivers #214's `next_retry_at` and `dead_letter`.
+* Good, because the fence gives any client a per-attempt identity, so a stale worker cannot complete a newer worker's attempt, and the shared owner string does not have to change.
+* Good, because `get_todo` also delivers the missing `next_retry_at` and `dead_letter`.
 * Good, because it is one table and a few CTE arms on statements that already exist. No new process, no new trust.
 * Bad, because every claim, heartbeat and closing transition writes one more row or column, which adds write amplification on the hottest path. The heartbeat update is one indexed row, and the cost is measured before the heartbeat write is kept (see *Confirmation*).
 * Bad, because attempt summaries are a cross-attempt prompt-injection channel that Switchboard carries. Switchboard labels them and bounds them; it cannot sanitize them.
@@ -226,4 +226,4 @@ sequenceDiagram
 * **Related [ADR-0029](ADR-0029-outbound-todo-webhooks.md)** and **[ADR-0013](ADR-0013-channels-push-delivery.md).** A re-queued retry must ring through both doorbell transports for relay consumers to take the next attempt.
 * **Related [ADR-0027](ADR-0027-endpoint-presence-clock-in-clock-out.md).** A clocked-out endpoint still gets attempts on its claims. Presence gates doorbells, not history.
 * **Companion records, accepted together on 2026-09-22 and linked as front-matter edges:** ADR-0034 / SPEC-0029 (notification sinks), ADR-0035 / SPEC-0030 (admission control), ADR-0038 / SPEC-0033 (teams and tenancy), SPEC-0024 (notify hooks). **Cross-product, cited in prose:** Harness ADR-0025 / SPEC-0019 (relay attempts), and Cairn ADR-0027 / SPEC-0021 (receipts).
-* Issues this touches: issue #160 (per-session owner identity; the fence covers the stale-worker case for clients that opt in), issue #214 (`next_retry_at` / `dead_letter`), and issue #163 (frozen verb sets; `get_todo` is gated on `list_todos` for that reason).
+* Known gaps this touches: per-session owner identity (the fence covers the stale-worker case for clients that opt in), `next_retry_at` / `dead_letter` on reads, and frozen verb sets (`get_todo` is gated on `list_todos` for that reason).

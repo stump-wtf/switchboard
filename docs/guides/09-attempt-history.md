@@ -204,7 +204,7 @@ short, rather than that the work is failing. See [Metrics](/guides/self-hosting#
 
 Attempts are scoped exactly like their todo. Only the endpoint that owns the todo reads them over
 MCP. Any other endpoint gets `not_found`, whether or not the todo exists. On the Board, the todo
-drawer is gaining the same attempt list, shown only to the human who owns the todo. The instance
+drawer lists the same attempts, shown only to the human who owns the todo. The instance
 operator gets aggregates from `/metrics`, never another user's summaries, artifacts or claimant
 labels through Switchboard's own surfaces. The rows are still in the database, as payloads
 are, so the [security model](/guides/security-model)'s advice about what to put in a payload applies

@@ -152,6 +152,14 @@ func TestAttemptReportArtifactRules(t *testing.T) {
 		"mcp://cairn/" + strings.Repeat("x", 65),
 		"mcp://other/Ab12",
 		"https://example.com/" + strings.Repeat("p", store.AttemptArtifactMax),
+		// Userinfo would put a credential in a URL that is stored on the attempt, handed to every
+		// later claimer and rendered as a link on the Board (REQ-13), and nothing dials an artifact.
+		"https://user:token@example.com/x",
+		"https://token@example.com/x",
+		// Whitespace is not trimmed for the caller: the stored value is returned to later claimers
+		// verbatim, so a padded URL would come back padded.
+		" https://example.com/x",
+		"https://example.com/x ",
 	}
 	for _, a := range bad {
 		_, err := attemptReport("s", a, "")

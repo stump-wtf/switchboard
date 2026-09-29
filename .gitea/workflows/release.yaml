@@ -1,9 +1,10 @@
 # Gitea Actions: cut a release from a v* tag.
 #
 # Until this file existed, switchboard had NO tag-triggered workflow at all —
-# aibot fires on PRs, build.yaml/ci.yaml/gitleaks on push-to-main, docs.yaml on
-# paths. So a .goreleaser.yaml on its own would never have been invoked: pushing
-# a tag would have done nothing, silently, and looked like success.
+# aibot fires on PRs, ci.yaml (gate + image + deploy) and gitleaks on
+# push-to-main, docs.yaml on paths. So a .goreleaser.yaml on its own would never
+# have been invoked: pushing a tag would have done nothing, silently, and looked
+# like success.
 #
 # Runs on Gitea rather than the GitHub mirror because this runner is the only
 # host that reaches both sides — Gitea over the LAN and github.com outbound.
@@ -40,8 +41,8 @@ jobs:
       # DELIBERATELY FATAL, and deliberately not a job-level `if:` — secrets are
       # not available there, so the env indirection is the only way to test one.
       #
-      # build.yaml skips quietly when REGISTRY_TOKEN is missing, which is right
-      # for an image that rebuilds on the next push. It is WRONG for a release: a
+      # ci.yaml's image job skips quietly when REGISTRY_TOKEN is missing, which is
+      # right for an image that rebuilds on the next push. It is WRONG for a release: a
       # tag that publishes nothing and still reports green is what leaves `brew
       # upgrade` serving a stale version for weeks while every run looks fine.
       #

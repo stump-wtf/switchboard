@@ -151,6 +151,14 @@
     <li data-sb-step="claimed"{{if .ClaimedAt}} class="sb-timeline__done" data-sb-done{{end}}>claimed under lease{{if .ClaimedAt}} · {{reltime .ClaimedAt}}{{end}}</li>
     <li data-sb-step="resolved"{{if .CompletedAt}} class="sb-timeline__done" data-sb-done{{end}}>{{if eq .Row.State "failed"}}failed{{else}}completed · ack{{end}}{{if .CompletedAt}} · {{reltime .CompletedAt}}{{end}}</li>
   </ol>
+  {{/* Attempt history: a visible heading inside the dialog, then an aria-live="polite" region
+       whose children the live "attempts_oob" swap replaces when a transition opens or closes an
+       attempt. The region node itself is never swapped, so screen readers announce the change.
+       Governing: SPEC-0034 REQ-13 "Operator Surfaces", Accessibility Requirements. */}}
+  <section class="sb-attempts" aria-labelledby="sb-attempts-h-{{.Row.ID}}" data-sb-attempts-section>
+    <h2 class="sb-microlabel sb-attempts__heading" id="sb-attempts-h-{{.Row.ID}}">attempt history</h2>
+    <div id="sb-attempts-{{.Row.ID}}" aria-live="polite" data-sb-attempts>{{template "attempt_list" .Attempts}}</div>
+  </section>
   <div class="sb-drawer__foot">
     {{if eq .Row.State "pending"}}<button type="button" class="sb-btn" hx-post="/todos/{{.Row.ID}}/claim" hx-target="#sb-overlay" hx-swap="innerHTML">Claim under lease</button>
     {{else if eq .Row.State "claimed"}}<button type="button" class="sb-btn sb-btn--success" hx-post="/todos/{{.Row.ID}}/complete" hx-target="#sb-overlay" hx-swap="innerHTML">Complete · ack</button><button type="button" class="sb-btn sb-btn--danger" hx-post="/todos/{{.Row.ID}}/fail" hx-target="#sb-overlay" hx-swap="innerHTML">Fail</button>
@@ -161,3 +169,31 @@
     {{else if eq .Row.State "done"}}<span class="sb-drawer__done" data-sb-acked>✓ completed · acked to source</span>{{end}}
   </div>
 </div>{{end}}
+
+{{/* attempt_list — the children of the drawer's aria-live attempt region, newest first: attempt
+     number, who claimed, claimed/ended/last-heartbeat times, outcome and disposition. A died
+     attempt (lease_expired, reaped) carries a marker with a text glyph and an aria-label, never
+     colour alone. Summary and artifact are agent-written data and render escaped; the artifact is
+     a link only when web.httpsArtifact accepted it. No session or lease-token hash is in the model.
+     Data: web.attemptList. Governing: SPEC-0034 REQ-4, REQ-13, Accessibility Requirements. */}}
+{{define "attempt_list"}}{{if .Unavailable}}<p class="sb-attempts__none" data-sb-attempts-unavailable>attempt history unavailable · reload to retry</p>{{else if not .Rows}}<p class="sb-attempts__none" data-sb-attempts-empty>no attempts yet</p>{{else}}<ol class="sb-attempts__list">{{range .Rows}}
+  <li class="sb-attempt{{if .Died}} sb-attempt--died{{end}}" data-sb-attempt="{{.Seq}}" data-sb-outcome="{{if .Outcome}}{{.Outcome}}{{else}}open{{end}}">
+    <div class="sb-attempt__head">
+      <span class="sb-attempt__seq sb-mono">#{{.Seq}}</span>
+      <span class="sb-attempt__who sb-mono" data-sb-claimant>{{.Who}}</span>
+      <span class="sb-attempt__outcome" data-sb-attempt-outcome>{{if .Outcome}}{{.Outcome}}{{if .Disposition}} → {{.Disposition}}{{end}}{{else}}in progress{{end}}</span>
+      {{if .Died}}<span class="sb-attempt__died" role="img" aria-label="died: no report" data-sb-died>✝ died</span>{{end}}
+    </div>
+    <div class="sb-attempt__times">claimed <time datetime="{{.ClaimedAt.ISO}}">{{.ClaimedAt.Rel}}</time>{{with .EndedAt}} · ended <time datetime="{{.ISO}}">{{.Rel}}</time>{{end}}{{with .LastHeartbeatAt}} · <span data-sb-heartbeat>last heartbeat <time datetime="{{.ISO}}">{{.Rel}}</time></span>{{else}}{{if .Died}} · <span data-sb-heartbeat>no heartbeat</span>{{end}}{{end}}</div>
+    {{if .Summary}}<p class="sb-attempt__summary" data-sb-summary>{{.Summary}}{{if .SummaryTruncated}} <span class="sb-muted">(truncated)</span>{{end}}</p>{{end}}
+    {{if .ArtifactURL}}<a class="sb-attempt__artifact" href="{{.ArtifactURL}}" rel="noopener noreferrer" data-sb-artifact>{{.Artifact}}</a>{{else if .Artifact}}<code class="sb-attempt__artifact" data-sb-artifact>{{.Artifact}}</code>{{end}}
+  </li>{{end}}
+</ol>{{if .Hidden}}<p class="sb-attempts__more" data-sb-attempts-hidden>{{.Hidden}} earlier attempt{{if gt .Hidden 1}}s{{end}} not shown · {{.Total}} in all</p>{{end}}{{end}}{{end}}
+
+{{/* attempts_oob — the live refresh of an open drawer's attempt history, appended to a todo
+     transition frame. innerHTML swaps discard their carrier, so the carrier is a bare <div> and
+     the aria-live region it targets stays in the page (oob_contract_test.go rule 1); the list is
+     flow content, legal in body mode (rule 2). With no drawer open for this todo the swap has no
+     target and htmx drops it. Data: web.attemptList. Governing: SPEC-0034 Accessibility
+     Requirements "Dynamic Content Regions"; SPEC-0015 REQ "Live Fragment Architecture". */}}
+{{define "attempts_oob"}}<div hx-swap-oob="innerHTML:#sb-attempts-{{.TodoID}}">{{template "attempt_list" .}}</div>{{end}}
