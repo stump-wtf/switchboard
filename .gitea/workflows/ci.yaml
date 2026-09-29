@@ -26,7 +26,11 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # train/** is the merge train (ADR-0032): a train commit is main plus one
+    # PR, and it must run exactly the gate a PR does — the train waits on CI
+    # for that commit before it can merge. The image push and the deploy stay
+    # limited to main, in the `image` and `deploy` jobs below.
+    branches: [main, 'train/**']
   pull_request:
   workflow_dispatch:
 
