@@ -12,6 +12,8 @@ import (
 	"testing/fstest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/stump-wtf/switchboard/internal/testdb"
 )
 
 // migrateTestSeq gives each migration test a unique throwaway-database name within this process.
@@ -37,15 +39,16 @@ func migrateTestPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 	}
 	name := fmt.Sprintf("sb_migrate_test_%d_%d", os.Getpid(), migrateTestSeq.Add(1))
 
-	// Admin connection to the server's default maintenance database creates and drops the throwaway
-	// DB (CREATE/DROP DATABASE cannot run from within the target database).
+	// Admin connection to the server's maintenance database drops the throwaway DB (DROP DATABASE
+	// cannot run from within the target database). The create itself goes through testdb.
 	adminURL := *u
 	adminURL.Path = "/postgres"
 	admin, err := Connect(ctx, adminURL.String())
 	if err != nil {
 		t.Fatalf("admin connect: %v", err)
 	}
-	if _, err := admin.Exec(ctx, `CREATE DATABASE "`+name+`"`); err != nil {
+	// Governing: issue #543 — create is serialized across concurrently running packages.
+	if err := testdb.Create(ctx, dsn, name); err != nil {
 		admin.Close()
 		t.Fatalf("create test db: %v", err)
 	}

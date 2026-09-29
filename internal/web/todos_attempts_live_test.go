@@ -25,6 +25,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/config"
 	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/testdb"
 )
 
 // newDBHandler is newTestHandler over a real store, on a database of this package's own.
@@ -36,16 +37,10 @@ func newDBHandler(t *testing.T) (*Handler, *store.Store, context.Context) {
 	}
 	ctx := context.Background()
 	const webTestDB = "switchboard_test_web"
-	admin, err := db.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect (admin): %v", err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+webTestDB); err != nil &&
-		!strings.Contains(err.Error(), "42P04") { // duplicate_database: already provisioned
-		admin.Close()
+	// Governing: issue #543 — create is serialized across concurrently running packages.
+	if err := testdb.Create(ctx, dsn, webTestDB); err != nil {
 		t.Fatalf("create test database: %v", err)
 	}
-	admin.Close()
 	u, err := url.Parse(dsn)
 	if err != nil {
 		t.Fatalf("parse test dsn: %v", err)

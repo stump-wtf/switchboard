@@ -15,7 +15,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -27,13 +26,13 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/testdb"
 )
 
 // --- fakeStore routing stubs ---------------------------------------------------------------------
@@ -104,18 +103,10 @@ func routeTestPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 	}
 	const testDB = "switchboard_mcproute_test"
 	if u.Path != "/"+testDB {
-		admin, err := db.Connect(ctx, dsn)
-		if err != nil {
-			t.Fatalf("connect (admin): %v", err)
+		// Governing: issue #543 — create is serialized across concurrently running packages.
+		if err := testdb.Create(ctx, dsn, testDB); err != nil {
+			t.Fatalf("create mcp route test database: %v", err)
 		}
-		if _, err := admin.Exec(ctx, `CREATE DATABASE `+testDB); err != nil {
-			var pgErr *pgconn.PgError
-			if !errors.As(err, &pgErr) || pgErr.Code != "42P04" { // duplicate_database
-				admin.Close()
-				t.Fatalf("create mcp route test database: %v", err)
-			}
-		}
-		admin.Close()
 		u.Path = "/" + testDB
 	}
 	pool, err := db.Connect(ctx, u.String())
