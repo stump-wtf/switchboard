@@ -72,7 +72,12 @@ var allRuleVerbs = []string{
 func ruleSessions(t *testing.T) (context.Context, *routeFixture, func(human string) (*sdk.ClientSession, string)) {
 	t.Helper()
 	pool, ctx := routeTestPool(t)
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	// One deadline covers the whole test, so it is a hang guard, not a latency budget: a rule
+	// test makes a dozen tool calls, each dry-running rules through the sandbox, and under -race
+	// on a busy runner that took 103s against the old 90s (main run 14523, 2026-09-27).
+	//
+	// @joestump 09/27/2026 - Raised from 90s to 5m after the flake on main.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	t.Cleanup(cancel)
 	f := newRouteFixture(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `UPDATE endpoints SET webhook_queues = ARRAY['reviews','forge'] WHERE id = $1`, f.epA1); err != nil {
