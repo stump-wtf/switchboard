@@ -7,7 +7,7 @@ related: [ADR-0003, ADR-0007, ADR-0012]
 
 # ADR-0014: Ingestion Adapters — Push (webhook) and Pull (queue) Families
 
-> **Superseded 2026-09-21 (#181).** The pull family — the Redis reference adapter, the adapter runner,
+> **Superseded 2026-09-21, with the shared-receiver removal.** The pull family — the Redis reference adapter, the adapter runner,
 > `SWITCHBOARD_REDIS_URL`, and the `adapters` table (dropped by migration 0021) — and the
 > operator-configured push receivers were removed. Self-managed webhooks
 > ([ADR-0012](ADR-0012-agents-self-manage-webhooks.md), `POST /webhooks/w/{token}`) are the only

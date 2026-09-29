@@ -4,8 +4,10 @@ title: Operator CLI and API
 
 # Operator CLI and API
 
-> The `switchboard` binary is not published for download. If you use the hosted service without a
-> build, everything below is also available in the web board's **Endpoints** view — see
+> Download the `switchboard` binary from
+> [GitHub Releases](https://github.com/stump-wtf/switchboard/releases/latest) (macOS, Linux, and
+> Windows; amd64 and arm64), or run it from the `ghcr.io/stump-wtf/switchboard` image. Without it,
+> everything below is also available in the web board's **Endpoints** view — see
 > [Sign in and vend your first endpoint](/getting-started/first-endpoint).
 
 One binary does everything. `switchboard serve` runs the service; the same binary is also the
@@ -25,6 +27,9 @@ switchboard endpoint revoke -h   # one verb's flags
 
 The pre-grouping spellings (`switchboard vend`, `endpoints`, `agents`) still work so existing
 scripts keep running, but they are no longer advertised — prefer the grouped form.
+
+Every subcommand and flag, as the binary prints it, is in the
+[CLI reference](/guides/cli-reference).
 
 ## Logging in (gh-style)
 
@@ -154,11 +159,52 @@ is needed unless the endpoint drains exactly one queue, and must be one of its v
 of minting another, and rings nothing. `--json` prints the API response.
 
 The agent treats what you push exactly as it treats any other todo: content to act on within its
-own clamps, never instructions that widen them (ADR-0026).
+own clamps, never instructions that widen them (ADR-0040).
+
+## Managing webhook routing rules
+
+A webhook's [routing rules](07-routing-rules.md) decide which queue each delivery lands in. Over MCP
+only the endpoint that owns the webhook can edit them, and only if it was vended with the rule verbs.
+From the CLI you manage them as the human who owns that endpoint, whatever its scope, which is the
+way to edit rules on a webhook whose endpoint predates the rule verbs.
+
+```
+switchboard webhook list
+switchboard webhook rules get WEBHOOK_ID                       # rules, default, params, grant
+switchboard webhook rules get WEBHOOK_ID --json > rules.json   # the editable document
+$EDITOR rules.json
+switchboard webhook rules test WEBHOOK_ID --file rules.json --event 812
+switchboard webhook rules set WEBHOOK_ID --file rules.json
+```
+
+The full loop — backup, dry-run against stored events and samples, apply, verify, roll back — is
+the [Change webhook routing safely](/guides/webhook-routing-safely) how-to.
+
+- `webhook list` shows every webhook your endpoints own, with its endpoint, its source and target
+  queue, and how many rules it has. Ingest URLs and signing secrets are never shown.
+- `webhook rules get` prints the rules in evaluation order (first match wins), the default action,
+  the params, and the `grant`: the queues and endpoints an action may name. Work-order rules are
+  marked `WORK ORDER`. `--json` prints the API document, which `rules set --file` accepts unchanged.
+- `webhook rules test` dry-runs the candidate rules in `--file` (or, without it, the saved rules)
+  against one of the webhook's stored deliveries (`--event`, an id from the event history) or a
+  sample body (`--payload`, with `--header "X-GitHub-Event: issues"` for the event kind). It prints
+  where the delivery would go and which rule matched, and saves nothing. `FAULTED (blocking)` means
+  that delivery would be recorded and routed nowhere.
+- `webhook rules set` replaces the whole configuration. It is validated exactly as the MCP verb is
+  and dry-run against the webhook's 50 latest deliveries, and a failure (a typo, a queue outside the
+  grant, a rule that faults on real traffic) names the problem and keeps the current rules.
+
+**Params are kept unless you say otherwise.** A file without a `params` key keeps the stored params,
+and `set` says so. To remove them, put `"params": null` (or `{}`) in the file. The MCP
+`set_webhook_rules` currently clears them when `params` is omitted; here it never does, because
+clearing a router's params quietly drops every handoff that reads them.
+
+A webhook of another human's endpoint is `not found`, exactly like one that does not exist. A
+webhook whose endpoint was revoked stays readable and testable, but `set` answers `409`.
 
 ## The API, for other clients
 
-The CLI is a thin client over five OAuth-guarded endpoints, documented in the site's
+The CLI is a thin client over nine OAuth-guarded endpoints, documented in the site's
 [API reference](/api):
 
 | Method | Path | Does |
@@ -168,6 +214,13 @@ The CLI is a thin client over five OAuth-guarded endpoints, documented in the si
 | `POST` | `/api/v1/endpoints/{slug\|id}/revoke` | Kills one endpoint: its credential stops authenticating and its live MCP sessions are torn down. `409` if it is already revoked, `404` if it is not yours. |
 | `POST` | `/api/v1/endpoints/{slug\|id}/todos` | Hands the endpoint a todo and rings its doorbell: `{title, queue?, kind?, payload?, key?}`. `201` carries the todo, with `created: false` when `key` matched a live one; `400` for a queue outside the vended scope, `409` if the endpoint is revoked, `404` if it is not yours. |
 | `GET` | `/api/v1/agents` | Lists your registered agents. |
+| `GET` | `/api/v1/webhooks` | Lists every webhook your endpoints own, with its endpoint and a routing summary (no ingest URL, no secret). |
+| `GET` | `/api/v1/webhooks/{id}/rules` | The webhook's rules, default, params and grant: `list_webhook_rules`' shape. |
+| `PUT` | `/api/v1/webhooks/{id}/rules` | Replaces them: `{rules, default_action?, params?}`. No `params` key keeps the stored params; `"params": null` clears them. `400`/`403` name a rule that fails validation or faults on a recent delivery, `409` if the webhook's endpoint is revoked or the rules changed meanwhile, `503` if the rule evaluator is down. The previous rules stay in force on any failure. |
+| `POST` | `/api/v1/webhooks/{id}/rules/test` | Dry run: exactly one of `event_id` or `payload`, plus optional candidate `rules`, `default_action`, `params`, `headers`, `omit_envelope`. Saves nothing. |
+
+Errors on the webhook routes are JSON, `{"error": "…", "code": "…"}`, with the same `code` the
+matching MCP verb returns. A webhook you do not own is `404`, the same as an unknown id.
 
 Any HTTP client that can complete the OAuth authorization-code + PKCE flow with
 `resource = <base>/api` can act as the operator — that is precisely what the CLI does, and

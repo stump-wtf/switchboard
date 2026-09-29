@@ -10,9 +10,11 @@ package mcp
 //
 //  1. VERB SCOPE — scopeGuard (tools.go) refuses these verbs outside the endpoint's allowlist; they
 //     are members of webhookVerbs (verbs.go).
-//  2. WEBHOOK OWNERSHIP — the caller's human must own the webhook (store.WebhookRoutingForHuman /
-//     UpdateWebhookRouting); unknown, malformed, and another human's webhook ids are uniformly
-//     not_found, exactly as the ADR-0022 route verbs answer.
+//  2. WEBHOOK OWNERSHIP — the calling endpoint must be the webhook's own endpoint
+//     (store.WebhookRoutingForEndpoint / UpdateWebhookRouting); unknown, malformed, and any other
+//     endpoint's webhook ids, the same human's included, are uniformly not_found, exactly as the
+//     ADR-0022 route verbs answer. Governing: ADR-0038, SPEC-0033 REQ "Closing the Audited
+//     Surfaces" (F3, F19).
 //  3. REACHABILITY — every save is validated by routing.Validate against a grant built from
 //     switchboard state alone: the webhook's target queue, its OWNER's allowed webhook queues (the
 //     owning endpoint's ceiling united with the queues of the owner's other active, unexpired
@@ -48,78 +50,40 @@ package mcp
 // checked candidate only if the stored config is unchanged (conflict otherwise). test_webhook_rules
 // reports faulted as blocking (#212).
 //
-// @joestump-agent 09/25/2026 - The save-time dry-run skips deliveries the trust gate would hold
-// (SPEC-0026 REQ-5): live traffic never runs rules on them, so an outsider's payload could otherwise
-// refuse the owner's saves. It pages back past them to find 50 that pass (#385 review).
-//
-// @joestump-agent 09/25/2026 - test_webhook_rules reports a held delivery's decision and trace as the
-// receiver records them (the trust gate's), with the rules' outcome moved to rules_would.
+// @joestump-agent 09/29/2026 - The verb bodies moved to internal/manage, which the human API's rule
+// routes also call (SPEC-0035 REQ "Shared Implementation With MCP"). This file is now the MCP
+// adapter: it decodes arguments, passes the calling endpoint as the principal, and maps manage's
+// sentinel errors onto the stable codes. The endpoint-ownership rule above is unchanged.
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"reflect"
-	"slices"
-	"strconv"
-	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/stump-wtf/switchboard/internal/manage"
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 const (
-	codeRuleNotFound = "rule_not_found"
-	// codeUnavailable says the rule evaluator could not run, so a save could not be checked. It is
+	codeRuleNotFound = string(manage.ErrRuleNotFound)
+	// codeUnavailable says the rule evaluator (or another optional subsystem) could not run. It is
 	// transient and names no rule. Governing: SPEC-0026 REQ-3.
-	codeUnavailable = "unavailable"
+	codeUnavailable = string(manage.ErrUnavailable)
 )
 
 // --- tool input/output shapes (SDK-inferred JSON schemas) ---
+//
+// The output shapes and the rule/action shapes live in internal/manage so the human API returns
+// exactly the same fields; these aliases keep the verb code and its tests reading as before.
 
-type actionIO struct {
-	Queue      string   `json:"queue,omitempty" jsonschema:"deliver to this queue (the webhook's target queue or one in its owner's allowed webhook queues)"`
-	Drop       bool     `json:"drop,omitempty" jsonschema:"true to record the delivery without creating a todo or ringing a doorbell"`
-	Quarantine bool     `json:"quarantine,omitempty" jsonschema:"true to hold the delivery on the owner's quarantine queue for a human or classifier to release or discard (no agent is handed it)"`
-	Endpoints  []string `json:"endpoints,omitempty" jsonschema:"with queue only: deliver to just these of the webhook's delivery targets (see grant.endpoints); omitted means every target"`
-	Exclusive  bool     `json:"exclusive,omitempty" jsonschema:"with queue only: deliver to exactly one target, the first (owner first, then routes by grant time) whose endpoint scope includes the queue"`
-	Once       bool     `json:"once,omitempty" jsonschema:"with queue only: at most one work order per subject (issue or cairn artifact) per queue; later deliveries about it are recorded but mint nothing"`
-	WorkOrder  bool     `json:"work_order,omitempty" jsonschema:"with queue only: attach a switchboard-authored work order (lane, verified provenance, authorizing rule, subject) to each todo"`
-}
-
-type ruleIO struct {
-	ID     string   `json:"id,omitempty" jsonschema:"stable rule id; minted when omitted on create"`
-	Name   string   `json:"name,omitempty" jsonschema:"label recorded on the routing trace"`
-	Expr   string   `json:"expr" jsonschema:"jq filter over the routing envelope; its first output decides (anything but false or null matches)"`
-	Action actionIO `json:"action" jsonschema:"where a matching delivery goes: exactly one of queue or drop"`
-}
-
-type grantOut struct {
-	Queues    []string `json:"queues" jsonschema:"queues an action may name: the webhook's target queue plus its owner's allowed webhook queues"`
-	Endpoints []string `json:"endpoints" jsonschema:"endpoints an action may narrow to: the webhook's live delivery targets, owner first"`
-}
-
-type webhookRulesOut struct {
-	WebhookID     string         `json:"webhook_id" jsonschema:"the webhook"`
-	SourceType    string         `json:"source_type" jsonschema:"the webhook's source type (the envelope's .source)"`
-	TargetQueue   string         `json:"target_queue" jsonschema:"the webhook's target queue"`
-	DefaultAction *actionIO      `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omitted means the target queue on every target"`
-	Rules         []ruleIO       `json:"rules" jsonschema:"the rules, in evaluation order (first match wins)"`
-	Params        map[string]any `json:"params,omitempty" jsonschema:"owner-set values rules read as $params (e.g. trusted-actor allowlists)"`
-	Grant         grantOut       `json:"grant" jsonschema:"what actions may reach right now"`
-	DryRun        *dryRunOut     `json:"dry_run,omitempty" jsonschema:"what the save-time dry-run checked; omitted when no dry-run ran"`
-}
-
-// dryRunOut reports a save-time dry-run's coverage, so an owner can tell when a flood of held
-// deliveries left fewer than dryRunEvents to check (SPEC-0026 REQ-3).
-type dryRunOut struct {
-	Checked     int    `json:"checked" jsonschema:"deliveries the trust gate passes that the new rules were evaluated against"`
-	SkippedHeld int    `json:"skipped_held" jsonschema:"deliveries skipped because the trust gate would hold them"`
-	Warning     string `json:"warning,omitempty" jsonschema:"set when the scan bound stopped the dry-run before it found 50 deliveries to check"`
-}
+type (
+	actionIO            = manage.ActionIO
+	ruleIO              = manage.RuleIO
+	webhookRulesOut     = manage.RulesOut
+	testWebhookRulesOut = manage.TestOut
+)
 
 type webhookIDIn struct {
 	WebhookID string `json:"webhook_id" jsonschema:"a webhook this endpoint's human owns"`
@@ -129,7 +93,7 @@ type setWebhookRulesIn struct {
 	WebhookID     string         `json:"webhook_id" jsonschema:"a webhook this endpoint's human owns"`
 	Rules         []ruleIO       `json:"rules" jsonschema:"the complete ordered rule list; replaces the current one atomically"`
 	DefaultAction *actionIO      `json:"default_action,omitempty" jsonschema:"what unmatched deliveries do; omit for the webhook's target queue"`
-	Params        map[string]any `json:"params,omitempty" jsonschema:"values bound as $params in every rule; replaces the current params (omit to clear)"`
+	Params        map[string]any `json:"params,omitempty" jsonschema:"values bound as $params in every rule; replaces the current params when present. Omit to keep the current params unchanged; pass {} to clear them"`
 }
 
 type addWebhookRuleIn struct {
@@ -137,7 +101,7 @@ type addWebhookRuleIn struct {
 	ID        string   `json:"id,omitempty" jsonschema:"stable rule id; minted when omitted"`
 	Name      string   `json:"name,omitempty" jsonschema:"label recorded on the routing trace"`
 	Expr      string   `json:"expr" jsonschema:"jq filter over the routing envelope"`
-	Action    actionIO `json:"action" jsonschema:"exactly one of queue or drop"`
+	Action    actionIO `json:"action" jsonschema:"exactly one of queue, drop or quarantine"`
 	Position  *int     `json:"position,omitempty" jsonschema:"0-based index to insert at; omitted appends (lowest precedence)"`
 }
 
@@ -171,40 +135,6 @@ type testWebhookRulesIn struct {
 	OmitEnvelope  bool              `json:"omit_envelope,omitempty" jsonschema:"true to leave the evaluated envelope out of the result"`
 }
 
-type decisionOut struct {
-	Drop        bool     `json:"drop" jsonschema:"true when a drop action would record the delivery without a todo"`
-	Queue       string   `json:"queue,omitempty" jsonschema:"the queue todos would land in"`
-	Endpoints   []string `json:"endpoints,omitempty" jsonschema:"the endpoints todos would be created on"`
-	Disposition string   `json:"disposition,omitempty" jsonschema:"the intake outcome: routed, dropped, quarantined or faulted"`
-	Faulted     bool     `json:"faulted" jsonschema:"BLOCKING: a rule faulted, so evaluation stopped and the delivery would be held on the owner's quarantine queue as rule_fault instead of routed; a save whose rules fault on recent deliveries is refused"`
-	Quarantine  bool     `json:"quarantine,omitempty" jsonschema:"a rule's {quarantine: true} matched: the delivery would be held on the owner's quarantine queue"`
-	// Governing: SPEC-0026 REQ-6 (quarantine triggers).
-	QuarantineReason string             `json:"quarantine_reason,omitempty" jsonschema:"why the delivery would be held on the owner's quarantine queue: untrusted_actor, rule_fault or rule_action; empty when it would not be held"`
-	Unavailable      bool               `json:"unavailable,omitempty" jsonschema:"the rule evaluator could not run, so this dry-run says nothing about the rules; retry"`
-	Fault            *routing.RuleFault `json:"fault,omitempty" jsonschema:"the fault that stopped evaluation: rule id, index, cause and detail"`
-}
-
-type testWebhookRulesOut struct {
-	Decision  decisionOut        `json:"decision" jsonschema:"where the delivery would go"`
-	Trace     routing.Trace      `json:"trace" jsonschema:"the routing trace that would be recorded"`
-	OnceKey   string             `json:"once_key,omitempty" jsonschema:"the at-most-once key a once action would claim (whether it is already claimed is only known at delivery)"`
-	WorkOrder *routing.WorkOrder `json:"work_order,omitempty" jsonschema:"the work order a work_order action would attach"`
-	Envelope  map[string]any     `json:"envelope,omitempty" jsonschema:"the JSON document the rules evaluated (write expressions against these paths)"`
-	// Governing: SPEC-0026 REQ-5, REQ-10.
-	Actor *routing.ActorTrust `json:"actor,omitempty" jsonschema:"github/gitea/cairn: who acted and the trust gate's verdict against the webhook's trusted_actors (.actor)"`
-	// Held reports the receiver's outcome, not the rules': live traffic records a held delivery with
-	// the trust gate's decision and trace and never runs the rules, so decision and trace say exactly
-	// that, and rules_would carries what the rules would have done had the actor been trusted.
-	Held       bool           `json:"held,omitempty" jsonschema:"true when the trust gate would hold this delivery before any rule ran: decision and trace are then the trust gate's (what live traffic records), and rules_would shows what the rules would do if the actor were trusted"`
-	RulesWould *rulesWouldOut `json:"rules_would,omitempty" jsonschema:"only when held: the decision and trace the rules would produce if the actor were trusted; live traffic never evaluates them for this delivery"`
-}
-
-// rulesWouldOut is what the rules would do with a held delivery, had the trust gate passed it.
-type rulesWouldOut struct {
-	Decision decisionOut   `json:"decision" jsonschema:"where the delivery would go if its actor were trusted"`
-	Trace    routing.Trace `json:"trace" jsonschema:"the routing trace the rules would produce"`
-}
-
 // registerWebhookRuleTools installs the endpoint's allowlisted rule verbs.
 func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoint) {
 	if hasScope(ep.ScopeVerbs, "list_webhook_rules") {
@@ -214,7 +144,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "set_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "set_webhook_rules",
-			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?}, {drop: true} or {quarantine: true}. First match wins, and a rule that errors or times out stops evaluation: the delivery is held on the owner's quarantine queue as rule_fault, never handed to an agent. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked)."},
+			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params when params is present. Omitting params keeps the saved params; params: {} clears them. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?}, {drop: true} or {quarantine: true}. First match wins, and a rule that errors or times out stops evaluation: the delivery is held on the owner's quarantine queue as rule_fault, never handed to an agent. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked)."},
 			h.setWebhookRulesTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
@@ -246,202 +176,74 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 
 // --- verb handlers ---
 
+// ruleSvc is the shared rule-management code, driven by this surface's endpoint principal. The
+// router is read on every call, so SetRouter takes effect for live sessions.
+func (h *Handler) ruleSvc() manage.Rules {
+	return manage.Rules{Store: h.store, Router: h.rulesRouter}
+}
+
 func (h *Handler) listWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[webhookIDIn, webhookRulesOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in webhookIDIn) (*sdk.CallToolResult, webhookRulesOut, error) {
-		id := strings.TrimSpace(in.WebhookID)
-		if id == "" {
-			return nil, webhookRulesOut{}, &toolError{codeInvalidArgument, "webhook_id is required"}
-		}
-		wr, err := h.store.WebhookRoutingForHuman(ctx, id, ep.OwnerHumanID)
+		out, err := h.ruleSvc().Get(ctx, manage.EndpointPrincipal(ep.ID), in.WebhookID)
 		if err != nil {
 			return nil, webhookRulesOut{}, h.mapRuleErr(ep, "list_webhook_rules", err)
 		}
-		g, err := h.routingGrant(ctx, wr)
-		if err != nil {
-			return nil, webhookRulesOut{}, h.mapRuleErr(ep, "list_webhook_rules", err)
-		}
-		return nil, rulesOut(wr, g), nil
+		return nil, out, nil
 	}
 }
 
+// setWebhookRulesTool keeps REQ-4's keep-on-omit semantics (SPEC-0026): an omitted params keeps
+// the saved ones and only an explicit {} clears them, the same answer the human API gives an
+// omitted params.
 func (h *Handler) setWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[setWebhookRulesIn, webhookRulesOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in setWebhookRulesIn) (*sdk.CallToolResult, webhookRulesOut, error) {
-		rules := make([]routing.Rule, 0, len(in.Rules))
-		for _, r := range in.Rules {
-			rules = append(rules, fromRuleIO(r))
-		}
-		return h.mutateRules(ctx, ep, "set_webhook_rules", in.WebhookID, func(routing.Config) (routing.Config, error) {
-			return routing.Config{Rules: rules, Default: fromActionIO(in.DefaultAction), Params: in.Params}, nil
-		})
+		out, _, err := h.ruleSvc().Replace(ctx, manage.EndpointPrincipal(ep.ID), in.WebhookID,
+			manage.Replacement{Rules: in.Rules, DefaultAction: in.DefaultAction, Params: in.Params, KeepParams: in.Params == nil})
+		return h.ruleResult(ep, "set_webhook_rules", out, err)
 	}
 }
 
 func (h *Handler) addWebhookRuleTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[addWebhookRuleIn, webhookRulesOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in addWebhookRuleIn) (*sdk.CallToolResult, webhookRulesOut, error) {
-		r := fromRuleIO(ruleIO{ID: in.ID, Name: in.Name, Expr: in.Expr, Action: in.Action})
-		return h.mutateRules(ctx, ep, "add_webhook_rule", in.WebhookID, func(cur routing.Config) (routing.Config, error) {
-			pos := len(cur.Rules)
-			if in.Position != nil {
-				pos = min(max(*in.Position, 0), len(cur.Rules))
-			}
-			cur.Rules = slices.Insert(slices.Clone(cur.Rules), pos, r)
-			return cur, nil
-		})
+		change := manage.Insert(ruleIO{ID: in.ID, Name: in.Name, Expr: in.Expr, Action: in.Action}, in.Position)
+		out, _, err := h.ruleSvc().Mutate(ctx, manage.EndpointPrincipal(ep.ID), in.WebhookID, true, change)
+		return h.ruleResult(ep, "add_webhook_rule", out, err)
 	}
 }
 
 func (h *Handler) updateWebhookRuleTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[updateWebhookRuleIn, webhookRulesOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in updateWebhookRuleIn) (*sdk.CallToolResult, webhookRulesOut, error) {
-		return h.mutateRules(ctx, ep, "update_webhook_rule", in.WebhookID, func(cur routing.Config) (routing.Config, error) {
-			i := ruleIndex(cur, in.RuleID)
-			if i < 0 {
-				return cur, &toolError{codeRuleNotFound, "rule not found"}
-			}
-			cur.Rules = slices.Clone(cur.Rules)
-			if in.Name != nil {
-				cur.Rules[i].Name = *in.Name
-			}
-			if in.Expr != nil {
-				cur.Rules[i].Expr = *in.Expr
-			}
-			if in.Action != nil {
-				cur.Rules[i].Action = *fromActionIO(in.Action)
-			}
-			return cur, nil
-		})
+		change := manage.Update(in.RuleID, in.Name, in.Expr, in.Action)
+		out, _, err := h.ruleSvc().Mutate(ctx, manage.EndpointPrincipal(ep.ID), in.WebhookID, true, change)
+		return h.ruleResult(ep, "update_webhook_rule", out, err)
 	}
 }
 
 func (h *Handler) moveWebhookRuleTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[moveWebhookRuleIn, webhookRulesOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in moveWebhookRuleIn) (*sdk.CallToolResult, webhookRulesOut, error) {
-		return h.mutateRules(ctx, ep, "move_webhook_rule", in.WebhookID, func(cur routing.Config) (routing.Config, error) {
-			i := ruleIndex(cur, in.RuleID)
-			if i < 0 {
-				return cur, &toolError{codeRuleNotFound, "rule not found"}
-			}
-			r := cur.Rules[i]
-			rest := slices.Delete(slices.Clone(cur.Rules), i, i+1)
-			cur.Rules = slices.Insert(rest, min(max(in.Position, 0), len(rest)), r)
-			return cur, nil
-		})
+		change := manage.Move(in.RuleID, in.Position)
+		out, _, err := h.ruleSvc().Mutate(ctx, manage.EndpointPrincipal(ep.ID), in.WebhookID, true, change)
+		return h.ruleResult(ep, "move_webhook_rule", out, err)
 	}
 }
 
+// removeWebhookRuleTool skips the save-time dry run (see manage.Remove).
 func (h *Handler) removeWebhookRuleTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[removeWebhookRuleIn, webhookRulesOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in removeWebhookRuleIn) (*sdk.CallToolResult, webhookRulesOut, error) {
-		return h.mutateRules(ctx, ep, "remove_webhook_rule", in.WebhookID, func(cur routing.Config) (routing.Config, error) {
-			if i := ruleIndex(cur, in.RuleID); i >= 0 {
-				cur.Rules = slices.Delete(slices.Clone(cur.Rules), i, i+1)
-			}
-			return cur, nil
-		})
+		out, _, err := h.ruleSvc().Mutate(ctx, manage.EndpointPrincipal(ep.ID), in.WebhookID, false, manage.Remove(in.RuleID))
+		return h.ruleResult(ep, "remove_webhook_rule", out, err)
 	}
 }
 
-// testWebhookRulesTool routes without persisting anything. A stored event is only reachable through
-// the webhook it arrived on (store.EventForWebhook), after webhook ownership has been established, so
-// a dry-run cannot read another tenant's deliveries.
+// testWebhookRulesTool routes without persisting anything (manage.Rules.Test).
 func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[testWebhookRulesIn, testWebhookRulesOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in testWebhookRulesIn) (*sdk.CallToolResult, testWebhookRulesOut, error) {
-		id := strings.TrimSpace(in.WebhookID)
-		if id == "" {
-			return nil, testWebhookRulesOut{}, &toolError{codeInvalidArgument, "webhook_id is required"}
-		}
-		if (in.EventID > 0) == (in.Payload != nil) {
-			return nil, testWebhookRulesOut{}, &toolError{codeInvalidArgument, "exactly one of event_id or payload is required"}
-		}
-		wr, err := h.store.WebhookRoutingForHuman(ctx, id, ep.OwnerHumanID)
+		out, err := h.ruleSvc().Test(ctx, manage.EndpointPrincipal(ep.ID), in.WebhookID, manage.TestIn{
+			EventID: in.EventID, Payload: in.Payload, Headers: in.Headers, Rules: in.Rules,
+			DefaultAction: in.DefaultAction, Params: in.Params, OmitEnvelope: in.OmitEnvelope,
+		})
 		if err != nil {
 			return nil, testWebhookRulesOut{}, h.mapRuleErr(ep, "test_webhook_rules", err)
-		}
-		g, err := h.routingGrant(ctx, wr)
-		if err != nil {
-			return nil, testWebhookRulesOut{}, h.mapRuleErr(ep, "test_webhook_rules", err)
-		}
-		cfg := wr.Config
-		if in.Rules != nil {
-			cfg = routing.Config{Default: fromActionIO(in.DefaultAction), Params: wr.Config.Params}
-			for _, r := range in.Rules {
-				cfg.Rules = append(cfg.Rules, fromRuleIO(r))
-			}
-		}
-		if in.Params != nil {
-			cfg.Params = in.Params
-		}
-		if in.Rules != nil || in.Params != nil {
-			// Candidates are held to the same standard as a save, so a dry-run that passes is a save
-			// that will pass.
-			if err := routing.Validate(cfg, g); err != nil {
-				return nil, testWebhookRulesOut{}, h.mapRuleErr(ep, "test_webhook_rules", err)
-			}
-		}
-
-		env := routing.EnvelopeInput{Source: wr.SourceType, WebhookID: wr.WebhookID, TrustMode: wr.TrustMode}
-		if in.EventID > 0 {
-			ev, err := h.store.EventForWebhook(ctx, in.EventID, wr.WebhookID)
-			if err != nil {
-				if errors.Is(err, store.ErrNotFound) {
-					return nil, testWebhookRulesOut{}, &toolError{codeNotFound, "event not found on this webhook"}
-				}
-				return nil, testWebhookRulesOut{}, h.mapRuleErr(ep, "test_webhook_rules", err)
-			}
-			env = storedEnvelope(wr, ev)
-		} else {
-			body, err := json.Marshal(in.Payload)
-			if err != nil {
-				return nil, testWebhookRulesOut{}, &toolError{codeInvalidArgument, "payload is not JSON-encodable"}
-			}
-			env.Body, env.Headers = body, in.Headers
-			env.Verified = wr.TrustMode == trustModeSigned // as a delivery that passed verification
-			env.ContentType = "application/json"
-			header := func(k string) string {
-				for hk, v := range in.Headers {
-					if strings.EqualFold(hk, k) {
-						return v
-					}
-				}
-				return ""
-			}
-			env.Kind = routing.EventKind(wr.SourceType, header, body)
-			env.Actor = dryRunActor(wr, env.Verified, body)
-		}
-
-		d := h.rulesRouter().Route(ctx, cfg, g, env)
-		out := testWebhookRulesOut{
-			Decision: decisionOut{Drop: d.Drop, Queue: d.Queue, Endpoints: d.Endpoints,
-				Disposition: d.Disposition(), Faulted: d.Faulted, Quarantine: d.Quarantine, QuarantineReason: d.QuarantineReason(),
-				Unavailable: d.Unavailable, Fault: d.Fault},
-			Trace: d.Trace,
-			Actor: env.Actor, Held: env.Actor != nil && !env.Actor.IsTrusted(),
-		}
-		if d.Unavailable {
-			// A dry-run that could not run says nothing about the rules. It is reported, but no
-			// disposition is claimed for it.
-			out.Decision.Disposition = ""
-		}
-		if out.Held {
-			// The receiver never runs the rules on a held delivery: it records the trust gate's
-			// decision and trace (ingest selfmanaged.go). Report exactly that, so an agent reading
-			// decision.disposition sees what live traffic records, and move the rules' hypothetical
-			// outcome aside. No once key or work order: a held delivery claims and mints neither.
-			// Governing: SPEC-0026 REQ-5, REQ-13 "trust gate".
-			held := routing.UntrustedDecision(env.Actor)
-			out.RulesWould = &rulesWouldOut{Decision: out.Decision, Trace: out.Trace}
-			out.Decision = decisionOut{Disposition: held.Disposition(), QuarantineReason: held.QuarantineReason(),
-				Faulted: held.Faulted, Fault: held.Fault}
-			out.Trace = held.Trace
-		}
-		subject := routing.SubjectOf(wr.SourceType, env.Headers, env.Body)
-		if d.Once && !d.Drop && !d.Faulted && !out.Held {
-			out.OnceKey = routing.OnceKey(subject, d.Queue)
-			out.Trace.OnceKey = out.OnceKey
-		}
-		if d.WorkOrder && !d.Drop && !d.Faulted && !out.Held {
-			wo := routing.BuildWorkOrder(d, env, subject)
-			out.WorkOrder = &wo
-		}
-		if !in.OmitEnvelope {
-			out.Envelope = routing.Envelope(env)
 		}
 		return nil, out, nil
 	}
@@ -449,236 +251,11 @@ func (h *Handler) testWebhookRulesTool(ep store.AuthEndpoint) sdk.ToolHandlerFor
 
 // --- helpers ---
 
-// mutateRules is the shared read-modify-validate-write for every rule mutation. change receives the
-// current configuration; the result is validated against a freshly computed grant inside the row
-// lock, so validation and write cannot be separated by a concurrent edit.
-func (h *Handler) mutateRules(ctx context.Context, ep store.AuthEndpoint, tool, webhookID string,
-	change func(routing.Config) (routing.Config, error)) (*sdk.CallToolResult, webhookRulesOut, error) {
-	id := strings.TrimSpace(webhookID)
-	if id == "" {
-		return nil, webhookRulesOut{}, &toolError{codeInvalidArgument, "webhook_id is required"}
-	}
-	// Resolve the grant's delivery targets BEFORE UpdateWebhookRouting takes its row lock. That
-	// transaction holds a pooled connection until it commits, so resolving targets from inside mutate
-	// needs a second one: N concurrent rule edits on an N-connection pool then each hold one and wait
-	// forever on another, and ingest wedges with them. Targets read a moment before the lock are as
-	// sound as targets read under it — the lock never covered webhook_routes or endpoint state — and
-	// every delivery re-applies the grant anyway. The queue ceiling still comes from the locked row.
-	pre, err := h.store.WebhookRoutingForHuman(ctx, id, ep.OwnerHumanID)
+func (h *Handler) ruleResult(ep store.AuthEndpoint, tool string, out webhookRulesOut, err error) (*sdk.CallToolResult, webhookRulesOut, error) {
 	if err != nil {
 		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
 	}
-	targets, err := h.store.ResolveWebhookTargets(ctx, pre.WebhookID, pre.EndpointID)
-	if err != nil {
-		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
-	}
-	scopes, err := h.store.EndpointScopeQueues(ctx, targets) // also before the lock, for the same reason
-	if err != nil {
-		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
-	}
-
-	// Build and check the candidate from the configuration read above, then dry-run it against the
-	// webhook's recent traffic, all BEFORE the lock (SPEC-0026 REQ-3). The dry-run reads up to
-	// dryRunEvents stored events and evaluates each one in the sandbox. Doing that under the row lock
-	// would hold it for as long as the evaluations take, and the event read would take a second
-	// pooled connection, which is the deadlock above. Instead, the locked mutation below saves this
-	// exact candidate only if the stored configuration is still the one it was built from. A
-	// concurrent edit in between answers conflict rather than saving something that was never
-	// dry-run.
-	next, err := change(pre.Config)
-	if err != nil {
-		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
-	}
-	for i := range next.Rules {
-		if next.Rules[i].ID == "" {
-			next.Rules[i].ID = routing.NewRuleID()
-		}
-	}
-	g := routing.Grant{TargetQueue: pre.TargetQueue, Queues: pre.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
-		Tenant: pre.OwnerHumanID}
-	// Param shapes are checked only when this save changes the params (SPEC-0026 REQ-3). Params saved
-	// before shapes were checked are carried forward as they are, so they never stop the owner from
-	// editing or removing the rules that read them. Such a rule faults, and fails closed, until the
-	// params are rewritten.
-	validate := routing.Validate
-	if reflect.DeepEqual(next.Params, pre.Config.Params) {
-		validate = routing.ValidateKeepingParams
-	}
-	if err := validate(next, g); err != nil {
-		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
-	}
-	// remove_webhook_rule is not dry-run (SPEC-0026 REQ-3 names the four verbs that add or change
-	// a rule). Removing a rule adds no new expression, and refusing it would block an owner from
-	// deleting the very rule that faults.
-	var report *dryRunOut
-	if tool != "remove_webhook_rule" {
-		if report, err = h.dryRunSave(ctx, pre, next, g); err != nil {
-			return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
-		}
-	}
-
-	wr, err := h.store.UpdateWebhookRouting(ctx, id, ep.OwnerHumanID, func(cur store.WebhookRouting) (routing.Config, error) {
-		if !reflect.DeepEqual(cur.Config, pre.Config) {
-			return routing.Config{}, &toolError{codeConflict, "the webhook's rules changed while this edit was being checked; read them again and retry"}
-		}
-		// The queue ceiling still comes from the locked row.
-		g = routing.Grant{TargetQueue: cur.TargetQueue, Queues: cur.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
-			Tenant: cur.OwnerHumanID}
-		if err := validate(next, g); err != nil { // cur.Config is pre.Config, so the same check applies
-			return routing.Config{}, err
-		}
-		return next, nil
-	})
-	if err != nil {
-		return nil, webhookRulesOut{}, h.mapRuleErr(ep, tool, err)
-	}
-	out := rulesOut(wr, g)
-	out.DryRun = report
 	return nil, out, nil
-}
-
-// dryRunEvents bounds the save-time dry-run: at most this many of the webhook's latest deliveries
-// that the trust gate would pass, each inside the per-event evaluation budget (SPEC-0026 REQ-3,
-// "Rate Limiting"). dryRunScanPages bounds how far back it reads to find them, a page of
-// dryRunEvents at a time, so an outsider's flood of held deliveries costs at most that many cheap
-// Go trust checks and never a sandbox evaluation. The bound means a flood of more than
-// dryRunScanPages*dryRunEvents held deliveries since the owner's last trusted one leaves fewer than
-// dryRunEvents to check, possibly none. The save still goes through, because refusing it would let
-// an outsider block the owner's edits. Live traffic still fails closed on a fault. The result's
-// dry_run.warning says so, so the owner can test_webhook_rules against a known event before
-// relying on the rules.
-const (
-	dryRunEvents    = 50
-	dryRunScanPages = 10
-)
-
-// dryRunSave evaluates a candidate configuration against the webhook's most recent stored
-// deliveries and refuses it with invalid_argument if any rule faults on any of them. The error names
-// every faulting rule id, with the event ids and the cause. Most faults are type errors that real
-// traffic exposes at once, so this turns "installs green, then faults every delivery" into a refused
-// save that says why. A webhook with no stored events skips the dry-run. So does a candidate with
-// no rules, which cannot fault.
-//
-// The sandbox being unavailable is not the candidate's fault. It refuses the save with
-// "unavailable", so the agent can retry, rather than blaming a rule.
-//
-// Only deliveries the trust gate would pass TODAY are checked, because only those ever reach the
-// rules on live traffic (the receiver holds the rest before any rule runs). Checking a held one
-// would let anyone who can make the producer send (on a public repository, anyone who can open an
-// issue) refuse the owner's saves with a payload built to fault, and a flood of them would push the
-// owner's real traffic out of the window. Held deliveries are skipped and the scan pages further
-// back, up to dryRunScanPages, to find dryRunEvents that pass.
-//
-// On success it reports what it checked: nil when nothing ran (no rules, or no stored events), and
-// a warning when the scan bound stopped it short of dryRunEvents while older deliveries remained.
-// Governing: SPEC-0026 REQ-3 "Save-Time Fault Refusal and Param Typing", REQ-5; ADR-0031.
-func (h *Handler) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg routing.Config, g routing.Grant) (*dryRunOut, error) {
-	if len(cfg.Rules) == 0 {
-		return nil, nil
-	}
-	router := h.rulesRouter()
-	faults := map[string][]int64{} // "rule_id (cause)" -> event ids, newest first
-	var order []string
-	checked, skipped := 0, 0
-	bounded := true                     // cleared when the scan ends for any reason but the page bound
-	var cursor store.EventHistoryDetail // zero: start at the newest
-scan:
-	for page := 0; page < dryRunScanPages; page++ {
-		events, err := h.store.WebhookEventsBefore(ctx, wr.WebhookID, cursor.ReceivedAt, cursor.ID, dryRunEvents)
-		if err != nil {
-			return nil, err
-		}
-		for _, ev := range events {
-			env := storedEnvelope(wr, ev)
-			if env.Actor != nil && !env.Actor.IsTrusted() {
-				skipped++
-				continue // held by the trust gate: live traffic never runs the rules on it
-			}
-			d := router.Route(ctx, cfg, g, env)
-			if d.Unavailable {
-				return nil, &toolError{codeUnavailable, "routing is unavailable, so the rules could not be checked against recent deliveries; retry shortly"}
-			}
-			if d.Faulted {
-				k := d.Fault.RuleID + " (" + d.Fault.Cause + ")"
-				if _, seen := faults[k]; !seen {
-					order = append(order, k)
-				}
-				faults[k] = append(faults[k], ev.ID)
-			}
-			if checked++; checked == dryRunEvents {
-				bounded = false
-				break scan
-			}
-		}
-		if len(events) < dryRunEvents {
-			bounded = false
-			break // no older deliveries
-		}
-		cursor = events[len(events)-1]
-	}
-	if len(order) == 0 {
-		if checked == 0 && skipped == 0 {
-			return nil, nil // no stored events: the dry-run is skipped
-		}
-		report := &dryRunOut{Checked: checked, SkippedHeld: skipped}
-		if bounded {
-			report.Warning = fmt.Sprintf("the dry-run read the newest %d deliveries and the trust gate would hold %d of them, "+
-				"so the rules were checked against only %d of the %d it aims for; older trusted deliveries were not checked. "+
-				"Run test_webhook_rules with a known event_id before relying on these rules.",
-				dryRunScanPages*dryRunEvents, skipped, checked, dryRunEvents)
-		}
-		return report, nil
-	}
-	parts := make([]string, 0, len(order))
-	for _, k := range order {
-		ids := make([]string, 0, len(faults[k]))
-		for _, id := range faults[k] {
-			ids = append(ids, strconv.FormatInt(id, 10))
-		}
-		parts = append(parts, "rule "+k+" on events "+strings.Join(ids, ", "))
-	}
-	return nil, &toolError{codeInvalidArgument, "refused: the rules fault on recent deliveries, which would record them and route them nowhere: " +
-		strings.Join(parts, "; ") + ". Fix the rules (test_webhook_rules with event_id reproduces each one) and save again."}
-}
-
-// storedEnvelope rebuilds the envelope input a stored delivery was routed on, exactly as the
-// receiver saw it: the sanitized headers, the body, the kind and the verification result.
-func storedEnvelope(wr store.WebhookRouting, ev store.EventHistoryDetail) routing.EnvelopeInput {
-	env := routing.EnvelopeInput{Source: wr.SourceType, WebhookID: wr.WebhookID, TrustMode: wr.TrustMode,
-		Body: ev.Payload, Kind: ev.EventType, Verified: ev.Verified, ContentType: ev.ContentType,
-		Actor: dryRunActor(wr, ev.Verified, ev.Payload)}
-	_ = json.Unmarshal(ev.Headers, &env.Headers)
-	return env
-}
-
-// dryRunActor is the trust gate's verdict exactly as the receiver would compute it (ingest
-// trustGate), so a dry-run's .actor matches live traffic: a missing or unreadable list, or an
-// unverified body, trusts no one. nil for a source with no gate. Governing: SPEC-0026 REQ-5, REQ-10.
-func dryRunActor(wr store.WebhookRouting, verified bool, body []byte) *routing.ActorTrust {
-	if !routing.HasActorProjection(wr.SourceType) {
-		return nil
-	}
-	ta, _ := routing.DecodeTrustedActors(wr.SourceType, wr.TrustedActors)
-	if !verified {
-		ta, _ = routing.DefaultTrustedActors(wr.SourceType)
-	}
-	return routing.EvaluateTrust(wr.SourceType, ta, body)
-}
-
-// routingGrant builds a webhook's grant from switchboard state: its target queue, its OWNER's
-// allowed webhook queues (the owner-wide union the routing read computes — see store.WebhookRouting),
-// and its live, authorized delivery targets.
-func (h *Handler) routingGrant(ctx context.Context, wr store.WebhookRouting) (routing.Grant, error) {
-	targets, err := h.store.ResolveWebhookTargets(ctx, wr.WebhookID, wr.EndpointID)
-	if err != nil {
-		return routing.Grant{}, err
-	}
-	scopes, err := h.store.EndpointScopeQueues(ctx, targets)
-	if err != nil {
-		return routing.Grant{}, err
-	}
-	return routing.Grant{TargetQueue: wr.TargetQueue, Queues: wr.WebhookQueues, Endpoints: targets, EndpointQueues: scopes,
-		Tenant: wr.OwnerHumanID}, nil
 }
 
 // rulesRouter is the router dry-runs use: the same sandbox the receiver uses unless a test replaced it.
@@ -689,15 +266,24 @@ func (h *Handler) rulesRouter() routing.Router {
 	return routing.Unavailable{}
 }
 
+// RulesRouter is the evaluator this handler's dry runs use. The human API's rule routes share it, so
+// both surfaces run candidates through the same sandbox.
+func (h *Handler) RulesRouter() routing.Router { return h.rulesRouter() }
+
 // SetRouter replaces the router used by test_webhook_rules (tests install routing.InProcess{}).
 func (h *Handler) SetRouter(r routing.Router) { h.router.Store(&r) }
 
-// mapRuleErr maps rule-verb failures onto stable codes. Validation failures carry routing's own code
-// and a message naming the offending rule — except not_granted, which is the house forbidden code.
+// mapRuleErr maps rule-verb failures onto stable codes. manage's sentinel kinds are the codes
+// themselves. Validation failures carry routing's own code and a message naming the offending rule —
+// except not_granted, which is the house forbidden code.
 func (h *Handler) mapRuleErr(ep store.AuthEndpoint, tool string, err error) error {
 	var te *toolError
 	if errors.As(err, &te) {
 		return te
+	}
+	var me *manage.Error
+	if errors.As(err, &me) {
+		return &toolError{me.Code(), me.Msg}
 	}
 	var ve *routing.ValidationError
 	if errors.As(err, &ve) {
@@ -708,48 +294,4 @@ func (h *Handler) mapRuleErr(ep store.AuthEndpoint, tool string, err error) erro
 		return &toolError{code, ve.Error()}
 	}
 	return h.mapWebhookErr(ep, tool, err)
-}
-
-func ruleIndex(cfg routing.Config, id string) int {
-	id = strings.TrimSpace(id)
-	return slices.IndexFunc(cfg.Rules, func(r routing.Rule) bool { return id != "" && r.ID == id })
-}
-
-func fromActionIO(a *actionIO) *routing.Action {
-	if a == nil {
-		return nil
-	}
-	return &routing.Action{Queue: strings.TrimSpace(a.Queue), Drop: a.Drop, Quarantine: a.Quarantine, Endpoints: a.Endpoints,
-		Exclusive: a.Exclusive, Once: a.Once, WorkOrder: a.WorkOrder}
-}
-
-func fromRuleIO(r ruleIO) routing.Rule {
-	return routing.Rule{ID: strings.TrimSpace(r.ID), Name: r.Name, Expr: r.Expr, Action: *fromActionIO(&r.Action)}
-}
-
-func toActionIO(a routing.Action) actionIO {
-	return actionIO{Queue: a.Queue, Drop: a.Drop, Quarantine: a.Quarantine, Endpoints: a.Endpoints,
-		Exclusive: a.Exclusive, Once: a.Once, WorkOrder: a.WorkOrder}
-}
-
-func rulesOut(wr store.WebhookRouting, g routing.Grant) webhookRulesOut {
-	out := webhookRulesOut{
-		WebhookID: wr.WebhookID, SourceType: wr.SourceType, TargetQueue: wr.TargetQueue,
-		Rules:  make([]ruleIO, 0, len(wr.Config.Rules)),
-		Params: wr.Config.Params,
-		Grant:  grantOut{Queues: []string{g.TargetQueue}, Endpoints: nonNil(g.Endpoints)},
-	}
-	for _, q := range g.Queues {
-		if !slices.Contains(out.Grant.Queues, q) {
-			out.Grant.Queues = append(out.Grant.Queues, q)
-		}
-	}
-	if wr.Config.Default != nil {
-		a := toActionIO(*wr.Config.Default)
-		out.DefaultAction = &a
-	}
-	for _, r := range wr.Config.Rules {
-		out.Rules = append(out.Rules, ruleIO{ID: r.ID, Name: r.Name, Expr: r.Expr, Action: toActionIO(r.Action)})
-	}
-	return out
 }

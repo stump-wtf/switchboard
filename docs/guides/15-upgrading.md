@@ -11,7 +11,176 @@ published image, check which release you are actually running first.
 To find your version, run `switchboard version`, or read it from `/healthz`. Newer builds
 also report it over MCP as `serverInfo.version`.
 
-## Upgrading past v0.3.0 (unreleased): routing rules fail closed
+## Upgrading to v0.5.0
+
+### Read this first
+
+**This release narrows what friend endpoints and sibling endpoints may do, and one migration
+cannot be fully reversed.** It also makes routing rules fail closed, with no switch: see
+[Routing rules fail closed](#routing-rules-fail-closed) below. After you upgrade:
+
+- a webhook's routes and rules can be managed **only from the endpoint that owns the
+  webhook**. The rule and route verbs called from any other endpoint, including another
+  endpoint of the same person, answer `not_found`;
+- every endpoint minted by approving a friend request is **narrowed in place** to
+  `create_for` and the drain verbs (`list_todos`, `get_todo`, `claim`, `claim_next`,
+  `complete`, `fail`, `release`, `heartbeat`), and its friendship's recorded grant is
+  narrowed with it;
+- a friend request (over A2A, or from the Friends page) that names only verbs a friend can
+  never be granted is refused with a 400 instead of being stored.
+
+Migration `0025_friend_edges_own_authority` rewrites `endpoints.scope_verbs` and
+`friend_edges.granted_verbs` in place. Its index change can be undone, but the verbs it
+removes cannot be put back from the database. Back up first.
+
+The migration's own narrowing list predates the `release` verb (#507) and does not carry
+it, so a friend endpoint that holds `release` loses it on upgrade. A follow-up migration,
+`0028_friend_release_verb`, repairs that on the same upgrade: every approved edge that
+requested `release` and no longer holds it gets it back, and its endpoint is re-broadened
+with it. (A grant is always a subset of the request, so requesting `release` is the only
+way an edge could ever have held it.) One limit: an approver who deliberately withheld
+`release` while granting the other requested verbs is indistinguishable from a stripped
+grant and gets it back too — revoke the edge and re-approve with a narrower scope if that
+matters. The list below is the correct one, and the verification query says what to expect.
+
+### What breaks, and who is affected
+
+You are affected if any of these is true:
+
+- an agent edits a webhook's rules or routes (`list_webhook_rules`, `set_webhook_rules`,
+  `add_webhook_rule`, `update_webhook_rule`, `move_webhook_rule`, `remove_webhook_rule`,
+  `test_webhook_rules`, `list_webhook_routes`, `add_webhook_route`, `remove_webhook_route`)
+  from an endpoint other than the one that created the webhook; or
+- you approved a friendship that granted webhook, rule, route or event-history verbs. Those
+  verbs are removed from the friend's endpoint, and a friend agent that relied on them now
+  gets `forbidden`; or
+- a client sends friend requests that ask only for such verbs.
+
+You are **not** affected if every webhook is managed from the endpoint that created it and
+no friendship was granted anything beyond `create_for` and the drain verbs.
+
+### Why this changed
+
+A friend endpoint is vended on the approver's agent, so every verb on it acted with the
+approver's authority. A friend granted `set_webhook_rules` or `test_webhook_rules` could
+rewrite the approver's rules or read their payloads. The same check also let any endpoint
+of a person configure all of that person's webhooks, so one leaked credential reached
+every webhook they own. Both now follow the endpoint that owns the webhook
+([SPEC-0033](https://github.com/stump-wtf/switchboard/blob/main/docs/openspec/specs/teams-tenancy/spec.md)
+F3 and F19).
+
+### Before you upgrade: back up
+
+```sh
+pg_dump --format=custom --file=switchboard-pre-friend-authority.dump "$SWITCHBOARD_DATABASE_URL"
+```
+
+Keep that file somewhere other than the database host until you have confirmed the upgrade
+works.
+
+### Steps
+
+1. **Manage each webhook from its own endpoint.** `list_webhooks` on an endpoint lists the
+   webhooks it owns. Point any agent that edits a webhook's rules or routes at that
+   endpoint's credential.
+2. **Review routes that deliver to friend endpoints.** Before this release, a friend
+   endpoint holding `add_webhook_route` could route your webhook's deliveries to itself.
+   The migration removes the verb but leaves any route it made, and such a route looks
+   exactly like one you added. List them:
+
+   ```sql
+   SELECT r.webhook_id, r.target_endpoint_id, r.granted_at, f.from_persona AS friend
+     FROM webhook_routes r
+     JOIN friend_edges f ON f.endpoint_id = r.target_endpoint_id
+    ORDER BY r.granted_at;
+   ```
+
+   For each row you did not add yourself, call `remove_webhook_route` from the webhook's
+   own endpoint, and check that webhook's rules with `list_webhook_rules`.
+
+### Verify
+
+- No friend endpoint carries anything beyond `create_for` and the drain verbs. This should
+  return no rows:
+
+  ```sql
+  SELECT e.id, e.scope_verbs
+    FROM endpoints e
+    JOIN friend_edges f ON f.endpoint_id = e.id
+   WHERE f.state = 'approved'
+     AND NOT e.scope_verbs <@ ARRAY['create_for','list_todos','get_todo','claim','claim_next','complete','fail','release','heartbeat'];
+  ```
+
+- From a webhook's own endpoint, `list_webhook_rules` returns its rules; from any other
+  endpoint it returns `not_found`.
+
+### If you need to go back
+
+Restore the dump with `pg_restore --clean --if-exists --dbname "$SWITCHBOARD_DATABASE_URL"
+switchboard-pre-friend-authority.dump`, then run the previous image. Anything written after
+the upgrade is lost.
+
+## Upgrading to v0.4.0
+
+### Replay targets are owned by the endpoint
+
+**What breaks.** The instance settings `replay_default_target` and `replay_allowed_targets`
+are removed. Migration `0026_owned_replay_targets` deletes both rows from `settings`; after
+the upgrade nothing reads them and nothing warns about them at startup. Their targets were
+exempt from the SSRF checks for every tenant's replay, which is why they are gone rather
+than kept for compatibility.
+
+`replay_webhook_event` now:
+
+- replays to the `target_url` the call names, or else to the calling endpoint's first
+  **owned** replay target;
+- fails with the new error code `replay_target_required` when it has neither;
+- sends every target, owned or not, through the shared SSRF guard, both when the call is
+  made and again when it connects: the target must be `https` and every address its host
+  resolves to must be public. Loopback, private (RFC 1918 and IPv6 unique-local),
+  link-local and cloud-metadata, and shared (100.64.0.0/10) addresses are refused, and so
+  is plain `http`.
+
+**Who is affected.** Anyone who set either setting, or who replays to a consumer on
+localhost, a private network, or plain `http`. An agent that called `replay_webhook_event`
+without `target_url` now gets `replay_target_required` until its endpoint owns a target.
+
+**What to do.**
+
+1. Back up first. The migration deletes the two rows and cannot put them back:
+
+   ```sh
+   pg_dump --format=custom --file=switchboard-pre-replay-targets.dump "$SWITCHBOARD_DATABASE_URL"
+   ```
+
+2. For each endpoint that should replay by default, vend a replacement that owns its
+   targets. Replay targets are part of an endpoint's scope, which is fixed at vend time:
+
+   ```sh
+   curl -sS -X POST "$SWITCHBOARD_URL/api/v1/endpoints" \
+     -H "Authorization: Bearer $OPERATOR_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"name":"my-agent","replay_targets":["https://consumer.example.com/hook"]}'
+   ```
+
+   A target the guard refuses fails the vend with `400` and mints nothing. Otherwise, pass
+   `target_url` on each replay call.
+
+3. Move any replay consumer that lived on localhost or a private network to a public
+   `https` URL, or stop replaying to it. There is no allowlist for internal hosts.
+
+**Verify.**
+
+- `GET /api/v1/endpoints` lists `replay_targets` for each of your endpoints.
+- `replay_webhook_event` with no `target_url` on an endpoint without targets returns
+  `replay_target_required`.
+- Nothing is left in `settings`. This should print `0`:
+
+  ```sh
+  psql "$SWITCHBOARD_DATABASE_URL" -Atc \
+    "SELECT count(*) FROM settings WHERE key IN ('replay_default_target','replay_allowed_targets')"
+  ```
+
+### Routing rules fail closed
 
 :::warning Behaviour change, no switch
 A routing rule that errors, times out, runs out of memory or budget, or no longer compiles

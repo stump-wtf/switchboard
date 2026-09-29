@@ -73,3 +73,72 @@ func TestMetricsTokenFromEnvTrimsWhitespace(t *testing.T) {
 		t.Fatal("unset SWITCHBOARD_METRICS_TOKEN should leave MetricsToken empty")
 	}
 }
+
+// TestAttemptSummaryFromResult pins SPEC-0034 REQ-5's operator option: off when unset, on for the
+// documented "true" (and any other strconv.ParseBool truth), and off for anything unparseable, so a
+// typo never turns a risky option on.
+func TestAttemptSummaryFromResult(t *testing.T) {
+	for value, want := range map[string]bool{
+		"":      false,
+		"false": false,
+		"0":     false,
+		"yes":   false,
+		"ture":  false,
+		"true":  true,
+		"TRUE":  true,
+		"1":     true,
+		" true": true,
+	} {
+		t.Setenv("SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT", value)
+		if got := FromEnv().AttemptSummaryFromResult; got != want {
+			t.Errorf("SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT=%q: AttemptSummaryFromResult = %v, want %v", value, got, want)
+		}
+	}
+	_ = os.Unsetenv("SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT")
+	if FromEnv().AttemptSummaryFromResult {
+		t.Fatal("unset SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT turned the option on; it defaults to off")
+	}
+}
+
+// TestNotifyHookMax pins SPEC-0024 REQ-1's operator bound: unset is 5, 0 is a valid kill switch,
+// and a malformed or negative value fails startup rather than silently becoming the default.
+func TestNotifyHookMax(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env  string
+		want int
+		ok   bool
+	}{
+		"unset":    {"", DefaultNotifyHookMax, true},
+		"zero":     {"0", 0, true},
+		"raised":   {"12", 12, true},
+		"spaces":   {" 3 ", 3, true},
+		"negative": {"-1", -1, false},
+		"garbage":  {"five", -1, false},
+	} {
+		t.Setenv("SWITCHBOARD_NOTIFY_HOOK_MAX", tc.env)
+		cfg := FromEnv()
+		if cfg.NotifyHookMax != tc.want {
+			t.Errorf("%s: NotifyHookMax = %d, want %d", name, cfg.NotifyHookMax, tc.want)
+		}
+		if err := cfg.Validate(); (err == nil) != tc.ok {
+			t.Errorf("%s: Validate() = %v, want ok=%v", name, err, tc.ok)
+		}
+	}
+}
+
+// TestNotifyHookAllowCIDRs: SPEC-0024 REQ-3's allowlist is empty by default, accepts a CIDR list,
+// and a malformed entry fails startup naming it.
+func TestNotifyHookAllowCIDRs(t *testing.T) {
+	t.Setenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS", "")
+	if cfg := FromEnv(); cfg.NotifyHookAllowCIDRs != "" || cfg.Validate() != nil {
+		t.Fatalf("default allowlist = %q, %v", cfg.NotifyHookAllowCIDRs, cfg.Validate())
+	}
+	t.Setenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS", " 127.0.0.1/32, 192.168.1.0/24 ")
+	if err := FromEnv().Validate(); err != nil {
+		t.Fatalf("valid allowlist: %v", err)
+	}
+	t.Setenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS", "10.0.0.0/8, lan")
+	if err := FromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "lan") {
+		t.Fatalf("malformed allowlist: %v", err)
+	}
+}

@@ -25,9 +25,11 @@ import (
 
 	"github.com/stump-wtf/switchboard/internal/auth"
 	"github.com/stump-wtf/switchboard/internal/config"
+	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/ingest"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 	"github.com/stump-wtf/switchboard/internal/web"
 )
@@ -41,6 +43,14 @@ const sessionCookieName = "sb_session"
 // parallel, and the store/ingest/db packages each truncate the shared test database mid-run;
 // carving out a separate database keeps these end-to-end tests (and theirs) deterministic.
 func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
+	t.Helper()
+	r, st, ctx, _ := newDBRouterWeb(t)
+	return r, st, ctx
+}
+
+// newDBRouterWeb is newDBRouter that also returns the router's web handler, for suites that
+// install the seams Run wires onto it (the notify-hook disable counter).
+func newDBRouterWeb(t *testing.T) (chi.Router, *store.Store, context.Context, *web.Handler) {
 	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -75,7 +85,13 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 		`TRUNCATE humans, agents, endpoints, todos, events, sessions, oauth_clients RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	st := store.New(pool)
+	// A fixed test key, so store paths that refuse to hold a secret in plaintext (notify hooks,
+	// SPEC-0024) are reachable from these suites exactly as in a keyed deployment.
+	box, err := cred.NewSecretBox([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("secret box: %v", err)
+	}
+	st := store.New(pool, store.WithSecretCipher(box))
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// The DB-backed suites exercise the personas + A2A advanced surfaces, so they opt into the
 	// ADR-0023 capability flags explicitly (the production default is off).
@@ -103,8 +119,11 @@ func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 		ing:   ingest.New(st, hub, log, ingest.Config{}),
 		ping:  pool.Ping,
 		log:   log,
+		// The human API's rule routes dry-run candidates; in-process evaluation keeps these suites
+		// free of the sandbox's child processes (the MCP suites cover the sandbox itself).
+		rulesRouter: routing.InProcess{},
 	})
-	return r, st, ctx
+	return r, st, ctx, webh
 }
 
 // mintSession creates a human plus a live server-side session and returns the plaintext cookie

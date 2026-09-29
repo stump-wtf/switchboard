@@ -15,17 +15,17 @@ only thing between an attacker-reachable webhook body and a tool-bearing agent. 
 open an issue, comment, or land a delivery controls that body. Three facts on `main` make the gate
 weaker than it looks.
 
-**1. Rules fail open (#212).** The `internal/routing` package documents it: "a rule that errors or
+**1. Rules fail open.** The `internal/routing` package documents it: "a rule that errors or
 times out is treated as no-match and recorded on the trace rather than failing the delivery."
 Rules are first-match-wins, so "no match" means *fall through*. A trust rule that faults stops
 restricting, and a drop rule that faults stops dropping. `internal/ingest/selfmanaged.go` now logs
-a warning when that happens (#226), but the delivery is still routed. If the sandbox cannot start
+a warning when that happens, but the delivery is still routed. If the sandbox cannot start
 at all, `internal/ingest/ingest.go` logs "webhooks with rules will route by default" and carries
 on. The checked-in fleet pack defends itself by hand: every allowlist is read through
 `| arrays | strings`, and a test holds it to that. Every other rule author is expected to reinvent
 fail-closed in jq.
 
-**2. Params vanish (#213).** `set_webhook_rules` builds its config from `in.Params`, so omitting
+**2. Params vanish.** `set_webhook_rules` builds its config from `in.Params`, so omitting
 `params` clears them (`internal/mcp/webhook_rules.go`). Params are where allowlists live
 (`trusted_humans`, `cairn_actors`). An agent that edits a rule list without mentioning params
 empties every allowlist. Combined with (1), whether the result is "everything passes" or
@@ -66,13 +66,13 @@ untrusted input visible without ever letting it reach an agent that has tools?**
 * **Multi-tenancy.** A trust list and a quarantine belong to the webhook's owner scope, like
   everything else a user creates (ADR-0022, and the Teams ADR-0038). The instance
   operator can bound them and never read them.
-* **No silent data loss from an omitted field.** #213 is a class of bug. Every new
+* **No silent data loss from an omitted field.** Clearing params on omission is a class of bug. Every new
   "replace-the-config" verb introduced here must make clearing explicit.
 
 ## Considered Options
 
 * **(A) Status quo plus documentation.** Keep jq-only trust, document the `| arrays` idiom
-  harder, and fix #213 alone.
+  harder, and fix the params bug alone.
 * **(B) Fail-closed engine plus first-class trusted actors; untrusted is dropped.**
 * **(C) Fail-closed engine, first-class trusted actors, and a quarantine queue that only a human
   or a tool-less classifier drains.** *(chosen)*
@@ -87,7 +87,7 @@ the same visible, reviewable place instead of in a work lane or nowhere.
 > **Intake has three outcomes: routed, dropped on purpose, or quarantined.** "Routed because the
 > gate broke" is no longer one of them.
 
-### 1. The engine fails closed (fixes #212)
+### 1. The engine fails closed
 
 * **Any rule fault stops evaluation.** The causes are timeout, error, compile failure or an
   exhausted budget. No later rule runs and the default does not apply. The delivery's disposition
@@ -95,7 +95,7 @@ the same visible, reviewable place instead of in a work lane or nowhere.
   something only if every earlier rule decided. After a fault, the evaluator does not know what
   the author intended.
 * **A faulted delivery is quarantined** (below), with the fault recorded, is counted, and is shown
-  to the owner. Until quarantine ships, the #212 fix alone persists the event with no todo, which
+  to the owner. Until quarantine ships, the fail-closed fix alone persists the event with no todo, which
   is the same shape as a drop, with disposition `faulted`, a counter and an owner-visible warning.
 * **A wholly unavailable sandbox refuses the delivery** with `503`, persisting nothing, so that the
   producer retries. This follows the existing precedent: a webhook with no resolvable target
@@ -106,7 +106,7 @@ the same visible, reviewable place instead of in a work lane or nowhere.
   already has. The save fails if any rule faults on any of them. `$params` values are also
   type-checked: every value must be a string, number, boolean, or a list of strings or numbers.
 
-### 2. Params are never cleared by omission (fixes #213)
+### 2. Params are never cleared by omission
 
 `set_webhook_rules` treats an omitted `params` as **unchanged**. Only an explicit `params: {}`
 clears them. Every rules verb echoes the resulting `params` in its response. The same rule governs
@@ -302,7 +302,7 @@ flowchart TD
 
 ## More Information
 
-* Bugs fixed first: #212 (rules fail open) and #213 (params cleared on omission).
+* Bugs fixed first: rules fail open, and params are cleared on omission.
 * Builds on [ADR-0024](ADR-0024-event-routing-deterministic-and-llm.md) (routing), and on
   [ADR-0003](ADR-0003-per-provider-ingestion-and-trust-model.md), whose per-source verification is
   where an actor's identity comes from. Work orders: [ADR-0025](ADR-0025-handoff-work-orders-and-difficulty-lanes.md).

@@ -395,12 +395,14 @@ func scopeBullets(queues, verbs []string) []string {
 	}
 
 	var bullets []string
-	if has("list_todos") {
+	// get_todo reads the same rows list_todos lists (SPEC-0034 REQ-8), so either earns the read line.
+	if has("list_todos") || has("get_todo") {
 		bullets = append(bullets, "read todos on "+strings.Join(queues, " · "))
 	}
 	// The lease-bound lifecycle verbs (everything on the drain surface past reading).
 	var lease []string
-	for _, v := range []string{"claim", "complete", "fail", "heartbeat"} {
+	// release ends the holder's own lease, so it belongs on this line (SPEC-0034 REQ-9).
+	for _, v := range []string{"claim", "complete", "fail", "release", "heartbeat"} {
 		if has(v) {
 			lease = append(lease, v)
 		}
@@ -414,8 +416,13 @@ func scopeBullets(queues, verbs []string) []string {
 	if events := inScope(mcp.EventVerbs()); len(events) > 0 {
 		bullets = append(bullets, "inspect event history & providers ("+strings.Join(events, " · ")+")")
 	}
+	// SPEC-0024 REQ-2: the notify-hook verbs are labelled for what they grant — switchboard making
+	// outbound HTTP calls to hosts the agent chooses — never folded into the webhook bullet.
+	if hooks := inScope(mcp.NotifyHookVerbs()); len(hooks) > 0 {
+		bullets = append(bullets, "make outbound HTTP calls: register URLs switchboard will POST to ("+strings.Join(hooks, " · ")+")")
+	}
 	// Anything outside the known families renders as itself — truthful, never embellished.
-	known := mcp.AllVerbs()
+	known := append(mcp.AllVerbs(), mcp.NotifyHookVerbs()...)
 	for _, v := range verbs {
 		if !slices.Contains(known, v) {
 			bullets = append(bullets, v)

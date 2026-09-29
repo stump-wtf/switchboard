@@ -128,6 +128,55 @@ func TestBoardLanesFragmentRendersFromViewModels(t *testing.T) {
 	}
 }
 
+// TestBoardLanesFailedLoadNotRenderedAsEmpty pins the #31 empty-state honesty rule: when the
+// durable-lane read fails, the verified/patched labels say the list failed to load instead of
+// rendering their confirmed-empty texts — an empty state next to truthful, non-zero header counts
+// reads as "work vanished". The header counts themselves render regardless (a separate read).
+func TestBoardLanesFailedLoadNotRenderedAsEmpty(t *testing.T) {
+	h := newTestHandler(t)
+
+	failed := renderFrag(t, h, "board_lanes", lanesView{
+		Counts: laneCounts{Verified: 363, Patched: 2951},
+		Failed: true,
+	})
+	// Both durable lanes surface the failure…
+	if c := strings.Count(failed, "couldn't load · not confirmed empty"); c != 2 {
+		t.Errorf("failed lanes must label both verified and patched, got %d occurrences", c)
+	}
+	// …and neither ever claims the lane is confirmed empty.
+	for _, lie := range []string{"nothing claimed yet", "none waiting · claims are keeping up"} {
+		if strings.Contains(failed, lie) {
+			t.Errorf("failed lanes must not render the confirmed-empty text %q", lie)
+		}
+	}
+	// The header counts stay truthful (they come from a separate read).
+	for _, want := range []string{
+		`<a href="/todos?filter=pending" class="sb-lane__link">363</a>`,
+		`<a href="/todos?filter=claimed" class="sb-lane__link">2951</a>`,
+	} {
+		if !strings.Contains(failed, want) {
+			t.Errorf("failed lanes must still render their header counts: missing %q", want)
+		}
+	}
+	// The labels remain visible (the lists are empty) and stay JS-toggleable.
+	for _, lane := range []string{"verified", "patched"} {
+		if strings.Contains(failed, `data-sb-lane-empty="`+lane+`" hidden`) {
+			t.Errorf("failed lane %q must show its label", lane)
+		}
+	}
+
+	// Without a failure the confirmed-empty texts render exactly as before.
+	empty := renderFrag(t, h, "board_lanes", lanesView{})
+	if strings.Contains(empty, "couldn't load") {
+		t.Error("healthy empty lanes must not render the failed-to-load label")
+	}
+	for _, want := range []string{"nothing claimed yet", "none waiting · claims are keeping up"} {
+		if !strings.Contains(empty, want) {
+			t.Errorf("healthy empty board: missing %q", want)
+		}
+	}
+}
+
 // TestLaneCardChipMatrix pins the state chip across the FULL taxonomy — the ephemeral received
 // states (verifying · rejected · deduped) and the durable states (pending→queued · claimed · done
 // · failed) — plus the pulse-vs-dot split: only the in-flight verifying card pulses, every settled

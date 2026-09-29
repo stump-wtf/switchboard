@@ -1,6 +1,6 @@
 # Design: Providers View, Runtime Registry, and Connect Wizard
 
-> **Retired 2026-09-21 (#181).** The provider registry was removed; see the note on
+> **Retired 2026-09-21, with the shared-receiver removal.** The provider registry was removed; see the note on
 > [SPEC-0017](spec.md). Kept as history.
 
 ## Context

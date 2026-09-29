@@ -49,10 +49,14 @@ func (s *Store) CancelTodo(ctx context.Context, id string, result []byte) (Todo,
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("canceled", "'canceled'")+`
-		SELECT `+todoCols+` FROM upd`, id, result)
-	t, err := scanTodo(row)
+		`+closedSelect, id, result)
+	var closed bool
+	t, err := scanTodo(row, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, "", id)
+	}
+	if err == nil && closed {
+		s.countAttemptClosed(t.Queue, "canceled")
 	}
 	if err == nil {
 		s.fireTodoHook("canceled", t)

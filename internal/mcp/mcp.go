@@ -30,6 +30,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/stump-wtf/switchboard/internal/buildinfo"
 	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
 	"github.com/stump-wtf/switchboard/internal/routing"
@@ -37,8 +38,9 @@ import (
 )
 
 const (
-	serverName    = "switchboard"
-	serverVersion = "0.1.0"
+	// serverName is the MCP serverInfo.name. The version is not a constant here: it is
+	// buildinfo.Get().Version, stamped at build time (SPEC-0027 REQ-2).
+	serverName = "switchboard"
 
 	// maxBodyBytes caps MCP request bodies before JSON-RPC parsing (SPEC-0014 REQ body size limits).
 	maxBodyBytes = 1 << 20 // 1 MiB
@@ -63,13 +65,16 @@ const (
 		`uniformly to any /a2ui URI.`
 )
 
-// sessionInstructions is the instructions block a new session receives: the doorbell contract,
-// plus the A2UI paragraph only while that surface is on.
+// sessionInstructions is the instructions block a new session receives: the build banner line
+// ("switchboard v0.3.0 (built 2026-09-24)"), then the doorbell contract, plus the A2UI paragraph
+// only while that surface is on.
+// Governing: SPEC-0027 REQ-2 "MCP Server Version and Session Instructions".
 func (h *Handler) sessionInstructions() string {
+	body := instructions
 	if h.a2uiOn() {
-		return instructions + a2uiInstructions
+		body += a2uiInstructions
 	}
-	return instructions
+	return buildinfo.Get().Banner() + "\n" + body
 }
 
 // EndpointStore is the slice of the store the auth middleware needs: resolution of BOTH credential
@@ -99,6 +104,17 @@ type ToolStore interface {
 	HeartbeatTodo(ctx context.Context, endpointID, id, owner string, ttl time.Duration) (store.Todo, error)
 	CompleteTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
 	FailTodo(ctx context.Context, endpointID, id, owner string, result []byte) (store.Todo, error)
+	// The attempt-aware lifecycle the drain verbs call (SPEC-0034): claim options (the lease-token
+	// fence) in, the report and presented token hash out.
+	ClaimTodoWith(ctx context.Context, endpointID, id, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error)
+	ClaimNextWith(ctx context.Context, endpointID string, queues []string, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error)
+	HeartbeatTodoWith(ctx context.Context, endpointID, id, owner string, ttl time.Duration, tokenHash []byte) (store.Todo, error)
+	CompleteTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error)
+	FailTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error)
+	// ReleaseTodoWith is release's transition (SPEC-0034 REQ-9): back to pending, attempt unchanged.
+	ReleaseTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error)
+	// TodoAttempts is get_todo's history read (SPEC-0034 REQ-8, REQ-10): endpoint-scoped, newest first.
+	TodoAttempts(ctx context.Context, endpointID, id string, limit int) ([]store.Attempt, int, int, error)
 	// The event-history reads are scoped to the calling endpoint, a required argument, so no tool
 	// can compile an unscoped history read. The store resolves the reach from it: the endpoint's
 	// owner's events, and nothing at all for a friend-vended endpoint. Governing: SPEC-0033 REQ
@@ -128,14 +144,14 @@ type ToolStore interface {
 	AddWebhookRoute(ctx context.Context, webhookID, targetEndpointID, grantedByHumanID string) error
 	RemoveWebhookRoute(ctx context.Context, webhookID, targetEndpointID string) error
 	ListWebhookRoutes(ctx context.Context, webhookID string) ([]store.WebhookRoute, error)
-	WebhookOwnerEndpointForHuman(ctx context.Context, webhookID, ownerHumanID string) (string, error)
+	WebhookOwnerEndpointFor(ctx context.Context, webhookID, callerEndpointID string) (string, error)
 	EndpointOwnerHuman(ctx context.Context, endpointID string) (string, error)
 	FriendEdgeAuthorizesDelivery(ctx context.Context, fromHumanID, toHumanID string) (bool, error)
 	// ADR-0024 routing rules (webhook_rules.go): read and read-modify-write a webhook's jq rules under
 	// human ownership, compute the grant from its live delivery targets, and scope a dry-run's stored
 	// event to the webhook it arrived on. Governing: ADR-0024, SPEC-0020.
-	WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHumanID string) (store.WebhookRouting, error)
-	UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
+	WebhookRoutingForEndpoint(ctx context.Context, webhookID, endpointID string) (store.WebhookRouting, error)
+	UpdateWebhookRouting(ctx context.Context, webhookID, endpointID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
 	ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error)
 	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
 	// WebhookEventsBefore feeds the save-time dry-run (SPEC-0026 REQ-3): the webhook's latest
@@ -144,9 +160,10 @@ type ToolStore interface {
 	WebhookEventsBefore(ctx context.Context, webhookID string, beforeAt time.Time, beforeID int64, limit int) ([]store.EventHistoryDetail, error)
 	// EndpointScopeQueues feeds the grant's per-target scopes for exclusive delivery (ADR-0025).
 	EndpointScopeQueues(ctx context.Context, endpointIDs []string) (map[string][]string, error)
-	// SettingString backs replay target resolution (SPEC-0005 REQ "Replay Safety"): the
-	// `replay_default_target` fallback and the `replay_allowed_targets` allowlist both read here.
-	SettingString(ctx context.Context, key, def string) (string, error)
+	// EndpointReplayTargets backs replay target resolution: the calling endpoint's OWN replay
+	// targets, the first of which is the default when a replay names none. Always called with the
+	// authenticated endpoint's id. Governing: SPEC-0033 REQ "Owned Replay Targets".
+	EndpointReplayTargets(ctx context.Context, endpointID string) ([]string, error)
 }
 
 // Handler mounts the per-endpoint Streamable HTTP MCP sessions, their scope-filtered tool
@@ -164,6 +181,9 @@ type Handler struct {
 	preRL    *rateLimiter
 	rl       *rateLimiter
 	replayRL *rateLimiter
+	// replayGuard is the shared SSRF guard every replay is validated and dialed through (replay.go).
+	// Governing: SPEC-0033 REQ "Owned Replay Targets".
+	replayGuard *replayGuard
 
 	// baseURL is the externally-reachable origin used to build the ingest_url returned by
 	// create_webhook/rotate_webhook (SPEC-0006). Installed at wiring time via SetBaseURL; read
@@ -175,9 +195,18 @@ type Handler struct {
 	// time, so new sessions pick up a flip without racing live ones.
 	a2uiEnabled atomic.Pointer[bool]
 
+	// summaryFromResult is the operator's SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT opt-in: complete and
+	// fail with no summary store the result's compact JSON as the attempt summary (report.go
+	// resultReport). The zero value is off, the spec's default. Governing: SPEC-0034 REQ-5.
+	summaryFromResult atomic.Bool
+
 	// router evaluates rules for test_webhook_rules — the same out-of-process sandbox the receiver
 	// uses (New installs it; tests swap in routing.InProcess). Governing: ADR-0024, SPEC-0020.
 	router atomic.Pointer[routing.Router]
+
+	// notifyHooks carries the SPEC-0024 notify-hook verbs' store, SSRF validator and ceiling
+	// (SetNotifyHooks). Nil until wired: a granted notify-hook verb then answers unavailable.
+	notifyHooks atomic.Pointer[NotifyHookConfig]
 
 	idleTimeout time.Duration
 
@@ -213,6 +242,7 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 		// Replay is bounded well under the read budget (5 rps / 20 burst vs. 20 / 40): enough for
 		// interactive local-consumer testing, far too little for amplification or SSRF sweeps.
 		replayRL:    newRateLimiter(5, 20),
+		replayGuard: newReplayGuard(nil),
 		idleTimeout: sessionIdleTimeout,
 		sessions:    map[string]*mcpSession{},
 		doorbellRR:  map[string]uint64{},
@@ -233,6 +263,11 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 // newServer time, so sessions established after the call see the resources; live ones are
 // untouched. Default off.
 func (h *Handler) SetA2UIEnabled(enabled bool) { h.a2uiEnabled.Store(&enabled) }
+
+// SetAttemptSummaryFromResult sets the operator's summary-from-result option (SPEC-0034 REQ-5): when
+// on, a complete or fail that sends no summary closes its attempt with the result's compact JSON as
+// the summary. Default off. It applies to every call after it, on live sessions too.
+func (h *Handler) SetAttemptSummaryFromResult(on bool) { h.summaryFromResult.Store(on) }
 
 // a2uiOn reads the gate; nil reads as off.
 func (h *Handler) a2uiOn() bool {
@@ -419,7 +454,7 @@ func (h *Handler) auth(next http.Handler) http.Handler {
 // Governing: SPEC-0014 REQ "Agent Tool Surface over MCP", SPEC-0011 REQ "Channel Capability on
 // the Vended Session".
 func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
-	srv := sdk.NewServer(&sdk.Implementation{Name: serverName, Version: serverVersion}, &sdk.ServerOptions{
+	srv := sdk.NewServer(&sdk.Implementation{Name: serverName, Version: buildinfo.Get().Version}, &sdk.ServerOptions{
 		Logger:       h.log,
 		Instructions: h.sessionInstructions(),
 		Capabilities: &sdk.ServerCapabilities{
@@ -440,6 +475,8 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	h.registerWebhookRuleTools(srv, ep)
 	// SPEC-0026 REQ-5 trust verbs (trusted_actors.go), also in the webhook family.
 	h.registerTrustedActorTools(srv, ep)
+	// The SPEC-0024 notify-hook verbs (notify_hooks.go): granted separately, never by default.
+	h.registerNotifyHookTools(srv, ep)
 	h.registerEventResources(srv, ep)
 	// The #102 A2UI resource surface (a2ui.go): queue and todo detail rendered as
 	// application/a2ui+json for A2UI-capable hosts.
