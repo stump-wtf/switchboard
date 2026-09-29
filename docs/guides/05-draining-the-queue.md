@@ -73,15 +73,6 @@ that `get_todo` shows. Any other `artifact` is refused with `invalid` and the to
 Only the holder can release: anyone else gets `conflict`, and another endpoint's todo is
 `not_found`. `release` is its own grant, and no other verb implies it.
 
-To stop without a verdict, because the daemon is shutting down, an operator stopped the run, or the
-agent hit a usage limit, call **`release`** with the todo's `id`. The todo goes straight back to
-**pending** for the next claimer: no backoff, no failure, and the attempt counter is unchanged. It
-takes an optional `summary` (why it stopped, cut to 2048 bytes) and `artifact` (an
-`mcp://cairn/<id>` handle or an absolute `https` URL, at most 512 bytes), both kept on the attempt
-that `get_todo` shows. Any other `artifact` is refused with `invalid` and the todo stays claimed.
-Only the holder can release: anyone else gets `conflict`, and another endpoint's todo is
-`not_found`. `release` is its own grant, and no other verb implies it.
-
 To read one todo in full, call **`get_todo`** with its `id`. It returns the todo as `claim` does,
 `payload` and `routing` included, plus its stored `result`, `next_retry_at`, `dead_letter` (true
 when the todo failed and nothing will re-queue it), and its **attempts**, newest first and including the open one: who claimed it, when, how each
