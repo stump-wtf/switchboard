@@ -14,8 +14,54 @@ unmatched takes the webhook's **default action**. With no rules and no default, 
 exactly as it always did.
 
 ```
-verify → idempotency key → resolve targets → ROUTE (rules → default) → todo(s) | drop
+verify → idempotency key → resolve targets → TRUST GATE → ROUTE (rules → default) → todo(s) | drop
 ```
+
+## Trusted actors: who may start work
+
+On `github`, `gitea` and `cairn` webhooks, a **trust gate** runs before any rule. It checks the
+delivery's actor against the webhook's `trusted_actors`, which Switchboard parses in Go from the
+**verified** body. A delivery from anyone not on the list never reaches your rules: it is recorded
+and routed nowhere. (It lands in the owner's quarantine once that ships; see SPEC-0026.) Trust
+lives on the webhook, not in the rules, so a rule edit can never remove it.
+
+| Source | `trusted_actors` | Compared |
+|---|---|---|
+| `github`, `gitea` | `{"logins": ["…"], "match": "sender" \| "author" \| "both"}` (default `sender`) | case-insensitively |
+| `cairn` | `{"actor_ids": ["…"]}`, the signed `actor_id` (`on_behalf_of` never counts) | exactly |
+| any of them | `{"allow_all": true}`, which trusts every verified sender | — |
+
+- **sender** is whoever triggered the event (`sender.login`). **author** is whoever wrote the thing
+  it is about: the comment, review, pull request, issue or discussion author. A Gitea review
+  payload names no reviewer, so a Gitea review's author is its sender. With
+  `match: "sender"`, a maintainer who labels an outsider's issue moves it on, while
+  `.actor.author_trusted` stays `false` so your rules and workers still know the text is an
+  outsider's.
+- **`author_trusted` covers the whole thread.** A comment or review delivery also carries its issue
+  or pull request, so `author_trusted` is `true` only when the comment's author *and* the thread's
+  author are both trusted. A maintainer's comment on an outsider's issue has
+  `.actor.author = "<maintainer>"` and `author_trusted = false`. Under `match: "author"` or
+  `"both"`, such a delivery is held. Promote outside threads with `match: "sender"` instead.
+- Logins compare with an ASCII-only case fold, and keys are read exactly as `.payload` reads them.
+- **A new webhook trusts no one.** `create_webhook` without `trusted_actors` stores an empty list
+  and says so in its result. Set the list with `set_trusted_actors`, and reset it with
+  `clear_trusted_actors`. `set_trusted_actors` requires the argument; omitting it never clears.
+- **`allow_all` is an explicit opt-in**, flagged by `list_webhooks` (`allow_all: true`). It is
+  exclusive with the other fields.
+- `generic`, `stripe` and `slack` webhooks refuse `trusted_actors`. A `generic` body is unsigned,
+  so anyone holding the URL could claim to be anyone.
+
+> **Upgrading:** every `github`, `gitea` and `cairn` webhook that existed before the trust gate was
+> migrated to `{"allow_all": true}`, so it routes exactly as before. Replace it with a list:
+> `set_trusted_actors {"webhook_id": "…", "trusted_actors": {"logins": ["you"], "match": "sender"}}`.
+>
+> Endpoints vended before the trust gate do **not** hold `set_trusted_actors` or
+> `clear_trusted_actors`: endpoint scope never widens ([SPEC-0007](/specs/identity/spec)), and the
+> upgrade does not grant new verbs to existing endpoints. Re-vend the endpoint with the webhook
+> verbs (see [older endpoints](#before-you-start-older-endpoints)), or delete the webhook and create
+> it again with `create_webhook {"trusted_actors": …}` (which mints a new ingest URL and secret for
+> the producer). An older endpoint that creates a webhook
+> without a list is told the same thing in `create_webhook`'s warning.
 
 ## Actions
 
@@ -60,9 +106,16 @@ and `.headers`.
 | `.payload` | the body parsed as JSON, or `null` when it is not JSON |
 | `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id` (authenticated), `on_behalf_of` (client-reported `name/version`), `expires_at`, `tags` (cairn's string list), `metadata` (`null`: cairn sends none) |
 | `.issue` | Gitea/GitHub `issues` events only (`null` otherwise, pull requests included): `provider`, `action`, `event_type`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels` (names), `label` (GitHub's changed label), `body_size`, `label_event`, `key` |
+| `.actor` | `{sender, author, sender_trusted, author_trusted, trusted}`: who acted, parsed from the verified body, and the trust gate's verdict. Names are `null` when the body has none (a push has no author). Every flag is `null` on sources with no trust gate (`generic`, `stripe`, `slack`), and the two per-actor flags are `null` under `allow_all`. A payload's own `actor` key stays under `.payload` and cannot reach `.actor`. |
 
 `.issue` reads the same on both forges: Gitea's label change (`issue_label`, action `label_updated`)
 and GitHub's (`labeled`) both set `.issue.label_event`, with the current labels in `.issue.labels`.
+
+A rule never sees an untrusted delivery (the gate holds it first), so `.actor.trusted` is `true`
+whenever a rule runs on a gated source. The per-actor flags are what rules use:
+`.actor.author_trusted == false` picks out work a trusted maintainer moved on an outsider's behalf,
+including a maintainer's comment or review on an outsider's thread.
+Work orders carry the same verdict as `author_trusted`.
 
 The first output of your filter decides the match with jq truthiness: anything except `false` and
 `null` matches; a filter that outputs nothing does not.
@@ -90,8 +143,17 @@ persists nothing, and lets the producer retry. A webhook with no rules is unaffe
 
 To catch faults before they reach live traffic, `set_webhook_rules`, `add_webhook_rule`,
 `update_webhook_rule` and `move_webhook_rule` dry-run the resulting rules against the webhook's 50
-most recent deliveries. If any rule faults on any of them, the save is refused, naming the rule,
-the event ids and the cause. `params` values must be a string, a number, a boolean, or a list of
+most recent deliveries that its trust gate passes today. If any rule faults on any of them, the save
+is refused, naming the rule, the event ids and the cause. Deliveries the gate would hold are
+skipped, since your rules never run on them: an outsider cannot block your saves with a payload
+built to fault. The scan reads at most the newest 500 deliveries to find those 50. If more than 500
+held deliveries have arrived since your last trusted one, fewer than 50 are checked, possibly none.
+The save still goes through, so a flood cannot block your edits. Every save's result carries
+`dry_run: {checked, skipped_held, warning}`, and `warning` is set when the bound cut the check
+short. When you see it, run `test_webhook_rules` against a known trusted `event_id` before you rely
+on the rules. `test_webhook_rules` on a
+held delivery (`held: true`) reports the gate's decision, as live traffic records it, and puts
+what your rules would do in `rules_would`. `params` values must be a string, a number, a boolean, or a list of
 all strings or all numbers (`invalid_params` otherwise).
 
 ## The tools

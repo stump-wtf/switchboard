@@ -100,6 +100,11 @@ func mustAPIWebhook(t *testing.T, st *store.Store, ctx context.Context, endpoint
 // seedDelivery records one routed delivery on webhookID, as the receiver would, and returns its id.
 func seedDelivery(t *testing.T, st *store.Store, ctx context.Context, webhookID, endpointID, key, payload string) int64 {
 	t.Helper()
+	// These tests exercise the rules, not the trust gate: trust every sender so seeded deliveries
+	// are ones the save-time dry-run actually evaluates (SPEC-0026 REQ-5).
+	if _, err := st.SetWebhookTrustedActors(ctx, webhookID, endpointID, []byte(`{"allow_all":true}`)); err != nil {
+		t.Fatalf("trust seeded deliveries: %v", err)
+	}
 	trace := []byte(`{"stage":"default","cause":"no_match_default","action":{"queue":"github"}}`)
 	id, _, _, err := st.CreateIntakeEventTodos(ctx, store.EventInput{
 		Source: "github", Family: "webhook", EventType: "issues", ExternalID: webhookID + ":" + key,

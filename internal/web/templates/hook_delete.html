@@ -1,0 +1,30 @@
+{{define "content"}}
+{{/* Notify-hook delete confirm page (SPEC-0015 REQ "Wizard Interaction Pattern": destructive and
+     irreversible steps confirm before executing). Deleting a hook removes it and its sealed secrets;
+     the receiver must be reconfigured with a new secret once an agent re-creates it. So the card's
+     delete links here and the POST fires only from this page's explicit confirm. The URL is the
+     card's server-side redaction. Plain form, no JS required. Governing: SPEC-0024 REQ-10, ADR-0018. */}}
+{{$d := .HookDelete}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">Delete notify hook</h1>
+    <p class="sb-tagline">delete = the hook and its secret are gone · this cannot be undone</p>
+  </div>
+</div>
+
+<section class="sb-wiz sb-wiz--confirm" data-sb-hook-delete-confirm aria-label="Confirm notify hook deletion">
+  <dl class="sb-wiz__summary">
+    {{if $d.AgentName}}<div class="sb-epcard__row"><dt class="sb-microlabel">Endpoint</dt><dd>{{$d.AgentName}}</dd></div>{{end}}
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Hook URL</dt><dd><code class="sb-code">{{$d.Hook.URL}}</code></dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Queues</dt><dd>{{range $d.Hook.Queues}}<span class="sb-chip sb-chip--queue">{{.}}</span> {{else}}<span class="sb-muted">every scoped queue</span>{{end}}</dd></div>
+  </dl>
+  <p class="sb-callout sb-callout--danger">Deleting stops every notification to this receiver and destroys its signing secret. To resume, an agent must create a new hook and the receiver must be given the new secret. To pause deliveries instead, disable the hook from its card.</p>
+  <form method="post" action="/endpoints/{{$d.EndpointID}}/hooks/{{$d.Hook.ID}}/delete" class="sb-epcard__delete">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="sb-vend__foot">
+      <a class="sb-btn sb-btn--secondary" href="/endpoints#sb-ep-{{$d.EndpointID}}">Cancel</a>
+      <button type="submit" class="sb-btn sb-btn--danger sb-btn--mono" data-sb-hook-delete-submit>Delete this notify hook</button>
+    </div>
+  </form>
+</section>
+{{end}}

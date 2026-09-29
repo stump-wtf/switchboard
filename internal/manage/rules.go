@@ -33,6 +33,13 @@ package manage
 // @joestump-agent 09/29/2026 - Extracted from internal/mcp/webhook_rules.go (mutateRules,
 // dryRunSave, routingGrant, the dry-run body, and the I/O shapes) and parameterized by a Principal,
 // so the human API's rule routes run the MCP verbs' code rather than a copy of it.
+//
+// @joestump-agent 09/25/2026 - The save-time dry-run skips deliveries the trust gate would hold
+// (SPEC-0026 REQ-5): live traffic never runs rules on them, so an outsider's payload could otherwise
+// refuse the owner's saves. It pages back past them to find 50 that pass (#385 review).
+//
+// @joestump-agent 09/25/2026 - Test reports a held delivery's decision and trace as the receiver
+// records them (the trust gate's), with the rules' outcome moved to rules_would.
 
 import (
 	"context"
@@ -43,6 +50,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
@@ -93,7 +101,7 @@ type RuleStore interface {
 	ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error)
 	EndpointScopeQueues(ctx context.Context, endpointIDs []string) (map[string][]string, error)
 	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
-	RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]store.EventHistoryDetail, error)
+	WebhookEventsBefore(ctx context.Context, webhookID string, beforeAt time.Time, beforeID int64, limit int) ([]store.EventHistoryDetail, error)
 }
 
 // HumanReach resolves a webhook's owning endpoint within a human's reach.
@@ -124,9 +132,20 @@ type Rules struct {
 	Router func() routing.Router
 }
 
-// DryRunEvents bounds the save-time dry run: at most this many of the webhook's latest deliveries,
-// each inside the per-event evaluation budget (SPEC-0026 REQ-3, "Rate Limiting").
-const DryRunEvents = 50
+// DryRunEvents bounds the save-time dry run: at most this many of the webhook's latest deliveries
+// that the trust gate would pass, each inside the per-event evaluation budget (SPEC-0026 REQ-3,
+// "Rate Limiting"). DryRunScanPages bounds how far back it reads to find them, a page of
+// DryRunEvents at a time, so an outsider's flood of held deliveries costs at most that many cheap
+// Go trust checks and never a sandbox evaluation. The bound means a flood of more than
+// DryRunScanPages*DryRunEvents held deliveries since the owner's last trusted one leaves fewer than
+// DryRunEvents to check, possibly none. The save still goes through, because refusing it would let
+// an outsider block the owner's edits. Live traffic still fails closed on a fault. The result's
+// dry_run.warning says so, so the owner can run a dry run against a known event before relying on
+// the rules.
+const (
+	DryRunEvents    = 50
+	DryRunScanPages = 10
+)
 
 // trustModeSigned is the trust mode of an HMAC-verified webhook: a sample payload is routed as a
 // delivery that passed verification.
@@ -169,6 +188,15 @@ type RulesOut struct {
 	Rules         []RuleIO       `json:"rules" jsonschema:"the rules, in evaluation order (first match wins)"`
 	Params        map[string]any `json:"params" jsonschema:"owner-set values rules read as $params (e.g. trusted-actor allowlists); {} when none are set"`
 	Grant         GrantOut       `json:"grant" jsonschema:"what actions may reach right now"`
+	DryRun        *DryRunOut     `json:"dry_run,omitempty" jsonschema:"what the save-time dry-run checked; omitted when no dry-run ran"`
+}
+
+// DryRunOut reports a save-time dry-run's coverage, so an owner can tell when a flood of held
+// deliveries left fewer than DryRunEvents to check (SPEC-0026 REQ-3).
+type DryRunOut struct {
+	Checked     int    `json:"checked" jsonschema:"deliveries the trust gate passes that the new rules were evaluated against"`
+	SkippedHeld int    `json:"skipped_held" jsonschema:"deliveries skipped because the trust gate would hold them"`
+	Warning     string `json:"warning,omitempty" jsonschema:"set when the scan bound stopped the dry-run before it found 50 deliveries to check"`
 }
 
 // TestIn is a dry run: exactly one of EventID or Payload, optionally with candidate rules, default
@@ -201,6 +229,19 @@ type TestOut struct {
 	OnceKey   string             `json:"once_key,omitempty" jsonschema:"the at-most-once key a once action would claim (whether it is already claimed is only known at delivery)"`
 	WorkOrder *routing.WorkOrder `json:"work_order,omitempty" jsonschema:"the work order a work_order action would attach"`
 	Envelope  map[string]any     `json:"envelope,omitempty" jsonschema:"the JSON document the rules evaluated (write expressions against these paths)"`
+	// Governing: SPEC-0026 REQ-5, REQ-10.
+	Actor *routing.ActorTrust `json:"actor,omitempty" jsonschema:"github/gitea/cairn: who acted and the trust gate's verdict against the webhook's trusted_actors (.actor)"`
+	// Held reports the receiver's outcome, not the rules': live traffic records a held delivery with
+	// the trust gate's decision and trace and never runs the rules, so decision and trace say exactly
+	// that, and rules_would carries what the rules would have done had the actor been trusted.
+	Held       bool           `json:"held,omitempty" jsonschema:"true when the trust gate would hold this delivery before any rule ran: decision and trace are then the trust gate's (what live traffic records), and rules_would shows what the rules would do if the actor were trusted"`
+	RulesWould *RulesWouldOut `json:"rules_would,omitempty" jsonschema:"only when held: the decision and trace the rules would produce if the actor were trusted; live traffic never evaluates them for this delivery"`
+}
+
+// RulesWouldOut is what the rules would do with a held delivery, had the trust gate passed it.
+type RulesWouldOut struct {
+	Decision DecisionOut   `json:"decision" jsonschema:"where the delivery would go if its actor were trusted"`
+	Trace    routing.Trace `json:"trace" jsonschema:"the routing trace the rules would produce"`
 }
 
 // Change is what a save replaced and what it stored, for a surface that records the difference.
@@ -382,8 +423,9 @@ func (r Rules) Mutate(ctx context.Context, p Principal, webhookID string, dryRun
 	if err := validate(next, g); err != nil {
 		return RulesOut{}, Change{}, err
 	}
+	var report *DryRunOut
 	if dryRun {
-		if err := r.dryRunSave(ctx, pre, next, g); err != nil {
+		if report, err = r.dryRunSave(ctx, pre, next, g); err != nil {
 			return RulesOut{}, Change{}, err
 		}
 	}
@@ -403,7 +445,9 @@ func (r Rules) Mutate(ctx context.Context, p Principal, webhookID string, dryRun
 	if err != nil {
 		return RulesOut{}, Change{}, notFoundAs(err, "webhook not found")
 	}
-	return Out(wr, g), Change{Previous: pre.Config, Saved: wr.Config}, nil
+	out := Out(wr, g)
+	out.DryRun = report
+	return out, Change{Previous: pre.Config, Saved: wr.Config}, nil
 }
 
 // Test routes without persisting anything. A stored event is only reachable through the webhook it
@@ -471,6 +515,7 @@ func (r Rules) Test(ctx context.Context, p Principal, webhookID string, in TestI
 			return ""
 		}
 		env.Kind = routing.EventKind(wr.SourceType, header, body)
+		env.Actor = dryRunActor(wr, env.Verified, body)
 	}
 
 	d := r.router().Route(ctx, cfg, g, env)
@@ -478,18 +523,30 @@ func (r Rules) Test(ctx context.Context, p Principal, webhookID string, in TestI
 		Decision: DecisionOut{Drop: d.Drop, Queue: d.Queue, Endpoints: d.Endpoints,
 			Disposition: d.Disposition(), Faulted: d.Faulted, Unavailable: d.Unavailable, Fault: d.Fault},
 		Trace: d.Trace,
+		Actor: env.Actor, Held: env.Actor != nil && !env.Actor.IsTrusted(),
 	}
 	if d.Unavailable {
 		// A dry run that could not run says nothing about the rules. It is reported, but no
 		// disposition is claimed for it.
 		out.Decision.Disposition = ""
 	}
+	if out.Held {
+		// The receiver never runs the rules on a held delivery: it records the trust gate's
+		// decision and trace (ingest selfmanaged.go). Report exactly that, so an agent reading
+		// decision.disposition sees what live traffic records, and move the rules' hypothetical
+		// outcome aside. No once key or work order: a held delivery claims and mints neither.
+		// Governing: SPEC-0026 REQ-5, REQ-13 "trust gate".
+		held := routing.UntrustedDecision(env.Actor)
+		out.RulesWould = &RulesWouldOut{Decision: out.Decision, Trace: out.Trace}
+		out.Decision = DecisionOut{Disposition: held.Disposition(), Faulted: held.Faulted, Fault: held.Fault}
+		out.Trace = held.Trace
+	}
 	subject := routing.SubjectOf(wr.SourceType, env.Headers, env.Body)
-	if d.Once && !d.Drop && !d.Faulted {
+	if d.Once && !d.Drop && !d.Faulted && !out.Held {
 		out.OnceKey = routing.OnceKey(subject, d.Queue)
 		out.Trace.OnceKey = out.OnceKey
 	}
-	if d.WorkOrder && !d.Drop && !d.Faulted {
+	if d.WorkOrder && !d.Drop && !d.Faulted && !out.Held {
 		wo := routing.BuildWorkOrder(d, env, subject)
 		out.WorkOrder = &wo
 	}
@@ -561,42 +618,72 @@ func (r Rules) router() routing.Router {
 }
 
 // dryRunSave evaluates a candidate configuration against the webhook's most recent stored
-// deliveries and refuses it with invalid_argument if any rule faults on any of them. The error names
-// every faulting rule id, with the event ids and the cause. Most faults are type errors that real
-// traffic exposes at once, so this turns "installs green, then faults every delivery" into a refused
-// save that says why. A webhook with no stored events skips the dry run. So does a candidate with
-// no rules, which cannot fault.
+// deliveries and refuses it with invalid_argument if any rule faults on any of them. It pages back
+// until it finds DryRunEvents that the trust gate would pass (live traffic only evaluates those).
 //
-// The sandbox being unavailable is not the candidate's fault. It refuses the save with
-// "unavailable", so the caller can retry, rather than blaming a rule.
-// Governing: SPEC-0026 REQ-3 "Save-Time Fault Refusal and Param Typing"; ADR-0031.
-func (r Rules) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg routing.Config, g routing.Grant) error {
+// Only deliveries the trust gate would pass TODAY are checked, because only those ever reach the
+// rules on live traffic (the receiver holds the rest before any rule runs). Checking a held one
+// would let anyone who can make the producer send (on a public repository, anyone who can open an
+// issue) refuse the owner's saves with a payload built to fault, and a flood of them would push the
+// owner's real traffic out of the window. Held deliveries are skipped and the scan pages further
+// back, up to DryRunScanPages, to find DryRunEvents that pass.
+//
+// On success it reports what it checked: nil when nothing ran (no rules, or no stored events), and
+// a warning when the scan bound stopped it short of DryRunEvents while older deliveries remained.
+// Governing: SPEC-0026 REQ-3 "Save-Time Fault Refusal and Param Typing", REQ-5; ADR-0031.
+func (r Rules) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg routing.Config, g routing.Grant) (*DryRunOut, error) {
 	if len(cfg.Rules) == 0 {
-		return nil
-	}
-	events, err := r.Store.RecentWebhookEvents(ctx, wr.WebhookID, DryRunEvents)
-	if err != nil {
-		return fmt.Errorf("manage: recent webhook events: %w", err)
+		return nil, nil
 	}
 	router := r.router()
-	faults := map[string][]int64{} // "rule_id (cause)" -> event ids, newest first
+	faults := map[string][]int64{}
 	var order []string
-	for _, ev := range events {
-		d := router.Route(ctx, cfg, g, StoredEnvelope(wr, ev))
-		if d.Unavailable {
-			return fail(ErrUnavailable, "routing is unavailable, so the rules could not be checked against recent deliveries; retry shortly")
+	checked, skipped := 0, 0
+	bounded := true
+	var cursor store.EventHistoryDetail
+scan:
+	for page := 0; page < DryRunScanPages; page++ {
+		events, err := r.Store.WebhookEventsBefore(ctx, wr.WebhookID, cursor.ReceivedAt, cursor.ID, DryRunEvents)
+		if err != nil {
+			return nil, fmt.Errorf("manage: webhook events before: %w", err)
 		}
-		if !d.Faulted {
-			continue
+		for _, ev := range events {
+			env := StoredEnvelope(wr, ev)
+			if env.Actor != nil && !env.Actor.IsTrusted() {
+				skipped++
+				continue
+			}
+			d := router.Route(ctx, cfg, g, env)
+			if d.Unavailable {
+				return nil, fail(ErrUnavailable, "routing is unavailable, so the rules could not be checked against recent deliveries; retry shortly")
+			}
+			if d.Faulted {
+				k := d.Fault.RuleID + " (" + d.Fault.Cause + ")"
+				if _, seen := faults[k]; !seen {
+					order = append(order, k)
+				}
+				faults[k] = append(faults[k], ev.ID)
+			}
+			if checked++; checked == DryRunEvents {
+				bounded = false
+				break scan
+			}
 		}
-		k := d.Fault.RuleID + " (" + d.Fault.Cause + ")"
-		if _, seen := faults[k]; !seen {
-			order = append(order, k)
+		if len(events) < DryRunEvents {
+			bounded = false
+			break
 		}
-		faults[k] = append(faults[k], ev.ID)
+		cursor = events[len(events)-1]
 	}
+	dryRun := &DryRunOut{Checked: checked, SkippedHeld: skipped}
 	if len(order) == 0 {
-		return nil
+		if checked == 0 && skipped == 0 {
+			return nil, nil
+		}
+		if bounded {
+			dryRun.Warning = fmt.Sprintf("the dry-run read the newest %d deliveries and the trust gate would hold %d of them, so the rules were checked against only %d of the %d it aims for; older trusted deliveries were not checked. Run test_webhook_rules with a known event_id before relying on these rules.", DryRunScanPages*DryRunEvents, skipped, checked, DryRunEvents)
+		}
+		return dryRun, nil
 	}
 	parts := make([]string, 0, len(order))
 	for _, k := range order {
@@ -606,19 +693,34 @@ func (r Rules) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg rout
 		}
 		parts = append(parts, "rule "+k+" on events "+strings.Join(ids, ", "))
 	}
-	return fail(ErrInvalidArgument, "refused: the rules fault on recent deliveries, which would record them and route them nowhere: "+
-		strings.Join(parts, "; ")+". Fix the rules (a dry run with that event_id reproduces each one) and save again.")
+	return nil, fail(ErrInvalidArgument, "refused: the rules fault on recent deliveries, which would record them and route them nowhere: "+
+		strings.Join(parts, "; ")+". Fix the rules (test_webhook_rules with event_id reproduces each one) and save again.")
 }
 
 // StoredEnvelope rebuilds the envelope input a stored delivery was routed on, exactly as the
 // receiver saw it: the sanitized headers, the body, the kind and the verification result.
 func StoredEnvelope(wr store.WebhookRouting, ev store.EventHistoryDetail) routing.EnvelopeInput {
 	env := routing.EnvelopeInput{Source: wr.SourceType, WebhookID: wr.WebhookID, TrustMode: wr.TrustMode,
-		Body: ev.Payload, Kind: ev.EventType, Verified: ev.Verified, ContentType: ev.ContentType}
+		Body: ev.Payload, Kind: ev.EventType, Verified: ev.Verified, ContentType: ev.ContentType,
+		Actor: dryRunActor(wr, ev.Verified, ev.Payload)}
 	// The receiver stores headers as a flat string map (sanitizeHeaders); a row that does not decode
 	// simply routes without headers, exactly as the delivery path does.
 	_ = json.Unmarshal(ev.Headers, &env.Headers)
 	return env
+}
+
+// dryRunActor is the trust gate's verdict exactly as the receiver would compute it (ingest
+// trustGate), so a dry-run's .actor matches live traffic: a missing or unreadable list, or an
+// unverified body, trusts no one. nil for a source with no gate. Governing: SPEC-0026 REQ-5, REQ-10.
+func dryRunActor(wr store.WebhookRouting, verified bool, body []byte) *routing.ActorTrust {
+	if !routing.HasActorProjection(wr.SourceType) {
+		return nil
+	}
+	ta, _ := routing.DecodeTrustedActors(wr.SourceType, wr.TrustedActors)
+	if !verified {
+		ta, _ = routing.DefaultTrustedActors(wr.SourceType)
+	}
+	return routing.EvaluateTrust(wr.SourceType, ta, body)
 }
 
 // notFoundAs turns the store's not-found into the ErrNotFound kind with msg, and wraps anything else
@@ -675,6 +777,7 @@ func Out(wr store.WebhookRouting, g routing.Grant) RulesOut {
 		Rules:  make([]RuleIO, 0, len(wr.Config.Rules)),
 		Params: wr.Config.Params,
 		Grant:  GrantOut{Queues: []string{g.TargetQueue}, Endpoints: nonNil(g.Endpoints)},
+		DryRun: nil,
 	}
 	for _, q := range g.Queues {
 		if !slices.Contains(out.Grant.Queues, q) {

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -46,6 +47,9 @@ type WebhookRouting struct {
 	// OwnerHumanID is the human who owns the webhook (through its endpoint's agent). The routing
 	// sandbox shares its evaluation slots fairly across owners (ADR-0038 F5).
 	OwnerHumanID string
+	// TrustedActors is the webhook's stored trust list, so a dry-run sees the same .actor verdict
+	// the receiver would. Governing: SPEC-0026 REQ-5, REQ-10.
+	TrustedActors []byte
 }
 
 // webhookRoutingSelect projects a webhook's routing row and computes the owner's allowed webhook
@@ -69,7 +73,7 @@ const webhookRoutingSelect = `
 		       ) granted
 		       WHERE q IS NOT NULL
 	       ), '{}'),
-	       w.routing_rules, w.default_action, w.routing_params, a.owner_human_id::text
+	       w.routing_rules, w.default_action, w.routing_params, a.owner_human_id::text, w.trusted_actors
 	FROM endpoint_webhooks w
 	JOIN endpoints e ON e.id = w.endpoint_id
 	JOIN agents a ON a.id = e.agent_id`
@@ -78,7 +82,7 @@ func scanWebhookRouting(row pgx.Row) (WebhookRouting, error) {
 	var wr WebhookRouting
 	var rules, def, params []byte
 	err := row.Scan(&wr.WebhookID, &wr.EndpointID, &wr.SourceType, &wr.TrustMode, &wr.TargetQueue,
-		&wr.WebhookQueues, &rules, &def, &params, &wr.OwnerHumanID)
+		&wr.WebhookQueues, &rules, &def, &params, &wr.OwnerHumanID, &wr.TrustedActors)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WebhookRouting{}, ErrNotFound
 	}
@@ -233,11 +237,30 @@ func (s *Store) EventForWebhook(ctx context.Context, eventID int64, webhookID st
 // UpdateWebhookRouting takes its row lock: a pooled read inside that lock deadlocks the pool under
 // concurrent rule edits (see mcp/webhook_rules.go). idx_events_webhook covers the scan.
 func (s *Store) RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]EventHistoryDetail, error) {
+	return s.WebhookEventsBefore(ctx, webhookID, time.Time{}, 0, limit)
+}
+
+// WebhookEventsBefore is RecentWebhookEvents one page further back: up to limit of webhookID's
+// deliveries strictly older than the (beforeAt, beforeID) keyset, newest first. A zero beforeAt
+// starts at the newest. The save-time dry-run pages with it past deliveries the trust gate would
+// hold, so an outsider's flood cannot push the owner's trusted traffic out of the checked window.
+// Governing: SPEC-0026 REQ-3, REQ-5; ADR-0005 (keyset over offset).
+func (s *Store) WebhookEventsBefore(ctx context.Context, webhookID string, beforeAt time.Time, beforeID int64, limit int) ([]EventHistoryDetail, error) {
 	if !isUUID(webhookID) || limit <= 0 {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, eventDetailSelect+`
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if beforeAt.IsZero() {
+		rows, err = s.pool.Query(ctx, eventDetailSelect+`
 		WHERE webhook_id = $1 ORDER BY received_at DESC, id DESC LIMIT $2`, webhookID, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, eventDetailSelect+`
+		WHERE webhook_id = $1 AND (received_at, id) < ($2, $3) ORDER BY received_at DESC, id DESC LIMIT $4`,
+			webhookID, beforeAt, beforeID, limit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store: recent webhook events: %w", err)
 	}

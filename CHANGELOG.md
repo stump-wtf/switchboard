@@ -15,6 +15,13 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **A CLI reference page and a safe-routing how-to on the docs site.** The
+  [CLI reference](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/16-cli-reference.md)
+  lists every `switchboard` operator subcommand and flag as the binary prints it; the
+  [safe-routing how-to](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/17-webhook-routing-safely.md)
+  walks the backup → dry-run → apply → verify → roll-back loop for a webhook's routing rules, and
+  the vend guide gained a section on storing the vended credential without ever printing it.
+
 - **An `llms.txt` for agents.** The docs site publishes
   [`/docs/llms.txt`](https://switchboard.stump.wtf/docs/llms.txt), an llmstxt.org index of
   the pages an agent needs to connect (connect, security model, self-hosting, operator

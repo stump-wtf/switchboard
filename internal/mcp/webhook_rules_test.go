@@ -56,7 +56,7 @@ func (f *fakeStore) EventForWebhook(_ context.Context, _ int64, _ string) (store
 	return store.EventHistoryDetail{}, store.ErrNotFound
 }
 
-func (f *fakeStore) RecentWebhookEvents(context.Context, string, int) ([]store.EventHistoryDetail, error) {
+func (f *fakeStore) WebhookEventsBefore(context.Context, string, time.Time, int64, int) ([]store.EventHistoryDetail, error) {
 	return nil, nil
 }
 
@@ -82,6 +82,12 @@ func ruleSessions(t *testing.T) (context.Context, *routeFixture, func(human stri
 	f := newRouteFixture(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `UPDATE endpoints SET webhook_queues = ARRAY['reviews','forge'] WHERE id = $1`, f.epA1); err != nil {
 		t.Fatalf("set ceiling: %v", err)
+	}
+	// The rule tests exercise rules, not trust, so webhookA takes the migrated allow_all shape: its
+	// sample payloads carry no sender, and under an empty list the trust gate would hold them before
+	// any rule ran. Tests of the gate set their own list.
+	if _, err := f.st.SetWebhookTrustedActors(ctx, f.webhookA, f.epA1, []byte(`{"allow_all":true}`)); err != nil {
+		t.Fatalf("set trust: %v", err)
 	}
 	verbs := append(append(append([]string{}, allRuleVerbs...), allRouteVerbs...), "get_webhook_event", "list_webhook_events")
 	grantVerbs(t, ctx, pool, f.epA1, verbs)

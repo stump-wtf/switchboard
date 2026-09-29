@@ -182,11 +182,14 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 	// The delivery dispatcher subscribes to the store's ready hook: sender-gated creations and
 	// requeues, fired once per transition on the instance that performed it. It is deliberately NOT
-	// behind the doorbellGate below: that gate suppresses re-rings of the channel doorbell for a
+	// behind the doorbellGate above: that gate suppresses re-rings of the channel doorbell for a
 	// minute, and a requeue inside that window must still reach a hook (SPEC-0024 REQ-6). With the
 	// ceiling at 0 nothing subscribes, so existing hooks receive nothing (the REQ-1 kill switch).
 	// It is started after mtr exists so it counts into the process registry (REQ-11).
 	startNotifyDispatcher(ctx, st, hookValidator, cfg.NotifyHookMax, mtr, log)
+	if cfg.NotifyHookMax > 0 {
+		wireNotifyHookMetrics(webh, mtr)
+	}
 
 	r := newRouter(routerDeps{
 		st:    st,
@@ -249,6 +252,16 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// wireNotifyHookMetrics counts an operator disable from the endpoint card as
+// switchboard_notify_hooks_disabled_total{reason="operator"}. Run calls it only when the dispatcher
+// runs (ceiling > 0), after startNotifyDispatcher has created the series at zero. Initialising them
+// again here is idempotent, so the server suite can drive exactly this wiring on its own.
+// Governing: SPEC-0024 REQ-11.
+func wireNotifyHookMetrics(webh *web.Handler, mtr *metrics.Metrics) {
+	mtr.InitNotifyHookSeries()
+	webh.SetNotifyHookDisabledCounter(func() { mtr.NotifyHookDisabled(metrics.NotifyDisabledByOp) })
 }
 
 // routerDeps carries the wired components newRouter assembles into the HTTP surface. Extracted from
@@ -499,6 +512,14 @@ func newRouter(d routerDeps) chi.Router {
 		// Endpoints"). Store constrains to state='revoked' + ownership; active endpoints must be revoked
 		// first. CSRF arrives via the layout hx-headers / hidden field; the group's RequireCSRF validates.
 		pr.Post("/endpoints/{id}/delete", d.webh.DeleteEndpoint)
+		// The endpoint card's notify-hook controls (SPEC-0024 REQ-10): owner-scoped in the store,
+		// CSRF-checked by the group, and 404 for anything the signed-in human does not own.
+		pr.Post("/endpoints/{id}/hooks/{hookID}/disable", d.webh.DisableNotifyHook)
+		pr.Post("/endpoints/{id}/hooks/{hookID}/enable", d.webh.EnableNotifyHook)
+		// Delete is irreversible, so the card links to a confirm page and only its form POSTs
+		// (SPEC-0015 REQ "Wizard Interaction Pattern"), like revoke.
+		pr.Get("/endpoints/{id}/hooks/{hookID}/delete", d.webh.DeleteNotifyHookConfirm)
+		pr.Post("/endpoints/{id}/hooks/{hookID}/delete", d.webh.DeleteNotifyHook)
 		// Friends view + approval flow (SPEC-0015 REQ "Friends View And Approval Flow"; SPEC-0010
 		// approval-is-vend). The handlers 404 until the friending capability is enabled (capability
 		// gating lives in the handler, so the routes stay classified session-gated for the route-table

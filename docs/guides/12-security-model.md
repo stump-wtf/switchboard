@@ -165,6 +165,11 @@ What's on you:
   sandbox that cannot run at all refuses deliveries with `503` instead of routing them by
   default. Still read lists with `arrays`, as the cookbook does, so a missing list evaluates
   cleanly instead of faulting.
+- **Attempt summaries are data too.** The `summary`, `claimant` and `artifact` a worker leaves on an
+  attempt are handed to every later claimer of that todo, in `prior_attempts` and `get_todo`. They
+  were written by an earlier model, which may itself have read a hostile payload. Switchboard does
+  not scan them, so redact before you send: keep tokens, log excerpts and customer data out of a
+  summary. See [attempt history](/guides/attempt-history#summaries-are-data-never-instructions).
 - **A work order grants nothing.** `work_order` on a todo records the verified provenance that made
   it eligible. A worker should refuse a todo routed with work orders that has none, or whose
   `work_order.verified` isn't `true`, and still treat the task itself as untrusted.

@@ -44,15 +44,13 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
   | Event history | `list_webhook_events`, `get_webhook_event`, `replay_webhook_event` |
   | Outbound HTTP calls (notify hooks) | `create_notify_hook`, `list_notify_hooks`, `rotate_notify_hook`, `delete_notify_hook` |
 
-  The web wizard pre-checks the seven todo verbs. `switchboard endpoint vend` grants every group
-  except outbound HTTP calls.
-
   The notify-hook verbs let the agent register an HTTPS URL that Switchboard POSTs a signed
   notification to when the endpoint's work is ready. Switchboard then dials a host the agent chose,
   so these verbs are never part of any default grant. The wizard and quick vend list them as their
   own "Outbound HTTP calls" group, unticked. `create_notify_hook` returns the Standard Webhooks
   signing secret (`whsec_…`) once. `list_notify_hooks` shows each hook's health, and never a secret
-  or a URL's query string.
+  or a URL's query string. `switchboard endpoint vend` grants every group except outbound HTTP
+  calls.
 
   The web wizard pre-checks the eight todo verbs. `switchboard endpoint vend` grants all of them.
   `list_todos` also grants `get_todo`, so an endpoint vended before `get_todo` existed has it.
@@ -88,6 +86,32 @@ queues outside the grant are denied.
    ```
 
 The agent can now drain its queues with `list_todos` / `claim` / `complete`.
+
+## Store the credential without printing it
+
+The CLI can vend the same thing without the credential ever reaching the screen or a terminal
+scrollback. `--json` prints the raw API response — the credential inside it — so capture it
+straight into a file only you can read:
+
+```sh
+umask 077
+switchboard endpoint vend my-agent --queue inbox --json > vend.json    # created 0600
+jq -r .mcp_json vend.json      # the client wiring block, still containing the token
+```
+
+Then move the credential where your secrets live — pass it to `op` / `pass` / your secret store
+from the file, never as a shell argument or an `echo` — and delete `vend.json`:
+
+```sh
+op item create --category=password --title switchboard-my-agent \
+  --password "$(jq -r .token vend.json)" && rm -f vend.json
+```
+
+Nothing in this path prints the token: `vend --json` writes to the file, the store reads the file,
+and `endpoint list` never shows credentials at all. If a credential does end up somewhere it
+should not be — a log, a transcript, a shared paste — the credential is compromised: revoke the
+endpoint and vend a fresh one
+([Operator CLI and API](/guides/operator-cli#revoking-an-endpoint)).
 
 ## What you use an endpoint for
 

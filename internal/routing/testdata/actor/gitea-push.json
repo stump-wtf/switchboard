@@ -1,0 +1,13 @@
+{
+  "source": "gitea",
+  "headers": {"Content-Type": "application/json", "X-Gitea-Event": "push", "X-Github-Event": "push", "X-Gitea-Delivery": "0e5c4a80-9a11-11f0-8e1c-1f2a3b4c5d6e"},
+  "body": {
+    "ref": "refs/heads/main",
+    "before": "5093946000000000000000000000000000000000",
+    "after": "a02e575000000000000000000000000000000000",
+    "commits": [{"id": "a02e575000000000000000000000000000000000", "message": "docs: tweak", "author": {"name": "Joe", "username": "joestump"}}],
+    "repository": {"full_name": "stump.wtf/switchboard"},
+    "pusher": {"login": "joestump", "username": "joestump"},
+    "sender": {"login": "joestump", "username": "joestump"}
+  }
+}

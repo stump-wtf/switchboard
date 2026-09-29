@@ -28,6 +28,9 @@ switchboard endpoint revoke -h   # one verb's flags
 The pre-grouping spellings (`switchboard vend`, `endpoints`, `agents`) still work so existing
 scripts keep running, but they are no longer advertised — prefer the grouped form.
 
+Every subcommand and flag, as the binary prints it, is in the
+[CLI reference](/guides/cli-reference).
+
 ## Logging in (gh-style)
 
 ```
@@ -173,6 +176,9 @@ $EDITOR rules.json
 switchboard webhook rules test WEBHOOK_ID --file rules.json --event 812
 switchboard webhook rules set WEBHOOK_ID --file rules.json
 ```
+
+The full loop — backup, dry-run against stored events and samples, apply, verify, roll back — is
+the [Change webhook routing safely](/guides/webhook-routing-safely) how-to.
 
 - `webhook list` shows every webhook your endpoints own, with its endpoint, its source and target
   queue, and how many rules it has. Ingest URLs and signing secrets are never shown.
