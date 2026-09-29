@@ -126,6 +126,11 @@ type ToolStore interface {
 	// persisted server-side and revealed exactly once at create/rotate time.
 	// Governing: ADR-0012 (agents self-manage webhooks), SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency".
 	CreateWebhook(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int) (store.Webhook, error)
+	// SPEC-0026 REQ-5 trusted actors (trusted_actors.go): create with a trust list, read one of the
+	// endpoint's own webhooks, and replace its list. All three are endpoint-scoped.
+	CreateWebhookWithTrust(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int, trustedActors []byte) (store.Webhook, error)
+	WebhookForEndpoint(ctx context.Context, id, endpointID string) (store.Webhook, error)
+	SetWebhookTrustedActors(ctx context.Context, id, endpointID string, trustedActors []byte) (store.Webhook, error)
 	ListWebhooks(ctx context.Context, endpointID string) ([]store.Webhook, error)
 	RotateWebhookSecret(ctx context.Context, id, endpointID, newSecret, newIngestToken string) (store.Webhook, error)
 	DeleteWebhook(ctx context.Context, id, endpointID string) error
@@ -147,9 +152,10 @@ type ToolStore interface {
 	UpdateWebhookRouting(ctx context.Context, webhookID, endpointID string, mutate func(store.WebhookRouting) (routing.Config, error)) (store.WebhookRouting, error)
 	ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error)
 	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
-	// RecentWebhookEvents feeds the save-time dry-run (SPEC-0026 REQ-3): the webhook's latest
-	// deliveries, read before the routing row lock.
-	RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]store.EventHistoryDetail, error)
+	// WebhookEventsBefore feeds the save-time dry-run (SPEC-0026 REQ-3): the webhook's latest
+	// deliveries, a keyset page at a time (a zero beforeAt is the newest), read before the routing
+	// row lock.
+	WebhookEventsBefore(ctx context.Context, webhookID string, beforeAt time.Time, beforeID int64, limit int) ([]store.EventHistoryDetail, error)
 	// EndpointScopeQueues feeds the grant's per-target scopes for exclusive delivery (ADR-0025).
 	EndpointScopeQueues(ctx context.Context, endpointIDs []string) (map[string][]string, error)
 	// EndpointReplayTargets backs replay target resolution: the calling endpoint's OWN replay
@@ -465,6 +471,8 @@ func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	// the same allowlist-filtered registration (webhook_routes.go).
 	h.registerWebhookRouteTools(srv, ep)
 	h.registerWebhookRuleTools(srv, ep)
+	// SPEC-0026 REQ-5 trust verbs (trusted_actors.go), also in the webhook family.
+	h.registerTrustedActorTools(srv, ep)
 	// The SPEC-0024 notify-hook verbs (notify_hooks.go): granted separately, never by default.
 	h.registerNotifyHookTools(srv, ep)
 	h.registerEventResources(srv, ep)

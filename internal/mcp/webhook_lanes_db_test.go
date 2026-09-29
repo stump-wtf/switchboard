@@ -33,7 +33,7 @@ func TestFleetPackInstallsAndDryRuns(t *testing.T) {
 		[]string{"triage", "lane-s", "lane-m", "lane-l", "lane-vision", "hold"}); err != nil {
 		t.Fatalf("ceiling: %v", err)
 	}
-	wh, err := f.st.CreateWebhook(ctx, router.ID, "gitea", "triage", "signed", "tok-lanes-mcp", "whsec", 5)
+	wh, err := f.st.CreateWebhookWithTrust(ctx, router.ID, "gitea", "triage", "signed", "tok-lanes-mcp", "whsec", 5, []byte(`{"allow_all":true}`)) // tests rules, not trust
 	if err != nil {
 		t.Fatalf("webhook: %v", err)
 	}

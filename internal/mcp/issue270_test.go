@@ -56,7 +56,7 @@ func TestIssue270VendedQueuesEnterTheRuleVerbGrant(t *testing.T) {
 	laneS, _ := vendCLI(t, ctx, st, human, "pool-lane-s", "pool-lane-s-00000002", "lane-s")
 	laneM, _ := vendCLI(t, ctx, st, human, "pool-lane-m", "pool-lane-m-00000003", "lane-m")
 
-	wh, err := st.CreateWebhook(ctx, router.ID, "cairn", "forge", "signed", "tok-270", "whsec-270", 5)
+	wh, err := st.CreateWebhookWithTrust(ctx, router.ID, "cairn", "forge", "signed", "tok-270", "whsec-270", 5, []byte(`{"allow_all":true}`)) // tests rules, not trust
 	if err != nil {
 		t.Fatalf("webhook: %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
@@ -66,7 +67,7 @@ func (m *memStore) EventForWebhook(context.Context, int64, string) (store.EventH
 	return store.EventHistoryDetail{}, store.ErrNotFound
 }
 
-func (m *memStore) RecentWebhookEvents(context.Context, string, int) ([]store.EventHistoryDetail, error) {
+func (m *memStore) WebhookEventsBefore(context.Context, string, time.Time, int64, int) ([]store.EventHistoryDetail, error) {
 	return nil, nil
 }
 
