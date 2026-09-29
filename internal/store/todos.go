@@ -710,8 +710,10 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 	var takeover bool
 	var ca ClaimedAttempt
 	var closedOld bool
+	// cand is MATERIALIZED explicitly: claimTail reads it three times, which already forces one
+	// evaluation, but a LIMIT ... SKIP LOCKED pick must never depend on that (see RingOnAttach).
 	row := s.pool.QueryRow(ctx, `
-		WITH cand AS (
+		WITH cand AS MATERIALIZED (
 			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
 			WHERE endpoint_id=$1 AND queue = ANY($2) AND (assignee IS NULL OR assignee=$3)
 				AND (state='pending'
@@ -1647,20 +1649,24 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			    )
 			  )
 		),
-		picked AS (
+		-- Both CTEs are MATERIALIZED so each runs exactly once. Inlined as IN-subqueries they can
+		-- land on the inner side of a nested loop and be rescanned per updated row; the cap then
+		-- holds only because the window sort happens to replay the same ids (see RingOnAttach).
+		picked AS MATERIALIZED (
 			SELECT id FROM ranked
 			ORDER BY rn, last_ringed_at NULLS FIRST, created_at
 			LIMIT $7
-		)
-		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
-		WHERE id IN (
-			-- Re-select through a plain scan so SKIP LOCKED still applies: a window function
-			-- cannot be combined with FOR UPDATE, and dropping the lock would let two sweeps
-			-- (or two instances) ring the same todo twice. Re-check the claim guard at lock
-			-- time so a todo claimed between the pick and the lock is not rung anyway.
-			SELECT id FROM todos WHERE id IN (SELECT id FROM picked) AND state = 'pending'
+		),
+		-- Re-select through a plain scan so SKIP LOCKED still applies: a window function cannot
+		-- be combined with FOR UPDATE, and dropping the lock would let two sweeps (or two
+		-- instances) ring the same todo twice. Re-check the claim guard at lock time so a todo
+		-- claimed between the pick and the lock is not rung anyway.
+		locked AS MATERIALIZED (
+			SELECT id AS lock_id FROM todos WHERE id IN (SELECT id FROM picked) AND state = 'pending'
 			FOR UPDATE SKIP LOCKED
 		)
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		FROM locked WHERE todos.id = locked.lock_id
 		RETURNING `+todoCols,
 		ringMaxAttempts,
 		ringBackoff(1), ringBackoff(2), ringBackoff(3), ringBackoff(4), ringBackoff(5),
@@ -1713,10 +1719,13 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 	if endpointScope(endpointID) != nil || len(queues) == 0 {
 		return nil, nil
 	}
+	// The pick is a MATERIALIZED CTE joined by FROM, never `WHERE id IN (... LIMIT ... SKIP
+	// LOCKED)`: as an IN-subquery the planner may put it on the inner side of a nested loop and
+	// rescan it per outer row, SKIP LOCKED then drops the rows this UPDATE already changed, and each
+	// rescan's LIMIT reaches further — ringing the whole backlog. MATERIALIZED runs it exactly once.
 	rows, err := s.pool.Query(ctx, `
-		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
-		WHERE id IN (
-			SELECT t.id FROM todos t
+		WITH picked AS MATERIALIZED (
+			SELECT t.id AS pick_id FROM todos t
 			WHERE t.endpoint_id = $1
 			  AND t.queue = ANY($2)
 			  AND t.state = 'pending'
@@ -1729,6 +1738,8 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 			LIMIT $5
 			FOR UPDATE SKIP LOCKED
 		)
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		FROM picked WHERE todos.id = picked.pick_id
 		RETURNING `+todoCols,
 		endpointID, queues, ringMaxAttempts, attachRingCooldown, attachRingLimit)
 	if err != nil {
