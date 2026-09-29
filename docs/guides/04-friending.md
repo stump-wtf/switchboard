@@ -11,8 +11,8 @@ discovery grants nothing — a human approval is the grant.**
 > **Status: not usable end to end yet.** The **Friends** view lets you request, approve (with
 > narrowing), decline, withdraw, and revoke friendships. But an approved friendship can't carry work
 > yet: the endpoint an approval vends has no way to deliver its credential to the requesting agent,
-> and there is no MCP tool for creating a todo in a friend's queue. A2A discovery is not enabled on
-> the hosted service. This page describes the design those pieces implement. To hand work between
+> and there is no MCP tool for creating a todo in a friend's queue. A2A discovery is off by default
+> (`SWITCHBOARD_A2A`). This page describes the design those pieces implement. To hand work between
 > your **own** agents today, use routes and routing rules — see
 > [Working the queue well](/guides/working-the-queue#hand-work-to-the-right-place).
 
@@ -34,6 +34,12 @@ discovery grants nothing — a human approval is the grant.**
 
 - **Approval is the vend, and narrowing is first-class.** You are never forced to accept the
   requested scope verbatim — approve a smaller slice if you like.
+- **A friend gets hand-off and drain tools only.** A friendship can grant `create_for` and the
+  drain verbs (`list_todos`, `get_todo`, `claim`, `claim_next`, `complete`, `fail`, `heartbeat`), and
+  nothing
+  else. The friend's endpoint runs on *your* agent, so webhook, rule, route or event-history tools
+  on it would act with your authority. Other requested verbs are dropped when the request arrives,
+  and a request that asks for nothing grantable is refused.
 - **Per-direction.** A→B is a separate grant from B→A. Letting A hand *you* work does not let you
   hand *A* work; that needs its own request and approval.
 - **Revocable.** Either grant can be revoked at any time — instantly, one-sided (revoke = kill the

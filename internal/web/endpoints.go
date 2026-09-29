@@ -52,6 +52,19 @@ func vendVerbOptions() []vendVerbOption {
 	return opts
 }
 
+// vendOutboundVerbOptions builds the "outbound HTTP calls" chip group: the SPEC-0024 notify-hook
+// verbs, which let the agent make Switchboard POST to URLs it registers. They are never part of
+// the default grant, so every chip starts unchecked unless the operator already chose it.
+// Governing: SPEC-0024 REQ-2 (listed by the vend wizard and quick vend, grouped and labelled as
+// outbound HTTP calls, not in any default grant).
+func vendOutboundVerbOptions(chosen []string) []vendVerbOption {
+	var opts []vendVerbOption
+	for _, v := range mcp.NotifyHookVerbs() {
+		opts = append(opts, vendVerbOption{Name: v, Checked: slices.Contains(chosen, v)})
+	}
+	return opts
+}
+
 // vendSourceTypeOptions builds the webhooks step's source-type chips from mcp.WebhookSourceTypes —
 // the types create_webhook actually accepts — checking the ones already in the draft. Deriving
 // them from the server's own list means the wizard can neither offer a type the server refuses

@@ -201,7 +201,7 @@ Gotify:
 
 ```json
 {"title": "Dead letter · forge", "priority": 8,
- "message": "“PR #482 opened in stump.wtf/switchboard” failed 5 of 5 attempts.\nBoard: https://sb.example.net/todos/td_…\nOrigin: gitea stump.wtf/switchboard#482"}
+ "message": "“PR 482 opened in stump.wtf/switchboard” failed 5 of 5 attempts.\nBoard: https://sb.example.net/todos/td_…\nOrigin: gitea stump.wtf/switchboard#482"}
 ```
 
 Apprise (stateful):

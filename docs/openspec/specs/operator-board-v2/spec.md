@@ -16,7 +16,7 @@ three-lane live patch-panel board, full-page wizards, a global keyboard map, and
 Supersedes SPEC-0013 (Operator Board). The durable architecture of SPEC-0012 (embedded templates,
 HTMX + SSE, CSRF, error standards, no-JS fallbacks) is inherited, not restated.
 
-> **Amended 2026-09-21 (#181).** The sixth view, Providers, was removed with the provider registry
+> **Amended 2026-09-21, with the shared-receiver removal.** The sixth view, Providers, was removed with the provider registry
 > ([SPEC-0017](../providers-view/spec.md), retired).
 
 ## Requirements

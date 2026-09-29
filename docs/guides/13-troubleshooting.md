@@ -100,11 +100,11 @@ anything.
 - **The save fails with `forbidden`.** The queue isn't one of the endpoint's webhook queues, or an
   `endpoints` entry isn't a delivery target yet (`add_webhook_route` first). An `exclusive` rule
   also fails to save when no delivery target is scoped to its queue.
-- **Everything drops after a rules change.** `set_webhook_rules` replaces rules, default, and
-  `params` together, and leaving `params` out clears them. An allowlist written to fail closed
-  (as the [cookbook's](/guides/routing-cookbook#only-act-on-trusted-people) are) then trusts no
-  one, and so does a list saved as a string by mistake. `list_webhook_rules` shows the params in
-  force.
+- **Everything drops after a rules change.** Check whether the save sent `"params": {}` (which
+  clears them; leaving `params` out keeps the saved ones) or a params object missing a list. An
+  allowlist written to fail closed (as the
+  [cookbook's](/guides/routing-cookbook#only-act-on-trusted-people) are) then trusts no one, and so
+  does a list saved as a string by mistake. `list_webhook_rules` shows the params in force.
 - **The delivery answers `{"repeat": true}` and no todo appears.** A `once` rule already created a
   todo about the same issue or artifact for that queue. That is the point of `once`. Re-sizing to
   a different queue routes again.
@@ -153,6 +153,7 @@ how many todos are at their attempt ceiling.
 | `not_found` on `claim` or `complete` | The id is wrong, or the todo belongs to a different endpoint. |
 | `ceiling_exceeded` on `create_webhook` | The endpoint has used its webhook allowance. `list_webhooks` shows `ceiling.max` and `ceiling.used`. |
 | `forbidden_source_type` | The endpoint wasn't allowed that source type. CLI-vended endpoints allow only `generic`; use the web wizard for GitHub, Gitea, or Cairn. |
+| `unavailable` on a notify-hook verb (`create_notify_hook`, `rotate_notify_hook`, …) | The instance can't hold notify hooks. The operator must set `SWITCHBOARD_SECRET_ENCRYPTION_KEY`, because a hook secret is never stored in plaintext. See [Self-hosting](/guides/self-hosting#configuration). A ceiling of `0` (`SWITCHBOARD_NOTIFY_HOOK_MAX=0`) is different: it turns hooks off and answers `ceiling_exceeded`. |
 | `list_todos` returns 50 when you asked for more | Ask for 200 or fewer. A larger limit is currently treated as the default. |
 | `401` from the MCP URL | The credential is wrong, the endpoint was revoked, or its lifetime ran out. |
 

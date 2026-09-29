@@ -231,6 +231,15 @@ func (a *apiClient) post(path string, body any) ([]byte, error) {
 	return readAPIResponse(resp, http.MethodPost, path, http.StatusOK, http.StatusCreated)
 }
 
+// put performs a JSON PUT and returns the response body, accepting 200.
+func (a *apiClient) put(path string, body any) ([]byte, error) {
+	resp, err := a.do(http.MethodPut, path, body)
+	if err != nil {
+		return nil, err
+	}
+	return readAPIResponse(resp, http.MethodPut, path, http.StatusOK)
+}
+
 func readAPIResponse(resp *http.Response, method, path string, want ...int) ([]byte, error) {
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -245,6 +254,19 @@ func readAPIResponse(resp *http.Response, method, path string, want ...int) ([]b
 	msg := strings.TrimSpace(string(b))
 	if msg == "" {
 		return nil, fmt.Errorf("%s %s: %s", method, path, statusText(resp.StatusCode))
+	}
+	// The human API's error shape (SPEC-0035): print the message and its code, not the raw JSON.
+	var shaped struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+		State string `json:"state"`
+	}
+	if json.Unmarshal(b, &shaped) == nil && shaped.Error != "" && shaped.Code != "" {
+		msg = shaped.Error + " (" + shaped.Code
+		if shaped.State != "" {
+			msg += ", state " + shaped.State
+		}
+		msg += ")"
 	}
 	return nil, fmt.Errorf("%s %s: %s: %s", method, path, statusText(resp.StatusCode), msg)
 }

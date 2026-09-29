@@ -165,12 +165,12 @@ func (r *interleavingRouter) Route(ctx context.Context, cfg routing.Config, g ro
 	return r.next.Route(ctx, cfg, g, in)
 }
 
-// openRulesWith opens a rule session for human A whose dry-runs use router.
-func openRulesWith(t *testing.T, ctx context.Context, f *routeFixture, slug string, router routing.Router) *sdk.ClientSession {
+// openRulesWith opens a rule session on webhook A's own endpoint (epA1, which ruleSessions widened
+// to the rule verbs) whose dry-runs use router. It must be the owning endpoint: a sibling endpoint of
+// the same human is a stranger to webhook A and would answer not_found (SPEC-0033 F19).
+func openRulesWith(t *testing.T, ctx context.Context, f *routeFixture, router routing.Router) *sdk.ClientSession {
 	t.Helper()
-	verbs := append(append([]string{}, allRuleVerbs...), "list_webhook_events")
-	_, token := mustEndpoint(t, ctx, f.st, f.agentA1, slug, verbs)
-	return ruleSessionWithRouter(t, ctx, f.st, slug, token, router)
+	return ruleSessionWithRouter(t, ctx, f.st, f.slugA1, f.tokenA1, router)
 }
 
 func storedRuleIDs(t *testing.T, ctx context.Context, f *routeFixture) []string {
@@ -195,7 +195,7 @@ func TestWebhookRuleSaveConflictsWithAConcurrentEdit(t *testing.T) {
 	seedStoredEvent(t, f, "ev", `{"n":1}`, "")
 	router := &interleavingRouter{next: routing.InProcess{}}
 	router.before = func() {
-		if _, err := f.st.UpdateWebhookRouting(ctx, f.webhookA, f.humanA, func(cur store.WebhookRouting) (routing.Config, error) {
+		if _, err := f.st.UpdateWebhookRouting(ctx, f.webhookA, f.epA1, func(cur store.WebhookRouting) (routing.Config, error) {
 			cfg := cur.Config
 			cfg.Rules = append(slices.Clone(cfg.Rules), routing.Rule{ID: "concurrent", Expr: `false`, Action: routing.Action{Queue: "reviews"}})
 			return cfg, nil
@@ -203,7 +203,7 @@ func TestWebhookRuleSaveConflictsWithAConcurrentEdit(t *testing.T) {
 			t.Errorf("concurrent edit: %v", err)
 		}
 	}
-	cs := openRulesWith(t, ctx, f, "rules-c-66666666", router)
+	cs := openRulesWith(t, ctx, f, router)
 	callErr(t, ctx, cs, "add_webhook_rule", map[string]any{"webhook_id": f.webhookA, "id": "mine",
 		"expr": `.kind == "push"`, "action": map[string]any{"queue": "forge"}}, codeConflict)
 	if got := storedRuleIDs(t, ctx, f); !slices.Equal(got, []string{"concurrent"}) {
@@ -216,7 +216,7 @@ func TestWebhookRuleSaveConflictsWithAConcurrentEdit(t *testing.T) {
 func TestWebhookRuleSaveRefusedWhenRoutingUnavailable(t *testing.T) {
 	ctx, f, _ := ruleSessions(t)
 	seedStoredEvent(t, f, "ev", `{"n":1}`, "")
-	cs := openRulesWith(t, ctx, f, "rules-u-77777777", routing.Unavailable{})
+	cs := openRulesWith(t, ctx, f, routing.Unavailable{})
 	callErr(t, ctx, cs, "add_webhook_rule", map[string]any{"webhook_id": f.webhookA, "id": "mine",
 		"expr": `.kind == "push"`, "action": map[string]any{"queue": "forge"}}, codeUnavailable)
 	if got := storedRuleIDs(t, ctx, f); len(got) != 0 {
@@ -253,7 +253,7 @@ func TestWebhookRuleEditsKeepPreexistingParams(t *testing.T) {
 	ctx, f, open := ruleSessions(t)
 	cs, _ := open("A")
 	legacy := map[string]any{"trusted": map[string]any{"alice": true}} // an object: refused today
-	if _, err := f.st.UpdateWebhookRouting(ctx, f.webhookA, f.humanA, func(store.WebhookRouting) (routing.Config, error) {
+	if _, err := f.st.UpdateWebhookRouting(ctx, f.webhookA, f.epA1, func(store.WebhookRouting) (routing.Config, error) {
 		return routing.Config{Params: legacy, Rules: []routing.Rule{
 			{ID: "old", Expr: `$params.trusted | has("alice")`, Action: routing.Action{Queue: "reviews"}}}}, nil
 	}); err != nil {

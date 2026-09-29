@@ -41,8 +41,32 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_GITHUB_REDIRECT_URL` | `<base>/auth/callback` | Override only if your proxy rewrites paths. |
 | `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | — | Recommended. Encrypts webhook signing secrets at rest. 32 bytes, base64 or hex. **Empty stores them in plaintext**; see [Secrets at rest](/guides/security-model#secrets-at-rest). |
 | `SWITCHBOARD_DEV_LOGIN` | off | Unauthenticated local login. Never in production. |
+| `SWITCHBOARD_NOTIFY_HOOK_MAX` | `5` | Per-endpoint ceiling on outbound notify hooks. `0` turns notify hooks off. Notify hooks also require `SWITCHBOARD_SECRET_ENCRYPTION_KEY`: without it, no hook can be created, because a hook secret is never stored in plaintext. |
+| `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` | empty | Comma-separated CIDRs that notify hooks may target despite the private-address rule. Off by default. **Read the warning below before setting it.** |
+| `SWITCHBOARD_PUSH_ALLOW_HTTP` | off | Allows plain `http://` notify-hook targets. Never in production: notifications then travel unencrypted. |
 | `SWITCHBOARD_METRICS_TOKEN` | — | Scrape token for `GET /metrics`. Unset, the endpoint answers `401` to everything. At least 32 bytes. See [Metrics](#metrics). |
 | `SWITCHBOARD_FRIENDING`, `SWITCHBOARD_PERSONAS`, `SWITCHBOARD_A2A`, `SWITCHBOARD_A2UI` | off | Advanced capabilities, hidden until switched on. |
+
+:::danger `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` exposes those ranges to every tenant
+Notify hooks refuse private, loopback, link-local, unique-local, CGNAT and multicast targets, so an
+agent cannot aim Switchboard at your internal network. The allowlist lifts that for the ranges you
+list, **for every endpoint of every human on the instance**, not only yours. Use it only on a
+single-tenant or homelab install, and list the narrowest ranges that work: `127.0.0.1/32` for a
+receiver on the same host, or one LAN host's `/32`.
+
+- Loopback and link-local are opened only by an entry that lies wholly inside them, such as
+  `127.0.0.1/32`. A broad entry like `0.0.0.0/0` never opens `127.0.0.1` or `169.254.169.254`.
+- **Exempting link-local (`169.254.0.0/16`, `fe80::/10`) exposes cloud metadata services**, which
+  hand out instance credentials. Never list it on a cloud VM.
+- Not every metadata service is link-local. Alibaba Cloud's (`100.100.100.200`) is in the CGNAT
+  range and AWS's IPv6 one (`fd00:ec2::254`) is unique-local. Those two stay refused under any
+  covering entry (`0.0.0.0/0`, `100.64.0.0/10`, `fc00::/7`, `::/0`) and open only when you list the
+  exact address. Any other address a broad entry covers is exposed, so on a cloud VM check what your
+  provider runs inside the ranges you list.
+- Switchboard's own listen address and port stay refused even when listed.
+
+Startup logs a warning while the allowlist is set.
+:::
 
 One setting is easy to get wrong: **`SWITCHBOARD_BASE_URL` decides whether session cookies are
 marked `Secure`.** Switchboard sets that flag when the base URL starts with `https://`. Behind TLS,
@@ -157,6 +181,8 @@ network, use `sslmode=verify-full`.
 | `db: ping: … connection refused` | The DSN is right but nothing is listening. |
 | `cred: secret encryption key must decode (base64 or hex) to exactly 32 bytes` | The key is the wrong length or encoding. |
 | `config: SWITCHBOARD_METRICS_TOKEN is N bytes; it must be at least 32 …` | The scrape token is too short. It must also be printable ASCII with no spaces. |
+| `config: SWITCHBOARD_NOTIFY_HOOK_MAX="…" must be a non-negative integer` | The notify-hook ceiling is not a whole number. Use `0` to turn notify hooks off. |
+| `config: SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS: … is not a CIDR range or IP address` | An allowlist entry is malformed. Use CIDRs such as `127.0.0.1/32`, separated by commas. |
 
 Each of these exits immediately and says which one it is.
 
@@ -276,10 +302,11 @@ empty list rather than an error:
 {"id": "untrusted", "expr": "(($params.trusted | arrays) // []) as $t | ((.payload.sender.login // \"\") as $who | any($t[]; . == $who) | not)", "action": {"drop": true}}
 ```
 
-**Saving rules without `params` clears them.** `set_webhook_rules` replaces rules, default action
-and parameters together. Omit `params` and your allowlists are gone — combined with the above, a
-trust rule then matches nobody or everybody depending on how it is written. Always send `params`
-with the rules, and read them back with `list_webhook_rules`.
+**Only an explicit `"params": {}` clears parameters.** `set_webhook_rules` replaces rules and the
+default action; it replaces `params` only when the field is present, so omitting it keeps your
+allowlists. Sending `{}`, or a params object that leaves a list out, empties them — combined with
+the above, a trust rule then matches nobody or everybody depending on how it is written. Every
+rules verb echoes the params in force, so read them back from the response or `list_webhook_rules`.
 
 The [routing cookbook](/guides/routing-cookbook) has tested recipes that already follow both rules.
 

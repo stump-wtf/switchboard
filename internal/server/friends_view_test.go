@@ -16,10 +16,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/stump-wtf/switchboard/internal/auth"
 	"github.com/stump-wtf/switchboard/internal/config"
@@ -32,6 +34,14 @@ import (
 // newFriendsRouter builds the production router with the friending capability ENABLED against a
 // dedicated test database, so the Friends routes serve rather than 404.
 func newFriendsRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
+	t.Helper()
+	r, st, _, ctx := newFriendsRouterWithPool(t)
+	return r, st, ctx
+}
+
+// newFriendsRouterWithPool is newFriendsRouter that also hands back the pool, for a test that must
+// seed rows the store API no longer writes (a pending edge recorded before a fix).
+func newFriendsRouterWithPool(t *testing.T) (chi.Router, *store.Store, *pgxpool.Pool, context.Context) {
 	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -83,7 +93,7 @@ func newFriendsRouter(t *testing.T) (chi.Router, *store.Store, context.Context) 
 		ing:     ingest.New(st, hub, log, ingest.Config{}),
 		friends: newFriendIntake(st, authr, log), ping: pool.Ping, log: log,
 	})
-	return r, st, ctx
+	return r, st, pool, ctx
 }
 
 // postFormAs (session-authenticated, CSRF-bearing HTMX-style form POST) is shared with the other
@@ -207,6 +217,84 @@ func TestFriendApproveOnlyAcceptsOwnedAgent(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("approve response must surface the vended result: missing %q", want)
 		}
+	}
+}
+
+// TestApproveLegacyPendingEdgeThroughTheForm: a pending edge recorded before F3 may still request a
+// webhook verb. The approve page offers only what a friend may be granted, so submitting it as
+// rendered approves (rather than 400ing on a pre-checked webhook verb) and mints only the grantable
+// verbs. Governing: SPEC-0033 REQ "Closing the Audited Surfaces" (F3), SPEC-0015 REQ "Friends View
+// And Approval Flow".
+func TestApproveLegacyPendingEdgeThroughTheForm(t *testing.T) {
+	r, st, pool, ctx := newFriendsRouterWithPool(t)
+	alice, tokenA := mintSession(t, st, ctx, "test|alice-legacy", "Alice", "alice@example.com")
+	agent, err := st.CreateAgent(ctx, alice.ID, "alice-agent", "")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	var edgeID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO friend_edges (from_persona, to_persona, to_human, requested_queues, requested_verbs)
+		VALUES ('peer://legacy', 'b-persona', $1, '{reviews}', '{create_for,set_webhook_rules,claim}')
+		RETURNING id::text`, alice.ID).Scan(&edgeID); err != nil {
+		t.Fatalf("seed legacy edge: %v", err)
+	}
+
+	page := getAs(t, r, tokenA, "/friends/"+edgeID+"/approve")
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET approve page: got %d, want 200", page.Code)
+	}
+	body := page.Body.String()
+	for _, want := range []string{
+		`name="granted_verbs" value="create_for" checked`, `name="granted_verbs" value="claim" checked`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("approve page: missing %q", want)
+		}
+	}
+	if strings.Contains(body, "set_webhook_rules") {
+		t.Fatal("approve page offers set_webhook_rules, which a friend can never be granted")
+	}
+
+	// Submit exactly what the page pre-checks.
+	csrf := scrapeCSRF(t, getAs(t, r, tokenA, "/friends").Body.String())
+	rec := postFormAs(t, r, tokenA, csrf, "/friends/"+edgeID+"/approve", url.Values{
+		"agent_id":       {agent.ID},
+		"granted_queues": {"reviews"},
+		"granted_verbs":  {"create_for", "claim"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve legacy edge as rendered: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	eps, err := st.ListEndpoints(ctx, agent.ID)
+	if err != nil || len(eps) != 1 {
+		t.Fatalf("approval must mint exactly one endpoint: %+v, %v", eps, err)
+	}
+	if !slices.Equal(eps[0].ScopeVerbs, []string{"create_for", "claim"}) {
+		t.Fatalf("minted verbs = %v, want [create_for claim]", eps[0].ScopeVerbs)
+	}
+}
+
+// TestAddFriendRefusesOnlyUngrantableIntents: an outgoing request whose every intent is one a friend
+// can never be granted is a 400 that stores nothing, as the A2A intake answers the same input (F3).
+func TestAddFriendRefusesOnlyUngrantableIntents(t *testing.T) {
+	r, st, ctx := newFriendsRouter(t)
+	alice, tokenA := mintSession(t, st, ctx, "test|alice-ungrant", "Alice", "alice@example.com")
+	agent, err := st.CreateAgent(ctx, alice.ID, "alice-agent", "")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	csrf := scrapeCSRF(t, getAs(t, r, tokenA, "/friends").Body.String())
+	rec := postFormAs(t, r, tokenA, csrf, "/friends", url.Values{
+		"agent_id": {agent.ID},
+		"handle":   {"zed@far.example"},
+		"intents":  {"set_webhook_rules"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /friends with only ungrantable intents: got %d, want 400", rec.Code)
+	}
+	if edges, _ := st.ListFriendEdges(ctx, alice.ID); len(edges) != 0 {
+		t.Fatalf("a refused request must store nothing, got %+v", edges)
 	}
 }
 

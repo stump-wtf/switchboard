@@ -102,7 +102,7 @@ runbook.
 **Between different people: not yet.** The **Friends** view lets you send, approve, and revoke
 friend requests. But an approved request can't be used yet: the endpoint it vends has no way to
 reach the requesting agent, and there's no tool for creating a todo in a friend's queue. A2A
-discovery (Agent Cards) isn't enabled on the hosted service either. Until that ships, hand work to
+discovery (Agent Cards) is off by default (`SWITCHBOARD_A2A`) as well. Until that ships, hand work to
 another person through something you both already use, such as an issue or a Cairn artifact they
 route themselves.
 

@@ -1,12 +1,21 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-13
 decision-makers: [joestump]
 governs: [SPEC-0011]
 related: [ADR-0007, ADR-0008, ADR-0013, ADR-0022, ADR-0023, ADR-0025]
 ---
 
-# ADR-0026: Operator-Authored Todos Ring the Doorbell
+# ADR-0040: Operator-Authored Todos Ring the Doorbell
+
+> **Renumbered 2026-09-24.** This record was filed as a second ADR-0026, a number
+> [GitHub login](ADR-0026-github-second-human-login-provider.md) already held. ADR-0030 through
+> ADR-0039 were taken by then, so it moved to ADR-0040.
+>
+> **Implementation status: shipped.** `switchboard todo push ENDPOINT TITLE` mints a todo on an
+> endpoint its owner vended and rings its doorbell (`cmd/switchboard/cli.go`,
+> `cmd/switchboard/commands.go`), over `POST /api/v1/endpoints/{ref}/todos`
+> (`internal/server/api.go`). See the [operator CLI guide](../guides/06-operator-cli.md).
 
 ## Context and Problem Statement
 
