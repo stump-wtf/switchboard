@@ -13,6 +13,88 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ## [Unreleased]
 
+### Added
+
+- **An `llms.txt` for agents.** The docs site publishes
+  [`/docs/llms.txt`](https://switchboard.stump.wtf/docs/llms.txt), an llmstxt.org index of
+  the pages an agent needs to connect (connect, security model, self-hosting, operator
+  CLI, routing), and the connect page gains a **Paste this to your agent** block that
+  points the agent at it. (#340)
+
+### Fixed
+
+- **Migration `0028_friend_release_verb` re-broadens the `release` verb that migration
+  `0025_friend_edges_own_authority` stripped.** 0025's narrowing list predates the
+  `release` verb (#507), so upgrading silently removed it from friend endpoints that held
+  it. Every approved edge that requested `release` and lost it gets it back, along with
+  its endpoint's scope; the upgrade note's manual re-grant advice is superseded. (#538)
+
+- **`set_webhook_rules` no longer wipes a webhook's params when the call omits them.**
+  Omitting `params` now keeps the saved ones; pass `params: {}` to clear them. An
+  explicit `params: null` is rejected by input validation rather than treated as either.
+  `list_webhook_rules`, `set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`,
+  `move_webhook_rule` and `remove_webhook_rule` now always return a `params` object,
+  `{}` when none are set (SPEC-0026 REQ-4, #213).
+
+## [0.5.0] - 2026-09-28
+
+Friend-vended endpoints stop acting with the approver's authority, and a worker can end
+an attempt without a verdict. **Read the
+[upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md#upgrading-to-v050)
+before upgrading**: migration `0025_friend_edges_own_authority` narrows existing friend
+endpoints in place, and the verbs it removes cannot be restored.
+
+### Breaking
+
+- **A webhook's rules and routes are managed only from the endpoint that owns it.** The
+  ten rule and route verbs called from any other endpoint, including another endpoint of
+  the same person, now answer `not_found`. Use the owning endpoint's credential. (#420)
+- **Existing friend endpoints are narrowed on upgrade.** Migration
+  `0025_friend_edges_own_authority` removes every verb except `create_for` and the drain
+  verbs from endpoints minted by approving a friend request, and from their recorded
+  grant. It cannot be reversed; back up first. (#420)
+- **A friend request that asks only for verbs a friend can never be granted is refused**
+  with a 400, over A2A and from the Friends page, instead of being stored. (#420)
+
+### Security
+
+- **Friend endpoints act with their own authority.** A friend endpoint runs on the
+  approver's agent, and friend intake accepted any requested tools, so a friend could be
+  granted webhook, rule and event-history tools and use them with the approver's authority.
+  Friend grants are now limited to `create_for` and the drain verbs, at request and at
+  approval, and existing friend endpoints are narrowed to that set on upgrade. A route a
+  friend endpoint added before the upgrade is left in place and keeps delivering to it;
+  the upgrade note has the query that lists such routes for review. (#420)
+- **A webhook's routes and rules are managed only from its own endpoint.** The rule and
+  route verbs used to accept any endpoint of the webhook owner's human. Another endpoint's
+  webhook now answers `not_found`. To edit a webhook's rules, use the endpoint that owns it.
+  (#420)
+- Friend requests from two different users' same-named personas no longer collide. (#420)
+
+### Added
+
+- **A worker can end an attempt without a verdict: `release`.** When an attempt ends for a
+  reason that is not the work's fault — the daemon is shutting down, an operator stops it,
+  a usage limit is hit — `release {id, summary?, artifact?, lease_token?}` hands the todo
+  back to the queue. The todo returns to `pending` with its attempt counter unchanged, so
+  no retry backoff is burned and the attempt does not read as a failure; the attempt closes
+  as `released` and the todo is requeued. It takes the same lease-token fence as
+  `complete` and `fail`, and an endpoint holds it only when its grant names it. (#507)
+- **`summary` and `artifact` on a released attempt.** Both are optional and both are kept
+  on the attempt for later claimers. `artifact` is an `mcp://cairn/<id>` handle or an
+  absolute `https` URL of at most 512 bytes; Switchboard never fetches it. A URL carrying
+  userinfo is refused, because the artifact is handed to every later claimer and rendered
+  as a link on the Board. (#507)
+
+## [0.4.0] - 2026-09-27
+
+Routing rules now fail closed, replay targets belong to their endpoint and every replay
+passes the SSRF guard, event history is scoped to its owner, and workers can fence their
+leases and read a todo's attempt history with `get_todo`. **Read the
+[upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md)
+before upgrading**: two changes are breaking, and the replay-target migration cannot be
+reversed.
+
 ### Breaking
 
 - **Routing rules fail closed.** A rule that errors, times out, runs out of memory or
@@ -22,7 +104,7 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   cannot run, instead of routing by default. Rule saves that would fault on the webhook's
   recent deliveries are refused, and `params` values must be strings, numbers, booleans or
   homogeneous lists. There is no switch. Run the query in the
-  [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md)
+  [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md#routing-rules-fail-closed)
   before upgrading to find webhooks whose rules fault today. (#212)
 - **Replay targets belong to the endpoint, and every replay passes the SSRF guard.** The
   instance settings `replay_default_target` and `replay_allowed_targets` are gone: the
@@ -81,6 +163,24 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   history, newest first (`attempts_limit`, default 20, maximum 50). `list_todos` implies it, so
   existing endpoints get it without a re-vend. A foreign todo, or one outside the granted queues,
   answers `not_found` exactly as an unknown id does. (#326)
+- **`release`.** Hands a held todo back to `pending` without a verdict (shutdown, operator stop,
+  usage limit): no backoff, attempt counter unchanged, and the attempt closes `released` with an
+  optional `summary` (cut to 2048 bytes, `summary_truncated`) and `artifact` (an `mcp://cairn/`
+  handle or an absolute `https` URL; anything else is `invalid` and changes nothing). It honours the
+  lease-token fence. It is its own grant, listed by the vend wizard and the consent screen, and no
+  other verb implies it. (#328)
+- **Attempt history on the Board.** The todo drawer lists each attempt, newest first: who claimed
+  it, when, how it ended, and a "died" marker with the last heartbeat when the lease lapsed with
+  no report. It updates live while open. The A2UI todo detail lists the same history. (#329)
+
+### Fixed
+
+- **`set_webhook_rules` no longer wipes a webhook's params when the call omits them.**
+  Omitting `params` now keeps the saved ones; pass `params: {}` to clear them. An
+  explicit `params: null` is rejected by input validation rather than treated as either.
+  `list_webhook_rules`, `set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`,
+  `move_webhook_rule` and `remove_webhook_rule` now always return a `params` object,
+  `{}` when none are set (SPEC-0026 REQ-4, #213).
 
 ## [0.3.0] - 2026-09-22
 

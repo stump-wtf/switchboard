@@ -112,7 +112,7 @@ func TestRenderTodoA2UI(t *testing.T) {
 		LeaseExpiresAt: &lease, CreatedAt: now,
 		Payload: []byte(`{"repo":"switchboard","branch":"main"}`),
 	}
-	p := renderTodoA2UI(todo)
+	p := renderTodoA2UI(todo, a2uiAttempts{})
 
 	if p.Version != "v0.9" {
 		t.Fatalf("version = %q, want v0.9", p.Version)
@@ -160,7 +160,7 @@ func TestRenderTodoA2UINoPayload(t *testing.T) {
 		ID: "td_100", Queue: "reviews", Title: "no payload", State: "pending",
 		Attempt: 0, MaxAttempts: 5, CreatedAt: time.Now(),
 	}
-	p := renderTodoA2UI(todo)
+	p := renderTodoA2UI(todo, a2uiAttempts{})
 
 	if findComponent(p, "payload") != nil {
 		t.Fatal("todo without payload must not render a payload section")
@@ -173,7 +173,7 @@ func TestRenderTodoA2UINoPayload(t *testing.T) {
 // TestRenderTodoA2UIButtonsHaveNoText is a spec-specific regression guard: a Button with a text
 // field is the #1 A2UI authoring mistake, and a payload round-trip must never introduce one.
 func TestRenderTodoA2UIButtonsHaveNoText(t *testing.T) {
-	p := renderTodoA2UI(store.Todo{ID: "td_x", Queue: "q", Title: "x", State: "pending", CreatedAt: time.Now()})
+	p := renderTodoA2UI(store.Todo{ID: "td_x", Queue: "q", Title: "x", State: "pending", CreatedAt: time.Now()}, a2uiAttempts{})
 	for _, c := range p.UpdateComponents.Components {
 		if c.Component == "Button" && c.Text != "" {
 			t.Fatalf("button %s has text %q — must use child Text instead", c.ID, c.Text)

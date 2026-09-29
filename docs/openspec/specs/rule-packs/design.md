@@ -15,8 +15,8 @@ top of SPEC-0020's routing stage:
   `internal/routing/fleet_pack_test.go` and `pool_review_pack_test.go`, and fixtures under
   `internal/routing/testdata/fleet/`.
 
-Known defects this work touches: #196 (dry-run rejects id-less candidates), #212 (faults are no-match),
-and #213 (`set_webhook_rules` clears params). #212 and #213 are fixed under ADR-0031 / SPEC-0026. This
+Known defects this work touches: dry-run rejects id-less candidates, faults are no-match,
+and `set_webhook_rules` clears params. The last two are fixed under ADR-0031 / SPEC-0026. This
 design only depends on their outcomes, and does not duplicate them.
 
 ## Goals / Non-Goals
@@ -245,7 +245,7 @@ New error codes: `plan_stale`, `pack_rule_faults`, `requires_pack`, `default_con
 
 ## Migration Plan
 
-1. Land the replay engine in `test_webhook_rules`, with #196. It is useful on its own.
+1. Land the replay engine in `test_webhook_rules`, with the id-less dry-run fix. It is useful on its own.
 2. Land the catalog format, the embedding, and the four v1 packs with equivalence tests against
    `fleet.json` and `pool-review.json`.
 3. Land the provenance column, `config_version`, the plan table and the three verbs.

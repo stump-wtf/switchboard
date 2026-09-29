@@ -78,7 +78,7 @@ Each webhook MUST evaluate its ordered rule list first-match-wins, terminated by
 Rule lists MUST be validated in full when saved, while the webhook row is locked, against a **grant** computed from switchboard state alone. The grant consists of:
 
 - the webhook's target queue;
-- the owner's allowed webhook queues: the owning endpoint's webhook-queue ceiling united with the scope and webhook queues of every **active, unexpired endpoint the same human owns** — vending an endpoint for queue `Q` demonstrably grants the owner `Q`, so the grant follows the endpoints the owner already has (issue #270). Revoking or expiring an endpoint shrinks the union on the next read;
+- the owner's allowed webhook queues: the owning endpoint's webhook-queue ceiling united with the scope and webhook queues of every **active, unexpired endpoint the same human owns** — vending an endpoint for queue `Q` demonstrably grants the owner `Q`, so the grant follows the endpoints the owner already has. Revoking or expiring an endpoint shrinks the union on the next read;
 - the webhook's live, authorized delivery targets (owner plus ADR-0022 routes).
 
 A save MUST be rejected, naming the offending rule by index, id, and name, when any of the following holds:
@@ -156,7 +156,7 @@ The agent surface MUST expose `list_webhook_rules`, `set_webhook_rules`, `add_we
 **Authorization and error codes.**
 
 - Every verb is gated by the endpoint's verb allowlist.
-- Every verb requires the calling endpoint's **human** to own the webhook. Unknown, malformed, and another human's webhook ids MUST all return `not_found`, and the three MUST be indistinguishable.
+- Every verb requires the calling **endpoint** to own the webhook: only the webhook's own endpoint may call it, not another endpoint of the same human ([SPEC-0033](../teams-tenancy/spec.md) F3, F19). Unknown, malformed, and any other endpoint's webhook ids MUST all return `not_found`, and the three MUST be indistinguishable.
 - Validation failures MUST surface routing's code verbatim (`invalid_expression`, `forbidden_function`, `invalid_rule`, `too_many_rules`, `invalid_params`), except `not_granted`, which MUST surface as `forbidden`.
 - `update_webhook_rule` and `move_webhook_rule` on an unknown rule id MUST return `rule_not_found`. `remove_webhook_rule` on an absent rule MUST succeed.
 
@@ -165,7 +165,7 @@ The agent surface MUST expose `list_webhook_rules`, `set_webhook_rules`, `add_we
 - Rule ids MUST be minted when omitted.
 - Every mutation MUST be a read-modify-validate-write under a row lock.
 - Every result MUST return the full rule list, the default, the params, and the current grant (`queues`, `endpoints`).
-- `set_webhook_rules` MUST replace rules, default, and params together; omitting `params` clears them. The other mutations MUST preserve the stored params.
+- `set_webhook_rules` MUST replace the rules and the default together. It MUST replace params only when the request carries `params`: omitting them MUST keep the stored params, and only an explicit `params: {}` clears them (SPEC-0026 REQ-4, ADR-0031). The other mutations MUST preserve the stored params.
 
 #### Scenario: Another human's webhook is opaque
 

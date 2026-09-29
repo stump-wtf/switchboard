@@ -86,6 +86,8 @@ type vendStepView struct {
 
 	// verbs step
 	VerbOptions []vendVerbOption
+	// OutboundVerbOptions is the separately grouped, default-off notify-hook verb chips (SPEC-0024).
+	OutboundVerbOptions []vendVerbOption
 
 	// webhooks step
 	WebhookMax         string // text input for max self-managed webhooks ("" = 0 = disabled)
@@ -330,6 +332,7 @@ func (h *Handler) renderVendStep(w http.ResponseWriter, r *http.Request, human *
 		v.ExtraQueues = strings.Join(extra, ", ")
 	case "verbs":
 		v.VerbOptions = vendVerbOptions()
+		v.OutboundVerbOptions = vendOutboundVerbOptions(values["verbs"])
 		// Once the operator has made a verb choice, the saved set replaces the drain-verb defaults —
 		// back navigation must show what was chosen, not re-check the defaults.
 		if chosen := values["verbs"]; len(chosen) > 0 {

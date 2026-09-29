@@ -1,0 +1,102 @@
+package mcp
+
+// Attempt report inputs
+//
+// The summary and artifact a lease-ending verb (release today; complete and fail with #321) closes
+// its attempt with. attemptReport is the one place they are checked, so every verb accepts and
+// refuses exactly the same values: a malformed artifact is an invalid call naming the argument,
+// refused before the store is touched, while a long summary is only long and the store cuts it
+// (store.ClipSummary, in reportArgs) and sets summary_truncated on the attempt. The MCP layer does
+// not pre-clip, because the store can only report the cut it makes itself. Neither value is ever
+// logged or interpreted; Switchboard never fetches an artifact.
+//
+// Governing: SPEC-0034 REQ-5 "Summary, Artifact and Claimant Inputs", REQ-19 "Error Handling
+// Standards"; design.md "Summaries are truncated, never rejected".
+//
+// @joestump-agent 09/25/2026 - Added for #328 (epic #313).
+// @joestump-agent 09/26/2026 - complete and fail share it through resultReport, which adds the
+// operator's summary-from-result fallback (#321).
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/url"
+	"regexp"
+	"strings"
+
+	"github.com/stump-wtf/switchboard/internal/store"
+)
+
+// cairnHandle is the only non-https artifact form (SPEC-0034 REQ-5).
+var cairnHandle = regexp.MustCompile(`^mcp://cairn/[A-Za-z0-9_-]{1,64}$`)
+
+// errInvalidArtifact is the client-visible refusal. It names the argument and never echoes the
+// value, so a caller's own text cannot come back in an error that might be logged downstream.
+var errInvalidArtifact = &toolError{codeInvalid,
+	"artifact must be an mcp://cairn/<id> handle or an absolute https URL of at most 512 bytes"}
+
+// attemptReport builds the store report for a lease-ending verb from its summary, artifact and
+// presented lease token, or returns errInvalidArtifact when the artifact is malformed. An empty
+// artifact is "none" and always valid.
+func attemptReport(summary, artifact, leaseToken string) (store.Report, error) {
+	if artifact != "" && !validArtifact(artifact) {
+		return store.Report{}, errInvalidArtifact
+	}
+	return store.Report{Summary: summary, Artifact: artifact, TokenHash: leaseTokenHash(leaseToken)}, nil
+}
+
+// resultReport is the report complete and fail close their attempt with: attemptReport's checks and
+// fence hash, plus the result they store on the todo. When the caller sent no summary and the
+// operator set SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT, the summary is the result's compact JSON,
+// which the store then cuts and flags like any summary. The option is off by default because it
+// shows what existing clients wrote to result to later claimers, who never saw result before
+// (SPEC-0034 REQ-5). release takes no result, so it has no fallback.
+//
+// Governing: SPEC-0034 REQ-5; design.md "No summary from result unless the operator opts in".
+func (h *Handler) resultReport(result any, summary, artifact, leaseToken string) (store.Report, error) {
+	r, err := attemptReport(summary, artifact, leaseToken)
+	if err != nil {
+		return store.Report{}, err
+	}
+	r.Result = rawJSON(result) // json.Marshal output, already compact
+	if summary == "" && len(r.Result) > 0 && h.summaryFromResult.Load() {
+		r.Summary = summaryJSON(result, r.Result)
+	}
+	return r, nil
+}
+
+// summaryJSON is result's compact JSON as a summary: like json.Marshal but without its HTML
+// escaping, so a later claimer reads "<nil>" rather than "\u003cnil\u003e". The result stored on the
+// todo keeps json.Marshal's form; the store's jsonb column normalizes it either way. marshaled is
+// that form, the fallback should the encoder ever fail.
+func summaryJSON(result any, marshaled []byte) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(result); err != nil { // unreachable: rawJSON already marshaled it
+		return string(marshaled)
+	}
+	return string(bytes.TrimSuffix(b.Bytes(), []byte("\n")))
+}
+
+// validArtifact reports whether s is an mcp://cairn handle or an absolute https URL with a host,
+// no userinfo, and no surrounding whitespace, within AttemptArtifactMax bytes.
+//
+// The userinfo rule is not cosmetic: an artifact is stored on the attempt and handed to later
+// claimers, and the Board renders it as a link when it is an https URL (SPEC-0034 REQ-13). A URL
+// like https://user:token@host/ would publish a credential to every subsequent claimer. Switchboard
+// never dials an artifact, so no receiver needs userinfo here (SPEC-0024 REQ-3 refuses it for the
+// URLs Switchboard does dial).
+func validArtifact(s string) bool {
+	if len(s) > store.AttemptArtifactMax {
+		return false
+	}
+	if strings.TrimSpace(s) != s {
+		return false
+	}
+	if cairnHandle.MatchString(s) {
+		return true
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.Hostname() != "" && u.User == nil
+}

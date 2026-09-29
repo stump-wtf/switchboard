@@ -7,7 +7,7 @@ title: Run handoff work orders and difficulty lanes
 This guide wires the [rule packs](https://github.com/stump-wtf/switchboard/blob/main/docs/routing/rule-packs/README.md). Once it is in place:
 
 - **Cairn handoffs:** an agent writes a tagged handoff prompt to Cairn, and one worker in the right lane picks it up.
-- **Forge issues:** Gitea and GitHub issues route by difficulty. `size/S` goes to the local Qwen, `size/M` and `size/L` to GLM 5.3 flash and GLM 5.3 on two providers each. `size/XL` and `HUMAN` are held for Joe. Unsized issues go to a triage worker that labels them, and the label event re-routes the issue.
+- **Forge issues:** Gitea and GitHub issues route by difficulty. `size/S` goes to the local Qwen, `size/M` and `size/L` to GLM 5.3 flash and GLM 5.3 on two providers each. `size/XL` and `HUMAN` are held for the operator (Joe, in this fleet). Unsized issues go to a triage worker that labels them, and the label event re-routes the issue.
 - **Review requests:** each identity's pool receives only the review requests addressed to that identity, and never a trigger to review its own pull request.
 
 Decision record: [ADR-0025](/decisions/ADR-0025-handoff-work-orders-and-difficulty-lanes). Requirements: the [event-routing spec](/specs/event-routing/spec).
@@ -47,7 +47,7 @@ Vend one `joestump-agent` endpoint that owns ingress. It is not a worker endpoin
 
 Use the **web vend wizard** for this one: its webhooks step is the only vend surface that sets several source types and several allowed webhook queues. `switchboard endpoint vend` (the CLI) always vends a single `generic` source type and a one-queue ceiling.
 
-Either surface works for the lane **rules**, though: a rule may target any queue the same human's active, unexpired endpoints drain (the owning endpoint's ceiling united with the owner's other endpoints' scope and webhook queues), so vended pool endpoints do not need to appear in the router's own ceiling for rules to reach them (issue #270). Revoking a pool endpoint removes its queue from that grant again.
+Either surface works for the lane **rules**, though: a rule may target any queue the same human's active, unexpired endpoints drain (the owning endpoint's ceiling united with the owner's other endpoints' scope and webhook queues), so vended pool endpoints do not need to appear in the router's own ceiling for rules to reach them. Revoking a pool endpoint removes its queue from that grant again.
 
 ## 2. Vend one pool endpoint per lane
 
@@ -181,7 +181,7 @@ Dedup is per webhook. If a per-identity pool hook still receives the same Issues
 
 ## 9. Start the workers
 
-Point each lane's workers at its lane endpoint and model. Each worker drains its endpoint with `claim_next`. Nobody works the `hold` endpoint; its todos are surfaced for Joe.
+Point each lane's workers at its lane endpoint and model. Each worker drains its endpoint with `claim_next`. Nobody works the `hold` endpoint; its todos are surfaced for the operator.
 
 A worker fails, and never executes, a lane todo that has no `work_order`. It also fails one whose `work_order.verified` is not `true`, whose `authorized_by.rule_id` is empty, or whose `lane` is not the queue it drained.
 
@@ -195,11 +195,11 @@ Endpoint scope is immutable ([SPEC-0007](/specs/identity/spec): a changed scope 
 2. **Rotate** the consumer's credential to the new endpoint (for lane workers, their per-lane URL and credential above).
 3. **Revoke** the old endpoint: `switchboard endpoint revoke SLUG|ID`.
 
-**Endpoints vended before the rule verbs existed** cannot call `set_webhook_rules` over MCP. Re-vend them. As an operator-only interim, write `endpoint_webhooks.routing_rules` directly with SQL — but only after validating the exact rules with the evaluator (`test_webhook_rules` on a rule-capable endpoint, or the Go evaluator against stored deliveries). SQL bypasses save-time validation. Before migration `0019` is deployed there is no `$params`, so an interim copy of a pack must use literal values (for the pool-review pack, the identity login written into both expressions).
+**Endpoints vended before the rule verbs existed** cannot call `set_webhook_rules` over MCP. Their human manages those rules instead: `switchboard webhook rules test` and `switchboard webhook rules set` ([guide 06](06-operator-cli.md#managing-webhook-routing-rules)) run the same validation and save-time dry run as the MCP verb, so there is no need to write `endpoint_webhooks.routing_rules` with SQL (which bypasses both). A rules file without `params` keeps the stored params there; write `"params": null` to clear them. Re-vend only when the agent itself must manage its rules.
 
 ## Writing a handoff
 
-A handoff is a Cairn artifact (or bundle) created by an allowlisted actor, with tags. It depends on the cairn tags contract (`data.tags`, cairn branch `feat/artifact-tags`) from the cairn-handoff work. Until cairn carries tags, every artifact drops as `cairn-not-handoff`.
+A handoff is a Cairn artifact (or bundle) created by an allowlisted actor, with tags. It relies on Cairn's client-asserted artifact tags, which arrive as `data.tags` on `artifact.created` (see Cairn's [Tags & handoffs](https://cairn.stump.wtf/docs/tags/)). An artifact without the handoff tags drops as `cairn-not-handoff`.
 
 | Tag | Meaning |
 |---|---|

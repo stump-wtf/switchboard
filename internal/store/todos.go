@@ -57,6 +57,10 @@ type Todo struct {
 	// WorkOrder is the switchboard-authored work order (routing.WorkOrder JSON) when a work_order
 	// routing action minted this todo, nil otherwise. Governing: ADR-0025, SPEC-0020 REQ "Work Orders".
 	WorkOrder []byte
+	// FinalAttempt is the attempt a dead-letter transition closed, set only on the Todo that
+	// transition returns and hands to the transition hook; nil everywhere else.
+	// Governing: SPEC-0034 REQ-15 "Dead-Letter Context for Notifications".
+	FinalAttempt *FinalAttempt
 }
 
 // DeadLetter reports whether the todo is a dead letter: failed with no scheduled retry, so nothing
@@ -252,6 +256,7 @@ func (s *Store) CreateEventTodo(ctx context.Context, e EventInput, p CreateTodoP
 		// reaches this path with a token trust mode.
 		if e.Verified || e.TrustMode == "token" {
 			s.fireDoorbell(t)
+			s.fireReady(t, ReadyCreated) // SPEC-0024 REQ-6: same gate, same commit
 		}
 	}
 	return ev.ID, t, created, nil
@@ -535,6 +540,7 @@ func (s *Store) RecordIntake(ctx context.Context, e EventInput, targetEndpointID
 		// anonymous (open) source never reaches this path carrying a token trust mode.
 		if e.Verified || e.TrustMode == "token" {
 			s.fireDoorbell(ct.Todo)
+			s.fireReady(ct.Todo, ReadyCreated) // SPEC-0024 REQ-6: same gate, same commit
 		}
 	}
 	return IntakeResult{EventID: ev.ID, Todos: out, Disposition: DispositionRouted, Inserted: inserted}, nil
@@ -628,7 +634,8 @@ func (s *Store) ClaimTodo(ctx context.Context, endpointID, id, owner string, ttl
 
 // ClaimTodoWith is ClaimTodo with the attempt inputs (claimant, MCP session, lease-token hash). The
 // claim opens the todo's new attempt in the same statement, closing a lapsed lease's attempt first
-// when it takes one over (SPEC-0034 REQ-2, REQ-3).
+// when it takes one over (SPEC-0034 REQ-2, REQ-3). After the commit it reads the attempts before
+// the new one into ClaimedAttempt.Prior (REQ-7, fillPrior).
 func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string, o ClaimOpts) (Todo, ClaimedAttempt, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return Todo{}, ClaimedAttempt{}, err
@@ -657,6 +664,7 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 	}
 	s.fireTodoHook("claimed", t)
 	s.countClaim(t, takeover, closedOld)
+	s.fillPrior(ctx, endpointID, t.ID, &ca)
 	return t, ca, nil
 }
 
@@ -710,8 +718,10 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 	var takeover bool
 	var ca ClaimedAttempt
 	var closedOld bool
+	// cand is MATERIALIZED explicitly: claimTail reads it three times, which already forces one
+	// evaluation, but a LIMIT ... SKIP LOCKED pick must never depend on that (see RingOnAttach).
 	row := s.pool.QueryRow(ctx, `
-		WITH cand AS (
+		WITH cand AS MATERIALIZED (
 			SELECT id AS cand_id, state AS prior_state, attempts_total AS prior_total FROM todos
 			WHERE endpoint_id=$1 AND queue = ANY($2) AND (assignee IS NULL OR assignee=$3)
 				AND (state='pending'
@@ -731,6 +741,7 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 	}
 	s.fireTodoHook("claimed", t)
 	s.countClaim(t, takeover, closedOld)
+	s.fillPrior(ctx, endpointID, t.ID, &ca)
 	return t, ca, nil
 }
 
@@ -841,14 +852,15 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 			RETURNING todos.*
 		),
 		`+closedArm("failed", failDisposition, "NULLIF($7::text, '')", "$8::boolean", "NULLIF($9::text, '')")+`
-		`+closedSelect, endpointID, id, owner, r.Result,
+		`+closedSelectFinal, endpointID, id, owner, r.Result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact, r.TokenHash)
-	var closed bool
-	t, err := scanTodo(row, &closed)
+	var f finalScan
+	t, err := scanTodo(row, f.dest()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
 	}
-	if err == nil && closed {
+	f.attach(&t) // at the cap, the hook payload carries the final attempt (SPEC-0034 REQ-15)
+	if err == nil && f.closed {
 		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
@@ -881,25 +893,32 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 // Governing: SPEC-0003 REQ "Bounded Retries via max_attempts" (scheduled backoff).
 func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 	rows, err := s.pool.Query(ctx, `
-		UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, next_retry_at=NULL,
-			updated_at=now()
-		WHERE state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
-		RETURNING `+todoCols)
+		WITH upd AS (
+			UPDATE todos SET state='pending', owner=NULL, lease_expires_at=NULL, next_retry_at=NULL,
+				updated_at=now()
+			WHERE state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
+			RETURNING *
+		)
+		SELECT `+todoCols+`, `+movedPushEligible+` FROM upd`)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 	var requeued []Todo
+	var eligible []bool
 	for rows.Next() {
-		t, err := scanTodo(rows)
+		var pushEligible bool
+		t, err := scanTodo(rows, &pushEligible)
 		if err != nil {
 			return 0, err
 		}
 		requeued = append(requeued, t)
+		eligible = append(eligible, pushEligible)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	s.fireRequeued(requeued, eligible)
 	// One wakeup per (endpoint, queue), not per queue: the todo_ready payload is now endpoint-scoped
 	// (TodoReadyPayload), so collapsing on queue alone would emit a single notification naming
 	// whichever endpoint happened to come first and silently strand every other tenant re-queued in
@@ -922,6 +941,33 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 		}
 	}
 	return int64(len(requeued)), nil
+}
+
+// movedPushEligible re-applies the SPEC-0011 sender gate to the rows a requeue statement's `upd`
+// CTE moved: the todo's delivery event exists and either verified or arrived on a token-trust
+// self-managed webhook. The requeue UPDATEs carry no gate of their own, so without this an
+// unverified todo that someone claimed by id and abandoned would reach the notify-hook dispatcher
+// on its way back to pending. Governing: SPEC-0024 REQ-6 ("Requeue re-applies the sender gate"),
+// design.md "Fire from the existing doorbell hook, plus the requeue paths".
+const movedPushEligible = `EXISTS (SELECT 1 FROM events ev WHERE ev.id = upd.event_id AND (ev.verified OR ev.trust_mode = 'token'))`
+
+// closedSelectFinalGate is closedSelectFinal with the sender gate appended as one more column, so
+// the requeue statement that can also dead-letter (ReapExpired) re-applies the gate in the same
+// read instead of a second round trip. Scan the extra column after finalScan.dest().
+const closedSelectFinalGate = `SELECT ` + todoCols + `, c.todo_id IS NOT NULL,
+			c.fa_disposition IS NOT DISTINCT FROM 'dead_lettered', c.fa_seq, c.fa_outcome,
+			COALESCE(c.fa_outcome IN ('lease_expired', 'reaped'), false), c.fa_summary, c.fa_artifact,
+			upd.attempts_total, ` + movedPushEligible + `
+		FROM upd LEFT JOIN closed c ON c.todo_id = upd.id`
+
+// fireRequeued tells the ready hook about every moved row that landed back in pending and passes
+// the sender gate. A reaped row that dead-lettered (failed) is not ready and fires nothing.
+func (s *Store) fireRequeued(moved []Todo, eligible []bool) {
+	for i, t := range moved {
+		if t.State == "pending" && eligible[i] {
+			s.fireReady(t, ReadyRequeued)
+		}
+	}
 }
 
 // TodoRequeuedHook observes each todo the retry scheduler re-queued, after the commit and before
@@ -1274,14 +1320,15 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("failed", failDisposition)+`
-		`+closedSelect, id, owner, result,
+		`+closedSelectFinal, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), ownerHumanID)
-	var closed bool
-	t, err := scanTodo(row, &closed)
+	var f finalScan
+	t, err := scanTodo(row, f.dest()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
-	if err == nil && closed {
+	f.attach(&t) // at the cap, the hook payload carries the final attempt (SPEC-0034 REQ-15)
+	if err == nil && f.closed {
 		s.countAttemptClosed(t.Queue, "failed")
 	}
 	if err == nil {
@@ -1330,25 +1377,30 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 			RETURNING todos.*
 		),
 		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
-		`+closedSelect)
+		`+closedSelectFinalGate)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 	var reaped []Todo
 	var closed []bool
+	var eligible []bool
 	for rows.Next() {
-		var c bool
-		t, err := scanTodo(rows, &c)
+		var f finalScan
+		var pushEligible bool
+		t, err := scanTodo(rows, append(f.dest(), &pushEligible)...)
 		if err != nil {
 			return 0, err
 		}
+		f.attach(&t) // a reap at the cap carries its final attempt (SPEC-0034 REQ-15)
 		reaped = append(reaped, t)
-		closed = append(closed, c)
+		closed = append(closed, f.closed)
+		eligible = append(eligible, pushEligible)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	s.fireRequeued(reaped, eligible)
 	// One lease expiry per reaped row, requeued or dead-lettered alike (SPEC-0023 REQ-3). A
 	// dead-letter here deliberately does NOT also count TodoFinished(outcome="fail"): that counter
 	// is claimant-reported outcomes, and nobody reported this one. Lease expiry is its own signal, and
@@ -1647,20 +1699,24 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			    )
 			  )
 		),
-		picked AS (
+		-- Both CTEs are MATERIALIZED so each runs exactly once. Inlined as IN-subqueries they can
+		-- land on the inner side of a nested loop and be rescanned per updated row; the cap then
+		-- holds only because the window sort happens to replay the same ids (see RingOnAttach).
+		picked AS MATERIALIZED (
 			SELECT id FROM ranked
 			ORDER BY rn, last_ringed_at NULLS FIRST, created_at
 			LIMIT $7
-		)
-		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
-		WHERE id IN (
-			-- Re-select through a plain scan so SKIP LOCKED still applies: a window function
-			-- cannot be combined with FOR UPDATE, and dropping the lock would let two sweeps
-			-- (or two instances) ring the same todo twice. Re-check the claim guard at lock
-			-- time so a todo claimed between the pick and the lock is not rung anyway.
-			SELECT id FROM todos WHERE id IN (SELECT id FROM picked) AND state = 'pending'
+		),
+		-- Re-select through a plain scan so SKIP LOCKED still applies: a window function cannot
+		-- be combined with FOR UPDATE, and dropping the lock would let two sweeps (or two
+		-- instances) ring the same todo twice. Re-check the claim guard at lock time so a todo
+		-- claimed between the pick and the lock is not rung anyway.
+		locked AS MATERIALIZED (
+			SELECT id AS lock_id FROM todos WHERE id IN (SELECT id FROM picked) AND state = 'pending'
 			FOR UPDATE SKIP LOCKED
 		)
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		FROM locked WHERE todos.id = locked.lock_id
 		RETURNING `+todoCols,
 		ringMaxAttempts,
 		ringBackoff(1), ringBackoff(2), ringBackoff(3), ringBackoff(4), ringBackoff(5),
@@ -1713,10 +1769,13 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 	if endpointScope(endpointID) != nil || len(queues) == 0 {
 		return nil, nil
 	}
+	// The pick is a MATERIALIZED CTE joined by FROM, never `WHERE id IN (... LIMIT ... SKIP
+	// LOCKED)`: as an IN-subquery the planner may put it on the inner side of a nested loop and
+	// rescan it per outer row, SKIP LOCKED then drops the rows this UPDATE already changed, and each
+	// rescan's LIMIT reaches further — ringing the whole backlog. MATERIALIZED runs it exactly once.
 	rows, err := s.pool.Query(ctx, `
-		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
-		WHERE id IN (
-			SELECT t.id FROM todos t
+		WITH picked AS MATERIALIZED (
+			SELECT t.id AS pick_id FROM todos t
 			WHERE t.endpoint_id = $1
 			  AND t.queue = ANY($2)
 			  AND t.state = 'pending'
@@ -1729,6 +1788,8 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 			LIMIT $5
 			FOR UPDATE SKIP LOCKED
 		)
+		UPDATE todos SET ring_attempts = ring_attempts + 1, last_ringed_at = now()
+		FROM picked WHERE todos.id = picked.pick_id
 		RETURNING `+todoCols,
 		endpointID, queues, ringMaxAttempts, attachRingCooldown, attachRingLimit)
 	if err != nil {

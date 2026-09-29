@@ -36,8 +36,8 @@ const REF_SRC = join(REPO, 'docs', 'reference');
 const OUT = join(SITE, 'docs-generated');
 const STATIC_REF = join(SITE, 'static', 'reference');
 
-// The source repository is private, so the published site links to nothing in it: a repo URL is a
-// dead link (or a login wall) for every reader of the public docs.
+// Links into the repository use the public GitHub mirror (https://github.com/stump-wtf/switchboard),
+// never the maintainers' private forge, which is a login wall for every reader of the public docs.
 
 // ---- discover sources ----
 const startFiles = readdirSync(START_SRC).filter((f) => /^\d+-.*\.md$/.test(f)).sort();
@@ -74,6 +74,14 @@ function fmValue(fm, key) {
 function sanitizeMdx(s) {
   return s.replace(/<((?:https?):\/\/[^>\s]+)>/g, '[$1]($1)');
 }
+// Docusaurus compiles every emitted page through MDX even with `format: md` front matter
+// (observed on 3.10.2, PR #519: an HTML comment in a spec body failed the docs build with
+// "Unexpected character `!`" — HTML comments are not legal MDX). Comments are authoring
+// notes and render as nothing under CommonMark, so dropping them from the emitted pages
+// changes no visible output while making the content safe under the MDX parser.
+function stripHtmlComments(s) {
+  return s.replace(/<!--[\s\S]*?-->/g, '');
+}
 // docs/README.md (the design-index) has no page in the site; the Decisions index is its published
 // equivalent.
 function rewriteRepoLinks(s) {
@@ -107,7 +115,7 @@ for (const f of startFiles) {
   const raw = readFileSync(join(START_SRC, f), 'utf8');
   const { fm, body } = splitFrontmatter(raw);
   const label = fmValue(fm, 'title') || slug;
-  const content = rewriteDesignLinks(rewriteRepoLinks(body));
+  const content = stripHtmlComments(rewriteDesignLinks(rewriteRepoLinks(body)));
   writeFileSync(
     join(OUT, 'getting-started', `${slug}.md`),
     `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,
@@ -137,7 +145,7 @@ for (const f of guideFiles) {
   const raw = readFileSync(join(GUIDES_SRC, f), 'utf8');
   const { fm, body } = splitFrontmatter(raw);
   const label = fmValue(fm, 'title') || slug;
-  const content = rewriteGuideSiblingLinks(rewriteDesignLinks(rewriteRepoLinks(body)));
+  const content = stripHtmlComments(rewriteGuideSiblingLinks(rewriteDesignLinks(rewriteRepoLinks(body))));
   writeFileSync(
     join(OUT, 'guides', `${slug}.md`),
     `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,
@@ -159,7 +167,7 @@ writeFileSync(
 // ---- PRFAQ -> /prfaq ----
 {
   const raw = readFileSync(join(REPO, 'docs', 'prfaq.md'), 'utf8');
-  const content = sanitizeMdx(rewriteRepoLinks(raw));
+  const content = sanitizeMdx(stripHtmlComments(rewriteRepoLinks(raw)));
   writeFileSync(
     join(OUT, 'prfaq.md'),
     `---\nslug: /prfaq\ntitle: PRFAQ\nsidebar_label: PRFAQ\nsidebar_position: 6\n---\n\n${content}`,
@@ -187,6 +195,7 @@ for (const f of adrFiles) {
     /^(#\s+.+)$/m,
     `$1\n\n> **Status** · ${status}  ·  **Date** · ${date}  ·  **Deciders** · ${deciders}`,
   );
+  content = stripHtmlComments(content);
   content = sanitizeMdx(content);
   const outFm = `---\nsidebar_position: ${num + 1}\n---\n\n`;
   writeFileSync(join(OUT, 'decisions', f), outFm + content);
@@ -233,7 +242,7 @@ for (const cap of capDirs) {
   );
 
   // spec.md page (requirements) — format: md for safety with machine-authored <…> constructs.
-  let specBody = rewriteDesignLinks(rewriteRepoLinks(body));
+  let specBody = stripHtmlComments(rewriteDesignLinks(rewriteRepoLinks(body)));
   let meta = `> **SPEC** · ${specId}  ·  **Status** · ${status}  ·  **Date** · ${date}`;
   if (implps) meta += `  ·  **Implements** · ${implps}`;
   if (requires) meta += `  ·  **Requires** · ${requires}`;
@@ -245,7 +254,7 @@ for (const cap of capDirs) {
 
   // design.md page (architecture + mermaid)
   const designRaw = readFileSync(join(dir, 'design.md'), 'utf8');
-  const designBody = rewriteDesignLinks(rewriteRepoLinks(splitFrontmatter(designRaw).body));
+  const designBody = stripHtmlComments(rewriteDesignLinks(rewriteRepoLinks(splitFrontmatter(designRaw).body)));
   writeFileSync(
     join(OUT, 'specs', cap, 'design.md'),
     `---\nsidebar_position: 2\nsidebar_label: Design\nformat: md\n---\n\n${designBody}`,
@@ -277,7 +286,7 @@ for (const f of designFiles) {
   const raw = readFileSync(join(DESIGN_SRC, f), 'utf8');
   const { fm, body } = splitFrontmatter(raw);
   const label = fmValue(fm, 'title') || slug;
-  const content = rewriteDesignSectionLinks(rewriteDesignLinks(rewriteRepoLinks(body)));
+  const content = stripHtmlComments(rewriteDesignSectionLinks(rewriteDesignLinks(rewriteRepoLinks(body))));
   writeFileSync(
     join(OUT, 'design', `${slug}.md`),
     `---\nsidebar_position: ${pos}\nsidebar_label: ${label}\nformat: md\n---\n\n${content}`,
@@ -325,5 +334,64 @@ writeFileSync(
     2,
   ),
 );
+
+// ---- llms.txt -> static/llms.txt (served at <site>/docs/llms.txt) ----
+// An agent pointed at this file (llmstxt.org format: H1, blockquote summary, H2 sections of
+// `- [Title](url): note` lines) finds the pages that answer "how do I connect, and is it safe?"
+// without guessing. Every URL is absolute and public; titles come from each page's front matter.
+// static/llms.txt is gitignored — this script is its source.
+// TODO: align with the shared approach stump.wtf/harness#475 picks for all three sites.
+const SITE_URL = (process.env.DOCS_URL || 'https://switchboard.stump.wtf').replace(/\/+$/, '');
+const DOCS_ROOT = `${SITE_URL}/docs`;
+function pageTitle(srcPath) {
+  const { fm, body } = splitFrontmatter(readFileSync(srcPath, 'utf8'));
+  const h1 = body.match(/^#\s+(.+)$/m);
+  return fmValue(fm, 'title') || (h1 ? h1[1].trim() : srcPath);
+}
+function llmsEntry(dir, file, route, note) {
+  return `- [${pageTitle(join(dir, file))}](${DOCS_ROOT}${route}): ${note}`;
+}
+const llms = [
+  '# Switchboard',
+  '',
+  '> Switchboard verifies inbound webhooks and turns them into a durable todo queue that AI agents',
+  '> drain over MCP (Streamable HTTP). Agents claim a todo, do the work, and complete or fail it; a',
+  '> push "doorbell" is only a hint, and the queue is the record.',
+  '',
+  'An operator runs a Switchboard instance and users sign in to it; stump.wtf runs one at',
+  'https://switchboard.stump.wtf. Start with the connect page: it says exactly what to configure for',
+  'Claude Code, Crush, or any other MCP client, and how to prove the connection works.',
+  '',
+  '## Start here',
+  '',
+  llmsEntry(START_SRC, '03-connect-an-agent.md', '/getting-started/connect-an-agent',
+    'wire an agent to an endpoint (URL + bearer credential or OAuth), turn on push for Claude Code or Crush, or poll with claim_next'),
+  '',
+  '## Guides',
+  '',
+  llmsEntry(GUIDES_SRC, '12-security-model.md', '/guides/security-model',
+    'what switchboard protects, what it cannot, and what is on the operator; read before giving an agent a credential'),
+  llmsEntry(GUIDES_SRC, '14-self-hosting.md', '/guides/self-hosting',
+    'run your own instance: one Go binary plus PostgreSQL'),
+  llmsEntry(GUIDES_SRC, '06-operator-cli.md', '/guides/operator-cli',
+    'log in, then vend, list, and revoke endpoints with the switchboard CLI or the /api/v1 operator API (the web board does the same)'),
+  llmsEntry(GUIDES_SRC, '07-routing-rules.md', '/guides/routing-rules',
+    'per-webhook jq rules, first match wins, that pick which queue and endpoints a delivery lands on, or drop it'),
+  llmsEntry(GUIDES_SRC, '10-routing-cookbook.md', '/guides/routing-cookbook',
+    'tested routing-rule recipes'),
+  '',
+  '## Optional',
+  '',
+  '- [How Harness, Switchboard and Cairn fit together](https://stump-wtf.github.io/harness/guides/harness-switchboard-cairn/): the canonical page for the whole stack',
+  '',
+].join('\n');
+// The docs are public; a private host in llms.txt is a dead link at best and a leak at worst.
+// Fail the build rather than publish one. Public hosts: switchboard.stump.wtf, cairn.stump.wtf,
+// stump-wtf.github.io, github.com. Everything under stump.rocks is private.
+const privateHost = llms.match(/(?:[a-z0-9-]+\.)*stump\.rocks\b/i);
+if (privateHost) {
+  throw new Error(`build-docs: llms.txt would publish a private host (${privateHost[0]}); fix the entry or DOCS_URL`);
+}
+writeFileSync(join(SITE, 'static', 'llms.txt'), llms);
 
 console.log(`build-docs: ${adrFiles.length} ADRs + ${capDirs.length} specs + ${refFiles.length} reference contracts -> docs-generated/`);

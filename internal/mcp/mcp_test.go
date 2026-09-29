@@ -54,6 +54,10 @@ type fakeStore struct {
 	fences map[string][]byte
 	// attempts is each todo's seeded attempt history, newest first (SPEC-0034; get_todo reads it).
 	attempts map[string][]store.Attempt
+	// claims and reports record, in call order, every committed claim's inputs and every report a
+	// complete or fail was called with (SPEC-0034 REQ-1, REQ-5), for the attempt-input tests.
+	claims  []store.ClaimOpts
+	reports []store.Report
 	// attemptsLimit is the limit the last TodoAttempts call received, so a test can pin the
 	// handler's own default and clamp rather than the fake's.
 	attemptsLimit int
@@ -307,8 +311,8 @@ func (f *fakeStore) FailTodo(_ context.Context, endpointID, id, owner string, re
 }
 
 // The ...With lifecycle wraps the calls above and models the store's lease-token fence
-// (store.leaseFence): a claim records its hash, and heartbeat, complete and fail on a live claim
-// apply only when the presented hash equals it (nil equals nil), else store.ErrConflict.
+// (store.leaseFence): a claim records its hash, and heartbeat, complete, fail and release on a live
+// claim apply only when the presented hash equals it (nil equals nil), else store.ErrConflict.
 
 func (f *fakeStore) ClaimTodoWith(ctx context.Context, endpointID, id, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error) {
 	t, err := f.ClaimTodo(ctx, endpointID, id, owner, o.TTL)
@@ -316,7 +320,7 @@ func (f *fakeStore) ClaimTodoWith(ctx context.Context, endpointID, id, owner str
 		return t, store.ClaimedAttempt{}, err
 	}
 	f.setFence(t.ID, o.TokenHash)
-	return t, store.ClaimedAttempt{}, nil
+	return t, f.claimed(t.ID, o), nil
 }
 
 func (f *fakeStore) ClaimNextWith(ctx context.Context, endpointID string, queues []string, owner string, o store.ClaimOpts) (store.Todo, store.ClaimedAttempt, error) {
@@ -325,7 +329,31 @@ func (f *fakeStore) ClaimNextWith(ctx context.Context, endpointID string, queues
 		return t, store.ClaimedAttempt{}, err
 	}
 	f.setFence(t.ID, o.TokenHash)
-	return t, store.ClaimedAttempt{}, nil
+	return t, f.claimed(t.ID, o), nil
+}
+
+// claimed records a committed claim's inputs and answers what the store would: the next seq after
+// the seeded history, and the closed seeded attempts (newest first) as the prior list, at most
+// store.PriorAttemptsMax. The seeded history itself is left alone, so get_todo tests read it as
+// seeded.
+func (f *fakeStore) claimed(id string, o store.ClaimOpts) store.ClaimedAttempt {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claims = append(f.claims, o)
+	ca := store.ClaimedAttempt{Seq: len(f.attempts[id]) + 1, AttemptsTotal: len(f.attempts[id]) + 1}
+	for _, a := range f.attempts[id] {
+		if a.EndedAt != nil && len(ca.Prior) < store.PriorAttemptsMax {
+			ca.Prior = append(ca.Prior, a)
+		}
+	}
+	return ca
+}
+
+// reported records the report a complete or fail was called with, whatever its outcome.
+func (f *fakeStore) reported(r store.Report) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports = append(f.reports, r)
 }
 
 func (f *fakeStore) HeartbeatTodoWith(ctx context.Context, endpointID, id, owner string, ttl time.Duration, tokenHash []byte) (store.Todo, error) {
@@ -336,6 +364,7 @@ func (f *fakeStore) HeartbeatTodoWith(ctx context.Context, endpointID, id, owner
 }
 
 func (f *fakeStore) CompleteTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error) {
+	f.reported(r)
 	if f.fenceMiss(endpointID, id, r.TokenHash) {
 		return store.Todo{}, store.ErrConflict
 	}
@@ -347,6 +376,7 @@ func (f *fakeStore) CompleteTodoWith(ctx context.Context, endpointID, id, owner 
 }
 
 func (f *fakeStore) FailTodoWith(ctx context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error) {
+	f.reported(r)
 	if f.fenceMiss(endpointID, id, r.TokenHash) {
 		return store.Todo{}, store.ErrConflict
 	}
@@ -355,6 +385,30 @@ func (f *fakeStore) FailTodoWith(ctx context.Context, endpointID, id, owner stri
 		f.setFence(id, nil)
 	}
 	return t, err
+}
+
+// ReleaseTodoWith mirrors store.ReleaseTodoWith: only the live holder, within this endpoint and
+// past the fence, returns the todo to pending with owner and lease cleared and attempt unchanged.
+func (f *fakeStore) ReleaseTodoWith(_ context.Context, endpointID, id, owner string, r store.Report) (store.Todo, error) {
+	if f.fenceMiss(endpointID, id, r.TokenHash) {
+		return store.Todo{}, store.ErrConflict
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return store.Todo{}, f.failErr
+	}
+	t, ok := f.scopedTodo(endpointID, id)
+	if !ok {
+		return store.Todo{}, store.ErrNotFound
+	}
+	if t.State != "claimed" || t.Owner != owner {
+		return store.Todo{}, store.ErrConflict
+	}
+	t.State, t.Owner, t.LeaseExpiresAt = "pending", "", nil
+	f.todos[id] = t
+	delete(f.fences, id)
+	return t, nil
 }
 
 // setFence records (or, for nil, clears) a todo's open-attempt fence.

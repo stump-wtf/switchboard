@@ -17,6 +17,9 @@ package store
 // Bounds", REQ-18 "Database Operation Standards".
 //
 // @joestump-agent 09/23/2026 - Added for #315 (epic #313).
+// @joestump-agent 09/25/2026 - Added FinalAttempt, the dead-letter hook context, for #330.
+// @joestump-agent 09/26/2026 - A committed claim reads its prior closed attempts (fillPrior) for the
+// claim responses' prior_attempts (#321).
 
 import (
 	"context"
@@ -72,11 +75,19 @@ type ClaimOpts struct {
 	TokenHash []byte // SHA-256 of the lease token when the claim asked for a fence (REQ-6), else nil
 }
 
-// ClaimedAttempt describes the attempt a committed claim opened.
+// ClaimedAttempt describes the attempt a committed claim opened, and what came before it.
+//
+// Prior is the todo's most recent closed attempts before this one, newest first, at most
+// PriorAttemptsMax (SPEC-0034 REQ-7): what the claim response hands the next claimer so it learns
+// what earlier attempts tried without a second call. It is nil on a first claim.
 type ClaimedAttempt struct {
 	Seq           int
 	AttemptsTotal int
+	Prior         []Attempt
 }
+
+// PriorAttemptsMax is how many closed attempts a claim response carries (SPEC-0034 REQ-7).
+const PriorAttemptsMax = 5
 
 // Report is what a holder says when it ends its attempt: the todo's result (stored on the todo, as
 // before) and the attempt's summary and artifact. Summary is clipped, never rejected (REQ-5).
@@ -188,7 +199,8 @@ func closedArm(outcome, disposition, summary, truncated, artifact string) string
 				summary_truncated = ` + truncated + `, artifact = ` + artifact + `
 			FROM upd
 			WHERE a.todo_id = upd.id AND a.ended_at IS NULL
-			RETURNING a.todo_id
+			RETURNING a.todo_id, a.seq AS fa_seq, a.outcome AS fa_outcome,
+				a.disposition AS fa_disposition, a.summary AS fa_summary, a.artifact AS fa_artifact
 		)`
 }
 
@@ -196,6 +208,56 @@ func closedArm(outcome, disposition, summary, truncated, artifact string) string
 // attempt actually closed. The flag, not the transition, is what the attempts-closed counter counts
 // (SPEC-0034 REQ-14), so a todo that somehow had no open attempt is never counted as a close.
 const closedSelect = `SELECT ` + todoCols + `, EXISTS (SELECT 1 FROM closed c WHERE c.todo_id = upd.id) FROM upd`
+
+// FinalAttempt is the attempt a dead-letter transition closed, plus the todo's attempts_total. It
+// rides on the Todo that transition hands to the committed-transition hook, so SPEC-0029's
+// notification sinks can say what was tried rather than only that it failed. It is set by fail at
+// the cap (agent and Board) and by the reaper at the cap, and only when an attempt actually closed
+// dead_lettered; every other Todo, including a fail below the cap, leaves it nil. The revocation
+// cascade fires no transition hook, so it never builds one.
+//
+// Summary and Artifact are nil when nobody reported one: a reap, or the Board's fail.
+//
+// Governing: SPEC-0034 REQ-15 "Dead-Letter Context for Notifications".
+type FinalAttempt struct {
+	Seq           int
+	Outcome       string // failed | reaped
+	Died          bool   // derived as on Attempt: outcome is lease_expired or reaped (REQ-4)
+	Summary       *string
+	Artifact      *string
+	AttemptsTotal int
+}
+
+// closedSelectFinal is closedSelect for the statements that can dead-letter: after the closed flag
+// it returns whether the close dead-lettered the todo and that attempt's REQ-15 fields, read from
+// the closing CTE's RETURNING, so the payload costs no second round trip. Scan it with finalScan.
+// At most one attempt is open per todo, so the join yields at most one closed row per upd row.
+const closedSelectFinal = `SELECT ` + todoCols + `, c.todo_id IS NOT NULL,
+			c.fa_disposition IS NOT DISTINCT FROM 'dead_lettered', c.fa_seq, c.fa_outcome,
+			COALESCE(c.fa_outcome IN ('lease_expired', 'reaped'), false), c.fa_summary, c.fa_artifact,
+			upd.attempts_total
+		FROM upd LEFT JOIN closed c ON c.todo_id = upd.id`
+
+// finalScan receives the columns closedSelectFinal returns after todoCols.
+type finalScan struct {
+	closed, dead, died         bool
+	seq                        *int
+	outcome, summary, artifact *string
+	total                      int
+}
+
+func (f *finalScan) dest() []any {
+	return []any{&f.closed, &f.dead, &f.seq, &f.outcome, &f.died, &f.summary, &f.artifact, &f.total}
+}
+
+// attach sets t.FinalAttempt when the scanned close dead-lettered the todo.
+func (f *finalScan) attach(t *Todo) {
+	if !f.dead || f.seq == nil || f.outcome == nil {
+		return
+	}
+	t.FinalAttempt = &FinalAttempt{Seq: *f.seq, Outcome: *f.outcome, Died: f.died,
+		Summary: f.summary, Artifact: f.artifact, AttemptsTotal: f.total}
+}
 
 // closedArmUnreported closes with no summary or artifact: deaths, cancels, revocations, and the
 // Board's actions, where no holder reported anything.
@@ -250,6 +312,24 @@ func (s *Store) TodoAttempts(ctx context.Context, endpointID, id string, limit i
 	return s.todoAttempts(ctx, `t.endpoint_id = $3`, id, limit, endpointID)
 }
 
+// TodoAttemptsOperatorOwned is TodoAttempts for the Board's todo drawer: the scope is the human who
+// owns the todo's endpoint, the same owning-human predicate GetTodoOperatorOwned carries (operatorOwns,
+// written here over alias t). Another human's todo and a never-minted id are both ErrNotFound, and
+// nothing reveals whether a foreign todo has attempts. The agent-facing path MUST use TodoAttempts.
+//
+// Governing: SPEC-0034 REQ-10 "Tenant Isolation" (Board reads use the owning-human predicate),
+// REQ-13 "Operator Surfaces"; ADR-0022.
+func (s *Store) TodoAttemptsOperatorOwned(ctx context.Context, ownerHumanID, id string, limit int) ([]Attempt, int, int, error) {
+	// A human id is a uuid like an endpoint id: an empty or malformed one is the same clean miss
+	// rather than a cast error from Postgres.
+	if err := endpointScope(ownerHumanID); err != nil {
+		return nil, 0, 0, err
+	}
+	return s.todoAttempts(ctx, `EXISTS (SELECT 1 FROM endpoints ep
+			JOIN agents ag ON ag.id = ep.agent_id
+			WHERE ep.id = t.endpoint_id AND ag.owner_human_id = $3)`, id, limit, ownerHumanID)
+}
+
 // todoAttempts runs the scoped attempt read; scope is the todo predicate over alias t, and its
 // parameter is $3.
 func (s *Store) todoAttempts(ctx context.Context, scope, id string, limit int, scopeArg any) ([]Attempt, int, int, error) {
@@ -301,6 +381,63 @@ func (s *Store) todoAttempts(ctx context.Context, scope, id string, limit int, s
 		return nil, 0, 0, ErrNotFound
 	}
 	return out, total, pruned, nil
+}
+
+// fillPrior reads a committed claim's prior attempts into ca.Prior (SPEC-0034 REQ-7). It runs after
+// the claim statement commits, never inside it: the statement's own snapshot would still show the
+// attempt a takeover closed as open, and would still hold the rows it pruned. It reads only attempts
+// with a lower seq than the one the claim opened, all of which are closed by then (one open attempt
+// per todo), so a close racing in after the commit cannot change the answer. A first claim has
+// nothing before it and costs no query.
+//
+// The read is scoped exactly as TodoAttempts is, by the todo's endpoint in the same statement
+// (REQ-10), though the claim that just committed already proved the caller owns the todo.
+//
+// A failed read never fails the claim: the lease is already committed, and an error here would hand
+// the caller a todo it holds but was told it did not get. The claim returns with Prior nil, the
+// response still carries attempt_seq, and get_todo reads the same history. The warning names the
+// todo and the error only, never attempt text (REQ-19).
+func (s *Store) fillPrior(ctx context.Context, endpointID, id string, ca *ClaimedAttempt) {
+	if ca.Seq <= 1 {
+		return
+	}
+	prior, err := s.priorAttempts(ctx, endpointID, id, ca.Seq)
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("store: prior attempts unread after a committed claim", "todo", id, "err", err)
+		}
+		return
+	}
+	ca.Prior = prior
+}
+
+// priorAttempts returns up to PriorAttemptsMax closed attempts of todo id with seq below before,
+// newest first, filtered on the todo's endpoint in the same statement.
+func (s *Store) priorAttempts(ctx context.Context, endpointID, id string, before int) ([]Attempt, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+attemptCols+`
+		FROM todo_attempts a JOIN todos t ON t.id = a.todo_id
+		WHERE a.todo_id = $1 AND t.endpoint_id = $2 AND a.seq < $3 AND a.ended_at IS NOT NULL
+		ORDER BY a.seq DESC
+		LIMIT $4`, id, endpointID, before, PriorAttemptsMax)
+	if err != nil {
+		return nil, fmt.Errorf("store: prior attempts %s: %w", id, err)
+	}
+	defer rows.Close()
+	var out []Attempt
+	for rows.Next() {
+		var a Attempt
+		if err := rows.Scan(&a.Seq, &a.Attempt, &a.ClaimerKind, &a.Claimant, &a.ClaimedAt,
+			&a.LastHeartbeatAt, &a.LeaseExpiresAt, &a.EndedAt, &a.Outcome, &a.Disposition, &a.Died,
+			&a.Summary, &a.SummaryTruncated, &a.Artifact); err != nil {
+			return nil, fmt.Errorf("store: prior attempts %s scan: %w", id, err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: prior attempts %s: %w", id, err)
+	}
+	return out, nil
 }
 
 // AttemptMetrics is the optional sink for switchboard_todo_attempts_closed_total (SPEC-0034 REQ-14).

@@ -50,6 +50,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
@@ -100,7 +101,7 @@ type RuleStore interface {
 	ResolveWebhookTargets(ctx context.Context, webhookID, ownerEndpointID string) ([]string, error)
 	EndpointScopeQueues(ctx context.Context, endpointIDs []string) (map[string][]string, error)
 	EventForWebhook(ctx context.Context, eventID int64, webhookID string) (store.EventHistoryDetail, error)
-	RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]store.EventHistoryDetail, error)
+	WebhookEventsBefore(ctx context.Context, webhookID string, beforeAt time.Time, beforeID int64, limit int) ([]store.EventHistoryDetail, error)
 }
 
 // HumanReach resolves a webhook's owning endpoint within a human's reach.
@@ -637,7 +638,7 @@ func (r Rules) dryRunSave(ctx context.Context, wr store.WebhookRouting, cfg rout
 	router := r.router()
 	faults := map[string][]int64{}
 	var order []string
-	checked, skipped := 0
+	checked, skipped := 0, 0
 	bounded := true
 	var cursor store.EventHistoryDetail
 scan:
@@ -648,12 +649,9 @@ scan:
 		}
 		for _, ev := range events {
 			env := StoredEnvelope(wr, ev)
-			if env.HasActorProjection() {
-				actor := routing.EvaluateTrust(wr.SourceType, routing.DefaultTrustedActors(wr.SourceType), env.Body)
-				if actor != nil && !actor.IsTrusted() {
-					skipped++
-					continue
-				}
+			if env.Actor != nil && !env.Actor.IsTrusted() {
+				skipped++
+				continue
 			}
 			d := router.Route(ctx, cfg, g, env)
 			if d.Unavailable {

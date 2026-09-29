@@ -179,6 +179,39 @@ func TestValidateResolverError(t *testing.T) {
 	}
 }
 
+// TestResolveMarksResolutionFailures asserts a lookup failure (and an empty answer) wraps ErrResolve
+// as well as ErrValidation, keeps the lookup error in the chain, and keeps Resolve's message, while
+// an address-policy rejection never wraps ErrResolve. The notify-hook dispatcher retries the first
+// and never the second (SPEC-0024 REQ-7).
+func TestResolveMarksResolutionFailures(t *testing.T) {
+	ctx := context.Background()
+	lookupErr := &net.DNSError{Err: "server misbehaving", Name: "flaky.example", IsTemporary: true}
+	v := New(WithResolver(&fakeResolver{err: lookupErr}))
+	_, err := v.Resolve(ctx, "https://flaky.example/hook")
+	var dnsErr *net.DNSError
+	if !errors.Is(err, ErrValidation) || !errors.Is(err, ErrResolve) || !errors.As(err, &dnsErr) {
+		t.Fatalf("a lookup failure must wrap ErrValidation, ErrResolve and the lookup error, got %v", err)
+	}
+	if want := ErrValidation.Error() + `: resolve "flaky.example": ` + lookupErr.Error(); err.Error() != want {
+		t.Fatalf("message = %q, want %q", err.Error(), want)
+	}
+
+	v = New(WithResolver(&fakeResolver{err: context.DeadlineExceeded}))
+	if _, err := v.Resolve(ctx, "https://slow.example/hook"); !errors.Is(err, ErrResolve) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a lookup timeout must wrap ErrResolve and context.DeadlineExceeded, got %v", err)
+	}
+
+	v = New(WithResolver(&fakeResolver{byHost: map[string][]net.IPAddr{"empty.example": {}}}))
+	if _, err := v.Resolve(ctx, "https://empty.example/hook"); !errors.Is(err, ErrValidation) || !errors.Is(err, ErrResolve) {
+		t.Fatalf("an empty answer must wrap ErrValidation and ErrResolve, got %v", err)
+	}
+
+	v = New(WithResolver(&fakeResolver{byHost: map[string][]net.IPAddr{"evil.example": ipAddrs("10.0.0.5")}}))
+	if _, err := v.Resolve(ctx, "https://evil.example/hook"); !errors.Is(err, ErrValidation) || errors.Is(err, ErrResolve) {
+		t.Fatalf("a disallowed address is a policy rejection, not a resolution failure, got %v", err)
+	}
+}
+
 // TestValidateMalformed covers empty/host-less/garbage URLs.
 func TestValidateMalformed(t *testing.T) {
 	ctx := context.Background()
