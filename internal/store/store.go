@@ -21,6 +21,8 @@ var ErrNotFound = errors.New("store: not found")
 // (pending = a retry/requeue/reaper re-surface). Implementations MUST NOT block: delivery is
 // presentation only — PostgreSQL remains the source of truth and a missed call costs nothing but a
 // UI refresh. Governing: SPEC-0012 REQ "Live Updates via SSE" (best-effort presentation).
+// A dead-letter transition's t carries FinalAttempt (SPEC-0034 REQ-15); consumers that do not
+// render it ignore it.
 type TodoTransitionHook func(verb string, t Todo)
 
 // TodoDoorbellHook observes committed todo creations that are eligible for a channel push. The
