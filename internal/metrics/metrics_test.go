@@ -139,9 +139,6 @@ func TestDeclaredFamiliesMatchSpec(t *testing.T) {
 		"switchboard_routing_decisions_total":         "action,rule_id,webhook",
 		"switchboard_webhook_verify_failures_total":   "provider,reason",
 		"switchboard_metrics_collection_errors_total": "collector",
-		"switchboard_notify_hook_notifications_total": "outcome,type",
-		"switchboard_notify_hook_attempts_total":      "result",
-		"switchboard_notify_hooks_disabled_total":     "reason",
 	}
 	got := familyLabels(t, m)
 	for name, labels := range want {
@@ -424,46 +421,6 @@ func TestNotifyHookSeries(t *testing.T) {
 			}
 		}
 	}
-	var nilM *Metrics
-	nilM.InitNotifyHookSeries()
-	nilM.NotifyHookNotification(NotifyTypeReady, NotifyDelivered)
-	nilM.NotifyHookAttempt("2xx")
-	nilM.NotifyHookDisabled(NotifyDisabledByOp)
-}
-
-// TestNotifyHookSeries pins SPEC-0024 REQ-11: the three families exist at zero once initialised
-// (every bounded label combination), increments land on the right series, out-of-enum values
-// coerce to Other, and no series carries a hook, endpoint, URL or host label.
-func TestNotifyHookSeries(t *testing.T) {
-	m := New(Options{})
-	m.InitNotifyHookSeries()
-	mustValue(t, m, "switchboard_notify_hook_notifications_total", map[string]string{"type": "todo.ready", "outcome": "dropped"}, 0)
-	mustValue(t, m, "switchboard_notify_hook_notifications_total", map[string]string{"type": "todos.backlog", "outcome": "delivered"}, 0)
-	for _, r := range []string{"2xx", "3xx", "4xx", "5xx", "timeout", "network", "tls", "rejected_ssrf"} {
-		mustValue(t, m, "switchboard_notify_hook_attempts_total", map[string]string{"result": r}, 0)
-	}
-	mustValue(t, m, "switchboard_notify_hooks_disabled_total", map[string]string{"reason": "operator"}, 0)
-
-	m.NotifyHookNotification(NotifyTypeReady, NotifyFailed)
-	m.NotifyHookAttempt("timeout")
-	m.NotifyHookAttempt("timeout")
-	m.NotifyHookDisabled(NotifyDisabledFailed)
-	m.NotifyHookAttempt("https://evil.example/?token=x")
-	mustValue(t, m, "switchboard_notify_hook_notifications_total", map[string]string{"type": "todo.ready", "outcome": "failed"}, 1)
-	mustValue(t, m, "switchboard_notify_hook_attempts_total", map[string]string{"result": "timeout"}, 2)
-	mustValue(t, m, "switchboard_notify_hooks_disabled_total", map[string]string{"reason": "consecutive_failures"}, 1)
-	mustValue(t, m, "switchboard_notify_hook_attempts_total", map[string]string{"result": Other}, 1)
-	for _, s := range gather(t, m) {
-		if !strings.HasPrefix(s.name, "switchboard_notify_hook") {
-			continue
-		}
-		for k := range s.labels {
-			if k != "type" && k != "outcome" && k != "result" && k != "reason" {
-				t.Errorf("%s carries unbounded label %q", s.name, k)
-			}
-		}
-	}
-
 	var nilM *Metrics
 	nilM.InitNotifyHookSeries()
 	nilM.NotifyHookNotification(NotifyTypeReady, NotifyDelivered)
