@@ -11,6 +11,16 @@ is emptied at tag time. Pre-1.0, a superseded surface is removed outright rather
 deprecated, so a breaking change is listed under **Breaking** and carries a note in
 [Upgrading](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md).
 
+## [Unreleased]
+
+### Added
+
+- **An `llms.txt` for agents.** The docs site publishes
+  [`/docs/llms.txt`](https://switchboard.stump.wtf/docs/llms.txt), an llmstxt.org index of
+  the pages an agent needs to connect (connect, security model, self-hosting, operator
+  CLI, routing), and the connect page gains a **Paste this to your agent** block that
+  points the agent at it. (#340)
+
 ## [0.5.0] - 2026-09-28
 
 Friend-vended endpoints stop acting with the approver's authority, and a worker can end

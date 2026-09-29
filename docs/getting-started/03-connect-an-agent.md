@@ -31,6 +31,33 @@ reason a doorbell is delivered and nothing happens.
 | Claude Code | yes, with a channels flag | Verified: an idle session wakes, claims, and completes. Needs a startup flag; see below. |
 | Any other MCP client | no | Poll. |
 
+## Paste this to your agent
+
+If an agent is doing the setup for you, paste this into its session. Replace
+`https://<your-switchboard>/mcp/<slug>` with your endpoint's MCP URL from the one-time reveal, and
+put the credential in `SWITCHBOARD_TOKEN` in the agent's environment first.
+
+```text
+Connect this agent to my Switchboard endpoint. Before you change anything, read
+https://switchboard.stump.wtf/docs/llms.txt and
+https://switchboard.stump.wtf/docs/getting-started/connect-an-agent
+and follow that page over anything you remember about MCP channels.
+
+1. Add an HTTP MCP server named "switchboard" with the URL
+   https://<your-switchboard>/mcp/<slug> and an "Authorization: Bearer ..."
+   header that references the SWITCHBOARD_TOKEN environment variable in the
+   client's own syntax: ${SWITCHBOARD_TOKEN} in Claude Code's .mcp.json,
+   $SWITCHBOARD_TOKEN in Crush. Never write the token itself into a file;
+   `claude mcp add --header` expands the variable and saves it, so don't use it.
+2. Push needs the server loaded as a channel at startup, and config alone is
+   not enough. Claude Code: claude --dangerously-load-development-channels server:switchboard
+   Crush: crush --channels server:switchboard (or "channel_enabled": true).
+   Any other client: poll with claim_next. Tell me the exact launch command.
+3. Prove it works. When a todo arrives (I will send a webhook to the endpoint),
+   claim it and complete it with a result. A doorbell the server reports as
+   delivered does not count; only a todo you claimed and completed does.
+```
+
 ## Crush
 
 Channel support and the fixes that keep a channel session alive are in the fork at
