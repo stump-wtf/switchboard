@@ -14,8 +14,12 @@ package mcp
 // Standards"; design.md "Summaries are truncated, never rejected".
 //
 // @joestump-agent 09/25/2026 - Added for #328 (epic #313).
+// @joestump-agent 09/26/2026 - complete and fail share it through resultReport, which adds the
+// operator's summary-from-result fallback (#321).
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/url"
 	"regexp"
 	"strings"
@@ -39,6 +43,40 @@ func attemptReport(summary, artifact, leaseToken string) (store.Report, error) {
 		return store.Report{}, errInvalidArtifact
 	}
 	return store.Report{Summary: summary, Artifact: artifact, TokenHash: leaseTokenHash(leaseToken)}, nil
+}
+
+// resultReport is the report complete and fail close their attempt with: attemptReport's checks and
+// fence hash, plus the result they store on the todo. When the caller sent no summary and the
+// operator set SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT, the summary is the result's compact JSON,
+// which the store then cuts and flags like any summary. The option is off by default because it
+// shows what existing clients wrote to result to later claimers, who never saw result before
+// (SPEC-0034 REQ-5). release takes no result, so it has no fallback.
+//
+// Governing: SPEC-0034 REQ-5; design.md "No summary from result unless the operator opts in".
+func (h *Handler) resultReport(result any, summary, artifact, leaseToken string) (store.Report, error) {
+	r, err := attemptReport(summary, artifact, leaseToken)
+	if err != nil {
+		return store.Report{}, err
+	}
+	r.Result = rawJSON(result) // json.Marshal output, already compact
+	if summary == "" && len(r.Result) > 0 && h.summaryFromResult.Load() {
+		r.Summary = summaryJSON(result, r.Result)
+	}
+	return r, nil
+}
+
+// summaryJSON is result's compact JSON as a summary: like json.Marshal but without its HTML
+// escaping, so a later claimer reads "<nil>" rather than "\u003cnil\u003e". The result stored on the
+// todo keeps json.Marshal's form; the store's jsonb column normalizes it either way. marshaled is
+// that form, the fallback should the encoder ever fail.
+func summaryJSON(result any, marshaled []byte) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(result); err != nil { // unreachable: rawJSON already marshaled it
+		return string(marshaled)
+	}
+	return string(bytes.TrimSuffix(b.Bytes(), []byte("\n")))
 }
 
 // validArtifact reports whether s is an mcp://cairn handle or an absolute https URL with a host,
