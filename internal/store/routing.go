@@ -6,9 +6,13 @@ package store
 // callback, while the webhook row is locked — so a concurrent edit can never interleave between
 // "validated against the grant" and "written".
 //
-// Ownership is checked at the HUMAN, exactly as the ADR-0022 route verbs do: a webhook is its owning
-// human's to configure from any of that human's endpoints, and an unknown, malformed, or
-// another-human's webhook id is uniformly ErrNotFound.
+// Ownership is checked at the webhook's OWN endpoint: only the endpoint that owns a webhook may read or
+// change its rules, and an unknown, malformed, or any-other-endpoint's webhook id is uniformly
+// ErrNotFound. Human-level ownership let any endpoint of a human, including a friend endpoint vended on
+// that human's agent, rewrite the human's rules and dry-run them over the human's payloads (F3, F19).
+//
+// Governing: ADR-0038, SPEC-0033 REQ "Closing the Audited Surfaces" (F19), scenario "Rule verbs stay
+// on their own webhook".
 //
 // Governing: ADR-0024, SPEC-0020 REQ "Rule Validation at Save Time", REQ "Isolation and Tenant
 // Safety"; ADR-0022; ADR-0012.
@@ -39,6 +43,9 @@ type WebhookRouting struct {
 	TargetQueue   string
 	WebhookQueues []string
 	Config        routing.Config
+	// OwnerHumanID is the human who owns the webhook (through its endpoint's agent). The routing
+	// sandbox shares its evaluation slots fairly across owners (ADR-0038 F5).
+	OwnerHumanID string
 }
 
 // webhookRoutingSelect projects a webhook's routing row and computes the owner's allowed webhook
@@ -62,7 +69,7 @@ const webhookRoutingSelect = `
 		       ) granted
 		       WHERE q IS NOT NULL
 	       ), '{}'),
-	       w.routing_rules, w.default_action, w.routing_params
+	       w.routing_rules, w.default_action, w.routing_params, a.owner_human_id::text
 	FROM endpoint_webhooks w
 	JOIN endpoints e ON e.id = w.endpoint_id
 	JOIN agents a ON a.id = e.agent_id`
@@ -71,7 +78,7 @@ func scanWebhookRouting(row pgx.Row) (WebhookRouting, error) {
 	var wr WebhookRouting
 	var rules, def, params []byte
 	err := row.Scan(&wr.WebhookID, &wr.EndpointID, &wr.SourceType, &wr.TrustMode, &wr.TargetQueue,
-		&wr.WebhookQueues, &rules, &def, &params)
+		&wr.WebhookQueues, &rules, &def, &params, &wr.OwnerHumanID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WebhookRouting{}, ErrNotFound
 	}
@@ -106,13 +113,14 @@ func (s *Store) WebhookRoutingByID(ctx context.Context, webhookID string) (Webho
 	WHERE w.id = $1`, webhookID))
 }
 
-// WebhookRoutingForHuman reads a webhook's routing when ownerHumanID owns it, else ErrNotFound.
-func (s *Store) WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHumanID string) (WebhookRouting, error) {
-	if !isUUID(webhookID) || !isUUID(ownerHumanID) {
+// WebhookRoutingForEndpoint reads a webhook's routing when endpointID is the endpoint that owns it,
+// else ErrNotFound.
+func (s *Store) WebhookRoutingForEndpoint(ctx context.Context, webhookID, endpointID string) (WebhookRouting, error) {
+	if !isUUID(webhookID) || !isUUID(endpointID) {
 		return WebhookRouting{}, ErrNotFound
 	}
 	return scanWebhookRouting(s.pool.QueryRow(ctx, webhookRoutingSelect+`
-	WHERE w.id = $1 AND a.owner_human_id = $2`, webhookID, ownerHumanID))
+	WHERE w.id = $1 AND w.endpoint_id = $2`, webhookID, endpointID))
 }
 
 // UpdateWebhookRouting replaces a webhook's routing configuration with whatever mutate returns,
@@ -124,9 +132,11 @@ func (s *Store) WebhookRoutingForHuman(ctx context.Context, webhookID, ownerHuma
 // mutate runs while this transaction holds a pooled connection, so it MUST NOT touch the pool (any
 // Store read): on a pool of N connections, N concurrent updates would each hold one and block forever
 // acquiring another. Read what validation needs before calling.
-func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanID string,
+//
+// Only the webhook's own endpoint (endpointID) may update it; any other caller is ErrNotFound.
+func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, endpointID string,
 	mutate func(WebhookRouting) (routing.Config, error)) (WebhookRouting, error) {
-	if !isUUID(webhookID) || !isUUID(ownerHumanID) {
+	if !isUUID(webhookID) || !isUUID(endpointID) {
 		return WebhookRouting{}, ErrNotFound
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -136,8 +146,8 @@ func (s *Store) UpdateWebhookRouting(ctx context.Context, webhookID, ownerHumanI
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	wr, err := scanWebhookRouting(tx.QueryRow(ctx, webhookRoutingSelect+`
-	WHERE w.id = $1 AND a.owner_human_id = $2
-	FOR UPDATE OF w`, webhookID, ownerHumanID))
+	WHERE w.id = $1 AND w.endpoint_id = $2
+	FOR UPDATE OF w`, webhookID, endpointID))
 	if err != nil {
 		return WebhookRouting{}, err
 	}
@@ -215,4 +225,30 @@ func (s *Store) EventForWebhook(ctx context.Context, eventID int64, webhookID st
 		return EventHistoryDetail{}, ErrNotFound
 	}
 	return scanEventDetail(s.pool.QueryRow(ctx, eventDetailSelect+` WHERE id = $1 AND webhook_id = $2`, eventID, webhookID))
+}
+
+// RecentWebhookEvents returns up to limit of webhookID's most recent stored deliveries, newest first,
+// with the full record a dry-run needs (headers, payload). The caller has already established
+// ownership of webhookID. It serves the save-time dry-run (SPEC-0026 REQ-3), which must run BEFORE
+// UpdateWebhookRouting takes its row lock: a pooled read inside that lock deadlocks the pool under
+// concurrent rule edits (see mcp/webhook_rules.go). idx_events_webhook covers the scan.
+func (s *Store) RecentWebhookEvents(ctx context.Context, webhookID string, limit int) ([]EventHistoryDetail, error) {
+	if !isUUID(webhookID) || limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, eventDetailSelect+`
+		WHERE webhook_id = $1 ORDER BY received_at DESC, id DESC LIMIT $2`, webhookID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: recent webhook events: %w", err)
+	}
+	defer rows.Close()
+	var out []EventHistoryDetail
+	for rows.Next() {
+		e, err := scanEventDetail(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: recent webhook events scan: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

@@ -1,0 +1,29 @@
+# Feature request form for public intake on the GitHub mirror (github.com/stump-wtf/switchboard).
+# Short on purpose: the problem and who else has it matter more than a proposed design.
+name: Feature request
+description: Something you need that Switchboard doesn't do yet.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way? Describe the problem, not a solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How do you get by today, if at all?
+    validations:
+      required: false
+
+  - type: textarea
+    id: who-else
+    attributes:
+      label: Who else hits this
+      description: Other people, agents, or setups you know of with the same problem.
+    validations:
+      required: false

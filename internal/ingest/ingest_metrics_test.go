@@ -51,6 +51,22 @@ type recordingMetrics struct {
 	deliveries []recordedDelivery
 	failures   []recordedFailure
 	decisions  []recordedDecision
+	faults     []string
+}
+
+func (r *recordingMetrics) RoutingFault(cause string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.faults = append(r.faults, cause)
+}
+
+// takeFaults copies the fault causes recorded so far and clears them.
+func (r *recordingMetrics) takeFaults() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f := r.faults
+	r.faults = nil
+	return f
 }
 
 func (r *recordingMetrics) WebhookDelivery(provider, trustMode, verdict string) {
@@ -342,9 +358,9 @@ func TestSelfManagedMetricsSilentRuleNeverFires(t *testing.T) {
 	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
 	ing.SetRouter(routing.InProcess{})
 	st := store.New(pool)
-	h, _, wh := seedWebhook(t, st, ctx, "generic", "token", "forge", "metrics-silent", "")
+	_, _, wh := seedWebhook(t, st, ctx, "generic", "token", "forge", "metrics-silent", "")
 	rid := routing.NewRuleID()
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: rid, Name: "drop ci", Expr: `.kind == "workflow_runs"`, Action: routing.Action{Drop: true}},
 	}})
 	rec := &recordingMetrics{}
@@ -375,7 +391,7 @@ func TestSelfManagedMetricsSilentRuleNeverFires(t *testing.T) {
 		t.Fatalf("verify failures = %+v, want none", f)
 	}
 
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: rid, Name: "drop ci", Expr: `.kind == "workflow_run"`, Action: routing.Action{Drop: true}},
 	}})
 	if r := routed(t, deliver("d-ci-fixed")); !r.Dropped {

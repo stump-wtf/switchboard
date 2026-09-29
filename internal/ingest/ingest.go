@@ -84,8 +84,8 @@ type Ingest struct {
 	// (instrument.go). Nil = no observation. Governing: SPEC-0015 REQ "Patch Panel Board".
 	instrument Instrument
 	// router evaluates webhook routing rules (routing.go). New installs the out-of-process sandbox;
-	// nil means none could be built, and rule-bearing webhooks then route by default with a recorded
-	// fault. Governing: ADR-0024, SPEC-0020.
+	// nil means none could be built, and rule-bearing webhooks then answer 503 with nothing persisted,
+	// so the producer retries. Governing: ADR-0024, SPEC-0020; SPEC-0026 REQ-2.
 	router routing.Router
 	// metricsSink receives the SPEC-0023 REQ-4 ingest and routing counters (metrics.go). Nil = no-op.
 	metricsSink atomic.Pointer[Metrics]
@@ -115,7 +115,10 @@ func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 	if sb, err := routing.NewSandbox(""); err == nil {
 		ing.router = sb
 	} else if log != nil {
-		log.Error("routing sandbox unavailable; webhooks with rules will route by default", "err", err)
+		// Fail closed (SPEC-0026 REQ-2): routeDelivery falls back to routing.Unavailable, so a
+		// webhook with rules answers 503 until the sandbox works, and one without rules is
+		// unaffected.
+		log.Error("routing sandbox unavailable; webhooks with rules will refuse deliveries with 503", "err", err)
 	}
 	return ing
 }

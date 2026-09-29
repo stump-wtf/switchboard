@@ -33,7 +33,9 @@ func TestUpdateWebhookRoutingIsOwnedAndAtomic(t *testing.T) {
 	s, ctx := testStore(t)
 	epA := seedEndpoint(t, s, ctx, "routing-a", "q")
 	epB := seedEndpoint(t, s, ctx, "routing-b", "q")
-	humanA, humanB := ownerOf(t, s, ctx, epA), ownerOf(t, s, ctx, epB)
+	// A second endpoint of A's own human: F19 says it is a stranger to epA's webhook too.
+	humanA := ownerOf(t, s, ctx, epA)
+	epA2 := vendUnder(t, s, ctx, humanA, "routing-a2", "q")
 	wh, err := s.CreateWebhook(ctx, epA, "cairn", "q", "signed", "tok-routing-a", "whsec_a", 5)
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
@@ -47,43 +49,51 @@ func TestUpdateWebhookRoutingIsOwnedAndAtomic(t *testing.T) {
 	if len(wr.Config.Rules) != 0 || wr.Config.Default != nil || wr.TargetQueue != "q" || wr.EndpointID != epA || wr.TrustMode != "signed" {
 		t.Fatalf("fresh routing = %+v, want empty config on target queue q owned by %s", wr, epA)
 	}
+	// The owning human is the sandbox's fairness key (ADR-0038 F5).
+	if wr.OwnerHumanID != humanA {
+		t.Fatalf("routing owner = %q, want %q", wr.OwnerHumanID, humanA)
+	}
 
 	cfg := routing.Config{
 		Rules:   []routing.Rule{{ID: "r1", Name: "one", Expr: `.kind == "x"`, Action: routing.Action{Queue: "q", Endpoints: []string{epA}}}},
 		Default: &routing.Action{Drop: true},
 	}
-	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, humanA, func(WebhookRouting) (routing.Config, error) { return cfg, nil }); err != nil {
+	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, epA, func(WebhookRouting) (routing.Config, error) { return cfg, nil }); err != nil {
 		t.Fatalf("owner update: %v", err)
 	}
-	got, err := s.WebhookRoutingForHuman(ctx, wh.ID, humanA)
+	got, err := s.WebhookRoutingForEndpoint(ctx, wh.ID, epA)
 	if err != nil || !reflect.DeepEqual(got.Config, cfg) {
 		t.Fatalf("reread = %+v (%v), want %+v", got.Config, err, cfg)
 	}
 
-	// Another human learns nothing and changes nothing — and its mutate callback never runs.
-	if _, err := s.WebhookRoutingForHuman(ctx, wh.ID, humanB); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("other human read = %v, want ErrNotFound", err)
-	}
-	called := false
-	_, err = s.UpdateWebhookRouting(ctx, wh.ID, humanB, func(WebhookRouting) (routing.Config, error) {
-		called = true
-		return routing.Config{}, nil
-	})
-	if !errors.Is(err, ErrNotFound) || called {
-		t.Fatalf("other human update = %v (mutate called: %v), want ErrNotFound without calling mutate", err, called)
+	// Another human's endpoint, and a sibling endpoint of the SAME human, learn nothing and change
+	// nothing — and the mutate callback never runs. Governing: SPEC-0033 REQ "Closing the Audited
+	// Surfaces" (F19), scenario "Rule verbs stay on their own webhook".
+	for name, other := range map[string]string{"other human": epB, "sibling endpoint": epA2} {
+		if _, err := s.WebhookRoutingForEndpoint(ctx, wh.ID, other); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s read = %v, want ErrNotFound", name, err)
+		}
+		called := false
+		_, err = s.UpdateWebhookRouting(ctx, wh.ID, other, func(WebhookRouting) (routing.Config, error) {
+			called = true
+			return routing.Config{}, nil
+		})
+		if !errors.Is(err, ErrNotFound) || called {
+			t.Fatalf("%s update = %v (mutate called: %v), want ErrNotFound without calling mutate", name, err, called)
+		}
 	}
 	for _, id := range []string{"", "not-a-uuid"} {
 		if _, err := s.WebhookRoutingByID(ctx, id); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("routing by malformed id %q = %v, want ErrNotFound", id, err)
 		}
-		if _, err := s.UpdateWebhookRouting(ctx, id, humanA, func(WebhookRouting) (routing.Config, error) { return cfg, nil }); !errors.Is(err, ErrNotFound) {
+		if _, err := s.UpdateWebhookRouting(ctx, id, epA, func(WebhookRouting) (routing.Config, error) { return cfg, nil }); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("update malformed id %q = %v, want ErrNotFound", id, err)
 		}
 	}
 
 	// A failed validation (any mutate error) leaves the previous configuration in force.
 	invalid := errors.New("rule 0: expr does not parse")
-	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, humanA, func(WebhookRouting) (routing.Config, error) {
+	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, epA, func(WebhookRouting) (routing.Config, error) {
 		return routing.Config{}, invalid
 	}); !errors.Is(err, invalid) {
 		t.Fatalf("failing mutate = %v, want its error unchanged", err)
@@ -93,7 +103,7 @@ func TestUpdateWebhookRoutingIsOwnedAndAtomic(t *testing.T) {
 	}
 
 	// Clearing persists an empty list and a NULL default: back to the target queue.
-	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, humanA, func(WebhookRouting) (routing.Config, error) { return routing.Config{}, nil }); err != nil {
+	if _, err := s.UpdateWebhookRouting(ctx, wh.ID, epA, func(WebhookRouting) (routing.Config, error) { return routing.Config{}, nil }); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	var rules string
@@ -125,7 +135,7 @@ func TestCreateRoutedEventTodosDropSpendsTheSlot(t *testing.T) {
 	if err != nil || !dropped || len(todos) != 0 {
 		t.Fatalf("drop = (%d todos, dropped %v, %v), want a dropped delivery with no todos", len(todos), dropped, err)
 	}
-	ev, err := s.EventHistoryByID(ctx, evID)
+	ev, err := s.EventHistoryByID(ctx, callerOf(t, s, ctx, ep), evID)
 	if err != nil || ev.WebhookID != wh.ID || !sameJSON(t, ev.RoutingTrace, dropTrace) {
 		t.Fatalf("dropped event = %+v (%v), want webhook %s and the drop trace", ev.EventHistoryItem, err, wh.ID)
 	}
@@ -196,7 +206,7 @@ func TestEventForWebhookIsScopedToItsWebhook(t *testing.T) {
 		}
 	}
 
-	items, err := s.ListEventHistory(ctx, EventHistoryFilter{Limit: 10})
+	items, err := s.ListEventHistory(ctx, callerOf(t, s, ctx, epA), EventHistoryFilter{Limit: 10})
 	if err != nil {
 		t.Fatalf("list history: %v", err)
 	}
@@ -215,7 +225,126 @@ func TestEventForWebhookIsScopedToItsWebhook(t *testing.T) {
 	if err := s.DeleteWebhook(ctx, whA.ID, epA); err != nil {
 		t.Fatalf("delete webhook with recorded events: %v", err)
 	}
-	if ev, err := s.EventHistoryByID(ctx, evID); err != nil || ev.WebhookID != "" {
+	if ev, err := s.EventHistoryByID(ctx, callerOf(t, s, ctx, epA), evID); err != nil || ev.WebhookID != "" {
 		t.Fatalf("event after webhook delete = %+v (%v), want it kept with no webhook", ev.EventHistoryItem, err)
+	}
+}
+
+// A faulted delivery is recorded with its trace and the faulted disposition, mints no todo, and spends
+// its dedup slot exactly as a drop does: a redelivery after the rules were fixed stays faulted.
+// Faulted events are filterable by disposition, and RecentWebhookEvents returns a webhook's own
+// deliveries newest first. Governing: SPEC-0026 REQ-1 "Faults Stop Evaluation", REQ-3.
+func TestCreateIntakeEventTodosFaultedSpendsTheSlot(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "routing-fault", "q")
+	wh, err := s.CreateWebhook(ctx, ep, "cairn", "q", "signed", "tok-routing-fault", "whsec_f", 5)
+	if err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	faultTrace := []byte(`{"stage":"fault","cause":"error","rule_index":0,"rule_id":"r1","action":{},"faults":[{"rule_index":0,"rule_id":"r1","cause":"error"}]}`)
+	queueTrace := []byte(`{"stage":"default","cause":"no_match_default","action":{"queue":"q"}}`)
+	in := EventInput{Source: "cairn", Family: "webhook", EventType: "artifact.created", ExternalID: wh.ID + ":f-1",
+		TrustMode: "signed", Verified: true, Payload: []byte(`{"n":1}`), WebhookID: wh.ID, RoutingTrace: faultTrace,
+		Disposition: DispositionFaulted}
+	params := func(key string) CreateTodoParams {
+		return CreateTodoParams{Queue: "q", Source: "cairn", Kind: "webhook", Title: "t", IdempotencyKey: key, RoutingTrace: queueTrace}
+	}
+
+	evID, todos, disp, err := s.CreateIntakeEventTodos(ctx, in, nil, CreateTodoParams{})
+	if err != nil || disp != DispositionFaulted || len(todos) != 0 {
+		t.Fatalf("faulted = (%d todos, %q, %v), want faulted with no todos", len(todos), disp, err)
+	}
+	ev, err := s.EventHistoryByID(ctx, callerOf(t, s, ctx, ep), evID)
+	if err != nil || ev.Disposition != DispositionFaulted || !sameJSON(t, ev.RoutingTrace, faultTrace) {
+		t.Fatalf("faulted event = %+v (%v), want disposition faulted and the fault trace", ev.EventHistoryItem, err)
+	}
+
+	redelivery := in
+	redelivery.RoutingTrace, redelivery.Disposition = queueTrace, ""
+	evID2, todos2, disp2, err := s.CreateIntakeEventTodos(ctx, redelivery, []string{ep}, params(in.ExternalID))
+	if err != nil || evID2 != evID || disp2 != DispositionFaulted || len(todos2) != 0 {
+		t.Fatalf("redelivery = (event %d, %d todos, %q, %v), want event %d still faulted", evID2, len(todos2), disp2, err, evID)
+	}
+	// The drop-flag wrapper reports a sticky fault as withheld too.
+	if _, todos3, withheld3, err := s.CreateRoutedEventTodos(ctx, redelivery, false, []string{ep}, params(in.ExternalID)); err != nil || !withheld3 || len(todos3) != 0 {
+		t.Fatalf("wrapper redelivery = (%d todos, withheld %v, %v), want withheld", len(todos3), withheld3, err)
+	}
+
+	routed := redelivery
+	routed.ExternalID = wh.ID + ":f-2"
+	routed.Payload = []byte(`{"n":2}`)
+	evRouted, todosR, dispR, err := s.CreateIntakeEventTodos(ctx, routed, []string{ep}, params(routed.ExternalID))
+	if err != nil || dispR != DispositionRouted || len(todosR) != 1 {
+		t.Fatalf("routed = (%d todos, %q, %v), want one routed todo", len(todosR), dispR, err)
+	}
+	if _, _, _, err := s.CreateIntakeEventTodos(ctx, EventInput{Source: "cairn", Family: "webhook", ExternalID: wh.ID + ":bad",
+		TrustMode: "signed", Disposition: "sideways"}, []string{ep}, params(wh.ID+":bad")); err == nil {
+		t.Fatal("an unknown disposition was accepted")
+	}
+
+	items, err := s.ListEventHistory(ctx, callerOf(t, s, ctx, ep), EventHistoryFilter{Disposition: DispositionFaulted, Limit: 50})
+	if err != nil {
+		t.Fatalf("list faulted: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != evID || items[0].Disposition != DispositionFaulted {
+		t.Fatalf("faulted filter = %+v, want exactly event %d", items, evID)
+	}
+
+	recent, err := s.RecentWebhookEvents(ctx, wh.ID, 50)
+	if err != nil || len(recent) != 2 || recent[0].ID != evRouted || recent[1].ID != evID || string(recent[0].Payload) != `{"n":2}` {
+		t.Fatalf("recent = %d events (%v), want [%d, %d] newest first with payloads", len(recent), err, evRouted, evID)
+	}
+	if one, err := s.RecentWebhookEvents(ctx, wh.ID, 1); err != nil || len(one) != 1 || one[0].ID != evRouted {
+		t.Fatalf("recent limit 1 = %+v (%v), want only the newest", one, err)
+	}
+	if none, err := s.RecentWebhookEvents(ctx, "not-a-uuid", 5); err != nil || len(none) != 0 {
+		t.Fatalf("recent for a bad id = %d (%v), want none", len(none), err)
+	}
+}
+
+// RecordIntake reports whether it recorded the event, so the receiver counts and logs a fault once
+// per delivery, and it always reports the RECORDED disposition: a routed delivery redelivered after
+// the rules started faulting on it stays routed and reports its existing todo. Governing: SPEC-0026
+// REQ-1.
+func TestRecordIntakeReportsTheRecordedOutcome(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "routing-record", "q")
+	wh, err := s.CreateWebhook(ctx, ep, "cairn", "q", "signed", "tok-routing-record", "whsec_r", 5)
+	if err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	queueTrace := []byte(`{"stage":"default","cause":"no_match_default","action":{"queue":"q"}}`)
+	faultTrace := []byte(`{"stage":"fault","cause":"error","action":{}}`)
+	params := func(key string) CreateTodoParams {
+		return CreateTodoParams{Queue: "q", Source: "cairn", Kind: "webhook", Title: "t", IdempotencyKey: key, RoutingTrace: queueTrace}
+	}
+
+	faulted := EventInput{Source: "cairn", Family: "webhook", ExternalID: wh.ID + ":r-1", TrustMode: "signed",
+		Payload: []byte(`{}`), WebhookID: wh.ID, RoutingTrace: faultTrace, Disposition: DispositionFaulted}
+	first, err := s.RecordIntake(ctx, faulted, nil, CreateTodoParams{})
+	if err != nil || !first.Inserted || first.Disposition != DispositionFaulted {
+		t.Fatalf("first = %+v (%v), want an inserted faulted delivery", first, err)
+	}
+	retry, err := s.RecordIntake(ctx, faulted, nil, CreateTodoParams{})
+	if err != nil || retry.Inserted || retry.Disposition != DispositionFaulted || retry.EventID != first.EventID {
+		t.Fatalf("retry = %+v (%v), want the same faulted event, not inserted", retry, err)
+	}
+
+	routed := EventInput{Source: "cairn", Family: "webhook", ExternalID: wh.ID + ":r-2", TrustMode: "signed",
+		Payload: []byte(`{}`), WebhookID: wh.ID, RoutingTrace: queueTrace}
+	orig, err := s.RecordIntake(ctx, routed, []string{ep}, params(routed.ExternalID))
+	if err != nil || !orig.Inserted || orig.Disposition != DispositionRouted || len(orig.Todos) != 1 || !orig.Todos[0].New {
+		t.Fatalf("routed = %+v (%v), want one new todo", orig, err)
+	}
+	refault := routed
+	refault.RoutingTrace, refault.Disposition = faultTrace, DispositionFaulted
+	again, err := s.RecordIntake(ctx, refault, nil, CreateTodoParams{})
+	if err != nil || again.Inserted || again.Disposition != DispositionRouted || len(again.Todos) != 1 ||
+		again.Todos[0].New || again.Todos[0].Todo.ID != orig.Todos[0].Todo.ID {
+		t.Fatalf("faulting redelivery of a routed delivery = %+v (%v), want routed with its existing todo", again, err)
+	}
+	ev, err := s.EventHistoryByID(ctx, callerOf(t, s, ctx, ep), orig.EventID)
+	if err != nil || ev.Disposition != DispositionRouted || !sameJSON(t, ev.RoutingTrace, queueTrace) {
+		t.Fatalf("event = %+v (%v), want it still routed with its original trace", ev.EventHistoryItem, err)
 	}
 }

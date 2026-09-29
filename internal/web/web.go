@@ -298,25 +298,23 @@ func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 	var lanes lanesView
 	var bars []bar
 	if sh.DBConnected {
-		// One durable-queue read partitions into the two persisted lanes, newest first, capped per
-		// lane. Errors are suppressed to a log so the Board still renders its shell; the lanes show
-		// their empty states.
-		items, err := h.store.ListTodoItems(r.Context(), human.ID, "", "", boardLaneQuery)
+		// The two durable lanes are read per lane, newest first, each capped — NOT one newest-N
+		// window partitioned afterwards, which let a burst of pending intake push every
+		// claimed-and-beyond todo out of the window and render "nothing claimed yet" against the
+		// stable non-zero header count (#31). A failed read never renders the empty state either:
+		// the lanes then say they failed to load, because the header counts come from a separate
+		// read and stay truthful, so a silent empty state next to them reads as "work vanished".
+		// Errors are suppressed to a log so the Board still renders its shell.
+		verified, patched, err := h.store.ListLaneItems(r.Context(), human.ID, laneCap, laneCap)
 		if err != nil {
 			h.log.Warn("board lane todos", "err", err)
+			lanes.Failed = true
 		}
-		for _, it := range items {
-			card := h.laneCardFromItem(r.Context(), it)
-			switch card.Lane {
-			case laneVerified:
-				if len(lanes.Verified) < laneCap {
-					lanes.Verified = append(lanes.Verified, card)
-				}
-			case lanePatched:
-				if len(lanes.Patched) < laneCap {
-					lanes.Patched = append(lanes.Patched, card)
-				}
-			}
+		for _, it := range verified {
+			lanes.Verified = append(lanes.Verified, h.laneCardFromItem(r.Context(), it))
+		}
+		for _, it := range patched {
+			lanes.Patched = append(lanes.Patched, h.laneCardFromItem(r.Context(), it))
 		}
 		counts, err := h.store.TodoCounts(r.Context(), human.ID)
 		if err != nil {
@@ -334,10 +332,6 @@ func (h *Handler) Board(w http.ResponseWriter, r *http.Request) {
 		Shell: sh, Tiles: tilesView{Stats: stats, Bars: bars}, Lanes: lanes,
 	})
 }
-
-// boardLaneQuery is how many todos the Board reads to fill its two persisted lanes (each capped at
-// laneCap after partitioning by state).
-const boardLaneQuery = 60
 
 // ClaimTodo claims a pending todo under a lease as the operator (the lane card's Claim action).
 // The Board's Claim posts with hx-swap="none" and receives the OOB lane movement (verified →
@@ -564,7 +558,7 @@ var trustDefs = map[string]string{
 
 // deliveryDefs are trust modes a DELIVERY can carry that no provider ever presents, so they are
 // not lines on the providers view and not in trustDefs (which the legend and providers tests
-// enumerate as the provider modes). An operator hand-off (ADR-0026) is verified provenance from
+// enumerate as the provider modes). An operator hand-off (ADR-0040) is verified provenance from
 // the endpoint's own owner: its badge needs the same one-line definition every trust pill gets.
 var deliveryDefs = map[string]string{
 	"operator": "handed over by the operator who vended the endpoint",

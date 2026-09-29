@@ -30,6 +30,11 @@ type Metrics interface {
 	// webhook id; ruleID is the matched rule's id, or "" when none matched (reported as "default");
 	// action is "queue" or "drop".
 	RoutingDecision(webhookID, ruleID, action string)
+	// RoutingFault counts one delivery whose routing stopped at a rule fault. cause is the routing
+	// fault cause (timeout, error, compile_error, budget_exhausted); the metrics side maps it onto
+	// its bounded label set. A faulted delivery is counted here and NOT as a routing decision.
+	// Governing: SPEC-0026 REQ-1, REQ-11.
+	RoutingFault(cause string)
 }
 
 // SetMetrics registers the ingest metrics sink. Safe to call concurrently with the receivers;
@@ -57,3 +62,4 @@ type nopMetrics struct{}
 func (nopMetrics) WebhookDelivery(string, string, string) {}
 func (nopMetrics) WebhookVerifyFailure(string, string)    {}
 func (nopMetrics) RoutingDecision(string, string, string) {}
+func (nopMetrics) RoutingFault(string)                    {}

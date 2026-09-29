@@ -46,6 +46,7 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_PUSH_ALLOW_HTTP` | off | Allows plain `http://` notify-hook targets. Never in production: notifications then travel unencrypted. |
 | `SWITCHBOARD_METRICS_TOKEN` | — | Scrape token for `GET /metrics`. Unset, the endpoint answers `401` to everything. At least 32 bytes. See [Metrics](#metrics). |
 | `SWITCHBOARD_FRIENDING`, `SWITCHBOARD_PERSONAS`, `SWITCHBOARD_A2A`, `SWITCHBOARD_A2UI` | off | Advanced capabilities, hidden until switched on. |
+| `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT` | off | Set to `true` so a `complete` or `fail` with no `summary` stores the compact JSON of its `result` as the attempt summary. Later claimers then see it in `prior_attempts` and `get_todo`, so turn it on only if your clients' results are safe to show them. |
 
 :::danger `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` exposes those ranges to every tenant
 Notify hooks refuse private, loopback, link-local, unique-local, CGNAT and multicast targets, so an
@@ -302,10 +303,11 @@ empty list rather than an error:
 {"id": "untrusted", "expr": "(($params.trusted | arrays) // []) as $t | ((.payload.sender.login // \"\") as $who | any($t[]; . == $who) | not)", "action": {"drop": true}}
 ```
 
-**Saving rules without `params` clears them.** `set_webhook_rules` replaces rules, default action
-and parameters together. Omit `params` and your allowlists are gone — combined with the above, a
-trust rule then matches nobody or everybody depending on how it is written. Always send `params`
-with the rules, and read them back with `list_webhook_rules`.
+**Only an explicit `"params": {}` clears parameters.** `set_webhook_rules` replaces rules and the
+default action; it replaces `params` only when the field is present, so omitting it keeps your
+allowlists. Sending `{}`, or a params object that leaves a list out, empties them — combined with
+the above, a trust rule then matches nobody or everybody depending on how it is written. Every
+rules verb echoes the params in force, so read them back from the response or `list_webhook_rules`.
 
 The [routing cookbook](/guides/routing-cookbook) has tested recipes that already follow both rules.
 

@@ -114,9 +114,12 @@ func (rl *rateLimiter) postMiddleware(next http.Handler) http.Handler {
 // reject answers an empty bucket: 429 plus a Retry-After derived from the refill rate, so
 // well-behaved clients (and HTMX retries) know when a token will exist again.
 func (rl *rateLimiter) reject(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", strconv.Itoa(int(1/rl.rate)+1))
+	w.Header().Set("Retry-After", rl.retryAfter())
 	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 }
+
+// retryAfter is the Retry-After value for an empty bucket: whole seconds until a token exists again.
+func (rl *rateLimiter) retryAfter() string { return strconv.Itoa(int(1/rl.rate) + 1) }
 
 // rateKey is the throttle key: the client IP (host portion of RemoteAddr).
 func rateKey(r *http.Request) string {

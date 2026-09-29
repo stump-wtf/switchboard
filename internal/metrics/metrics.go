@@ -40,6 +40,12 @@ const (
 	// default target applied.
 	RuleDefault = "default"
 
+	// Routing fault causes (SPEC-0026 REQ-11).
+	FaultCauseTimeout = "timeout"
+	FaultCauseError   = "error"
+	FaultCauseCompile = "compile"
+	FaultCauseBudget  = "budget"
+
 	// SPEC-0024 REQ-11 notify-hook label values.
 	NotifyTypeReady      = "todo.ready"
 	NotifyTypeBacklog    = "todos.backlog"
@@ -49,6 +55,10 @@ const (
 	NotifyDisabledFailed = "consecutive_failures"
 	NotifyDisabledByOp   = "operator"
 )
+
+// attemptOutcomes is the SPEC-0034 REQ-3 outcome set, the only values the attempts-closed counter's
+// outcome label takes.
+var attemptOutcomes = []string{"completed", "failed", "released", "lease_expired", "reaped", "canceled", "revoked"}
 
 // notifyAttemptResults is the bounded result label of switchboard_notify_hook_attempts_total.
 var notifyAttemptResults = []string{"2xx", "3xx", "4xx", "5xx", "timeout", "network", "tls", "rejected_ssrf"}
@@ -89,19 +99,22 @@ type Metrics struct {
 	todosCompleted *prometheus.CounterVec
 	leasesExpired  *prometheus.CounterVec
 	todoAttempts   *prometheus.CounterVec
+	attemptsClosed *prometheus.CounterVec
 
 	// REQ-4 ingest and routing counters.
 	deliveries       *prometheus.CounterVec
 	routingDecisions *prometheus.CounterVec
 	verifyFailures   *prometheus.CounterVec
-
-	// REQ-6: a collector that could not compute its families says so here.
-	collectionErrors *prometheus.CounterVec
+	// SPEC-0026 REQ-1 / REQ-11: deliveries whose routing stopped at a rule fault.
+	routingFaults *prometheus.CounterVec
 
 	// SPEC-0024 REQ-11 notify-hook counters. No hook, endpoint, URL or host label, ever.
 	notifyNotifications *prometheus.CounterVec
 	notifyAttempts      *prometheus.CounterVec
 	notifyDisabled      *prometheus.CounterVec
+
+	// REQ-6: a collector that could not compute its families says so here.
+	collectionErrors *prometheus.CounterVec
 }
 
 // New builds the metric surface on a dedicated registry — never the global default, so a stray
@@ -136,6 +149,10 @@ func New(opts Options) *Metrics {
 			Name: "switchboard_todo_attempts_total",
 			Help: "Claims by the attempt number they started (1|2|3+).",
 		}, []string{"queue", "attempt_bucket"}),
+		attemptsClosed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_todo_attempts_closed_total",
+			Help: "Todo attempts closed, by queue and outcome; lease_expired and reaped are deaths (SPEC-0034).",
+		}, []string{"queue", "outcome"}),
 
 		deliveries: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_webhook_deliveries_total",
@@ -149,11 +166,10 @@ func New(opts Options) *Metrics {
 			Name: "switchboard_webhook_verify_failures_total",
 			Help: "Webhook deliveries that failed verification, by provider and bounded reason.",
 		}, []string{"provider", "reason"}),
-
-		collectionErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "switchboard_metrics_collection_errors_total",
-			Help: "Scrape-time collectors that failed and omitted their families, by collector.",
-		}, []string{"collector"}),
+		routingFaults: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_routing_faults_total",
+			Help: "Deliveries whose routing stopped at a rule fault and routed nowhere, by cause (timeout|error|compile|budget).",
+		}, []string{"cause"}),
 
 		notifyNotifications: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_notify_hook_notifications_total",
@@ -167,71 +183,21 @@ func New(opts Options) *Metrics {
 			Name: "switchboard_notify_hooks_disabled_total",
 			Help: "Notify hooks disabled, by reason (consecutive_failures|operator).",
 		}, []string{"reason"}),
+
+		collectionErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_metrics_collection_errors_total",
+			Help: "Scrape-time collectors that failed and omitted their families, by collector.",
+		}, []string{"collector"}),
 	}
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		m.todosCreated, m.todosClaimed, m.todosCompleted, m.leasesExpired, m.todoAttempts,
-		m.deliveries, m.routingDecisions, m.verifyFailures,
+		m.todosCreated, m.todosClaimed, m.todosCompleted, m.leasesExpired, m.todoAttempts, m.attemptsClosed,
+		m.deliveries, m.routingDecisions, m.verifyFailures, m.routingFaults,
 		m.collectionErrors,
 		m.notifyNotifications, m.notifyAttempts, m.notifyDisabled,
 	)
 	return m
-}
-
-// InitNotifyHookSeries pre-creates every notify-hook series at zero. The label sets are small fixed
-// enums, so a dashboard or an increase() alert has a baseline from the first scrape instead of a
-// family that appears only after the first failure (#362). Call it once where the dispatcher is
-// wired; a registry with no dispatcher stays honestly empty.
-func (m *Metrics) InitNotifyHookSeries() {
-	if m == nil {
-		return
-	}
-	for _, typ := range []string{NotifyTypeReady, NotifyTypeBacklog} {
-		for _, outcome := range []string{NotifyDelivered, NotifyFailed, NotifyDropped} {
-			m.notifyNotifications.WithLabelValues(typ, outcome)
-		}
-	}
-	for _, r := range notifyAttemptResults {
-		m.notifyAttempts.WithLabelValues(r)
-	}
-	for _, reason := range []string{NotifyDisabledFailed, NotifyDisabledByOp} {
-		m.notifyDisabled.WithLabelValues(reason)
-	}
-}
-
-// NotifyHookNotification counts one notification's final outcome: NotifyDelivered, NotifyFailed
-// (after its attempts), or NotifyDropped (queue full or over the per-hook rate limit).
-//
-// The unit is one hook's notification, except for a queue_full drop at the ready queue. That
-// bounded queue sits on the ingest path and holds ready todos, not per-hook notifications, because
-// matching hooks needs a store read that SPEC-0024 REQ-7 keeps off that path. Such a drop is
-// therefore counted once per dropped todo: once for a todo whose endpoint has three matching hooks,
-// and once for one with none. (A queue_full drop at the per-hook delivery queue, after matching, is
-// one hook's notification.) Read a dropped rate as "the dispatcher is shedding load", not as a count
-// of receivers that missed a notification.
-func (m *Metrics) NotifyHookNotification(typ, outcome string) {
-	if m == nil {
-		return
-	}
-	m.notifyNotifications.WithLabelValues(oneOf(typ, NotifyTypeReady, NotifyTypeBacklog),
-		oneOf(outcome, NotifyDelivered, NotifyFailed, NotifyDropped)).Inc()
-}
-
-// NotifyHookAttempt counts one outbound attempt by its bounded result.
-func (m *Metrics) NotifyHookAttempt(result string) {
-	if m == nil {
-		return
-	}
-	m.notifyAttempts.WithLabelValues(oneOf(result, notifyAttemptResults...)).Inc()
-}
-
-// NotifyHookDisabled counts one hook being disabled, automatically or by its owning human.
-func (m *Metrics) NotifyHookDisabled(reason string) {
-	if m == nil {
-		return
-	}
-	m.notifyDisabled.WithLabelValues(oneOf(reason, NotifyDisabledFailed, NotifyDisabledByOp)).Inc()
 }
 
 // Registry is the dedicated registry the handler serves. Scrape-time collectors (the queue
@@ -316,6 +282,16 @@ func (m *Metrics) LeaseExpired(queue string) {
 	m.leasesExpired.WithLabelValues(m.QueueLabel(queue)).Inc()
 }
 
+// AttemptClosed counts one committed attempt close (SPEC-0034 REQ-14). outcome is one of the REQ-3
+// outcomes; anything else is reported as Other. Each lease_expired or reaped close has exactly one
+// matching LeaseExpired increment, so the two families reconcile.
+func (m *Metrics) AttemptClosed(queue, outcome string) {
+	if m == nil {
+		return
+	}
+	m.attemptsClosed.WithLabelValues(m.QueueLabel(queue), oneOf(outcome, attemptOutcomes...)).Inc()
+}
+
 // WebhookDelivery counts one inbound delivery by its verdict: VerdictAccepted (verified and
 // persisted, idempotency dedups included), VerdictRejected (failed verification or refused), or
 // VerdictDropped (a routing decision of drop).
@@ -346,6 +322,33 @@ func (m *Metrics) RoutingDecision(webhookID, ruleID, action string) {
 	}
 	m.routingDecisions.WithLabelValues(m.webhookLabel(webhookID), ruleLabel(ruleID),
 		oneOf(action, ActionQueue, ActionDrop)).Inc()
+}
+
+// RoutingFault counts one delivery whose routing stopped at a rule fault. cause is the routing
+// package's fault cause; it is folded into the four label values SPEC-0026 REQ-11 names, and
+// anything else reports as Other.
+func (m *Metrics) RoutingFault(cause string) {
+	if m == nil {
+		return
+	}
+	m.routingFaults.WithLabelValues(faultCauseLabel(cause)).Inc()
+}
+
+// faultCauseLabel maps routing's fault causes (routing.FaultTimeout and friends, spelled out here
+// because this package imports neither routing nor ingest) onto the REQ-11 label set.
+func faultCauseLabel(cause string) string {
+	switch cause {
+	case "timeout":
+		return FaultCauseTimeout
+	case "error":
+		return FaultCauseError
+	case "compile_error":
+		return FaultCauseCompile
+	case "budget_exhausted":
+		return FaultCauseBudget
+	default:
+		return Other
+	}
 }
 
 // attemptBucket folds an attempt number into the three buckets REQ-3 names. A claim is always at
@@ -390,4 +393,59 @@ func ruleLabel(id string) string {
 	default:
 		return Other
 	}
+}
+
+// InitNotifyHookSeries pre-creates every notify-hook series at zero. The label sets are small fixed
+// enums, so a dashboard or an increase() alert has a baseline from the first scrape instead of a
+// family that appears only after the first failure (#362). Call it once where the dispatcher is
+// wired; a registry with no dispatcher stays honestly empty.
+func (m *Metrics) InitNotifyHookSeries() {
+	if m == nil {
+		return
+	}
+	for _, typ := range []string{NotifyTypeReady, NotifyTypeBacklog} {
+		for _, outcome := range []string{NotifyDelivered, NotifyFailed, NotifyDropped} {
+			m.notifyNotifications.WithLabelValues(typ, outcome)
+		}
+	}
+	for _, r := range notifyAttemptResults {
+		m.notifyAttempts.WithLabelValues(r)
+	}
+	for _, reason := range []string{NotifyDisabledFailed, NotifyDisabledByOp} {
+		m.notifyDisabled.WithLabelValues(reason)
+	}
+}
+
+// NotifyHookNotification counts one notification's final outcome: NotifyDelivered, NotifyFailed
+// (after its attempts), or NotifyDropped (queue full or over the per-hook rate limit).
+//
+// The unit is one hook's notification, except for a queue_full drop at the ready queue. That
+// bounded queue sits on the ingest path and holds ready todos, not per-hook notifications, because
+// matching hooks needs a store read that SPEC-0024 REQ-7 keeps off that path. Such a drop is
+// therefore counted once per dropped todo: once for a todo whose endpoint has three matching hooks,
+// and once for one with none. (A queue_full drop at the per-hook delivery queue, after matching, is
+// one hook's notification.) Read a dropped rate as "the dispatcher is shedding load", not as a count
+// of receivers that missed a notification.
+func (m *Metrics) NotifyHookNotification(typ, outcome string) {
+	if m == nil {
+		return
+	}
+	m.notifyNotifications.WithLabelValues(oneOf(typ, NotifyTypeReady, NotifyTypeBacklog),
+		oneOf(outcome, NotifyDelivered, NotifyFailed, NotifyDropped)).Inc()
+}
+
+// NotifyHookAttempt counts one outbound attempt by its bounded result.
+func (m *Metrics) NotifyHookAttempt(result string) {
+	if m == nil {
+		return
+	}
+	m.notifyAttempts.WithLabelValues(oneOf(result, notifyAttemptResults...)).Inc()
+}
+
+// NotifyHookDisabled counts one hook being disabled, automatically or by its owning human.
+func (m *Metrics) NotifyHookDisabled(reason string) {
+	if m == nil {
+		return
+	}
+	m.notifyDisabled.WithLabelValues(oneOf(reason, NotifyDisabledFailed, NotifyDisabledByOp)).Inc()
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/ingest"
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
+	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
 	"github.com/stump-wtf/switchboard/internal/web"
 )
@@ -118,6 +119,9 @@ func newDBRouterWeb(t *testing.T) (chi.Router, *store.Store, context.Context, *w
 		ing:   ingest.New(st, hub, log, ingest.Config{}),
 		ping:  pool.Ping,
 		log:   log,
+		// The human API's rule routes dry-run candidates; in-process evaluation keeps these suites
+		// free of the sandbox's child processes (the MCP suites cover the sandbox itself).
+		rulesRouter: routing.InProcess{},
 	})
 	return r, st, ctx, webh
 }
