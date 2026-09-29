@@ -34,9 +34,14 @@ Migration `0025_friend_edges_own_authority` rewrites `endpoints.scope_verbs` and
 removes cannot be put back from the database. Back up first.
 
 The migration's own narrowing list predates the `release` verb (#507) and does not carry
-it, so a friend endpoint that holds `release` loses it on upgrade. The list below is the
-correct one, and the verification query says what to expect; the migration fix is tracked
-as #538. Re-grant `release` to such an endpoint after upgrading if its agent needs it.
+it, so a friend endpoint that holds `release` loses it on upgrade. A follow-up migration,
+`0028_friend_release_verb`, repairs that on the same upgrade: every approved edge that
+requested `release` and no longer holds it gets it back, and its endpoint is re-broadened
+with it. (A grant is always a subset of the request, so requesting `release` is the only
+way an edge could ever have held it.) One limit: an approver who deliberately withheld
+`release` while granting the other requested verbs is indistinguishable from a stripped
+grant and gets it back too — revoke the edge and re-approve with a narrower scope if that
+matters. The list below is the correct one, and the verification query says what to expect.
 
 ### What breaks, and who is affected
 

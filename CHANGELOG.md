@@ -23,6 +23,12 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Fixed
 
+- **Migration `0028_friend_release_verb` re-broadens the `release` verb that migration
+  `0025_friend_edges_own_authority` stripped.** 0025's narrowing list predates the
+  `release` verb (#507), so upgrading silently removed it from friend endpoints that held
+  it. Every approved edge that requested `release` and lost it gets it back, along with
+  its endpoint's scope; the upgrade note's manual re-grant advice is superseded. (#538)
+
 - **`set_webhook_rules` no longer wipes a webhook's params when the call omits them.**
   Omitting `params` now keeps the saved ones; pass `params: {}` to clear them. An
   explicit `params: null` is rejected by input validation rather than treated as either.
