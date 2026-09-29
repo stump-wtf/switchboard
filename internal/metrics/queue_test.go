@@ -162,6 +162,9 @@ func TestQueueCollectorFailureOmitsBothFamilies(t *testing.T) {
 				if got := queueFamilySeries(series); len(got) != 0 {
 					t.Fatalf("scrape %d: failed collector still emitted %v; want both families omitted", scrape, got)
 				}
+				if v, ok := series["switchboard_quarantine_oldest_seconds"]; ok {
+					t.Fatalf("scrape %d: failed collector still emitted switchboard_quarantine_oldest_seconds = %v", scrape, v)
+				}
 				if got := queueCollectionErrors(t, m); got != float64(scrape) {
 					t.Errorf("scrape %d: collection errors = %v, want %d", scrape, got, scrape)
 				}

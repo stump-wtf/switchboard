@@ -15,9 +15,17 @@ package metrics
 // gauges (REQ-2), so a queue carries the same label value in every family and a PromQL join across
 // them lines up.
 //
-// Governing: SPEC-0023 REQ-5 "Cardinality", ADR-0028.
+// A limiter can also carry reserved values: names the service itself defines, which are admitted
+// without consuming a slot and so can never fold into the overflow bucket. The queue limiter
+// reserves "quarantine" (SPEC-0026 REQ-6), because the documented liveness alert excludes it by
+// name; were it folded into "__other__" after 50 operator queues, that exclusion would match
+// nothing and the alert would fire on every held delivery.
+//
+// Governing: SPEC-0023 REQ-5 "Cardinality", ADR-0028; SPEC-0026 REQ-11 "Liveness alert ignores
+// quarantine".
 //
 // @joestump-agent 09/21/2026 - Added for issue #273 (SPEC-0023 story 1).
+// @joestump-agent 09/26/2026 - Reserved values, so quarantine never folds (#392 review).
 
 import (
 	"sync"
@@ -43,13 +51,24 @@ type labelLimiter struct {
 	limit    int
 	mu       sync.RWMutex
 	admitted map[string]struct{}
+	// reserved values always report as themselves and never count against limit. Written only by
+	// newLabelLimiter, so reads need no lock.
+	reserved map[string]struct{}
 }
 
-func newLabelLimiter(limit int) *labelLimiter {
+// newLabelLimiter builds a limiter admitting limit operator values, plus every reserved value
+// outside that cap. A reserved value that could never be a safe label is ignored.
+func newLabelLimiter(limit int, reserved ...string) *labelLimiter {
 	if limit <= 0 {
 		limit = DefaultLabelCap
 	}
-	return &labelLimiter{limit: limit, admitted: make(map[string]struct{}, limit)}
+	l := &labelLimiter{limit: limit, admitted: make(map[string]struct{}, limit), reserved: make(map[string]struct{}, len(reserved))}
+	for _, v := range reserved {
+		if v != "" && v != Other && len(v) <= maxLimitedValueBytes && utf8.ValidString(v) {
+			l.reserved[v] = struct{}{}
+		}
+	}
+	return l
 }
 
 // label returns v when v is (or can now be) admitted, and Other otherwise. Values that could never
@@ -58,6 +77,9 @@ func newLabelLimiter(limit int) *labelLimiter {
 func (l *labelLimiter) label(v string) string {
 	if v == "" || v == Other || len(v) > maxLimitedValueBytes || !utf8.ValidString(v) {
 		return Other
+	}
+	if _, ok := l.reserved[v]; ok {
+		return v
 	}
 	// Fast path: the steady state is every call hitting an already-admitted value, or a full set.
 	l.mu.RLock()

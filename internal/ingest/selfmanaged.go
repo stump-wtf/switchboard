@@ -381,7 +381,9 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case decision.Untrusted, decision.Quarantine:
 		// Held before or by a rule with no fault: neither a queue-or-drop routing decision nor a
-		// routing fault (decision.Fault is nil). SPEC-0026 REQ-11's quarantine counter is #392's.
+		// routing fault (decision.Fault is nil). The store counts it as held
+		// (switchboard_quarantine_items_total) once it commits, so a redelivery collapsing onto its item
+		// is not counted twice. Governing: SPEC-0026 REQ-11.
 	case disposition == store.DispositionFaulted:
 		if rec.Inserted && decision.Faulted {
 			f := decision.Fault

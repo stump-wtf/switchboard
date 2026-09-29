@@ -12,8 +12,9 @@ package ingest
 // The receiver tests install recordingMetrics through SetMetrics and assert the raw calls. One test
 // wires the real *metrics.Metrics instead and reads the gathered series, so the literals this
 // package passes are proven to survive the metrics side's label coercion. That import is test-only;
-// internal/metrics imports nothing from switchboard, so there is no cycle, and production code in
-// this package still never imports it.
+// internal/metrics imports only internal/store (for QueueStat and the reserved quarantine queue) and
+// its dependencies, never ingest, so there is no cycle, and production code in this package still
+// never imports it.
 //
 // Governing: SPEC-0023 REQ-4 "Ingest and routing" (scenario "a routing rule that matches nothing"),
 // REQ-5 "Cardinality"; ADR-0028.
@@ -505,6 +506,11 @@ func TestSelfManagedMetricsExposition(t *testing.T) {
 		`switchboard_webhook_verify_failures_total{provider="unknown",reason="unknown_webhook"}`:           1,
 		`switchboard_routing_decisions_total{action="queue",rule_id="default",webhook="` + first.ID + `"}`: 1,
 		`switchboard_routing_decisions_total{action="queue",rule_id="default",webhook="__other__"}`:        1,
+	}
+	// Every routing-fault cause is present at its zero baseline (SPEC-0026 REQ-11) and stays there:
+	// nothing here faulted.
+	for _, cause := range []string{metrics.FaultCauseBudget, metrics.FaultCauseCompile, metrics.FaultCauseError, metrics.FaultCauseTimeout} {
+		want[`switchboard_routing_faults_total{cause="`+cause+`"}`] = 0
 	}
 	for k, v := range want {
 		if got[k] != v {

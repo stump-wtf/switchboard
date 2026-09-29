@@ -146,6 +146,7 @@ reversed.
   too, and images built from `main` report a `git describe` version instead of a bare
   commit hash.
 
+
 ### Security
 
 - **Event history is scoped to its owner.** `list_webhook_events`, `get_webhook_event`,

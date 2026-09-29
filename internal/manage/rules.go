@@ -169,7 +169,7 @@ type RuleIO struct {
 	ID     string   `json:"id,omitempty" jsonschema:"stable rule id; minted when omitted on create"`
 	Name   string   `json:"name,omitempty" jsonschema:"label recorded on the routing trace"`
 	Expr   string   `json:"expr" jsonschema:"jq filter over the routing envelope; its first output decides (anything but false or null matches)"`
-	Action ActionIO `json:"action" jsonschema:"where a matching delivery goes: exactly one of queue or drop"`
+	Action ActionIO `json:"action" jsonschema:"where a matching delivery goes: exactly one of queue, drop or quarantine"`
 }
 
 // GrantOut is what actions may reach right now.

@@ -101,7 +101,7 @@ type addWebhookRuleIn struct {
 	ID        string   `json:"id,omitempty" jsonschema:"stable rule id; minted when omitted"`
 	Name      string   `json:"name,omitempty" jsonschema:"label recorded on the routing trace"`
 	Expr      string   `json:"expr" jsonschema:"jq filter over the routing envelope"`
-	Action    actionIO `json:"action" jsonschema:"exactly one of queue or drop"`
+	Action    actionIO `json:"action" jsonschema:"exactly one of queue, drop or quarantine"`
 	Position  *int     `json:"position,omitempty" jsonschema:"0-based index to insert at; omitted appends (lowest precedence)"`
 }
 
@@ -149,17 +149,17 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "add_webhook_rule",
-			Description: "Insert one routing rule into a webhook's rule list at a position (default: last). The expression is compiled and the action checked before saving, and the resulting rules are dry-run against the webhook's 50 most recent deliveries: a rule that faults on any of them is refused."},
+			Description: "Insert one routing rule into a webhook's rule list at a position (default: last). The expression is compiled and the action checked before saving, and the resulting rules are dry-run against the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked): a rule that faults on any of them is refused."},
 			h.addWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "update_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "update_webhook_rule",
-			Description: "Change a routing rule's name, expression, or action in place. Refused if the resulting rules fault on any of the webhook's 50 most recent deliveries."},
+			Description: "Change a routing rule's name, expression, or action in place. Refused if the resulting rules fault on any of the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked)."},
 			h.updateWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "move_webhook_rule") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "move_webhook_rule",
-			Description: "Move a routing rule to a new position. Order is precedence: the first matching rule wins. Refused if the reordered rules fault on any of the webhook's 50 most recent deliveries."},
+			Description: "Move a routing rule to a new position. Order is precedence: the first matching rule wins. Refused if the reordered rules fault on any of the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked)."},
 			h.moveWebhookRuleTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "remove_webhook_rule") {

@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -29,13 +30,17 @@ type recMetrics struct {
 	claims   map[string][]int // queue -> attempt numbers, in claim order
 	finished map[string]int   // "queue/outcome"
 	expired  map[string]int   // queue
-	closed   map[string]int   // "queue/outcome" (SPEC-0034 REQ-14, the optional AttemptMetrics sink)
+	// SPEC-0026 REQ-11: held reasons, and "outcome/by" resolutions as the store recorded them.
+	held     map[string]int
+	resolved map[string]int
+	closed   map[string]int // "queue/outcome" (SPEC-0034 REQ-14, the optional AttemptMetrics sink)
 }
 
 func newRecMetrics() *recMetrics {
 	return &recMetrics{
 		created: map[string]int{}, claims: map[string][]int{},
-		finished: map[string]int{}, expired: map[string]int{}, closed: map[string]int{},
+		finished: map[string]int{}, expired: map[string]int{},
+		held: map[string]int{}, resolved: map[string]int{}, closed: map[string]int{},
 	}
 }
 
@@ -61,6 +66,25 @@ func (r *recMetrics) LeaseExpired(queue string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.expired[queue]++
+}
+
+func (r *recMetrics) QuarantineHeld(reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.held[reason]++
+}
+
+func (r *recMetrics) QuarantineResolved(outcome, by string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resolved[outcome+"/"+by]++
+}
+
+// quarantineSnapshot returns copies of the quarantine maps.
+func (r *recMetrics) quarantineSnapshot() (held, resolved map[string]int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return maps.Clone(r.held), maps.Clone(r.resolved)
 }
 
 func (r *recMetrics) AttemptClosed(queue, outcome string) {

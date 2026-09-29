@@ -225,6 +225,11 @@ func validIntakeFields(b *friendRequestBody) bool {
 	if !validScopeList(b.RequestedVerbs) || !validScopeList(b.RequestedQueues) {
 		return false
 	}
+	// The reserved quarantine queue can never be granted, so asking for it is refused at intake rather
+	// than failing at approval. Governing: SPEC-0026 REQ-6 (reserved name).
+	if store.CheckQueueNames(b.RequestedQueues...) != nil {
+		return false
+	}
 	// A friend edge can only ever grant create_for and the drain verbs: any other requested verb
 	// would act with the approver's authority, so it is dropped before the request is stored (the
 	// store drops it again, for every other caller). Governing: ADR-0038, SPEC-0033 REQ "Closing
