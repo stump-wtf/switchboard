@@ -189,16 +189,18 @@ jobs:
             echo "JS gate active: node $(node --version) — jstest/ runs via TestJSModules"
           fi
           make test
-      - name: test (race — queue + MCP packages)
+      - name: test (race — every package)
         # The durable queue's correctness rests on concurrent claims (FOR UPDATE SKIP LOCKED) and the
-        # lease reaper, so the race detector guards the queue packages in the PRIMARY gate too, not
-        # only the GitHub mirror (SPEC-0003). internal/mcp joins the list because its session
-        # registry, tool layer, and doorbell fan-out are shared state under concurrent HTTP
-        # traffic (SPEC-0014 REQ "Concurrency Safety"). -race needs cgo, hence a C compiler on
-        # the runner.
+        # lease reaper (SPEC-0003), and internal/mcp's session registry, tool layer, and doorbell
+        # fan-out are shared state under concurrent HTTP traffic (SPEC-0014 REQ "Concurrency
+        # Safety"). The race detector used to cover only those packages here, so a race anywhere
+        # else failed only the GitHub mirror, which runs -race ./... — cmd/switchboard's login
+        # test was red there for 30+ runs and the v0.4.0 tag while this gate stayed green. Every
+        # package, so the PRIMARY gate and the mirror agree. internal/routing's sandbox dominates
+        # (~130s under -race). -race needs cgo, hence a C compiler on the runner.
         env:
           CGO_ENABLED: "1"
-        run: go test -race ./internal/store/... ./internal/db/... ./internal/ingest/... ./internal/mcp/... ./internal/metrics/... ./internal/notifyhook/... ./internal/push/...
+        run: go test -race ./...
 
   # Gitea Actions: build + scan + push the switchboard container image to
   # gitea.stump.rocks/stump.wtf/switchboard — the image lives under the stump.wtf org, alongside the
