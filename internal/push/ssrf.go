@@ -43,20 +43,22 @@ var ErrValidation = errors.New("push: webhook target validation failed")
 // must not be recorded as an SSRF rejection).
 var ErrResolve = errors.New("push: webhook target host did not resolve")
 
-// resolveError is a resolve-failure refusal that also unwraps to ErrResolve and the lookup's own
-// error. Its Error() text and caller-safe class are the refusal's, so every tenant-facing and
-// log-facing behavior is unchanged; only the delivery-time retry classification reads the added
-// sentinels.
-type resolveError struct {
-	*refusal
-	cause error
+// lookupFailure is a RefusedUnresolvable refusal that also wraps ErrResolve and the lookup error,
+// so a delivery-time caller can retry a resolver outage without retrying an address-policy
+// rejection. Error() and PublicReason behave exactly as the bare refusal's.
+type lookupFailure struct {
+	refusal *refusal
+	cause   error
 }
 
-func (e *resolveError) Unwrap() []error {
-	if e.cause == nil {
-		return []error{e.refusal, ErrResolve}
+func (e *lookupFailure) Error() string { return e.refusal.Error() }
+
+func (e *lookupFailure) Unwrap() []error {
+	errs := []error{error(e.refusal), ErrResolve}
+	if e.cause != nil {
+		errs = append(errs, e.cause)
 	}
-	return []error{e.refusal, ErrResolve, e.cause}
+	return errs
 }
 
 // Resolver resolves a host to its IP addresses. It is injected so tests can drive the DNS-rebinding
@@ -276,10 +278,15 @@ func (v *Validator) Resolve(ctx context.Context, raw string) (Target, error) {
 
 	addrs, err := v.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return Target{}, &resolveError{refusal: &refusal{RefusedUnresolvable, fmt.Sprintf("resolve %q: %v", host, err)}, cause: err}
+		return Target{}, &lookupFailure{
+			refusal: &refusal{RefusedUnresolvable, fmt.Sprintf("resolve %q: %v", host, err)},
+			cause:   err,
+		}
 	}
 	if len(addrs) == 0 {
-		return Target{}, &resolveError{refusal: &refusal{RefusedUnresolvable, fmt.Sprintf("host %q resolved to no addresses", host)}}
+		return Target{}, &lookupFailure{
+			refusal: &refusal{RefusedUnresolvable, fmt.Sprintf("host %q resolved to no addresses", host)},
+		}
 	}
 	// Fail closed if ANY resolved address is disallowed: the dialer may connect to any of them, so a
 	// single private answer among public ones is enough to reach an internal service.
