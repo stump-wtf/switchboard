@@ -81,7 +81,11 @@ fields where this spec names them. MCP error codes MUST map to statuses as follo
 → `400`; `forbidden` and `forbidden_source_type` → `403`; `not_found` and
 `rule_not_found` → `404`; `conflict` → `409`; `ceiling_exceeded` → `409`; `rate_limited` → `429` with
 `Retry-After`; `unavailable` → `503`; `replay_target_required` → `400`; `replay_failed` → `502`;
-`internal` → `500`. Any other failure is a `500` with code `internal`. The existing mapping of
+`internal` → `500`. A routing validation failure MUST answer `400` with routing's own code, exactly
+as the MCP rule verbs surface it (`invalid_expression`, `forbidden_function`, `invalid_rule`,
+`too_many_rules`, `invalid_params`), except `not_granted`, which MUST answer `403` with code
+`forbidden`. A body that does not decode MUST answer `400` with code `invalid_argument`, and one over
+the route's size cap `413`. Any other failure is a `500` with code `internal`. The existing mapping of
 `store.ErrNotFound` to `400` in `apiHandler.fail` MUST NOT be used by the new routes.
 
 #### Scenario: Endpoint credential on a management route
@@ -140,7 +144,7 @@ the same MCP error code, and the same response fields, apart from the envelope.
 
 - **WHEN** a 33-rule set is submitted through `PUT /api/v1/webhooks/{id}/rules` and through
   `set_webhook_rules`
-- **THEN** both are refused with code `invalid_argument` and the same `detail`, and the stored rules
+- **THEN** both are refused with code `too_many_rules` and the same message, and the stored rules
   are unchanged
 
 #### Scenario: Dry run applies to the API
@@ -152,9 +156,10 @@ the same MCP error code, and the same response fields, apart from the envelope.
 ### Requirement: Webhook Management
 
 `GET /api/v1/endpoints/{ref}/webhooks` MUST return `list_webhooks`' shape for that endpoint, including
-its `ceiling`. `GET /api/v1/webhooks` MUST return every webhook in reach, each with its
-`endpoint_id` and `endpoint_slug`. Neither MAY ever return a signing secret or ingest token after
-creation.
+its `ceiling`. `GET /api/v1/webhooks` MUST return `{"webhooks": [...]}` listing every webhook in
+reach, a revoked endpoint's included, each with its `endpoint_id`, `endpoint_slug` and
+`endpoint_state`, and a routing summary (`rule_count`, `has_default_action`, `has_params`). Neither MAY
+ever return a signing secret or ingest token after creation.
 
 `POST /api/v1/endpoints/{ref}/webhooks` with `{"source_type", "target_queue"}` MUST enforce that
 endpoint's vend-time ceiling exactly as `create_webhook` does: source type in its allowed types,
@@ -195,10 +200,12 @@ conflict check that answers `409 conflict` when the stored config changed since 
 included. `DELETE …/rules/{rule_id}` MUST skip the dry run, as `remove_webhook_rule` does, so an owner can
 always remove a faulting rule, and MUST succeed when the rule is already absent.
 
-`PUT /api/v1/webhooks/{id}/rules` replaces the whole config. It MUST refuse, with `400` and code
-`invalid_argument`, a body that omits the `params` key while the stored config has params. A body
-that clears params MUST say so with `"params": null`. This deliberately diverges from
-`set_webhook_rules`, where omitting `params` clears them silently (ADR-0025 names that trap).
+`PUT /api/v1/webhooks/{id}/rules` replaces the whole config. It MUST require the `rules` key (an
+empty list removes every rule) and MUST ignore the read-only fields of a `GET` response, so a `GET`
+body is a valid `PUT` body. A body that omits the `params` key MUST keep the stored params unchanged.
+A body that clears params MUST say so with `"params": null` or `"params": {}`. This is SPEC-0026
+REQ-4's rule for `set_webhook_rules`, applied here from the start: omitting `params` must never clear
+them silently (ADR-0025 names that trap).
 
 `POST /api/v1/webhooks/{id}/rules/test` MUST accept exactly one of `event_id` or `payload`, plus the
 optional candidate `rules`, `default_action`, `params`, `headers` and `omit_envelope`. It MUST save
@@ -208,7 +215,12 @@ nothing, and MUST refuse an `event_id` that belongs to another webhook with `404
 
 - **GIVEN** webhook `W`'s stored config carries `params.repo_prefixes`
 - **WHEN** its human sends `PUT /api/v1/webhooks/W/rules` with `rules` and no `params` key
-- **THEN** the response is `400`, and the stored params are unchanged
+- **THEN** the response is `200`, the new rules are stored, and the stored params are unchanged
+
+#### Scenario: Clearing params
+
+- **WHEN** its human sends `PUT /api/v1/webhooks/W/rules` with `"params": null`
+- **THEN** the stored params are removed
 
 #### Scenario: Concurrent edit
 
@@ -329,13 +341,13 @@ The `switchboard` binary MUST provide a command for every `/api/v1` route, group
 | `webhook create REF --source TYPE --queue Q` | `POST /endpoints/{ref}/webhooks` |
 | `webhook rotate WEBHOOK` | `POST /webhooks/{id}/rotate` |
 | `webhook delete WEBHOOK` | `DELETE /webhooks/{id}` |
-| `rule list WEBHOOK` | `GET …/rules` |
-| `rule set WEBHOOK --file F` | `PUT …/rules` |
-| `rule add WEBHOOK --expr E --queue Q\|--drop [--id ID] [--name N] [--work-order] [--position N]` | `POST …/rules` |
-| `rule update WEBHOOK RULE [--expr E] [--queue Q\|--drop] [--name N] [--work-order\|--no-work-order]` | `PATCH …/rules/{rule}` |
-| `rule move WEBHOOK RULE POSITION` | `POST …/rules/{rule}/move` |
-| `rule remove WEBHOOK RULE` | `DELETE …/rules/{rule}` |
-| `rule test WEBHOOK (--event ID\|--payload F) [--file F]` | `POST …/rules/test` |
+| `webhook rules get WEBHOOK` | `GET …/rules` |
+| `webhook rules set WEBHOOK --file F` | `PUT …/rules` |
+| `webhook rules add WEBHOOK --expr E --queue Q\|--drop [--id ID] [--name N] [--work-order] [--position N]` | `POST …/rules` |
+| `webhook rules update WEBHOOK RULE [--expr E] [--queue Q\|--drop] [--name N] [--work-order\|--no-work-order]` | `PATCH …/rules/{rule}` |
+| `webhook rules move WEBHOOK RULE POSITION` | `POST …/rules/{rule}/move` |
+| `webhook rules remove WEBHOOK RULE` | `DELETE …/rules/{rule}` |
+| `webhook rules test WEBHOOK (--event ID\|--payload F) [--file F] [--header H]` | `POST …/rules/test` |
 | `route list WEBHOOK` | `GET …/routes` |
 | `route add WEBHOOK ENDPOINT` | `PUT …/routes/{endpoint}` |
 | `route remove WEBHOOK ENDPOINT` | `DELETE …/routes/{endpoint}` |
@@ -350,14 +362,16 @@ The `switchboard` binary MUST provide a command for every `/api/v1` route, group
 Every command MUST take `--json`, which prints the API response body verbatim. Without it, the
 command MUST print a human-readable table or summary. Inputs that are JSON documents (`--file`,
 `--payload`, `--result`) MUST accept a path, `-` for stdin, or `@path`, as `todo push --payload` does
-today. `rule list`, `rule set`, `rule add` and `rule update` MUST mark rules carrying `work_order` in
-their text output. A command that gets a `4xx` or `5xx` MUST print the `error` and `code` and exit
-non-zero. `rule set` MUST refuse, before sending, a file that omits `params` while the stored config
-has them, unless `--clear-params` is given.
+today. `webhook rules get`, `set`, `add` and `update` MUST mark rules carrying `work_order` in their
+text output. A command that gets a `4xx` or `5xx` MUST print the `error` and `code` and exit
+non-zero. `webhook rules get --json` MUST print a document `webhook rules set --file` accepts
+unchanged. `webhook rules set` MUST send the file as written, MUST refuse before sending a file with
+no `rules` key, and MUST say in its text output when the file had no `params` and the stored params
+were therefore kept. `webhook rules test --file` MUST treat the file's `params` the same way.
 
 #### Scenario: Inspecting a lane's rules from a terminal
 
-- **WHEN** the human runs `switchboard rule list W`
+- **WHEN** the human runs `switchboard webhook rules get W`
 - **THEN** the rules print in evaluation order with their ids, expressions and actions, and the
   `lane-s` rule is marked as carrying a work order
 

@@ -195,7 +195,7 @@ Endpoint scope is immutable ([SPEC-0007](/specs/identity/spec): a changed scope 
 2. **Rotate** the consumer's credential to the new endpoint (for lane workers, their per-lane URL and credential above).
 3. **Revoke** the old endpoint: `switchboard endpoint revoke SLUG|ID`.
 
-**Endpoints vended before the rule verbs existed** cannot call `set_webhook_rules` over MCP. Re-vend them. As an operator-only interim, write `endpoint_webhooks.routing_rules` directly with SQL — but only after validating the exact rules with the evaluator (`test_webhook_rules` on a rule-capable endpoint, or the Go evaluator against stored deliveries). SQL bypasses save-time validation. Before migration `0019` is deployed there is no `$params`, so an interim copy of a pack must use literal values (for the pool-review pack, the identity login written into both expressions).
+**Endpoints vended before the rule verbs existed** cannot call `set_webhook_rules` over MCP. Their human manages those rules instead: `switchboard webhook rules test` and `switchboard webhook rules set` ([guide 06](06-operator-cli.md#managing-webhook-routing-rules)) run the same validation and save-time dry run as the MCP verb, so there is no need to write `endpoint_webhooks.routing_rules` with SQL (which bypasses both). A rules file without `params` keeps the stored params there; write `"params": null` to clear them. Re-vend only when the agent itself must manage its rules.
 
 ## Writing a handoff
 

@@ -40,8 +40,8 @@ it lands before or after teams.
   code, never duplicated.
 - Parity is enforced by a test, so the next MCP verb cannot silently skip the API.
 - Tenancy by construction: every new store method takes a reach value (SPEC-0033).
-- A human can answer "why didn't this reach the lane?" from a terminal: `rule list`, `rule test
-  --event`, `event list --disposition`, `todo list --queue`.
+- A human can answer "why didn't this reach the lane?" from a terminal: `webhook rules get`,
+  `webhook rules test --event`, `event list --disposition`, `todo list --queue`.
 
 ### Non-Goals
 
@@ -78,8 +78,8 @@ Resources whose ids are globally unique and human-scoped hang off the root: `/we
 **Rationale**: Creating a webhook draws on one endpoint's vend-time ceiling, so the endpoint belongs
 in the path. Rules and routes are gated by webhook ownership, not by endpoint (that is how
 `webhook_rules.go` already works), so nesting them under an endpoint would add a check that means
-nothing. It is also the shape the CLI wants: `rule list W` should not make the human remember which
-endpoint owns `W`.
+nothing. It is also the shape the CLI wants: `webhook rules get W` should not make the human remember
+which endpoint owns `W`.
 **Alternatives considered**:
 - Everything under `/endpoints/{ref}/…`: rejected. It is redundant for human-scoped resources, and
   wrong for events, which carry an owner, not a caller endpoint.
@@ -122,13 +122,21 @@ explicit `target_url` goes through the same owned-or-SSRF-valid check as MCP.
 replays. Sharing the bucket means a human with the CLI cannot multiply an endpoint's replay budget.
 An event with a `team_id` owner and no endpoint has no default target, so it must name one.
 
-### `PUT …/rules` refuses a silent params wipe
+### `PUT …/rules` keeps the stored params unless told otherwise
 
-**Choice**: `PUT` without a `params` key is refused when stored params exist. Clearing requires
-`"params": null`, or `--clear-params` in the CLI.
+**Choice**: `PUT` without a `params` key keeps the stored params. Clearing requires `"params": null`
+or `{}` in the body (the CLI sends the file as written, so the file says it). The CLI says when it
+kept them.
 **Rationale**: ADR-0025 names this footgun. Rule packs fail closed without `params.repo_prefixes`,
-so a careless replace silently stops every lane. On MCP the semantics stay as they are, to keep
-existing agents working. A new surface should not copy the trap.
+so a careless replace silently stops every lane. SPEC-0026 REQ-4 already requires
+`set_webhook_rules` to keep omitted params, and a new surface should not copy the trap while MCP
+catches up. Keeping is what a human editing rules expects, and it is what Joe asked for
+(2026-09-29): a rules file written by hand, or one `webhook rules get --json` printed before params
+were added, must not wipe them.
+**Alternatives considered**:
+- Refuse a `PUT` without `params` while params are stored (this spec's first draft): rejected. It
+  also prevents the wipe, but makes every rules-only edit restate the params, and a stale copy of
+  them in a hand-kept file is its own way to change them by accident.
 
 ### Todo actions reuse the board's human-owned functions
 

@@ -36,6 +36,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/manage"
 	"github.com/stump-wtf/switchboard/internal/mcp"
 	"github.com/stump-wtf/switchboard/internal/push"
 	"github.com/stump-wtf/switchboard/internal/store"
@@ -55,11 +56,21 @@ type apiHandler struct {
 	// guard's defaults, the same rules replay_webhook_event applies. Governing: SPEC-0033 REQ "Owned
 	// Replay Targets".
 	replayGuard *push.Validator
+	// rules is the rule-management code the MCP rule verbs also run (internal/manage), driven here by
+	// the calling human (api_webhooks.go). Its Router is the MCP handler's sandbox when one is wired
+	// (newRouter), and unavailable otherwise. Governing: SPEC-0035 REQ "Shared Implementation With MCP".
+	rules manage.Rules
+	// readRL and writeRL are the per-human buckets on the webhook routes (SPEC-0035 "Rate Limiting").
+	readRL, writeRL *rateLimiter
 }
 
 func newAPIHandler(st *store.Store, baseURL string, log *slog.Logger, onEndpointRevoked func(string)) *apiHandler {
 	return &apiHandler{st: st, base: strings.TrimRight(baseURL, "/"), log: log, endpointRevoked: onEndpointRevoked,
-		replayGuard: push.New()}
+		replayGuard: push.New(),
+		rules:       manage.Rules{Store: st, Humans: st},
+		readRL:      newRateLimiter(20, 40),
+		writeRL:     newRateLimiter(5, 20),
+	}
 }
 
 // operatorKey is the API context key carrying the resolved operator principal.
@@ -102,15 +113,20 @@ func (a *apiHandler) oauthGuard(next http.Handler) http.Handler {
 	})
 }
 
-// Routes mounts the operator API. Every route requires a live operator OAuth bearer.
+// Routes mounts the operator API. Every route requires a live operator OAuth bearer. Body caps are
+// per group because a cap can only narrow: the rule routes need more than the usual 64 KiB.
 func (a *apiHandler) Routes() chi.Router {
 	r := chi.NewRouter()
-	r.Use(a.oauthGuard, maxBytes(64<<10))
-	r.Post("/endpoints", a.VendEndpoint)
-	r.Get("/endpoints", a.ListEndpoints)
-	r.Post("/endpoints/{ref}/revoke", a.RevokeEndpoint)
-	r.Post("/endpoints/{ref}/todos", a.PushTodo)
-	r.Get("/agents", a.ListAgents)
+	r.Use(a.oauthGuard)
+	r.Group(func(r chi.Router) {
+		r.Use(maxBytes(64 << 10))
+		r.Post("/endpoints", a.VendEndpoint)
+		r.Get("/endpoints", a.ListEndpoints)
+		r.Post("/endpoints/{ref}/revoke", a.RevokeEndpoint)
+		r.Post("/endpoints/{ref}/todos", a.PushTodo)
+		r.Get("/agents", a.ListAgents)
+	})
+	a.webhookRoutes(r)
 	return r
 }
 

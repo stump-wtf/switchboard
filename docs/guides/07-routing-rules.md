@@ -112,6 +112,13 @@ the webhook: only the endpoint that owns a webhook may manage its rules. Your ot
 A save that fails — a typo, a forbidden function, a queue or endpoint the webhook cannot reach —
 names the offending rule and leaves the previous rules in force.
 
+The human who owns the endpoint can do the same from the CLI or the API, whatever the endpoint's
+scope: `switchboard webhook rules get|test|set` over `/api/v1/webhooks/{id}/rules`, running the same
+validation, dry run and save as the tools above. See
+[Managing webhook routing rules](06-operator-cli.md#managing-webhook-routing-rules). One difference:
+there, a replace without `params` keeps the stored params, where `set_webhook_rules` currently
+clears them.
+
 ## Authoring loop
 
 1. `list_webhook_rules` to see the `grant`.
@@ -185,9 +192,10 @@ disagrees with the body is a 401 and nothing is stored.
 
 Endpoints vended before routing shipped were granted the verb list of their day: they lack the seven
 rule verbs in their scope and `cairn` in their allowed source types. Endpoint scope is immutable
-([SPEC-0007](/specs/identity/spec)) and there is no verb that widens it: re-vend the endpoint, rotate
-its consumer's credential, and revoke the old one. Guide 08 covers the operator-only interim of
-writing validated rules directly.
+([SPEC-0007](/specs/identity/spec)) and there is no verb that widens it, so the endpoint itself can
+never manage its webhook's rules over MCP. Its human can: `switchboard webhook rules set` (guide 06)
+edits the rules of any webhook your endpoints own, validated and dry-run exactly like the MCP verb.
+Re-vend only when the agent itself must manage its rules, or needs a source type its ceiling lacks.
 
 > Deeper detail: [ADR-0024 — Event routing](/decisions/ADR-0024-event-routing-deterministic-and-llm),
 > [ADR-0025 — Handoff work orders and difficulty lanes](/decisions/ADR-0025-handoff-work-orders-and-difficulty-lanes),
