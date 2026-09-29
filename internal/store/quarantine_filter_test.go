@@ -24,23 +24,27 @@ import (
 
 // quarantineAllowlist are the exported todo methods that MAY see or act on quarantine rows, and why.
 var quarantineAllowlist = map[string]string{
-	"GetTodoOperatorOwned":   "the owner's todo detail on the Board",
-	"TodoCounts":             "the owner's Board counts group every queue",
-	"ListTodoItems":          "the owner's todo list",
-	"GetTodoItem":            "the owner's todo detail",
-	"QuarantinedForHuman":    "the quarantine read itself",
-	"ApplyQuarantineRelease": "release: the only way out besides discard and expiry",
-	"DiscardQuarantined":     "discard",
-	"ExpireQuarantine":       "expiry",
-	"QuarantineCounts":       "list_webhooks' count of held items",
-	"CreateTodo":             "writers: a quarantine row needs a reason (CHECK), which only intake sets",
-	"CreateEventTodo":        "writer",
-	"CreateEventTodos":       "writer",
-	"CreateRoutedEventTodos": "writer",
-	"CreateIntakeEventTodos": "writer: quarantine is created here",
-	"CreateForFriend":        "writer: a friend handoff targets the friend's scope queues, never quarantine",
-	"SetTodoDoorbellHook":    "hook registration, no todo access (fireDoorbell refuses quarantine itself)",
-	"SetTodoTransitionHook":  "hook registration, no todo access",
+	"GetTodoOperatorOwned":      "the owner's todo detail on the Board",
+	"TodoCounts":                "the owner's Board counts group every queue",
+	"ListTodoItems":             "the owner's todo list",
+	"ListLaneItems":             "the owner's Board lanes",
+	"GetTodoItem":               "the owner's todo detail",
+	"QuarantinedForHuman":       "the quarantine read itself",
+	"ApplyQuarantineRelease":    "release: the only way out besides discard and expiry",
+	"DiscardQuarantined":        "discard",
+	"ExpireQuarantine":          "expiry",
+	"QuarantineCounts":          "list_webhooks' count of held items",
+	"CreateTodo":                "writers: a quarantine row needs a reason (CHECK), which only intake sets",
+	"CreateEventTodo":           "writer",
+	"CreateEventTodos":          "writer",
+	"CreateRoutedEventTodos":    "writer",
+	"CreateIntakeEventTodos":    "writer: quarantine is created here",
+	"CreateForFriend":           "writer: a friend handoff targets the friend's scope queues, never quarantine",
+	"SetTodoDoorbellHook":       "hook registration, no todo access (fireDoorbell refuses quarantine itself)",
+	"SetTodoTransitionHook":     "hook registration, no todo access",
+	"SetTodoReadyHook":          "hook registration, no todo access (fireReady refuses quarantine itself)",
+	"SetTodoRequeuedHook":       "hook registration, no todo access",
+	"TodoAttemptsOperatorOwned": "the operator's attempt history: a held todo is never claimed, so it has no attempts",
 }
 
 type heldFixture struct {
@@ -172,6 +176,13 @@ func TestQuarantineDefaultFilterCoversEveryTodoMethod(t *testing.T) {
 			id := f.seedHeld(t, "claimed")
 			if _, err := s.HeartbeatTodo(ctx, ep, id, "w", ttl); !errors.Is(err, ErrNotFound) {
 				return fmt.Errorf("HeartbeatTodo = %v, want not found", err)
+			}
+			return unchanged(t, f, id, "quarantine/claimed/w")
+		},
+		"HeartbeatTodoWith": func(t *testing.T) error {
+			id := f.seedHeld(t, "claimed")
+			if _, err := s.HeartbeatTodoWith(ctx, ep, id, "w", ttl, nil); !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("HeartbeatTodoWith = %v, want not found", err)
 			}
 			return unchanged(t, f, id, "quarantine/claimed/w")
 		},

@@ -191,6 +191,12 @@ func (s *Store) SetTodoReadyHook(fn TodoReadyHook) {
 }
 
 func (s *Store) fireReady(t Todo, reason string) {
+	// A held todo is not ready work, whatever path reaches here: fireDoorbell refuses the quarantine
+	// queue for the same reason (SPEC-0026 REQ-6). A release fires it on the released row, whose
+	// queue is a working one by then (ApplyQuarantineRelease).
+	if t.Queue == QueueQuarantine {
+		return
+	}
 	if fn := s.readyHook.Load(); fn != nil {
 		(*fn)(t, reason)
 	}

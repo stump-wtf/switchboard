@@ -76,7 +76,7 @@ func TestReleaseRoutesThroughTheRules(t *testing.T) {
 	h, owner, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "tok-q-release", secret)
 	setWebhookQueues(t, ctx, pool, owner.ID, "lane-m", "reviews")
 	setTrust(t, ctx, st, wh, `{"logins":["joestump"]}`)
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "hold-comments", Expr: `.payload.action == "edited"`, Action: routing.Action{Quarantine: true}},
 		{ID: "human-release", Expr: `.release != null and (.release.by | startswith("human:"))`,
 			Action: routing.Action{Queue: "lane-m", WorkOrder: true}},
@@ -193,7 +193,7 @@ func TestReleaseRoutesAsTheOwnersTenant(t *testing.T) {
 	const secret = "whsec_q_tenant"
 	h, owner, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "tok-q-tenant", secret)
 	setTrust(t, ctx, st, wh, `{"logins":["joestump"]}`)
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Default: &routing.Action{Queue: "reviews"}})
+	setRules(t, ctx, st, wh.ID, routing.Config{Default: &routing.Action{Queue: "reviews"}})
 
 	if code := postGitHubIssue(ing, "tok-q-tenant", secret, "q-tenant-1", githubIssueBody("opened", "mallory", "mallory")); code != 202 {
 		t.Fatalf("delivery = %d", code)

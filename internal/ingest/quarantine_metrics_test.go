@@ -32,7 +32,7 @@ func TestQuarantineMetricsEndToEnd(t *testing.T) {
 	const secret = "whsec_q_metrics"
 	h, owner, wh := seedWebhook(t, st, ctx, "github", "signed", "reviews", "tok-q-metrics", secret)
 	setTrust(t, ctx, st, wh, `{"logins":["joestump"]}`)
-	setRules(t, ctx, st, wh.ID, h.ID, routing.Config{Rules: []routing.Rule{
+	setRules(t, ctx, st, wh.ID, routing.Config{Rules: []routing.Rule{
 		{ID: "hold-edits", Expr: `.payload.action == "edited"`, Action: routing.Action{Quarantine: true}},
 		{ID: "broken", Expr: `.payload.action == "closed" and error("boom")`, Action: routing.Action{Queue: "reviews"}},
 	}, Default: &routing.Action{Queue: "reviews"}})
