@@ -77,8 +77,8 @@ previous rules in force:
 
 At delivery time each rule gets 50 ms and the whole list 250 ms, in a separate, memory-capped
 process. A rule that errors, times out, or runs out of budget **faults**. Evaluation stops there, no
-later rule or default applies, and the delivery is recorded as `faulted` with no todo. Rules
-fail closed.
+later rule or default applies, and the delivery is recorded as `faulted` and held in the owner's
+quarantine, where no agent is handed it. Rules fail closed.
 
 > **Guard allowlists anyway.** The engine no longer lets a faulting trust rule wave a delivery
 > through, and `params` are type-checked at save time. But a faulting rule still means that
@@ -134,12 +134,13 @@ Every todo a routed delivery creates carries a `routing` trace, and so does the 
 | `default` | `no_match_default` | No rule matched; the default action applied. |
 | `default` | `rule_not_granted` | A rule matched, but its queue or endpoint is no longer reachable (a route was removed, the endpoint revoked). The default applied instead, and later rules were **not** tried. `rule_id` names the rule. |
 | `default` | `default_not_granted` | The default itself is unreachable, so the delivery fell back to the webhook's target queue on every target. |
-| `fault` | `error`, `timeout`, `compile_error`, `budget_exhausted` | A rule could not be evaluated. Evaluation stopped at `rule_index` / `rule_id`, and the delivery was recorded as `faulted` with no todo. `faults` carries the detail. |
+| `fault` | `error`, `timeout`, `compile_error`, `budget_exhausted` | A rule could not be evaluated. Evaluation stopped at `rule_index` / `rule_id`, and the delivery was recorded as `faulted` and held in quarantine (`rule_fault`). `faults` carries the detail. |
+| `trust_gate` | `untrusted_actor` | The trust gate held the delivery before any rule ran. `actor` carries the verdict, and the delivery waits in quarantine (`untrusted_actor`). |
 
 When the evaluator itself cannot run (`sandbox_failure`, `sandbox_busy`), nothing is recorded: the
-producer gets `503 routing unavailable` and retries. A dropped or faulted delivery, or a `once`
-repeat, creates no todo, so its trace lives on the event only. Filter for them with
-`list_webhook_events {"disposition": "faulted"}` (or `"dropped"`).
+producer gets `503 routing unavailable` and retries. A dropped delivery, or a `once` repeat, creates
+no todo, so its trace lives on the event only. A held one creates only its quarantine item. Filter
+for them with `list_webhook_events {"disposition": "faulted"}` (or `"quarantined"`, `"dropped"`).
 
 ## Recipes
 

@@ -59,6 +59,10 @@ func (f *fakeStore) SetWebhookTrustedActors(_ context.Context, id, endpointID st
 	return w, nil
 }
 
+func (f *fakeStore) QuarantineCounts(context.Context, string) (map[string]int, error) {
+	return map[string]int{}, nil
+}
+
 var trustVerbs = []string{"create_webhook", "list_webhooks", "set_trusted_actors", "clear_trusted_actors"}
 
 // An endpoint vended before the trust verbs existed holds create_webhook but not set_trusted_actors
@@ -119,6 +123,11 @@ func TestTrustedActorVerbs(t *testing.T) {
 		"trusted_actors": map[string]any{"logins": []string{"joestump"}, "match": "both"}}, &listed)
 	if listed.TrustedActors == nil || len(listed.TrustedActors.Logins) != 1 || listed.TrustedActors.Match != "both" || listed.Warning != "" {
 		t.Fatalf("create with a list = %+v", listed)
+	}
+	// SPEC-0026 REQ-6 scenario "Reserved name refused".
+	if msg := callErr(t, ctx, cs, "create_webhook", map[string]any{"source_type": "github", "target_queue": "quarantine"},
+		codeInvalidArgument); !strings.Contains(msg, "reserved") {
+		t.Fatalf("reserved target refusal %q does not say why", msg)
 	}
 	// REQ-5 scenario "Token-trust webhook refused", on create and on set.
 	if msg := callErr(t, ctx, cs, "create_webhook", map[string]any{"source_type": "generic", "target_queue": "reviews",
@@ -228,9 +237,10 @@ func TestTestWebhookRulesReportsTheTrustGate(t *testing.T) {
 	}
 	// The decision is what the receiver records for a held delivery, not what the rules would do;
 	// the rules' outcome is reported aside, and a held delivery previews no work order.
-	if d := res.Decision; d.Disposition != routing.DispositionFaulted || !d.Faulted || d.Queue != "" || len(d.Endpoints) != 0 ||
+	if d := res.Decision; d.Disposition != routing.DispositionQuarantined || d.Faulted || d.Queue != "" || len(d.Endpoints) != 0 ||
+		d.QuarantineReason != routing.QuarantineUntrustedActor ||
 		res.Trace.Stage != routing.StageTrustGate || res.Trace.Cause != routing.CauseUntrustedActor || res.WorkOrder != nil {
-		t.Fatalf("outsider decision = %+v, trace %+v, want the trust gate's faulted outcome", d, res.Trace)
+		t.Fatalf("outsider decision = %+v, trace %+v, want the trust gate's quarantined outcome", d, res.Trace)
 	}
 	if res.RulesWould == nil || res.RulesWould.Decision.Queue != "forge" || res.RulesWould.Decision.Disposition != routing.DispositionRouted ||
 		res.RulesWould.Trace.RuleID != "outsider" {

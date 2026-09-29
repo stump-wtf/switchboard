@@ -191,6 +191,12 @@ func (s *Store) SetTodoReadyHook(fn TodoReadyHook) {
 }
 
 func (s *Store) fireReady(t Todo, reason string) {
+	// A quarantined todo never signals readiness, whatever path reaches here: the SPEC-0011 sender
+	// gate is amended by SPEC-0026 REQ-6, and a held intake fires no ready hook. A release fires it
+	// once the row has left the quarantine queue (ApplyQuarantineRelease).
+	if t.Queue == QueueQuarantine {
+		return
+	}
 	if fn := s.readyHook.Load(); fn != nil {
 		(*fn)(t, reason)
 	}
@@ -199,6 +205,11 @@ func (s *Store) fireReady(t Todo, reason string) {
 // fireDoorbell invokes the registered doorbell hook, if any. Callers fire it only after a durable
 // commit AND only when the todo's delivery event passed per-source verification (the sender gate).
 func (s *Store) fireDoorbell(t Todo) {
+	// A quarantined todo never rings an ordinary doorbell, whatever path reaches here: the
+	// SPEC-0011 sender gate is amended by SPEC-0026 REQ-6. Classifier doorbells (REQ-8) carry no todo.
+	if t.Queue == QueueQuarantine {
+		return
+	}
 	if fn := s.doorbellHook.Load(); fn != nil {
 		(*fn)(t)
 	}

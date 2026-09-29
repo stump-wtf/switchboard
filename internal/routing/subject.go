@@ -126,8 +126,11 @@ type WorkOrder struct {
 	// order built from a delivery with .actor always carries the key: null under allow_all, where
 	// there is no per-actor verdict. It is absent only on a source with no actor projection. A worker
 	// treats null or absent as not trusted.
-	AuthorTrusted *bool  `json:"author_trusted,omitempty"`
-	Authority     string `json:"authority"`
+	AuthorTrusted *bool `json:"author_trusted,omitempty"`
+	// ReleasedBy names who let this work out of quarantine ("human:<id>" or "classifier:<slug>"),
+	// empty for a delivery that was never held. Governing: SPEC-0026 REQ-10.
+	ReleasedBy string `json:"released_by,omitempty"`
+	Authority  string `json:"authority"`
 	// gated records that the delivery had .actor, so author_trusted is emitted even when null.
 	gated bool
 }
@@ -165,6 +168,9 @@ func BuildWorkOrder(d Decision, in EnvelopeInput, s *Subject) WorkOrder {
 	}
 	if in.Actor != nil {
 		wo.AuthorTrusted, wo.gated = in.Actor.AuthorTrusted, true
+	}
+	if in.Release != nil {
+		wo.ReleasedBy = in.Release.By
 	}
 	return wo
 }

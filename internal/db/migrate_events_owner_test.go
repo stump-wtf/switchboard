@@ -30,7 +30,7 @@ func TestEventsOwnerBackfill(t *testing.T) {
 		t.Fatalf("endpoint: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `INSERT INTO endpoint_webhooks (endpoint_id, source_type, target_queue, trust_mode, ingest_token)
-		VALUES ($1, 'github', 'q', 'token', 'tok') RETURNING id::text`, ep).Scan(&wh); err != nil {
+		VALUES ($1, 'stripe', 'q', 'token', 'tok') RETURNING id::text`, ep).Scan(&wh); err != nil {
 		t.Fatalf("webhook: %v", err)
 	}
 	insertEvent := func(family, externalID string, webhookID any) int64 {

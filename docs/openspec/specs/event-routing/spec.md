@@ -52,10 +52,10 @@ Each webhook MUST evaluate its ordered rule list first-match-wins, terminated by
 
 - **Rule shape.** A rule is `{id, name?, expr, action}`.
 - **Match.** A rule matches when the **first** output of `expr` is jq-truthy: anything except `false` and `null`. A filter that emits no output MUST NOT match.
-- **Action.** Exactly one of `{"queue": <name>, "endpoints"?: [<endpoint id>, …], "exclusive"?: bool, "once"?: bool, "work_order"?: bool}` or `{"drop": true}`. The three flags are valid only with `queue`.
+- **Action.** Exactly one of `{"queue": <name>, "endpoints"?: [<endpoint id>, …], "exclusive"?: bool, "once"?: bool, "work_order"?: bool}`, `{"drop": true}` or `{"quarantine": true}` (held for review, [SPEC-0026](../trusted-intake/spec.md) REQ-6). The three flags are valid only with `queue`, and `"quarantine"` is reserved and MUST NOT be a rule's `queue`.
 - **Params.** Every expression is evaluated with the webhook's `params` bound as `$params` (see "Rule Parameters").
 - **Determinism.** Evaluation MUST be pure: the same envelope and rule list MUST always produce the same route, unless a rule faults.
-- **Faults.** A rule that errors (`error`), times out (`timeout`), no longer compiles (`compile_error`), or is not reached before the event budget is spent (`budget_exhausted`) MUST stop evaluation, as [SPEC-0026](../trusted-intake/spec.md) REQ-1 specifies: no later rule runs, the default does not apply, the fault is recorded on the trace, and the delivery's disposition is `faulted` (recorded, routed nowhere). A fault MUST NOT be treated as no-match. *(Amended by SPEC-0026; this bullet previously required no-match, which let a broken drop or trust rule route everything.)*
+- **Faults.** A rule that errors (`error`), times out (`timeout`), no longer compiles (`compile_error`), or is not reached before the event budget is spent (`budget_exhausted`) MUST stop evaluation, as [SPEC-0026](../trusted-intake/spec.md) REQ-1 specifies: no later rule runs, the default does not apply, the fault is recorded on the trace, and the delivery's disposition is `faulted`, and it is held on the owner's quarantine queue (SPEC-0026 REQ-6), never routed to a working queue. A fault MUST NOT be treated as no-match. *(Amended by SPEC-0026; this bullet previously required no-match, which let a broken drop or trust rule route everything.)*
 - **Budgets.** Each rule MUST be bounded by a 50 ms timeout, and the whole list by a 250 ms per-event budget.
 
 #### Scenario: First match wins
@@ -210,7 +210,7 @@ A webhook's routing configuration MAY carry `params`, a JSON object that MUST be
 #### Scenario: Mistyped params fail closed
 
 - **WHEN** an allowlist param is saved with the wrong shape: an object or a mixed list is refused at save time with `invalid_params` ([SPEC-0026](../trusted-intake/spec.md) REQ-3), while a string or a number where a list was meant is an accepted shape
-- **THEN** a rule that faults on it stops evaluation and the delivery is recorded as `faulted` and routed nowhere (SPEC-0026 REQ-1), so a malformed allowlist admits no one even without guards; the shipped packs still guard each allowlist with `| arrays` (and `| strings` where entries feed string builtins), so they evaluate to "not trusted" rather than faulting
+- **THEN** a rule that faults on it stops evaluation and the delivery is recorded as `faulted` and held in the owner's quarantine, never routed to a working queue (SPEC-0026 REQ-1, REQ-6), so a malformed allowlist admits no one even without guards; the shipped packs still guard each allowlist with `| arrays` (and `| strings` where entries feed string builtins), so they evaluate to "not trusted" rather than faulting
 
 ### Requirement: Issue Envelope Projection
 

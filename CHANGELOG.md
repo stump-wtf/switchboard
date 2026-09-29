@@ -113,6 +113,14 @@ reversed.
   homogeneous lists. There is no switch. Run the query in the
   [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md#routing-rules-fail-closed)
   before upgrading to find webhooks whose rules fault today. (#212)
+- **`quarantine` is a reserved queue name.** Held deliveries (from an untrusted actor, a
+  faulting rule, or a rule's new `{"quarantine": true}` action) wait there on the webhook
+  owner's endpoint until the owner releases or discards them, or they expire after 30
+  days; no agent can list, claim or be rung for them. A faulted delivery is held there
+  rather than routed nowhere. Migration `0028` aborts if a todo, endpoint or webhook
+  already uses a queue with that name; the
+  [upgrade note](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md)
+  has the query to check first. (#386)
 - **Replay targets belong to the endpoint, and every replay passes the SSRF guard.** The
   instance settings `replay_default_target` and `replay_allowed_targets` are gone: the
   migration deletes both rows and nothing reads or warns about them. They used to exempt

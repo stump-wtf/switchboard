@@ -304,12 +304,14 @@ const attemptCols = `a.seq, a.attempt, a.claimer_kind, COALESCE(a.claimant, ''),
 // with the todo's attempts_total and attempts_pruned. endpointID is the tenant scope (ADR-0022):
 // the todo and its attempts are read in ONE statement filtered on the todo's endpoint, so a foreign
 // id and a never-minted id are both ErrNotFound and nothing reveals whether a foreign todo has
-// attempts (SPEC-0034 REQ-10). limit defaults to 20 and is capped at 50 (REQ-8).
+// attempts (SPEC-0034 REQ-10). A quarantine item is ErrNotFound too: the default filter keeps a
+// held delivery invisible to every agent read (SPEC-0026 REQ-6). limit defaults to 20 and is capped
+// at 50 (REQ-8).
 func (s *Store) TodoAttempts(ctx context.Context, endpointID, id string, limit int) ([]Attempt, int, int, error) {
 	if err := endpointScope(endpointID); err != nil {
 		return nil, 0, 0, err
 	}
-	return s.todoAttempts(ctx, `t.endpoint_id = $3`, id, limit, endpointID)
+	return s.todoAttempts(ctx, `t.endpoint_id = $3 AND t.queue <> 'quarantine'`, id, limit, endpointID)
 }
 
 // TodoAttemptsOperatorOwned is TodoAttempts for the Board's todo drawer: the scope is the human who

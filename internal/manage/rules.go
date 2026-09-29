@@ -155,12 +155,13 @@ const trustModeSigned = "signed"
 
 // ActionIO is where a matching delivery goes.
 type ActionIO struct {
-	Queue     string   `json:"queue,omitempty" jsonschema:"deliver to this queue (the webhook's target queue or one in its owner's allowed webhook queues)"`
-	Drop      bool     `json:"drop,omitempty" jsonschema:"true to record the delivery without creating a todo or ringing a doorbell"`
-	Endpoints []string `json:"endpoints,omitempty" jsonschema:"with queue only: deliver to just these of the webhook's delivery targets (see grant.endpoints); omitted means every target"`
-	Exclusive bool     `json:"exclusive,omitempty" jsonschema:"with queue only: deliver to exactly one target, the first (owner first, then routes by grant time) whose endpoint scope includes the queue"`
-	Once      bool     `json:"once,omitempty" jsonschema:"with queue only: at most one work order per subject (issue or cairn artifact) per queue; later deliveries about it are recorded but mint nothing"`
-	WorkOrder bool     `json:"work_order,omitempty" jsonschema:"with queue only: attach a switchboard-authored work order (lane, verified provenance, authorizing rule, subject) to each todo"`
+	Queue      string   `json:"queue,omitempty" jsonschema:"deliver to this queue (the webhook's target queue or one in its owner's allowed webhook queues)"`
+	Drop       bool     `json:"drop,omitempty" jsonschema:"true to record the delivery without creating a todo or ringing a doorbell"`
+	Quarantine bool     `json:"quarantine,omitempty" jsonschema:"true to hold the delivery on the owner's quarantine queue for a human or classifier to release or discard (no agent is handed it)"`
+	Endpoints  []string `json:"endpoints,omitempty" jsonschema:"with queue only: deliver to just these of the webhook's delivery targets (see grant.endpoints); omitted means every target"`
+	Exclusive  bool     `json:"exclusive,omitempty" jsonschema:"with queue only: deliver to exactly one target, the first (owner first, then routes by grant time) whose endpoint scope includes the queue"`
+	Once       bool     `json:"once,omitempty" jsonschema:"with queue only: at most one work order per subject (issue or cairn artifact) per queue; later deliveries about it are recorded but mint nothing"`
+	WorkOrder  bool     `json:"work_order,omitempty" jsonschema:"with queue only: attach a switchboard-authored work order (lane, verified provenance, authorizing rule, subject) to each todo"`
 }
 
 // RuleIO is one ordered rule.
@@ -213,13 +214,16 @@ type TestIn struct {
 
 // DecisionOut is where a dry-run delivery would go.
 type DecisionOut struct {
-	Drop        bool               `json:"drop" jsonschema:"true when a drop action would record the delivery without a todo"`
-	Queue       string             `json:"queue,omitempty" jsonschema:"the queue todos would land in"`
-	Endpoints   []string           `json:"endpoints,omitempty" jsonschema:"the endpoints todos would be created on"`
-	Disposition string             `json:"disposition,omitempty" jsonschema:"the intake outcome: routed, dropped or faulted"`
-	Faulted     bool               `json:"faulted" jsonschema:"BLOCKING: a rule faulted, so evaluation stopped and the delivery would be recorded and routed nowhere; a save whose rules fault on recent deliveries is refused"`
-	Unavailable bool               `json:"unavailable,omitempty" jsonschema:"the rule evaluator could not run, so this dry-run says nothing about the rules; retry"`
-	Fault       *routing.RuleFault `json:"fault,omitempty" jsonschema:"the fault that stopped evaluation: rule id, index, cause and detail"`
+	Drop        bool     `json:"drop" jsonschema:"true when a drop action would record the delivery without a todo"`
+	Queue       string   `json:"queue,omitempty" jsonschema:"the queue todos would land in"`
+	Endpoints   []string `json:"endpoints,omitempty" jsonschema:"the endpoints todos would be created on"`
+	Disposition string   `json:"disposition,omitempty" jsonschema:"the intake outcome: routed, dropped, quarantined or faulted"`
+	Faulted     bool     `json:"faulted" jsonschema:"BLOCKING: a rule faulted, so evaluation stopped and the delivery would be held on the owner's quarantine queue as rule_fault instead of routed; a save whose rules fault on recent deliveries is refused"`
+	Quarantine  bool     `json:"quarantine,omitempty" jsonschema:"a rule's {quarantine: true} matched: the delivery would be held on the owner's quarantine queue"`
+	// Governing: SPEC-0026 REQ-6 (quarantine triggers).
+	QuarantineReason string             `json:"quarantine_reason,omitempty" jsonschema:"why the delivery would be held on the owner's quarantine queue: untrusted_actor, rule_fault or rule_action; empty when it would not be held"`
+	Unavailable      bool               `json:"unavailable,omitempty" jsonschema:"the rule evaluator could not run, so this dry-run says nothing about the rules; retry"`
+	Fault            *routing.RuleFault `json:"fault,omitempty" jsonschema:"the fault that stopped evaluation: rule id, index, cause and detail"`
 }
 
 // TestOut is a dry run's result.
@@ -521,7 +525,8 @@ func (r Rules) Test(ctx context.Context, p Principal, webhookID string, in TestI
 	d := r.router().Route(ctx, cfg, g, env)
 	out := TestOut{
 		Decision: DecisionOut{Drop: d.Drop, Queue: d.Queue, Endpoints: d.Endpoints,
-			Disposition: d.Disposition(), Faulted: d.Faulted, Unavailable: d.Unavailable, Fault: d.Fault},
+			Disposition: d.Disposition(), Faulted: d.Faulted, Quarantine: d.Quarantine, QuarantineReason: d.QuarantineReason(),
+			Unavailable: d.Unavailable, Fault: d.Fault},
 		Trace: d.Trace,
 		Actor: env.Actor, Held: env.Actor != nil && !env.Actor.IsTrusted(),
 	}
@@ -538,7 +543,8 @@ func (r Rules) Test(ctx context.Context, p Principal, webhookID string, in TestI
 		// Governing: SPEC-0026 REQ-5, REQ-13 "trust gate".
 		held := routing.UntrustedDecision(env.Actor)
 		out.RulesWould = &RulesWouldOut{Decision: out.Decision, Trace: out.Trace}
-		out.Decision = DecisionOut{Disposition: held.Disposition(), Faulted: held.Faulted, Fault: held.Fault}
+		out.Decision = DecisionOut{Disposition: held.Disposition(), QuarantineReason: held.QuarantineReason(),
+			Faulted: held.Faulted, Fault: held.Fault}
 		out.Trace = held.Trace
 	}
 	subject := routing.SubjectOf(wr.SourceType, env.Headers, env.Body)
@@ -756,7 +762,7 @@ func FromActionIO(a *ActionIO) *routing.Action {
 	if a == nil {
 		return nil
 	}
-	return &routing.Action{Queue: strings.TrimSpace(a.Queue), Drop: a.Drop, Endpoints: a.Endpoints,
+	return &routing.Action{Queue: strings.TrimSpace(a.Queue), Drop: a.Drop, Quarantine: a.Quarantine, Endpoints: a.Endpoints,
 		Exclusive: a.Exclusive, Once: a.Once, WorkOrder: a.WorkOrder}
 }
 
@@ -766,7 +772,7 @@ func FromRuleIO(r RuleIO) routing.Rule {
 }
 
 func toActionIO(a routing.Action) ActionIO {
-	return ActionIO{Queue: a.Queue, Drop: a.Drop, Endpoints: a.Endpoints,
+	return ActionIO{Queue: a.Queue, Drop: a.Drop, Quarantine: a.Quarantine, Endpoints: a.Endpoints,
 		Exclusive: a.Exclusive, Once: a.Once, WorkOrder: a.WorkOrder}
 }
 

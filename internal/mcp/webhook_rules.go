@@ -144,7 +144,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "set_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "set_webhook_rules",
-			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params when params is present. Omitting params keeps the saved params; params: {} clears them. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?} or {drop: true}. First match wins, and a rule that errors or times out stops evaluation: the delivery is recorded and routed nowhere. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries."},
+			Description: "Replace a webhook's whole routing configuration atomically: the ordered rules, the default action, and the params rules read as $params when params is present. Omitting params keeps the saved params; params: {} clears them. Each rule is a jq filter plus an action: {queue, endpoints?, exclusive?, once?, work_order?}, {drop: true} or {quarantine: true}. First match wins, and a rule that errors or times out stops evaluation: the delivery is held on the owner's quarantine queue as rule_fault, never handed to an agent. The save is refused, keeping the previous configuration, if a rule is invalid, if a params value is not a string, number, boolean or homogeneous list, or if any rule faults on any of the webhook's 50 most recent deliveries that its trust gate passes (found within its newest 500; the result's dry_run says how many were checked)."},
 			h.setWebhookRulesTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "add_webhook_rule") {
@@ -169,7 +169,7 @@ func (h *Handler) registerWebhookRuleTools(srv *sdk.Server, ep store.AuthEndpoin
 	}
 	if hasScope(ep.ScopeVerbs, "test_webhook_rules") {
 		sdk.AddTool(srv, &sdk.Tool{Name: "test_webhook_rules",
-			Description: "Dry-run routing: evaluate the saved rules (or candidate rules) against a sample payload or one of this webhook's stored events, and return the decision, the trace, and the envelope the rules saw. A faulted decision (faulted: true) is blocking: that delivery would be recorded and routed nowhere. Saves nothing."},
+			Description: "Dry-run routing: evaluate the saved rules (or candidate rules) against a sample payload or one of this webhook's stored events, and return the decision, the trace, and the envelope the rules saw. A faulted decision (faulted: true) is blocking: that delivery would be held on the owner's quarantine queue (quarantine_reason rule_fault) instead of routed. On a github, gitea or cairn webhook, a delivery whose actor the trust gate would hold (held: true) reports the gate's decision, exactly as live traffic records it (disposition quarantined, quarantine_reason untrusted_actor), and rules_would shows what the rules would do if the actor were trusted. Saves nothing."},
 			h.testWebhookRulesTool(ep))
 	}
 }

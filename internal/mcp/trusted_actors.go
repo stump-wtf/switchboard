@@ -30,7 +30,7 @@ import (
 // Warnings the trust verbs attach to their results.
 const (
 	trustEmptyWarning = "trusted_actors is empty: every delivery to this webhook will be quarantined " +
-		"(recorded and routed nowhere) until trusted actors, or allow_all, are set with set_trusted_actors"
+		"(held on the owner's quarantine queue, never handed to an agent) until trusted actors, or allow_all, are set with set_trusted_actors"
 	trustAllowAllWarning = "allow_all trusts every verified sender: anyone who can make the producer send " +
 		"(for a public repository, anyone who can open an issue) reaches your rules; prefer a list"
 	trustNoSetVerbWarning = "This endpoint was not granted set_trusted_actors (endpoints vended before it existed " +

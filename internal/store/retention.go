@@ -34,6 +34,15 @@ func (r PruneResult) Total() int64 {
 	return r.EventsAged + r.EventsCapped + r.TodosAged + r.TodosCapped
 }
 
+// notHeldEvent keeps an event while a pending quarantine item holds it, against both the age and
+// the row-cap deletes: the item's release reruns routing on that event, so deleting it would strand
+// the item (unreleasable, and missing from list_webhooks' count) until it expired. Quarantine
+// expiry (ExpireQuarantine, same hourly tick) completes the item first, and the next prune takes
+// the event. Governing: SPEC-0026 REQ-6 (a quarantine item stores the event's existing payload), REQ-7.
+const notHeldEvent = `
+		  AND NOT EXISTS (SELECT 1 FROM todos t
+		                   WHERE t.event_id = events.id AND t.queue = 'quarantine' AND t.state = 'pending')`
+
 // Prune enforces the hybrid age + row-cap retention policy in a single transaction, seeded from the
 // settings table (retention_max_age_days, retention_max_rows). It deletes over-age events and
 // terminal todos, then trims events and terminal todos still beyond the row cap (keeping the newest).
@@ -60,7 +69,7 @@ func (s *Store) Prune(ctx context.Context) (PruneResult, error) {
 	// Age: drop events older than the age bound.
 	if res.EventsAged, err = exec(ctx, tx, `
 		DELETE FROM events
-		WHERE received_at < now() - make_interval(days => $1)`, maxAgeDays); err != nil {
+		WHERE received_at < now() - make_interval(days => $1)`+notHeldEvent, maxAgeDays); err != nil {
 		return res, err
 	}
 	// Age: drop terminal todos whose last transition is older than the age bound. Pending/claimed
@@ -80,7 +89,7 @@ func (s *Store) Prune(ctx context.Context) (PruneResult, error) {
 		DELETE FROM events
 		WHERE id IN (
 			SELECT id FROM events ORDER BY received_at DESC, id DESC OFFSET $1
-		)`, maxRows); err != nil {
+		)`+notHeldEvent, maxRows); err != nil {
 		return res, err
 	}
 	// Cap: trim terminal todos beyond the cap. Only done/failed/canceled/rejected rows with no open

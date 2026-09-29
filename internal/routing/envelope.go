@@ -31,7 +31,12 @@ package routing
 //	               source with no actor projection, and the per-actor flags are null under allow_all.
 //	               A payload's own "actor" key lives under .payload and cannot reach it.
 //
+//	.release       {by, at} on a delivery released from quarantine (by is "human:<id>" or
+//	               "classifier:<slug>"), null otherwise.
+//
 // @joestump-agent 09/25/2026 - Added .actor (ADR-0031, SPEC-0026 REQ-10, #385).
+//
+// @joestump-agent 09/25/2026 - Added .release (SPEC-0026 REQ-7, REQ-10, #386).
 //
 // @joestump-agent 09/11/2026 - Added .issue and the cairn on_behalf_of/handle fields (ADR-0025); cairn
 // handoffs are described by tags, not a label map.
@@ -65,6 +70,17 @@ type EnvelopeInput struct {
 	// dry-run from the webhook's trusted_actors, never by the evaluator. Nil means the gate did not
 	// run: .actor then carries the parsed names with null flags. Governing: SPEC-0026 REQ-10.
 	Actor *ActorTrust `json:",omitempty"`
+	// Release marks a delivery released from quarantine (.release), nil for a fresh delivery.
+	// Governing: SPEC-0026 REQ-7, REQ-10.
+	Release *Release `json:",omitempty"`
+}
+
+// Release is .release on a delivery let out of quarantine: who released it ("human:<id>" or
+// "classifier:<endpoint slug>") and when (RFC 3339). Rules can treat a classifier's release more
+// cautiously than a human's.
+type Release struct {
+	By string `json:"by"`
+	At string `json:"at"`
 }
 
 // Envelope builds the rule input. It uses only the value types gojq accepts (map[string]any,
@@ -88,6 +104,10 @@ func Envelope(in EnvelopeInput) map[string]any {
 		"artifact":     nil,
 		"issue":        nil,
 		"actor":        actorEnvelope(in),
+		"release":      nil,
+	}
+	if in.Release != nil {
+		env["release"] = map[string]any{"by": in.Release.By, "at": in.Release.At}
 	}
 	if in.Source == SourceCairn {
 		env["artifact"] = cairnArtifact(payload)
