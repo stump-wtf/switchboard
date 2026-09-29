@@ -87,6 +87,14 @@ type Config struct {
 	// Governing: ADR-0023 REQ "Feature Flags Hide Advanced Surfaces".
 	A2UIEnabled bool
 
+	// AttemptSummaryFromResult makes a complete or fail that sends no summary close its attempt with
+	// the compact JSON of its result as the summary, which later claimers then read in
+	// prior_attempts and get_todo. Off by default, because it would show what existing clients wrote
+	// to result, which no read returned before, to later claimers and notification sinks.
+	// (SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT=true; any strconv.ParseBool true value, else off)
+	// Governing: SPEC-0034 REQ-5 "Summary, Artifact and Claimant Inputs".
+	AttemptSummaryFromResult bool
+
 	// MetricsToken is the dedicated scrape credential for GET /metrics, presented by the scraper as
 	// "Authorization: Bearer <token>". It is its own credential class: no vended endpoint token,
 	// OAuth grant, or human session authorizes a scrape. Empty leaves /metrics closed (every
@@ -137,28 +145,36 @@ func FromEnv() Config {
 		githubRedirect = base + "/auth/callback"
 	}
 	return Config{
-		Addr:                 getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
-		BaseURL:              base,
-		DatabaseURL:          os.Getenv("SWITCHBOARD_DATABASE_URL"),
-		OIDCIssuer:           os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
-		OIDCClientID:         os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
-		OIDCClientSecret:     os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
-		OIDCRedirectURL:      redirect,
-		GitHubClientID:       os.Getenv("SWITCHBOARD_GITHUB_CLIENT_ID"),
-		GitHubClientSecret:   os.Getenv("SWITCHBOARD_GITHUB_CLIENT_SECRET"),
-		GitHubRedirectURL:    githubRedirect,
-		SecretEncryptionKey:  os.Getenv("SWITCHBOARD_SECRET_ENCRYPTION_KEY"),
-		DevLogin:             os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
-		FriendingEnabled:     os.Getenv("SWITCHBOARD_FRIENDING") == "1",
-		PushAllowHTTP:        os.Getenv("SWITCHBOARD_PUSH_ALLOW_HTTP") == "1",
-		PersonasEnabled:      os.Getenv("SWITCHBOARD_PERSONAS") == "1",
-		A2AEnabled:           os.Getenv("SWITCHBOARD_A2A") == "1",
-		A2UIEnabled:          os.Getenv("SWITCHBOARD_A2UI") == "1",
-		MetricsToken:         strings.TrimSpace(os.Getenv("SWITCHBOARD_METRICS_TOKEN")),
-		NotifyHookMax:        notifyHookMax,
-		NotifyHookAllowCIDRs: strings.TrimSpace(os.Getenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS")),
-		notifyHookMaxRaw:     notifyHookMaxRaw,
+		Addr:                     getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
+		BaseURL:                  base,
+		DatabaseURL:              os.Getenv("SWITCHBOARD_DATABASE_URL"),
+		OIDCIssuer:               os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
+		OIDCClientID:             os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),
+		OIDCClientSecret:         os.Getenv("SWITCHBOARD_OIDC_CLIENT_SECRET"),
+		OIDCRedirectURL:          redirect,
+		GitHubClientID:           os.Getenv("SWITCHBOARD_GITHUB_CLIENT_ID"),
+		GitHubClientSecret:       os.Getenv("SWITCHBOARD_GITHUB_CLIENT_SECRET"),
+		GitHubRedirectURL:        githubRedirect,
+		SecretEncryptionKey:      os.Getenv("SWITCHBOARD_SECRET_ENCRYPTION_KEY"),
+		DevLogin:                 os.Getenv("SWITCHBOARD_DEV_LOGIN") == "1",
+		FriendingEnabled:         os.Getenv("SWITCHBOARD_FRIENDING") == "1",
+		PushAllowHTTP:            os.Getenv("SWITCHBOARD_PUSH_ALLOW_HTTP") == "1",
+		PersonasEnabled:          os.Getenv("SWITCHBOARD_PERSONAS") == "1",
+		A2AEnabled:               os.Getenv("SWITCHBOARD_A2A") == "1",
+		A2UIEnabled:              os.Getenv("SWITCHBOARD_A2UI") == "1",
+		MetricsToken:             strings.TrimSpace(os.Getenv("SWITCHBOARD_METRICS_TOKEN")),
+		NotifyHookMax:            notifyHookMax,
+		NotifyHookAllowCIDRs:     strings.TrimSpace(os.Getenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS")),
+		notifyHookMaxRaw:         notifyHookMaxRaw,
+		AttemptSummaryFromResult: envBool("SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT"),
 	}
+}
+
+// envBool reads a boolean option: true for any value strconv.ParseBool reads as true ("true", "1",
+// "TRUE", …), false when unset or unparseable, so a typo leaves a risky option off.
+func envBool(key string) bool {
+	v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(key)))
+	return err == nil && v
 }
 
 // parseNotifyHookMax reads SWITCHBOARD_NOTIFY_HOOK_MAX: unset is the default, anything else must be
