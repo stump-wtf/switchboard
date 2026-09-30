@@ -31,6 +31,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/oauthsrv"
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/testdb"
 	"github.com/stump-wtf/switchboard/internal/web"
 )
 
@@ -72,17 +73,11 @@ func newDBRouterFull(t *testing.T) (chi.Router, *store.Store, context.Context, *
 		t.Skip("set SWITCHBOARD_TEST_DATABASE_URL to run ownership-scoping tests")
 	}
 	ctx := context.Background()
+	// Governing: issue #543 — create is serialized across concurrently running packages.
 	const serverTestDB = "switchboard_test_server"
-	admin, err := db.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect (admin): %v", err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+serverTestDB); err != nil &&
-		!strings.Contains(err.Error(), "42P04") { // duplicate_database: already provisioned
-		admin.Close()
+	if err := testdb.Create(ctx, dsn, serverTestDB); err != nil {
 		t.Fatalf("create test database: %v", err)
 	}
-	admin.Close()
 	u, err := url.Parse(dsn)
 	if err != nil {
 		t.Fatalf("parse test dsn: %v", err)

@@ -28,6 +28,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/ingest"
 	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/testdb"
 	"github.com/stump-wtf/switchboard/internal/web"
 )
 
@@ -48,17 +49,11 @@ func newFriendsRouterWithPool(t *testing.T) (chi.Router, *store.Store, *pgxpool.
 		t.Skip("set SWITCHBOARD_TEST_DATABASE_URL to run friends-view tests")
 	}
 	ctx := context.Background()
+	// Governing: issue #543 — create is serialized across concurrently running packages.
 	const friendsTestDB = "switchboard_test_friends"
-	admin, err := db.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect (admin): %v", err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+friendsTestDB); err != nil &&
-		!strings.Contains(err.Error(), "42P04") { // duplicate_database: already provisioned
-		admin.Close()
+	if err := testdb.Create(ctx, dsn, friendsTestDB); err != nil {
 		t.Fatalf("create test database: %v", err)
 	}
-	admin.Close()
 	u, err := url.Parse(dsn)
 	if err != nil {
 		t.Fatalf("parse test dsn: %v", err)

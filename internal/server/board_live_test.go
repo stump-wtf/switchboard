@@ -36,6 +36,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/ingest"
 	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/testdb"
 	"github.com/stump-wtf/switchboard/internal/web"
 )
 
@@ -72,17 +73,11 @@ func newLiveBoardRouter(t *testing.T) (chi.Router, *store.Store, context.Context
 	ctx := context.Background()
 	// The same package-dedicated database newDBRouter provisions (tests in this package run
 	// serially, and every harness truncates before use).
+	// Governing: issue #543 — create is serialized across concurrently running packages.
 	const serverTestDB = "switchboard_test_server"
-	admin, err := db.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect (admin): %v", err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+serverTestDB); err != nil &&
-		!strings.Contains(err.Error(), "42P04") { // duplicate_database: already provisioned
-		admin.Close()
+	if err := testdb.Create(ctx, dsn, serverTestDB); err != nil {
 		t.Fatalf("create test database: %v", err)
 	}
-	admin.Close()
 	u, err := url.Parse(dsn)
 	if err != nil {
 		t.Fatalf("parse test dsn: %v", err)

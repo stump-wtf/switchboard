@@ -12,19 +12,18 @@ package notifyhook
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/db"
 	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/testdb"
 )
 
 func e2ePool(t *testing.T) (*pgxpool.Pool, context.Context) {
@@ -40,18 +39,10 @@ func e2ePool(t *testing.T) (*pgxpool.Pool, context.Context) {
 	}
 	const testDB = "switchboard_test_notifyhook"
 	if u.Path != "/"+testDB {
-		admin, err := db.Connect(ctx, dsn)
-		if err != nil {
-			t.Fatalf("connect (admin): %v", err)
+		// Governing: issue #543 — create is serialized across concurrently running packages.
+		if err := testdb.Create(ctx, dsn, testDB); err != nil {
+			t.Fatalf("create test database: %v", err)
 		}
-		if _, err := admin.Exec(ctx, `CREATE DATABASE `+testDB); err != nil {
-			var pgErr *pgconn.PgError
-			if !errors.As(err, &pgErr) || pgErr.Code != "42P04" {
-				admin.Close()
-				t.Fatalf("create test database: %v", err)
-			}
-		}
-		admin.Close()
 		u.Path = "/" + testDB
 	}
 	pool, err := db.Connect(ctx, u.String())
