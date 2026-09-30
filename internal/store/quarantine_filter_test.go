@@ -33,6 +33,8 @@ var quarantineAllowlist = map[string]string{
 	"DiscardQuarantined":        "discard",
 	"ExpireQuarantine":          "expiry",
 	"QuarantineCounts":          "list_webhooks' count of held items",
+	"ListQuarantinedForHuman":   "the owner's Quarantine view (SPEC-0026 REQ-9)",
+	"CountQuarantinedForHuman":  "the owner's Quarantine rail badge",
 	"CreateTodo":                "writers: a quarantine row needs a reason (CHECK), which only intake sets",
 	"CreateEventTodo":           "writer",
 	"CreateEventTodos":          "writer",

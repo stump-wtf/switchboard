@@ -332,6 +332,17 @@ func ActorOf(source string, body []byte) *Actor {
 	return nil
 }
 
+// SameActor reports whether two trust-list entries of a webhook of source name the same actor, with
+// the comparison the trust gate uses: cairn actor ids exactly, forge logins with loginEqual. Anything
+// that edits a trust list (the Quarantine view's "trust this actor") dedupes with it, so a name the
+// edit skips as already present is one the gate already trusts.
+func SameActor(source, a, b string) bool {
+	if source == SourceCairn {
+		return a == b
+	}
+	return loginEqual(a, b)
+}
+
 // loginEqual compares forge logins with an ASCII-only case fold. GitHub and Gitea logins are ASCII
 // and compare case-insensitively. Unicode folding (strings.EqualFold) would also match look-alikes,
 // such as the Kelvin sign for "k", so every non-ASCII byte must match exactly.
@@ -392,10 +403,11 @@ func EvaluateTrust(source string, t TrustedActors, body []byte) *ActorTrust {
 		if name == "" {
 			return false
 		}
+		list := t.Logins
 		if source == SourceCairn {
-			return slices.Contains(t.ActorIDs, name)
+			list = t.ActorIDs
 		}
-		return slices.ContainsFunc(t.Logins, func(l string) bool { return loginEqual(l, name) })
+		return slices.ContainsFunc(list, func(l string) bool { return SameActor(source, l, name) })
 	}
 	sender := in(a.Sender)
 	author := sender

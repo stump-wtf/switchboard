@@ -408,6 +408,9 @@ func tenancyCovered() map[string]bool {
 		// Notify-hook card controls — deep (owner-scoped through the endpoint's agent).
 		"POST /endpoints/{id}/hooks/{hookID}/disable", "POST /endpoints/{id}/hooks/{hookID}/enable",
 		"GET /endpoints/{id}/hooks/{hookID}/delete", "POST /endpoints/{id}/hooks/{hookID}/delete",
+		// Quarantine view + actions — deep in quarantine_view_test.go (TestQuarantineViewIsOwnerScoped).
+		"GET /quarantine", "POST /quarantine/{id}/release", "POST /quarantine/{id}/discard",
+		"POST /quarantine/{id}/trust",
 	} {
 		m[k] = true
 	}

@@ -347,3 +347,35 @@ func TestSandboxSeesTheActorVerdict(t *testing.T) {
 		t.Fatalf("sandbox decision = %+v, want the actor rule to match", d)
 	}
 }
+
+// SameActor is the gate's own comparison, so a trust-list edit that skips a name as "already there"
+// never skips one the gate would still hold: logins fold ASCII case only, cairn ids are exact.
+func TestSameActorMatchesTheGate(t *testing.T) {
+	cases := []struct {
+		source, a, b string
+		want         bool
+	}{
+		{"github", "JoeStump", "joestump", true},
+		{"gitea", "joe", "joe", true},
+		{"github", "joe", "jo", false},
+		{"github", "ſam", "sam", false},   // long s: strings.EqualFold matches it, the gate does not
+		{"github", "Kate", "kate", false}, // Kelvin sign
+		{SourceCairn, "Actor-1", "actor-1", false},
+		{SourceCairn, "actor-1", "actor-1", true},
+	}
+	for _, c := range cases {
+		if got := SameActor(c.source, c.a, c.b); got != c.want {
+			t.Errorf("SameActor(%s, %q, %q) = %v, want %v", c.source, c.a, c.b, got, c.want)
+		}
+		// The gate agrees: trusting a trusts b exactly when SameActor says so.
+		list := TrustedActors{Logins: []string{c.a}, Match: MatchSender}
+		body := `{"sender":{"login":"` + c.b + `"}}`
+		if c.source == SourceCairn {
+			list = TrustedActors{ActorIDs: []string{c.a}}
+			body = `{"data":{"actor_id":"` + c.b + `"}}`
+		}
+		if got := EvaluateTrust(c.source, list, []byte(body)).IsTrusted(); got != c.want {
+			t.Errorf("EvaluateTrust(%s, [%q], %q) = %v, want %v", c.source, c.a, c.b, got, c.want)
+		}
+	}
+}

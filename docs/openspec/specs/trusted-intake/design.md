@@ -265,8 +265,8 @@ chose one. (Settled in review of #509.)
 
 ## Risks / Trade-offs
 
-- **Fail-closed quiets a queue.** → Save-time dry-run, the fault counter, the board warning, and
-  the webhook's `quarantined` count in `list_webhooks`.
+- **Fail-closed quiets a queue.** → Save-time dry-run, the fault counter, the endpoint card
+  warning, and the webhook's `quarantined` count in `list_webhooks`.
 - **Liveness alert noise from `quarantine`.** → The documented alert excludes it. A dedicated age
   alert covers it instead.
 - **Login reuse after a rename.** → Documented. Numeric ids are the proposed follow-up.

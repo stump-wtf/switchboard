@@ -44,13 +44,28 @@ const sessionCookieName = "sb_session"
 // carving out a separate database keeps these end-to-end tests (and theirs) deterministic.
 func newDBRouter(t *testing.T) (chi.Router, *store.Store, context.Context) {
 	t.Helper()
-	r, st, ctx, _ := newDBRouterWeb(t)
+	r, st, ctx, _, _ := newDBRouterFull(t)
 	return r, st, ctx
 }
 
 // newDBRouterWeb is newDBRouter that also returns the router's web handler, for suites that
 // install the seams Run wires onto it (the notify-hook disable counter).
 func newDBRouterWeb(t *testing.T) (chi.Router, *store.Store, context.Context, *web.Handler) {
+	t.Helper()
+	r, st, ctx, webh, _ := newDBRouterFull(t)
+	return r, st, ctx, webh
+}
+
+// newDBRouterWithIngest is newDBRouter that also hands back the router's intake service, so a test
+// can swap its rule router (the Quarantine view's release reroutes through it).
+func newDBRouterWithIngest(t *testing.T) (chi.Router, *store.Store, context.Context, *ingest.Ingest) {
+	t.Helper()
+	r, st, ctx, _, ing := newDBRouterFull(t)
+	return r, st, ctx, ing
+}
+
+// newDBRouterFull is newDBRouter returning every seam the variants above hand out.
+func newDBRouterFull(t *testing.T) (chi.Router, *store.Store, context.Context, *web.Handler, *ingest.Ingest) {
 	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -108,6 +123,7 @@ func newDBRouterWeb(t *testing.T) (chi.Router, *store.Store, context.Context, *w
 	// enables it exactly as Run does — the Personas view and its routes are live for these tests.
 	webh.SetPersonasEnabled(true)
 	hub := ingest.NewHub()
+	ing := ingest.New(st, hub, log, ingest.Config{})
 	r := newRouter(routerDeps{
 		cfg:   cfg,
 		st:    st,
@@ -116,14 +132,14 @@ func newDBRouterWeb(t *testing.T) (chi.Router, *store.Store, context.Context, *w
 		// The AS surface (token endpoint included) is part of the real route table: the operator
 		// grant tests exchange codes and rotate refresh tokens through it.
 		oauth: oauthsrv.New(st, cfg.BaseURL, log),
-		ing:   ingest.New(st, hub, log, ingest.Config{}),
+		ing:   ing,
 		ping:  pool.Ping,
 		log:   log,
 		// The human API's rule routes dry-run candidates; in-process evaluation keeps these suites
 		// free of the sandbox's child processes (the MCP suites cover the sandbox itself).
 		rulesRouter: routing.InProcess{},
 	})
-	return r, st, ctx, webh
+	return r, st, ctx, webh, ing
 }
 
 // mintSession creates a human plus a live server-side session and returns the plaintext cookie

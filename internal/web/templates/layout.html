@@ -21,6 +21,7 @@
 <script src="/static/js/sb-vend.js" defer></script>
 <script src="/static/js/sb-theme.js" defer></script>
 <script src="/static/js/sb-keys.js" defer></script>
+<script src="/static/js/sb-disclosure.js" defer></script>
 </head>
 {{/* hx-headers injects the per-session CSRF synchronizer token into every HTMX request
      uniformly (SPEC-0013 "CSRF over HTMX"; auth.RequireCSRF reads X-CSRF-Token). */}}
@@ -85,6 +86,8 @@
     <li><a class="sb-rail__item" data-sb-nav="b" href="/"{{if eq .Shell.Active "board"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Board</span></a></li>
     <li><a class="sb-rail__item" data-sb-nav="t" href="/todos"{{if eq .Shell.Active "todos"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Todos</span>{{template "todo_count" dict "Count" .Shell.TodoCount}}</a></li>
     <li><a class="sb-rail__item" data-sb-nav="e" href="/endpoints"{{if eq .Shell.Active "endpoints"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Endpoints</span></a></li>
+    {{/* Quarantine (SPEC-0026 REQ-9): held deliveries; the badge counts open items and shows only when nonzero. */}}
+    <li><a class="sb-rail__item" data-sb-nav="q" href="/quarantine"{{if eq .Shell.Active "quarantine"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Quarantine</span>{{if gt .Shell.QuarantineCount 0}}<span class="sb-rail__count" data-sb-quarantine-count aria-label="{{.Shell.QuarantineCount}} held">{{.Shell.QuarantineCount}}</span>{{end}}</a></li>
     {{if .Shell.PersonasEnabled}}<li><a class="sb-rail__item" data-sb-nav="p" href="/personas"{{if eq .Shell.Active "personas"}} aria-current="page"{{end}}><span class="sb-rail__dot" aria-hidden="true"></span><span class="sb-rail__label">Personas</span></a></li>{{end}}
     {{/* Friends: revealed only when the friending capability is enabled (SPEC-0013 hidden-not-broken);
          the pending-incoming badge shows only when nonzero. */}}
