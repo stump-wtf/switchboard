@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -28,6 +29,22 @@ const (
 	defaultLeaseTTL = 5 * time.Minute
 	maxLeaseTTL     = 24 * time.Hour
 )
+
+// The lease bounds as the agent-facing text states them, in the seconds lease_ttl_seconds takes.
+// The session instructions and the claim, claim_next and heartbeat descriptions are built from
+// these, so the numbers an agent reads cannot drift from what leaseTTL enforces.
+// Governing: SPEC-0006 REQ "Lease Lifecycle and Crash Safety".
+var (
+	defaultLeaseSeconds = strconv.Itoa(int(defaultLeaseTTL / time.Second))
+	maxLeaseSeconds     = strconv.Itoa(int(maxLeaseTTL / time.Second))
+)
+
+// claimLeaseNote is the lease sentence claim and claim_next share: the default and maximum, the
+// heartbeat that extends it, and what a lapse does. A worker that never heartbeats loses the todo
+// to the reaper while it is still working, and nothing tells it so until its next call.
+var claimLeaseNote = "The claim holds a lease for " + defaultLeaseSeconds + " seconds unless you pass " +
+	"lease_ttl_seconds (max " + maxLeaseSeconds + "); size it to the work you expect, and call heartbeat " +
+	"before it runs out. A lapsed lease is reaped: the todo goes back to the queue for another worker. "
 
 // Stable machine error codes (SPEC-0006 REQ "Structured Output and Stable Error Shape").
 const (
@@ -114,7 +131,7 @@ type listTodosOut struct {
 // complete and fail take the summary and artifact their attempt closes with.
 type claimIn struct {
 	ID              string `json:"id" jsonschema:"the todo id to claim"`
-	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default 300)"`
+	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default 300, max 86400); size it to the work, and heartbeat before it runs out"`
 	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete, fail and release on this attempt must then present it"`
 	Claimant        string `json:"claimant,omitempty" jsonschema:"optional label for who is making this attempt (for example harness/box/fixer/run-7), shown to later claimers; cut to 128 bytes with control characters removed"`
 }
@@ -155,7 +172,7 @@ type releaseIn struct {
 
 type claimNextIn struct {
 	Queue           string `json:"queue,omitempty" jsonschema:"restrict the scan to one granted queue (default: all granted queues)"`
-	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default 300)"`
+	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default 300, max 86400); size it to the work, and heartbeat before it runs out"`
 	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete, fail and release on this attempt must then present it"`
 	Claimant        string `json:"claimant,omitempty" jsonschema:"optional label for who is making this attempt (for example harness/box/fixer/run-7), shown to later claimers; cut to 128 bytes with control characters removed"`
 }
@@ -175,7 +192,7 @@ type claimNextOut struct {
 
 type heartbeatIn struct {
 	ID              string `json:"id" jsonschema:"the claimed todo id whose lease to extend"`
-	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"new lease TTL in seconds from now (default 300)"`
+	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"new lease TTL in seconds from now (default 300, max 86400)"`
 	LeaseToken      string `json:"lease_token,omitempty" jsonschema:"the lease_token from a claim made with require_fence; required for a fenced attempt, omitted for an unfenced one (a mismatch is conflict)"`
 }
 
@@ -203,18 +220,19 @@ func (h *Handler) registerTools(srv *sdk.Server, ep store.AuthEndpoint) {
 	if hasScope(ep.ScopeVerbs, "claim") {
 		sdk.AddTool(srv, &sdk.Tool{
 			Name: "claim",
-			Description: "Atomically claim a pending todo, acquiring a time-bounded lease. The response " +
-				"carries the new attempt's attempt_seq and the todo's earlier attempts as prior_attempts; " +
-				priorAttemptsWarning,
+			Description: "Atomically claim a pending todo by id. " + claimLeaseNote + "A conflict means " +
+				"you did not get the todo: leave it alone. The response carries the new attempt's " +
+				"attempt_seq and the todo's earlier attempts as prior_attempts; " + priorAttemptsWarning,
 		}, h.claimTool(ep))
 	}
 	if hasScope(ep.ScopeVerbs, "claim_next") {
 		sdk.AddTool(srv, &sdk.Tool{
 			Name: "claim_next",
-			Description: "Atomically claim the oldest available todo from this endpoint's granted queues, " +
-				"acquiring a time-bounded lease. Returns empty=true when there is no work — that is the " +
-				"normal idle answer, not an error. Safe to call concurrently from several workers sharing " +
-				"this endpoint: each caller receives a different todo. A claim carries the new attempt's " +
+			Description: "Atomically claim the oldest available todo from this endpoint's granted queues. " +
+				"Returns empty=true when there is no work — that is the normal idle answer, not an error. " +
+				claimLeaseNote + "Safe to call concurrently from several workers sharing this endpoint: " +
+				"each caller receives a different todo; pass require_fence so a worker whose lease lapsed " +
+				"cannot act on a todo another worker has since claimed. A claim carries the new attempt's " +
 				"attempt_seq and the todo's earlier attempts as prior_attempts; " + priorAttemptsWarning,
 		}, h.claimNextTool(ep))
 	}
@@ -243,8 +261,13 @@ func (h *Handler) registerTools(srv *sdk.Server, ep store.AuthEndpoint) {
 	}
 	if hasScope(ep.ScopeVerbs, "heartbeat") {
 		sdk.AddTool(srv, &sdk.Tool{
-			Name:        "heartbeat",
-			Description: "Extend the lease on a claimed todo this endpoint holds.",
+			Name: "heartbeat",
+			Description: "Extend the lease on a claimed todo this endpoint holds: it is reset to end " +
+				"lease_ttl_seconds from now (default " + defaultLeaseSeconds + ", max " + maxLeaseSeconds +
+				"). Call it before the lease runs out, before any slow step, and before any irreversible " +
+				"action you take for the todo. A conflict means you no longer hold the todo — its lease " +
+				"lapsed and it was requeued, or another attempt holds it: stop, and make no further " +
+				"changes on its behalf. On a claim made with require_fence, pass its lease_token.",
 		}, h.heartbeatTool(ep))
 	}
 }

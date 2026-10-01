@@ -46,15 +46,16 @@ Every vended MCP session (SPEC-0014) MUST advertise
 `capabilities.experimental["claude/channel"] = {}` alongside `capabilities.tools = {}` on
 `initialize`, MUST identify itself with `serverInfo.name = "switchboard"`, and MUST supply
 human-readable `instructions` explaining that todos arrive as `<channel>` doorbell events while the
-durable queue remains the record. Protocol-version negotiation is delegated to the SDK per
-SPEC-0014.
+durable queue remains the record. The same instructions MUST then state the lease contract that
+[SPEC-0006](../agent-tools/spec.md) REQ "Lease Lifecycle and Crash Safety" requires. Protocol-version
+negotiation is delegated to the SDK per SPEC-0014.
 
 #### Scenario: Initialize advertises the channel capability
 
 - **WHEN** a harness sends `initialize` to a vended endpoint
 - **THEN** the result includes `capabilities.experimental["claude/channel"]` and
   `capabilities.tools`, `serverInfo.name = "switchboard"`, and instructions describing
-  doorbell-over-durable-queue semantics
+  doorbell-over-durable-queue semantics followed by the lease contract
 
 ### Requirement: Push Notification Shape
 

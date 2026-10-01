@@ -30,6 +30,16 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Fixed
 
+- **Connecting agents are told how leases work.** The MCP session instructions said only
+  that a claim "sets a lease", so a worker could claim, never heartbeat, and lose the todo
+  to the reaper mid-task. They now say: take work with `claim_next`; a claim holds a
+  300-second lease unless you pass `lease_ttl_seconds` (at most 86400); `heartbeat` before
+  it runs out, before slow steps and before irreversible actions; a lapsed lease is
+  requeued for another worker; `conflict` means stop; end every claim with `complete`,
+  `fail` or `release`; and workers sharing a credential claim with `require_fence`. The
+  `claim`, `claim_next` and `heartbeat` descriptions state the same bounds, and the
+  instructions no longer point every endpoint at `list_todos`.
+
 - **Migration `0028_friend_release_verb` re-broadens the `release` verb that migration
   `0025_friend_edges_own_authority` stripped.** 0025's narrowing list predates the
   `release` verb (#507), so upgrading silently removed it from friend endpoints that held

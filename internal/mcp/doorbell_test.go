@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -96,6 +97,56 @@ func TestInitializeReportsBuildVersion(t *testing.T) {
 	}
 	if !strings.HasPrefix(rest, "Todos routed to you") {
 		t.Fatalf("doorbell contract must follow the banner line, got %q", rest)
+	}
+}
+
+// TestInstructionsStateLeaseContract: a connecting agent learns the lease contract from the session
+// instructions alone — the claim verbs, the default and maximum TTL as leaseTTL actually enforces
+// them, heartbeat and when to call it, that a lapse requeues the todo, that conflict means stop,
+// and the fence for workers sharing a credential. A worker told none of this (2026-10-01) never
+// heartbeated, was reaped mid-review, and merged a PR for a todo it no longer held.
+// Governing: SPEC-0006 REQ "Lease Lifecycle and Crash Safety" (scenario "A connecting worker is
+// told the lease contract"), SPEC-0011 REQ "Channel Capability on the Vended Session".
+func TestInstructionsStateLeaseContract(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f := &fakeStore{byHash: map[string]store.AuthEndpoint{}}
+	token := vend(t, f, "agent-a-11111111", []string{"reviews"}, []string{"claim_next", "heartbeat", "complete"})
+	ts := newTestServer(t, f)
+
+	cs, err := connect(t, ctx, ts.URL+"/mcp/agent-a-11111111", token)
+	if err != nil {
+		t.Fatalf("initialize handshake: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+	got := cs.InitializeResult().Instructions
+
+	// The numbers are what the lease code enforces, not a copy of them: an omitted TTL and an
+	// oversized one, in the seconds lease_ttl_seconds takes.
+	def := strconv.Itoa(int(leaseTTL(0) / time.Second))
+	maxTTL := strconv.Itoa(int(leaseTTL(1<<31-1) / time.Second))
+	for _, want := range []string{
+		"claim_next",                                 // how to take work
+		"lease for " + def + " seconds",              // the default, as enforced
+		"lease_ttl_seconds (at most " + maxTTL + ")", // the override and its cap
+		"Call heartbeat",                             // how to keep the lease
+		"before any slow step",                       // when
+		"before any irreversible action",             // the step the incident took on a lost lease
+		"goes back to the queue",                     // what a lapse does
+		"another worker can claim it",
+		"conflict error from heartbeat, complete, fail or release", // what conflict means ...
+		"Stop, and make no further changes on its behalf",          // ... and what to do about it
+		"End every claim with complete, fail or release",
+		"require_fence", "lease_token", // workers sharing one credential
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("instructions missing %q:\n%s", want, got)
+		}
+	}
+	// list_todos is allowlisted per endpoint; the instructions must not make it the way to work.
+	if strings.Contains(got, "Use list_todos") {
+		t.Errorf("instructions still steer to list_todos, which many endpoints are not granted:\n%s", got)
 	}
 }
 

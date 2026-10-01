@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -575,6 +576,53 @@ func TestClaimNextRespectsTheVerbAllowlist(t *testing.T) {
 
 	cs := session(t, ctx, newFakeStore(), []string{"reviews"}, []string{"list_todos", "claim"})
 	callErr(t, ctx, cs, "claim_next", map[string]any{}, codeForbidden)
+}
+
+// TestLeaseVerbsStateTheLeaseContract: claim, claim_next and heartbeat each tell a caller the
+// default and maximum lease as leaseTTL enforces them, and what losing the lease looks like —
+// the claims say a lapsed lease is requeued for another worker, heartbeat says when to call it and
+// that conflict means stop. The lease_ttl_seconds schema text is a struct tag and cannot be built
+// from the constants, so it is pinned to them here instead.
+// Governing: SPEC-0006 REQ "Lease Lifecycle and Crash Safety".
+func TestLeaseVerbsStateTheLeaseContract(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cs := session(t, ctx, newFakeStore(), []string{"reviews"}, []string{"claim", "claim_next", "heartbeat"})
+	tools := toolNames(t, ctx, cs)
+	def := strconv.Itoa(int(leaseTTL(0) / time.Second))
+	maxTTL := strconv.Itoa(int(leaseTTL(1<<31-1) / time.Second))
+
+	wants := map[string][]string{
+		"claim": {"lease for " + def + " seconds", "lease_ttl_seconds (max " + maxTTL + ")",
+			"call heartbeat before it runs out", "goes back to the queue for another worker",
+			"A conflict means you did not get the todo"},
+		"claim_next": {"lease for " + def + " seconds", "lease_ttl_seconds (max " + maxTTL + ")",
+			"call heartbeat before it runs out", "goes back to the queue for another worker",
+			"require_fence"},
+		"heartbeat": {"default " + def + ", max " + maxTTL, "before the lease runs out",
+			"before any slow step", "before any irreversible action",
+			"A conflict means you no longer hold the todo", "make no further changes on its behalf",
+			"lease_token"},
+	}
+	for name, phrases := range wants {
+		tool := tools[name]
+		if tool == nil {
+			t.Fatalf("%s not advertised", name)
+		}
+		for _, want := range phrases {
+			if !strings.Contains(tool.Description, want) {
+				t.Errorf("%s description missing %q: %q", name, want, tool.Description)
+			}
+		}
+		in, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal %s input schema: %v", name, err)
+		}
+		if want := "(default " + def + ", max " + maxTTL + ")"; !strings.Contains(string(in), want) {
+			t.Errorf("%s lease_ttl_seconds schema does not state %q, the enforced bounds: %s", name, want, in)
+		}
+	}
 }
 
 // TestListTodosCarriesRetryTimeAndDeadLetter: a todo failed below its attempt cap reads back through
