@@ -50,24 +50,48 @@ const (
 	// keeps a session live; idle abandoned sessions expire.
 	sessionIdleTimeout = 30 * time.Minute
 
-	// instructions describe the doorbell-over-durable-queue contract to connecting harnesses.
-	// Governing: SPEC-0011 REQ "Channel Capability on the Vended Session".
-	instructions = `Todos routed to you arrive as <channel source="switchboard"> doorbell events ` +
-		`(notifications/claude/channel) on this session's notification stream. The durable todo ` +
-		`queue is the record: a doorbell is only a hint, and a missed push is never a lost todo. ` +
-		`Use list_todos to see work, claim to take a todo (which sets a lease), then complete or fail it.`
-
 	// a2uiInstructions is appended only when the A2UI surface is registered (ADR-0023 flag): the
 	// instructions must never advertise a resource the session cannot read.
-	a2uiInstructions = ` A2UI surfaces at switchboard://queue/{name}/a2ui and switchboard://todo/{id}/a2ui render ` +
+	a2uiInstructions = "\nA2UI surfaces at switchboard://queue/{name}/a2ui and switchboard://todo/{id}/a2ui render " +
 		`the queue and per-todo detail as application/a2ui+json for hosts that support it. Both ` +
 		`accept an optional ?w=N width hint (ignored by these surfaces) so a host may append it ` +
 		`uniformly to any /a2ui URI.`
 )
 
+// instructions describe the doorbell-over-durable-queue contract to connecting harnesses, then the
+// lease contract: how to take work, how long a claim is held, how to keep it, what a lapse and a
+// conflict mean, and how workers sharing one credential stay apart. It is injected into every
+// session's system prompt, so it stays short, one plain imperative sentence per rule, for the
+// smallest model that drains a queue. The lease numbers come from tools.go's constants.
+//
+// Governing: SPEC-0011 REQ "Channel Capability on the Vended Session", SPEC-0006 REQ "Lease
+// Lifecycle and Crash Safety".
+//
+// @joestump-agent 10/01/2026 - Added the lease contract. A worker that had never been told about
+// heartbeat claimed with the 300-second default, was reaped and requeued while still reviewing,
+// then approved and merged a pull request for a todo it no longer held; only the conflict from
+// its later complete told it so.
+var instructions = `Todos routed to you arrive as <channel source="switchboard"> doorbell events ` +
+	`(notifications/claude/channel) on this session's notification stream. The durable todo ` +
+	`queue is the record: a doorbell is only a hint, and a missed push is never a lost todo.` + "\n" +
+	`Take work with claim_next, or with claim for a specific todo id. list_todos, where this ` +
+	`endpoint grants it, shows waiting work; you do not need it to work the queue.` + "\n" +
+	`Every claim holds a lease for ` + defaultLeaseSeconds + ` seconds unless you pass ` +
+	`lease_ttl_seconds (at most ` + maxLeaseSeconds + `). Size the lease to the work you expect.` + "\n" +
+	`Call heartbeat to extend the lease before it runs out, before any slow step, and before any ` +
+	`irreversible action you take for the todo, such as a merge, a deploy or a message. If you ` +
+	`cannot call heartbeat, claim with a lease_ttl_seconds that covers the whole job.` + "\n" +
+	`When a lease lapses, the todo is reaped and goes back to the queue, where another worker can ` +
+	`claim it.` + "\n" +
+	`A conflict error from heartbeat, complete, fail or release means you no longer hold the todo. ` +
+	`Stop, and make no further changes on its behalf.` + "\n" +
+	`End every claim with complete, fail or release.` + "\n" +
+	`When several workers share this endpoint's credential, claim with require_fence: true and ` +
+	`pass the returned lease_token to heartbeat, complete, fail and release.`
+
 // sessionInstructions is the instructions block a new session receives: the build banner line
-// ("switchboard v0.3.0 (built 2026-09-24)"), then the doorbell contract, plus the A2UI paragraph
-// only while that surface is on.
+// ("switchboard v0.3.0 (built 2026-09-24)"), then the doorbell and lease contract, plus the A2UI
+// paragraph only while that surface is on.
 // Governing: SPEC-0027 REQ-2 "MCP Server Version and Session Instructions".
 func (h *Handler) sessionInstructions() string {
 	body := instructions

@@ -68,6 +68,27 @@ becomes claimable again without human intervention (SQS-style visibility).
 **Alternatives considered**:
 - No lease (claim = own forever): a crashed agent strands the todo permanently.
 
+### The lease contract is stated, not discovered
+
+**Choice**: The session instructions and the `claim`, `claim_next` and `heartbeat` descriptions
+spell out the lease: 300 seconds by default, at most 86,400 via `lease_ttl_seconds`, `heartbeat`
+before it runs out and before any irreversible step, a lapse requeues the todo, and `conflict`
+means stop. The numbers are built from `defaultLeaseTTL` and `maxLeaseTTL`; the
+`lease_ttl_seconds` schema text is a struct tag, so a test pins it to them.
+
+**Rationale**: The instructions used to say only that a claim "sets a lease". On 2026-10-01 a
+Qwen3.8-27B one-shot worker claimed a review todo with `claim_next` and the default lease, never
+called `heartbeat`, and was reaped 23 seconds after the lease lapsed while it was still reviewing.
+It then approved and merged the pull request, and learned it had lost the todo only from the
+`conflict` its `complete` returned. For about nine minutes another worker could have claimed the
+requeued todo and acted on the same pull request. A worker that does not know the contract cannot
+keep it, and the instructions are the one text every session reads before its first call.
+
+**Alternatives rejected**: a longer default TTL only moves the lapse later, and strands a crashed
+worker's todo for longer; tailoring the text to each endpoint's granted verbs makes every session's
+instructions different for one sentence's gain, so the text instead says what to do without
+`heartbeat`.
+
 ### The payload ships once, at claim
 
 **Choice**: `list_todos`, `complete`, `fail` and `heartbeat` return compact rows (`payload_size`

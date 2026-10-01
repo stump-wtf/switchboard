@@ -144,6 +144,28 @@ without completion MUST be reclaimable — a background reaper MUST requeue expi
 dead-letter them when attempts are exhausted) so that a crashed agent does not strand work. Lease
 extension and completion MUST be permitted only to the endpoint that holds the lease.
 
+The surface MUST tell a worker this contract before it claims, because a worker that does not know
+it loses its todo to the reaper while still working on it. The session `instructions` (SPEC-0011
+REQ "Channel Capability on the Vended Session") MUST state: take work with `claim_next`, or `claim`
+for a known id; the default lease TTL and the maximum `lease_ttl_seconds`; that `heartbeat`
+extends the lease and is called before it runs out, before any slow step and before any
+irreversible action taken for the todo; that a lapsed lease is reaped and the todo requeued for
+another worker; that `conflict` from `heartbeat`, `complete`, `fail` or `release` means the caller
+no longer holds the todo and MUST make no further changes on its behalf; that every claim ends in
+`complete`, `fail` or `release`; and that workers sharing one credential claim with `require_fence`
+and present the `lease_token`. The `claim`, `claim_next` and `heartbeat` descriptions MUST state the
+default and maximum TTL and what losing the lease looks like. The instructions MUST NOT direct a
+worker to `list_todos`, which is allowlisted per endpoint like every verb. Every TTL the text states
+MUST be derived from, or tested against, the values the lease code enforces, so the text cannot
+drift from them.
+
+#### Scenario: A connecting worker is told the lease contract
+
+- **WHEN** a harness initializes a session and lists its tools
+- **THEN** the instructions and the `claim`, `claim_next` and `heartbeat` descriptions MUST name the
+  default lease TTL and its maximum as the server enforces them, `heartbeat`, the requeue on lapse,
+  and `conflict` as the signal to stop acting on the todo
+
 #### Scenario: Expired lease is requeued
 
 - **WHEN** an agent claims a todo and then crashes without completing it, and the lease TTL elapses
