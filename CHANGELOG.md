@@ -15,6 +15,23 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **A per-endpoint default claim lease.** An endpoint's human can now say how long its claims last
+  when a call passes no `lease_ttl_seconds`: `default_lease_ttl_seconds`, 60 to 86400 seconds, or
+  unset for the server's 300. `claim`, `claim_next` and `heartbeat` apply per-call >
+  endpoint default > 300, so a worker that forgets the parameter keeps its todo, and a bare
+  `heartbeat` no longer cuts a long lease back to 300 seconds. Set it at vend (`POST
+  /api/v1/endpoints`, quick vend, the wizard's lifetime step, `switchboard endpoint vend
+  --lease-ttl 1h`) and change it any time without a re-vend (`PATCH /api/v1/endpoints/{ref}`, the
+  form on each endpoint card, `switchboard endpoint edit SLUG --lease-ttl 45m|default`). Out of
+  range is refused, never clamped; a change applies to the next claim, and granted leases keep their
+  expiry. `GET /api/v1/endpoints` and `endpoint list` show it. Session instructions and the claim,
+  claim_next and heartbeat descriptions state the endpoint's own default. New MCP verbs
+  `get_default_lease` and `set_default_lease` let an endpoint read and set its own default; they
+  are in the default grant beside webhook self-management, never friend-grantable, and an endpoint
+  vended before this release needs a re-vend to hold them (its human can still set its default).
+  Migration `0029_endpoint_default_lease` adds the nullable column. See
+  [ADR-0043](https://github.com/stump-wtf/switchboard/blob/main/docs/adrs/ADR-0043-per-endpoint-default-claim-lease.md).
+
 - **A CLI reference page and a safe-routing how-to on the docs site.** The
   [CLI reference](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/16-cli-reference.md)
   lists every `switchboard` operator subcommand and flag as the binary prints it; the

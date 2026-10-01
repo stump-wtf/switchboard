@@ -74,6 +74,7 @@ Two layers:
 | ADR | Title | One-line |
 |-----|-------|----------|
 | [ADR-0040](adrs/ADR-0040-operator-authored-todos.md) | **Operator-authored todos** | `switchboard todo push` mints a todo on an endpoint you own and rings its doorbell. First filed as a second ADR-0026. |
+| [ADR-0043](adrs/ADR-0043-per-endpoint-default-claim-lease.md) | **Per-endpoint default claim lease** | The endpoint's human sets how long its claims last when a call names no `lease_ttl_seconds`; per-call > endpoint > 300s, on every surface. |
 
 ## OpenSpec Specifications
 

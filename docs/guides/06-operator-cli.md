@@ -80,6 +80,7 @@ This credential is shown ONCE and cannot be recovered — store it now.
                 (any producer POSTs here; the unguessable URL is its credential)
   Verbs         list_todos claim claim_next complete fail heartbeat create_webhook …
   Expires       never (valid until revoked)
+  Lease         5m (300s) (server default)
 
 Client wiring — paste into your MCP client's .mcp.json:
 {
@@ -100,10 +101,31 @@ producer at the ingest URL. Deliveries become durable todos and ring the live se
 receive, `mcp_json` included — for scripts and agents. `-q` is the short form of `--queue`, and
 flags may come before or after the name.
 
+`--lease-ttl` sets the endpoint's [default claim lease](/guides/vend-an-endpoint#the-default-claim-lease):
+what a claim or heartbeat without `lease_ttl_seconds` gets. It takes a duration (`45m`, `1h`) or
+whole seconds, from 60 to 86400; without it the server default (300 seconds) applies.
+
+```
+switchboard endpoint vend pr-reviewer --queue reviews --lease-ttl 1h
+```
+
+## Changing an endpoint's default lease
+
+```
+switchboard endpoint edit pr-reviewer-k3x9 --lease-ttl 45m
+switchboard endpoint edit pr-reviewer-k3x9 --lease-ttl default   # back to the server default
+```
+
+The default claim lease is not scope, so it changes in place, with no re-vend. The next claim or
+heartbeat without `lease_ttl_seconds` gets the new value; leases already granted keep their
+expiry. The deployment checks the range and prints its refusal (`invalid_argument`) for anything
+outside 60 to 86400 seconds. `--json` prints the API response. A revoked endpoint answers a
+conflict.
+
 ## Listing what you own
 
 ```
-switchboard endpoint list   # slug, agent, state, queues, expiry per vended endpoint
+switchboard endpoint list   # slug, agent, state, queues, expiry, default lease per vended endpoint
 switchboard agent list      # your registered agents
 switchboard status          # where you are logged in, and whether the credentials are live
 switchboard logout          # forget the local credentials
