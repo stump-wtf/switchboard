@@ -36,6 +36,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/lease"
 	"github.com/stump-wtf/switchboard/internal/manage"
 	"github.com/stump-wtf/switchboard/internal/mcp"
 	"github.com/stump-wtf/switchboard/internal/push"
@@ -60,8 +61,14 @@ type apiHandler struct {
 	// the calling human (api_webhooks.go). Its Router is the MCP handler's sandbox when one is wired
 	// (newRouter), and unavailable otherwise. Governing: SPEC-0035 REQ "Shared Implementation With MCP".
 	rules manage.Rules
-	// readRL and writeRL are the per-human buckets on the webhook routes (SPEC-0035 "Rate Limiting").
+	// readRL and writeRL are the per-human buckets on the webhook routes and the endpoint edit route
+	// (SPEC-0035 "Rate Limiting").
 	readRL, writeRL *rateLimiter
+	// endpointLeaseChanged re-registers the lease-bound MCP tools on the endpoint's live sessions
+	// after an edit, so their descriptions state the new default (mcp.Handler.RefreshEndpointLease).
+	// Nil is tolerated, like endpointRevoked: the lease verbs read the live default regardless.
+	// Governing: ADR-0043.
+	endpointLeaseChanged func(endpointID string, defaultLease *int)
 }
 
 func newAPIHandler(st *store.Store, baseURL string, log *slog.Logger, onEndpointRevoked func(string)) *apiHandler {
@@ -126,6 +133,12 @@ func (a *apiHandler) Routes() chi.Router {
 		r.Post("/endpoints/{ref}/todos", a.PushTodo)
 		r.Get("/agents", a.ListAgents)
 	})
+	// Editing an endpoint's settings draws from the per-human write bucket, like the other SPEC-0035
+	// writes. Governing: ADR-0043, SPEC-0035 "Rate Limiting".
+	r.Group(func(r chi.Router) {
+		r.Use(maxBytes(64<<10), a.perHuman(a.writeRL))
+		r.Patch("/endpoints/{ref}", a.EditEndpoint)
+	})
 	a.webhookRoutes(r)
 	return r
 }
@@ -142,6 +155,10 @@ type vendEndpointIn struct {
 	// names none). Optional; each must pass the SSRF guard. Governing: SPEC-0033 REQ "Owned Replay
 	// Targets".
 	ReplayTargets []string `json:"replay_targets,omitempty"`
+	// DefaultLeaseTTLSeconds is the endpoint's default claim lease, 60 to 86400 seconds. Absent or
+	// null vends with the server default (300). Out of range is refused before anything is minted.
+	// Governing: ADR-0043, SPEC-0007 REQ "Endpoint Default Lease".
+	DefaultLeaseTTLSeconds *int `json:"default_lease_ttl_seconds,omitempty"`
 }
 
 type vendWebhookOut struct {
@@ -165,6 +182,20 @@ type vendEndpointOut struct {
 	// credential embedded — byte-identical to the web reveal's wiring (internal/mcp).
 	MCPJSON   json.RawMessage `json:"mcp_json,omitempty"`
 	ExpiresAt *string         `json:"expires_at,omitempty"`
+	endpointLeaseOut
+}
+
+// endpointLeaseOut is the default-lease pair every endpoint shape carries, under the same names on
+// every surface (MCP get_default_lease included): the endpoint's own setting, null when it uses the
+// server default, and the lease a claim with no lease_ttl_seconds actually gets.
+// Governing: ADR-0043, SPEC-0007 REQ "Endpoint Default Lease".
+type endpointLeaseOut struct {
+	DefaultLeaseTTLSeconds   *int `json:"default_lease_ttl_seconds"`
+	EffectiveLeaseTTLSeconds int  `json:"effective_lease_ttl_seconds"`
+}
+
+func leaseOut(def *int) endpointLeaseOut {
+	return endpointLeaseOut{DefaultLeaseTTLSeconds: def, EffectiveLeaseTTLSeconds: lease.EffectiveSeconds(def)}
 }
 
 type agentOut struct {
@@ -185,6 +216,21 @@ type endpointOut struct {
 	// ReplayTargets are the endpoint's owned replay destinations, shown only to its owner.
 	ReplayTargets []string `json:"replay_targets"`
 	ExpiresAt     *string  `json:"expires_at,omitempty"`
+	endpointLeaseOut
+}
+
+// endpointOutFrom projects an owner-scoped card into the API shape. It never carries a credential.
+func endpointOutFrom(c store.EndpointCard) endpointOut {
+	e := endpointOut{
+		ID: c.ID, Slug: c.Slug, AgentName: c.AgentName, State: c.State,
+		Queues: c.ScopeQueues, Verbs: c.ScopeVerbs, ReplayTargets: nonNilStrings(c.ReplayTargets),
+		endpointLeaseOut: leaseOut(c.DefaultLeaseTTLSeconds),
+	}
+	if c.ExpiresAt != nil {
+		s := c.ExpiresAt.UTC().Format(time.RFC3339)
+		e.ExpiresAt = &s
+	}
+	return e
 }
 
 // VendEndpoint is the one-call mint: agent + endpoint + queue + webhook. Every default is chosen so
@@ -215,6 +261,14 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// The default lease is refused out of range BEFORE anything is minted, in SPEC-0035's error
+	// shape. Governing: ADR-0043.
+	if in.DefaultLeaseTTLSeconds != nil {
+		if err := lease.ValidateDefault(*in.DefaultLeaseTTLSeconds); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_argument", leaseRangeMessage(), nil)
+			return
+		}
+	}
 
 	// The basics scope: mcp.AllVerbs() — the full todo-drain surface (the core scope an endpoint
 	// exists to carry) plus webhook self-management and the event history — so the vended loop
@@ -239,10 +293,11 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		OwnerHumanID: human.ID, Name: in.Name,
 		CredHash: hash, CredPrefix: prefix, Slug: slug,
 		Queues: []string{in.Queue}, Verbs: verbs,
-		WebhookMax:         whMax,
-		WebhookSourceTypes: whSources,
-		WebhookQueues:      whQueues,
-		ReplayTargets:      replayTargets,
+		WebhookMax:             whMax,
+		WebhookSourceTypes:     whSources,
+		WebhookQueues:          whQueues,
+		ReplayTargets:          replayTargets,
+		DefaultLeaseTTLSeconds: in.DefaultLeaseTTLSeconds,
 	})
 	if err != nil {
 		a.fail(w, "vend endpoint", err)
@@ -266,7 +321,8 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 			AgentName: res.AgentName, Slug: ep.Slug,
 			MCPURL: mcp.EndpointURL(a.base, ep.Slug),
 			Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs, ReplayTargets: replayTargets,
-			MCPJSON: json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
+			MCPJSON:          json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
+			endpointLeaseOut: leaseOut(ep.DefaultLeaseTTLSeconds),
 		})
 		return
 	}
@@ -280,9 +336,10 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		AgentName: res.AgentName, Slug: ep.Slug,
 		MCPURL: mcp.EndpointURL(a.base, ep.Slug),
 		Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs, ReplayTargets: replayTargets,
-		Webhook:   vendWebhookOut{WebhookID: webhook.ID, IngestURL: a.base + "/webhooks/w/" + ingestToken, TrustMode: "token"},
-		MCPJSON:   json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
-		ExpiresAt: expiresAt,
+		Webhook:          vendWebhookOut{WebhookID: webhook.ID, IngestURL: a.base + "/webhooks/w/" + ingestToken, TrustMode: "token"},
+		MCPJSON:          json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
+		ExpiresAt:        expiresAt,
+		endpointLeaseOut: leaseOut(ep.DefaultLeaseTTLSeconds),
 	})
 }
 
@@ -297,15 +354,7 @@ func (a *apiHandler) ListEndpoints(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]endpointOut, 0, len(cards))
 	for _, c := range cards {
-		e := endpointOut{
-			ID: c.ID, Slug: c.Slug, AgentName: c.AgentName, State: c.State,
-			Queues: c.ScopeQueues, Verbs: c.ScopeVerbs, ReplayTargets: nonNilStrings(c.ReplayTargets),
-		}
-		if c.ExpiresAt != nil {
-			s := c.ExpiresAt.UTC().Format(time.RFC3339)
-			e.ExpiresAt = &s
-		}
-		out = append(out, e)
+		out = append(out, endpointOutFrom(c))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -377,7 +426,7 @@ func (a *apiHandler) ownedEndpoint(w http.ResponseWriter, r *http.Request, what 
 		}
 	}
 	writeJSON(w, http.StatusNotFound, map[string]any{
-		"error": "no endpoint by that name or id belongs to you"})
+		"error": "no endpoint by that name or id belongs to you", "code": "not_found"})
 	return store.EndpointCard{}, false
 }
 

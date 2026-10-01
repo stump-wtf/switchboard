@@ -118,13 +118,68 @@ agent may do, the human SHOULD revoke the endpoint and vend a new one with the n
 editing a live grant in place. This keeps a given URL+credential pair denoting one fixed power set for
 its lifetime. (Whether to also support mutable-in-place scope is an open question recorded in
 design.md.) An endpoint's presence and `shift` ([SPEC-0022](../endpoint-presence/spec.md)) are not
-scope: they decide only when the endpoint is rung, so changing them MUST NOT require a re-vend.
+scope: they decide only when the endpoint is rung, so changing them MUST NOT require a re-vend. Its
+default claim lease (REQ "Endpoint Default Lease") is not scope either: it decides only how long a
+claim the endpoint may already make is held, so changing it MUST NOT require a re-vend.
 
 #### Scenario: Scope change is a re-vend
 
 - **WHEN** a human needs an agent to act on a different queue than an existing endpoint permits
 - **THEN** the human revokes the existing endpoint and vends a new one with the new scope, receiving a
   new URL+credential pair
+
+### Requirement: Endpoint Default Lease
+
+Every vended endpoint MUST carry a default claim lease, `default_lease_ttl_seconds`: null, meaning
+the server default (300 seconds), or a whole number of seconds from 60 to 86400 inclusive. It is the
+lease a `claim`, `claim_next` or `heartbeat` on the endpoint gets when the call passes no
+`lease_ttl_seconds` ([SPEC-0006](../agent-tools/spec.md) REQ "Lease Lifecycle and Crash Safety").
+A value outside the bounds MUST be refused, never clamped, on every surface, and storage MUST enforce
+the same bounds. The owning human MUST be able to set it at vend and to change or reset it later
+without a re-vend, on the human API, the web UI and the CLI; the endpoint MAY change its own when its
+scope grants `set_default_lease` (SPEC-0006 REQ "Endpoint Default Lease Verbs"). A human's change
+MUST be authorized against ownership in the same statement as the write, and another human's endpoint
+MUST be treated as not found. A revoked endpoint's setting MUST NOT change. A change MUST apply to
+claims and heartbeats made after it and MUST NOT change the expiry of a lease already granted. Every
+human surface that shows an endpoint MUST show the setting, null when unset, and the effective lease,
+under the same field names everywhere. See
+[ADR-0043](../../../adrs/ADR-0043-per-endpoint-default-claim-lease.md).
+
+#### Scenario: Default set at vend
+
+- **WHEN** a human vends an endpoint with `default_lease_ttl_seconds = 3600`
+- **THEN** the endpoint stores 3600, the vend response and every endpoint listing show it with
+  `effective_lease_ttl_seconds = 3600`, and a claim with no `lease_ttl_seconds` holds a 3600-second
+  lease
+
+#### Scenario: Out of range is refused, not clamped
+
+- **WHEN** a human vends or edits an endpoint with 59 or 86401
+- **THEN** the request fails with `invalid_argument` (HTTP 400), a vend mints nothing, and an edit
+  leaves the stored value unchanged
+
+#### Scenario: Reset to the server default
+
+- **WHEN** the human sets the default to null
+- **THEN** the endpoint shows `default_lease_ttl_seconds = null` and `effective_lease_ttl_seconds =
+  300`
+
+#### Scenario: An edit changes new claims only
+
+- **GIVEN** a todo claimed with a 300-second lease
+- **WHEN** the human sets the endpoint's default to 86400
+- **THEN** that todo's lease keeps its expiry, and the next claim or heartbeat without
+  `lease_ttl_seconds` gets 86400 seconds
+
+#### Scenario: Another human's endpoint
+
+- **WHEN** a human edits the default of an endpoint they do not own
+- **THEN** the answer is the same not-found an unknown id gets, and nothing changes
+
+#### Scenario: A revoked endpoint
+
+- **WHEN** the owner edits the default of their revoked endpoint
+- **THEN** the human API answers 409 `conflict` with `state: "revoked"` and nothing changes
 
 ### Requirement: Instant, Total Revocation
 
@@ -204,8 +259,9 @@ NOT cascade into todos: a todo an agent claimed is history and MUST survive the 
 All endpoint and agent persistence MUST use parameterized queries only (no string interpolation into
 SQL). Ownership-scoped mutations (vend, revoke, delete) MUST enforce the ownership predicate in the
 same statement that performs the write, so a mutation cannot succeed against a row the human does not
-own. The delete statement MUST additionally constrain to `state = 'revoked'` so an active endpoint can
-never be removed. Connection use MUST propagate the request context for cancellation and timeout.
+own. The default-lease edit MUST likewise bind ownership and `state = 'active'` in its UPDATE. The
+delete statement MUST additionally constrain to `state = 'revoked'` so an active endpoint can never be
+removed. Connection use MUST propagate the request context for cancellation and timeout.
 
 #### Scenario: Revocation binds ownership in the write
 
@@ -238,6 +294,8 @@ authorized against ownership.
 | `POST /agents/{id}/vend` (human UI) | Required (session + ownership) | — |
 | `POST /endpoints/{id}/revoke` (human UI) | Required (session + ownership) | — |
 | `POST /endpoints/{id}/delete` (human UI) | Required (session + ownership; revoked-only) | — |
+| `POST /endpoints/{id}/lease` (human UI) | Required (session + ownership + CSRF; active-only) | — |
+| `PATCH /api/v1/endpoints/{ref}` (human API) | Required (operator OAuth bearer + ownership; active-only) | — |
 
 There are no public endpoints in this capability. A missing or malformed `Authorization: Bearer`
 header MUST yield `401 unauthenticated`; a credential that does not resolve to an `active` endpoint

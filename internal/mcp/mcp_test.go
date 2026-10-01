@@ -23,6 +23,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/lease"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -61,6 +62,12 @@ type fakeStore struct {
 	// attemptsLimit is the limit the last TodoAttempts call received, so a test can pin the
 	// handler's own default and clamp rather than the fake's.
 	attemptsLimit int
+	// defaultLeases is each endpoint's default lease (ADR-0043), keyed by endpoint id; absent or nil
+	// is the server default. heartbeatTTLs records every heartbeat's resolved lease, in call order.
+	defaultLeases map[string]*int
+	heartbeatTTLs []time.Duration
+	// defaultLeaseErr, when set, fails EndpointDefaultLease (the lease verbs' live read).
+	defaultLeaseErr error
 }
 
 // RingOnAttach hands out attachRings once. Deliberately ignores failErr: a stream open in a test
@@ -86,7 +93,44 @@ func newFakeStore() *fakeStore {
 		fences:         map[string][]byte{},
 		attempts:       map[string][]store.Attempt{},
 		replayTargets:  map[string][]string{},
+		defaultLeases:  map[string]*int{},
 	}
+}
+
+// EndpointDefaultLease mirrors store.Store.EndpointDefaultLease: the endpoint's own default, nil for
+// the server default.
+func (f *fakeStore) EndpointDefaultLease(_ context.Context, endpointID string) (*int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.defaultLeaseErr != nil {
+		return nil, f.defaultLeaseErr
+	}
+	return f.defaultLeases[endpointID], nil
+}
+
+// SetEndpointDefaultLease mirrors store.Store.SetEndpointDefaultLease: the bounds are checked, then
+// the endpoint's own default is replaced (nil resets it).
+func (f *fakeStore) SetEndpointDefaultLease(_ context.Context, endpointID string, seconds *int) (*int, error) {
+	if seconds != nil {
+		if err := lease.ValidateDefault(*seconds); err != nil {
+			return nil, err
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.defaultLeases[endpointID] = seconds
+	return seconds, nil
+}
+
+// withLease returns ep carrying the fake's current default lease for it, the way the store's auth
+// resolve reads the column.
+func (f *fakeStore) withLease(ep store.AuthEndpoint) store.AuthEndpoint {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if d, ok := f.defaultLeases[ep.ID]; ok {
+		ep.DefaultLeaseTTLSeconds = d
+	}
+	return ep
 }
 
 // EndpointReplayTargets mirrors store.Store.EndpointReplayTargets: the endpoint's own list, keyed by
@@ -102,7 +146,7 @@ func (f *fakeStore) EndpointByCredHash(_ context.Context, hash string) (store.Au
 	if !ok {
 		return store.AuthEndpoint{}, store.ErrNotFound
 	}
-	return ep, nil
+	return f.withLease(ep), nil
 }
 
 // EndpointByOAuthToken mirrors store.Store.EndpointByOAuthToken: a live OAuth access token
@@ -113,7 +157,7 @@ func (f *fakeStore) EndpointByOAuthToken(_ context.Context, hash string) (store.
 	if !ok {
 		return store.AuthEndpoint{}, store.ErrNotFound
 	}
-	return ep, nil
+	return f.withLease(ep), nil
 }
 
 func (f *fakeStore) TouchEndpoint(_ context.Context, _ string) error {
@@ -258,8 +302,9 @@ func (f *fakeStore) HeartbeatTodo(_ context.Context, endpointID, id, owner strin
 	if t.State != "claimed" || t.Owner != owner {
 		return store.Todo{}, store.ErrConflict
 	}
-	lease := time.Now().Add(ttl)
-	t.LeaseExpiresAt = &lease
+	f.heartbeatTTLs = append(f.heartbeatTTLs, ttl)
+	expires := time.Now().Add(ttl)
+	t.LeaseExpiresAt = &expires
 	f.todos[id] = t
 	return t, nil
 }

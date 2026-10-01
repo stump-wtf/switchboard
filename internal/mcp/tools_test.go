@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/stump-wtf/switchboard/internal/lease"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -579,49 +580,72 @@ func TestClaimNextRespectsTheVerbAllowlist(t *testing.T) {
 }
 
 // TestLeaseVerbsStateTheLeaseContract: claim, claim_next and heartbeat each tell a caller the
-// default and maximum lease as leaseTTL enforces them, and what losing the lease looks like —
-// the claims say a lapsed lease is requeued for another worker, heartbeat says when to call it and
-// that conflict means stop. The lease_ttl_seconds schema text is a struct tag and cannot be built
-// from the constants, so it is pinned to them here instead.
-// Governing: SPEC-0006 REQ "Lease Lifecycle and Crash Safety".
+// default and maximum lease as the lease code enforces them for THIS endpoint, and what losing the
+// lease looks like — the claims say a lapsed lease is requeued for another worker, heartbeat says
+// when to call it, that a bare heartbeat resets to the default, and that conflict means stop. The
+// lease_ttl_seconds schema text is a struct tag and cannot carry a per-endpoint number, so it states
+// the cap and points at the description for the default; it is pinned to the cap here and must not
+// state any fixed default.
+// Governing: SPEC-0006 REQ "Lease Lifecycle and Crash Safety", ADR-0043.
 func TestLeaseVerbsStateTheLeaseContract(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	hour := 3600
+	for _, c := range []struct {
+		name  string
+		def   *int
+		whose string
+	}{
+		{"unconfigured", nil, "the server default"},
+		{"configured", &hour, "this endpoint's default"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-	cs := session(t, ctx, newFakeStore(), []string{"reviews"}, []string{"claim", "claim_next", "heartbeat"})
-	tools := toolNames(t, ctx, cs)
-	def := strconv.Itoa(int(leaseTTL(0) / time.Second))
-	maxTTL := strconv.Itoa(int(leaseTTL(1<<31-1) / time.Second))
+			f := newFakeStore()
+			f.defaultLeases[endpointIDFor("agent-a-11111111")] = c.def
+			cs := session(t, ctx, f, []string{"reviews"}, []string{"claim", "claim_next", "heartbeat"})
+			tools := toolNames(t, ctx, cs)
+			def := strconv.Itoa(int(lease.TTL(0, c.def) / time.Second))
+			maxTTL := strconv.Itoa(int(lease.TTL(1<<31-1, c.def) / time.Second))
 
-	wants := map[string][]string{
-		"claim": {"lease for " + def + " seconds", "lease_ttl_seconds (max " + maxTTL + ")",
-			"call heartbeat before it runs out", "goes back to the queue for another worker",
-			"A conflict means you did not get the todo"},
-		"claim_next": {"lease for " + def + " seconds", "lease_ttl_seconds (max " + maxTTL + ")",
-			"call heartbeat before it runs out", "goes back to the queue for another worker",
-			"require_fence"},
-		"heartbeat": {"default " + def + ", max " + maxTTL, "before the lease runs out",
-			"before any slow step", "before any irreversible action",
-			"A conflict means you no longer hold the todo", "make no further changes on its behalf",
-			"lease_token"},
-	}
-	for name, phrases := range wants {
-		tool := tools[name]
-		if tool == nil {
-			t.Fatalf("%s not advertised", name)
-		}
-		for _, want := range phrases {
-			if !strings.Contains(tool.Description, want) {
-				t.Errorf("%s description missing %q: %q", name, want, tool.Description)
+			wants := map[string][]string{
+				"claim": {"lease for " + def + " seconds (" + c.whose + ")", "lease_ttl_seconds (max " + maxTTL + ")",
+					"call heartbeat before it runs out", "goes back to the queue for another worker",
+					"A conflict means you did not get the todo"},
+				"claim_next": {"lease for " + def + " seconds (" + c.whose + ")", "lease_ttl_seconds (max " + maxTTL + ")",
+					"call heartbeat before it runs out", "goes back to the queue for another worker",
+					"require_fence"},
+				"heartbeat": {"default " + def + ", max " + maxTTL,
+					"Without lease_ttl_seconds the lease is reset to " + def + " seconds (" + c.whose + ")",
+					"before the lease runs out", "before any slow step", "before any irreversible action",
+					"A conflict means you no longer hold the todo", "make no further changes on its behalf",
+					"lease_token"},
 			}
-		}
-		in, err := json.Marshal(tool.InputSchema)
-		if err != nil {
-			t.Fatalf("marshal %s input schema: %v", name, err)
-		}
-		if want := "(default " + def + ", max " + maxTTL + ")"; !strings.Contains(string(in), want) {
-			t.Errorf("%s lease_ttl_seconds schema does not state %q, the enforced bounds: %s", name, want, in)
-		}
+			for name, phrases := range wants {
+				tool := tools[name]
+				if tool == nil {
+					t.Fatalf("%s not advertised", name)
+				}
+				for _, want := range phrases {
+					if !strings.Contains(tool.Description, want) {
+						t.Errorf("%s description missing %q: %q", name, want, tool.Description)
+					}
+				}
+				if c.def != nil && strings.Contains(tool.Description, "300") {
+					t.Errorf("%s description of a configured endpoint still states 300: %q", name, tool.Description)
+				}
+				in, err := json.Marshal(tool.InputSchema)
+				if err != nil {
+					t.Fatalf("marshal %s input schema: %v", name, err)
+				}
+				if want := "max " + maxTTL + ")"; !strings.Contains(string(in), want) {
+					t.Errorf("%s lease_ttl_seconds schema does not state %q, the enforced cap: %s", name, want, in)
+				}
+				if strings.Contains(string(in), "default "+strconv.Itoa(lease.DefaultSeconds)) {
+					t.Errorf("%s lease_ttl_seconds schema states a fixed default, which is wrong for a configured endpoint: %s", name, in)
+				}
+			}
+		})
 	}
 }
 

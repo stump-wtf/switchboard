@@ -112,6 +112,26 @@ one-time credential reveal with copyable `.mcp.json`. For OAuth-capable clients 
 offer the URL-only variant (SPEC-0016). Scope stays immutable; the wizard SHALL make re-vend the
 path for scope changes (SPEC-0007 doctrine).
 
+The endpoint's default claim lease (SPEC-0007 REQ "Endpoint Default Lease") is not scope. Quick vend
+and the wizard's lifetime step SHALL take it as an optional field that states the server default and
+the allowed range (blank = server default); the confirm summary and the reveal SHALL state it, and a
+re-vend SHALL seed it from the source endpoint. Every card SHALL state the effective lease and whose
+it is, and an active card SHALL carry a form that changes or resets it in place
+(`POST /endpoints/{id}/lease`, session- and CSRF-guarded like its siblings). A refused value SHALL
+re-render the same page with the message and the entered value, never a dead end.
+
+#### Scenario: Lease edited on the card
+
+- **WHEN** the operator types `1h` into an active card's lease form and saves
+- **THEN** the endpoint's default becomes 3600 seconds, the page returns to that card, and the card
+  states `1h (3600s)` as set for this endpoint
+
+#### Scenario: Lease refused on the card
+
+- **WHEN** the operator saves `86401`
+- **THEN** the Endpoints view re-renders with 400, that card's form shows the refusal and `86401`,
+  and the stored default is unchanged
+
 #### Scenario: Lifetime chosen at vend
 
 - **WHEN** the operator selects a 7-day lifetime and completes the wizard

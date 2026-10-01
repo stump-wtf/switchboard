@@ -112,6 +112,14 @@ type endpointCard struct {
 	// quarantine count, the faults over the last 24 hours, and the allow_all warning. Governing:
 	// SPEC-0026 REQ-9 (the webhook card's counts), REQ-1 (the fault warning), REQ-5 (allow_all).
 	Webhooks []webhookSignalView
+	// DefaultLease is the endpoint's own default claim lease in seconds (nil = the server default),
+	// LeaseLabel how the card states the effective one, and LeaseInput/LeaseError the lease form's
+	// re-rendered value and refusal after a rejected edit. Governing: ADR-0043, SPEC-0015 REQ
+	// "Endpoints View And Vend Wizard".
+	DefaultLease *int
+	LeaseLabel   string
+	LeaseInput   string
+	LeaseError   string
 }
 
 // hookRow is one notify hook on an endpoint card. URL is redacted server-side (scheme, host and
@@ -191,6 +199,7 @@ type revealView struct {
 	Queues         []string
 	Verbs          []string
 	ExpiresAt      *time.Time // vend-time expiry echoed on the reveal (nil = until revoked)
+	LeaseLabel     string     // the endpoint's effective default claim lease (ADR-0043)
 	CSRF           string
 }
 
@@ -213,6 +222,13 @@ func (h *Handler) cardFromStore(c store.EndpointCard, principal string) endpoint
 		RevokedAt:  c.RevokedAt,
 		LastSeenAt: c.LastSeenAt,
 		ExpiresAt:  c.ExpiresAt,
+		// ADR-0043: the card states the lease a claim with no lease_ttl_seconds gets, and the form
+		// starts from the endpoint's own setting (blank = the server default).
+		DefaultLease: c.DefaultLeaseTTLSeconds,
+		LeaseLabel:   leaseCardLabel(c.DefaultLeaseTTLSeconds),
+	}
+	if c.DefaultLeaseTTLSeconds != nil {
+		card.LeaseInput = strconv.Itoa(*c.DefaultLeaseTTLSeconds)
 	}
 	if h.personasEnabled {
 		card.PersonaName = c.PersonaName
@@ -460,6 +476,9 @@ type vendSubmission struct {
 	Queues    []string
 	Verbs     []string
 	Lifetime  string // parseLifetime vocabulary; "" = valid until revoked
+	// DefaultLease is the operator's default-claim-lease input (parseLeaseInput vocabulary); "" =
+	// the server default. Governing: ADR-0043.
+	DefaultLease string
 	// Webhook ceiling (ADR-0012, SPEC-0006). WebhookMax=0 disables self-managed webhooks.
 	WebhookMax         int
 	WebhookSourceTypes []string
@@ -500,6 +519,7 @@ func (h *Handler) Vend(w http.ResponseWriter, r *http.Request) {
 		Queues:             multiValues(r, "queues"),
 		Verbs:              multiValues(r, "verbs"),
 		Lifetime:           strings.TrimSpace(r.FormValue("lifetime")),
+		DefaultLease:       strings.TrimSpace(r.FormValue("default_lease")),
 		WebhookMax:         webhookMax,
 		WebhookSourceTypes: multiValues(r, "webhook_source_types"),
 		WebhookQueues:      multiValues(r, "webhook_queues"),
@@ -534,6 +554,13 @@ func (h *Handler) executeVendOn(w http.ResponseWriter, r *http.Request, human *s
 		exp := time.Now().Add(d).UTC()
 		expiresAt = &exp
 	}
+	// Optional default claim lease, refused out of range before anything is minted, like the
+	// lifetime above. Governing: ADR-0043.
+	defaultLease, leaseErr := parseLeaseInput(sub.DefaultLease)
+	if leaseErr != "" {
+		http.Error(w, leaseErr, http.StatusBadRequest)
+		return false
+	}
 
 	token, hash, prefix, err := cred.Mint()
 	if err != nil {
@@ -558,6 +585,7 @@ func (h *Handler) executeVendOn(w http.ResponseWriter, r *http.Request, human *s
 		CredHash: hash, CredPrefix: prefix, Slug: slug, Queues: sub.Queues, Verbs: sub.Verbs,
 		ExpiresAt: expiresAt, WebhookMax: sub.WebhookMax,
 		WebhookSourceTypes: sub.WebhookSourceTypes, WebhookQueues: sub.WebhookQueues,
+		DefaultLeaseTTLSeconds: defaultLease,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -580,7 +608,8 @@ func (h *Handler) executeVendOn(w http.ResponseWriter, r *http.Request, human *s
 		MCPJSON:        buildMCPJSON(h.cfg.BaseURL, ep.Slug, token),
 		MCPJSONURLOnly: buildMCPJSONURLOnly(h.cfg.BaseURL, ep.Slug),
 		Queues:         ep.ScopeQueues, Verbs: ep.ScopeVerbs, ExpiresAt: ep.ExpiresAt,
-		CSRF: auth.CSRFFromContext(r.Context()),
+		LeaseLabel: leaseCardLabel(ep.DefaultLeaseTTLSeconds),
+		CSRF:       auth.CSRFFromContext(r.Context()),
 	}
 	// The reveal renders inline at the top of the Endpoints page — a full server-rendered page, so
 	// the wizard completes identically with JS disabled (SPEC-0015 REQ "Wizard Interaction

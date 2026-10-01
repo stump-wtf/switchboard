@@ -24,28 +24,30 @@ type fakeDeployment struct {
 	srv *httptest.Server
 
 	mu           sync.Mutex
-	deny         bool                // authorize answers access_denied
-	registered   []map[string]any    // registration bodies seen
-	authorizes   []url.Values        // authorize queries seen
-	codes        map[string]string   // code → PKCE challenge
-	tokenCalls   []url.Values        // token-endpoint forms seen
-	access       string              // the currently valid access token
-	refresh      string              // the currently valid refresh token
-	expiresIn    int64               // expires_in advertised on issuance
-	generation   int                 // bumps on every issuance
-	revoked      map[string]bool     // access tokens the API rejects with 401
-	vends        []map[string]string // POST /api/v1/endpoints bodies seen
-	pushes       []map[string]any    // POST /api/v1/endpoints/{ref}/todos bodies seen, "ref" added
-	pushExists   bool                // the push answers created:false, as a matched key does
-	revokes      []string            // endpoint refs seen on POST /api/v1/endpoints/{ref}/revoke
-	revokeStatus int                 // when non-zero, the status the revoke route answers with
-	endpointRows []map[string]any    // GET /api/v1/endpoints answer
-	agentRows    []map[string]any    // GET /api/v1/agents answer
-	webhookRows  []map[string]any    // GET /api/v1/webhooks answer
-	rulesDocs    map[string]any      // GET /api/v1/webhooks/{id}/rules answers, by webhook id
-	ruleSets     []map[string]any    // PUT /api/v1/webhooks/{id}/rules bodies seen, "webhook" added
-	ruleTests    []map[string]any    // POST /api/v1/webhooks/{id}/rules/test bodies seen, "webhook" added
-	testAnswer   map[string]any      // the rules/test answer
+	deny         bool              // authorize answers access_denied
+	registered   []map[string]any  // registration bodies seen
+	authorizes   []url.Values      // authorize queries seen
+	codes        map[string]string // code → PKCE challenge
+	tokenCalls   []url.Values      // token-endpoint forms seen
+	access       string            // the currently valid access token
+	refresh      string            // the currently valid refresh token
+	expiresIn    int64             // expires_in advertised on issuance
+	generation   int               // bumps on every issuance
+	revoked      map[string]bool   // access tokens the API rejects with 401
+	vends        []map[string]any  // POST /api/v1/endpoints bodies seen
+	edits        []map[string]any  // PATCH /api/v1/endpoints/{ref} bodies seen, "ref" added
+	editStatus   int               // when non-zero, the status (and APIError body) the edit route answers with
+	pushes       []map[string]any  // POST /api/v1/endpoints/{ref}/todos bodies seen, "ref" added
+	pushExists   bool              // the push answers created:false, as a matched key does
+	revokes      []string          // endpoint refs seen on POST /api/v1/endpoints/{ref}/revoke
+	revokeStatus int               // when non-zero, the status the revoke route answers with
+	endpointRows []map[string]any  // GET /api/v1/endpoints answer
+	agentRows    []map[string]any  // GET /api/v1/agents answer
+	webhookRows  []map[string]any  // GET /api/v1/webhooks answer
+	rulesDocs    map[string]any    // GET /api/v1/webhooks/{id}/rules answers, by webhook id
+	ruleSets     []map[string]any  // PUT /api/v1/webhooks/{id}/rules bodies seen, "webhook" added
+	ruleTests    []map[string]any  // POST /api/v1/webhooks/{id}/rules/test bodies seen, "webhook" added
+	testAnswer   map[string]any    // the rules/test answer
 }
 
 func newFakeDeployment(t *testing.T) *fakeDeployment {
@@ -148,18 +150,19 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method + " " + r.URL.Path {
 		case "POST /api/v1/endpoints":
-			var in map[string]string
+			var in map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 				http.Error(w, "invalid JSON body", 400)
 				return
 			}
-			if in["name"] == "" {
+			name, _ := in["name"].(string)
+			if name == "" {
 				http.Error(w, "name is required", 400)
 				return
 			}
 			f.vends = append(f.vends, in)
-			slug := in["name"] + "-ab12cd34"
-			writeJSONResponse(w, 201, map[string]any{
+			slug := name + "-ab12cd34"
+			doc := map[string]any{
 				"agent_name": in["name"], "slug": slug,
 				"mcp_url": base + "/mcp/" + slug, "token": "sbk_" + strings.Repeat("x", 40),
 				"queue": in["queue"], "verbs": []string{"list_todos", "claim", "complete"},
@@ -169,7 +172,13 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 					"headers": map[string]string{"Authorization": "Bearer sbk_" + strings.Repeat("x", 40)},
 				}}},
 				"expires_at": nil,
-			})
+			}
+			// The lease pair is echoed only when the vend set one, so the older reveal tests keep
+			// the response shape they were written against.
+			if d, ok := in["default_lease_ttl_seconds"].(float64); ok {
+				doc["default_lease_ttl_seconds"], doc["effective_lease_ttl_seconds"] = int(d), int(d)
+			}
+			writeJSONResponse(w, 201, doc)
 		case "GET /api/v1/endpoints":
 			rows := f.endpointRows
 			if rows == nil {
@@ -183,6 +192,29 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSONResponse(w, 200, rows)
 		default:
+			// PATCH /api/v1/endpoints/{ref}
+			if ref, ok := strings.CutPrefix(r.URL.Path, "/api/v1/endpoints/"); ok && r.Method == http.MethodPatch && ref != "" && !strings.Contains(ref, "/") {
+				var in map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+					http.Error(w, "invalid JSON body", 400)
+					return
+				}
+				in["ref"] = ref
+				f.edits = append(f.edits, in)
+				if f.editStatus != 0 {
+					writeJSONResponse(w, f.editStatus, map[string]any{
+						"error": "default_lease_ttl_seconds must be a whole number of seconds from 60 to 86400, or null for the server default (300)",
+						"code":  "invalid_argument"})
+					return
+				}
+				out := map[string]any{"id": "ep-1", "slug": ref, "agent_name": "some-agent", "state": "active",
+					"default_lease_ttl_seconds": nil, "effective_lease_ttl_seconds": 300}
+				if d, ok := in["default_lease_ttl_seconds"].(float64); ok {
+					out["default_lease_ttl_seconds"], out["effective_lease_ttl_seconds"] = int(d), int(d)
+				}
+				writeJSONResponse(w, 200, out)
+				return
+			}
 			// POST /api/v1/endpoints/{ref}/todos
 			if rest, ok := strings.CutPrefix(r.URL.Path, "/api/v1/endpoints/"); ok && r.Method == http.MethodPost {
 				if ref, ok := strings.CutSuffix(rest, "/todos"); ok && ref != "" {

@@ -51,6 +51,8 @@ The routes below MUST be mounted under `/api/v1` behind the existing human OAuth
 
 | Method | Path | Mirrors | Auth |
 | --- | --- | --- | --- |
+| GET | `/api/v1/endpoints` | `get_default_lease`, across reach (`default_lease_ttl_seconds`, `effective_lease_ttl_seconds`) | Required |
+| PATCH | `/api/v1/endpoints/{ref}` | `set_default_lease` ([ADR-0043](../../../adrs/ADR-0043-per-endpoint-default-claim-lease.md)) | Required |
 | GET | `/api/v1/webhooks` | `list_webhooks`, across reach | Required |
 | GET | `/api/v1/endpoints/{ref}/webhooks` | `list_webhooks` | Required |
 | POST | `/api/v1/endpoints/{ref}/webhooks` | `create_webhook` | Required |
@@ -337,6 +339,9 @@ The `switchboard` binary MUST provide a command for every `/api/v1` route, group
 
 | Command | Route |
 | --- | --- |
+| `endpoint vend NAME [--lease-ttl DUR]` | `POST /endpoints` |
+| `endpoint list` (with a LEASE column) | `GET /endpoints` |
+| `endpoint edit REF --lease-ttl DUR\|default` | `PATCH /endpoints/{ref}` |
 | `webhook list [--endpoint REF]` | `GET /webhooks`, or `GET /endpoints/{ref}/webhooks` |
 | `webhook create REF --source TYPE --queue Q` | `POST /endpoints/{ref}/webhooks` |
 | `webhook rotate WEBHOOK` | `POST /webhooks/{id}/rotate` |
@@ -388,7 +393,13 @@ agent-only allowlist. The allowlist starts with exactly the lease verbs, `claim`
 `heartbeat`: a human does not hold leases through the API. `complete` and `fail` map to the board
 actions in REQ "Todos and Board Actions", and `recent_webhook_events` maps to `GET /api/v1/events`.
 Verbs added later by other specs, for example `release` (SPEC-0034) or the presence verbs
-(SPEC-0022), MUST either gain a route or be allowlisted by that spec.
+(SPEC-0022), MUST either gain a route or be allowlisted by that spec. `get_default_lease` maps to
+`GET /api/v1/endpoints` and `set_default_lease` to `PATCH /api/v1/endpoints/{ref}` (ADR-0043).
+
+`PATCH /api/v1/endpoints/{ref}` takes `{"default_lease_ttl_seconds": int|null}`. The key is
+required, any other key MUST be refused with `invalid_argument` (scope is not editable, SPEC-0007),
+and a value from 60 to 86400 or null is the only valid input. It MUST follow REQ "Reach on Every
+Route" (409 for a revoked endpoint) and draw from the per-human write bucket.
 
 A second test MUST enumerate the `/api/v1` route table and fail when a route has no CLI command.
 

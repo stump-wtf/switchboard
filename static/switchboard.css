@@ -2425,6 +2425,26 @@ pre code {
 .sb-epcard__delete {
   margin: 0;
 }
+/* The card's default-claim-lease form (ADR-0043): label, a short input and save on one line, the
+   help and any refusal on their own lines below. */
+.sb-epcard__lease {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0;
+  border-top: 1px solid var(--sb-divider);
+  padding-top: 8px;
+}
+.sb-epcard__lease .sb-epcard__lease-input {
+  width: 9em;
+  max-width: 9em;
+}
+.sb-epcard__lease .sb-help,
+.sb-epcard__lease .sb-callout {
+  flex-basis: 100%;
+  margin: 0;
+}
 
 /* Scope chips: queues (brass) and verbs (green), plus a toggle variant for the vend form. */
 .sb-chip {

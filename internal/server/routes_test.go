@@ -132,6 +132,7 @@ var sessionRoutes = map[string]bool{
 	"GET /endpoints/{id}/revoke":  true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
 	"POST /endpoints/{id}/revoke": true,
 	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)
+	"POST /endpoints/{id}/lease":  true, // edit the default claim lease in place (ADR-0043)
 	// The endpoint card's notify-hook controls (SPEC-0024 REQ-10), owner-scoped in the store.
 	"POST /endpoints/{id}/hooks/{hookID}/disable": true,
 	"POST /endpoints/{id}/hooks/{hookID}/enable":  true,

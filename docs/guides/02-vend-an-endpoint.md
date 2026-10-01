@@ -42,6 +42,7 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
   | Fan-out routes | `add_webhook_route`, `list_webhook_routes`, `remove_webhook_route` |
   | Routing rules | `list_webhook_rules`, `set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`, `move_webhook_rule`, `remove_webhook_rule`, `test_webhook_rules` |
   | Event history | `list_webhook_events`, `get_webhook_event`, `replay_webhook_event` |
+  | Default lease | `get_default_lease`, `set_default_lease` |
   | Outbound HTTP calls (notify hooks) | `create_notify_hook`, `list_notify_hooks`, `rotate_notify_hook`, `delete_notify_hook` |
 
   The notify-hook verbs let the agent register an HTTPS URL that Switchboard POSTs a signed
@@ -55,6 +56,9 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
   The web wizard pre-checks the eight todo verbs. `switchboard endpoint vend` grants all of them.
   `list_todos` also grants `get_todo`, so an endpoint vended before `get_todo` existed has it.
   `release` changes state, so no other verb grants it: an older endpoint needs a re-vend to get it.
+  The default-lease verbs let the agent read and change its own endpoint's default lease (below).
+  `switchboard endpoint vend` grants them; the wizard leaves them unticked; a friend endpoint can
+  never hold them.
 - **A webhook ceiling** — how many webhooks the endpoint may create, which source types (`github`,
   `gitea`, `cairn`, `generic`; `stripe` and `slack` exist but
   [aren't usable yet](/getting-started/first-webhook#1-create-a-webhook)), and which queues those webhooks and their routing
@@ -64,10 +68,33 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
 The endpoint enforces this scope at the boundary on every call: verbs outside the allowlist and
 queues outside the grant are denied.
 
+## The default claim lease
+
+Every endpoint also has a **default claim lease**: how long a `claim`, `claim_next` or `heartbeat`
+holds a todo when the call passes no `lease_ttl_seconds`. Left blank, it is the server default, 300
+seconds. Set it when the endpoint's jobs run longer than five minutes, such as a model reviewing a
+pull request for half an hour: then a worker that forgets `lease_ttl_seconds` keeps its todo, and a
+bare `heartbeat` extends by your default instead of cutting the lease back to 300 seconds.
+
+- It is whole seconds from 60 to 86400 (24 hours). The web forms and the CLI also take a duration
+  like `45m` or `1h`. A value out of range is refused, never rounded to the nearest bound.
+- A `lease_ttl_seconds` on the call still wins, up to 86400.
+- It is not scope, so you can change it at any time without re-vending: on the endpoint's card,
+  with `switchboard endpoint edit SLUG --lease-ttl 1h` (`--lease-ttl default` resets it), or with
+  `PATCH /api/v1/endpoints/{ref}`. A change applies to the next claim or heartbeat; leases already
+  granted keep their expiry.
+- The agent sees the number: its session instructions and its `claim`, `claim_next` and
+  `heartbeat` descriptions state the endpoint's default. An endpoint granted `set_default_lease`
+  can change its own default; it can never change another endpoint's.
+
+A longer default also means a crashed worker's todo waits longer before another worker gets it,
+because the todo is requeued only when the lease lapses. Pick the shortest lease that covers a job.
+
 ## How to configure and vend one
 
 1. **Open Endpoints** on the web board and choose **+ vend endpoint** (the six-step wizard) or
-   **quick vend** (one page, no webhook ceiling).
+   **quick vend** (one page, no webhook ceiling). Both take an optional default claim lease (the
+   wizard asks on its lifetime step).
 2. **Name the agent, then choose its queues, verbs, webhook ceiling, and lifetime.** Naming the
    agent registers it; registration alone grants nothing.
 3. **Vend, and copy the reveal.** It shows the MCP URL, the credential, and the MCP client

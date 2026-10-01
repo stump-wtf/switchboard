@@ -46,6 +46,17 @@ func WebhookVerbs() []string {
 	}
 }
 
+// LeaseVerbs returns the endpoint's own lease-setting surface in display order: read the default
+// lease a claim on this endpoint gets, and set it. They act only on the calling endpoint and grant
+// nothing a caller could not already ask for per call (lease_ttl_seconds has the same cap), so they
+// sit in the default grant beside the webhook self-management verbs. They are not friend-grantable
+// (store.friendGrantableVerbs): a friend endpoint is vended on the approver's agent, and its
+// settings are the approver's to change. Governing: ADR-0043, SPEC-0006 REQ "Endpoint Default
+// Lease Verbs".
+func LeaseVerbs() []string {
+	return []string{"get_default_lease", "set_default_lease"}
+}
+
 // EventVerbs returns the SPEC-0005 event-history surface in display order.
 func EventVerbs() []string {
 	return []string{"list_webhook_events", "get_webhook_event", "replay_webhook_event"}
@@ -60,14 +71,15 @@ func NotifyHookVerbs() []string {
 	return []string{"create_notify_hook", "list_notify_hooks", "rotate_notify_hook", "delete_notify_hook"}
 }
 
-// AllVerbs returns the default-grantable verb set: every drain, webhook, and event verb
+// AllVerbs returns the default-grantable verb set: every drain, webhook, event and lease verb
 // concatenated in display order. The notify-hook verbs are grantable too but never by default, so
 // they are listed separately (NotifyHookVerbs) and never folded in here. Call sites that need the composed grant (the vend wizard's
 // endpoint API, the OAuth consent screen) enumerate this instead of concatenating the three
 // families by hand, so the composition cannot drift between them. Governing: SPEC-0006 REQ
 // "Todo Drain Verbs", REQ "Webhook Self-Management"; SPEC-0014 REQ "Agent Tool Surface over MCP".
 func AllVerbs() []string {
-	return append(append(append([]string{}, DrainVerbs()...), WebhookVerbs()...), EventVerbs()...)
+	out := append(append(append([]string{}, DrainVerbs()...), WebhookVerbs()...), EventVerbs()...)
+	return append(out, LeaseVerbs()...)
 }
 
 // verbSet builds the membership map the scope guard consults from an ordered verb list.

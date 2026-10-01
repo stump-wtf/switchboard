@@ -35,6 +35,7 @@ but are no longer advertised.
 | `switchboard version` | Print the build version. |
 | `switchboard endpoint list` | List the vended endpoints you own. |
 | `switchboard endpoint vend NAME` | Register an agent and vend its endpoint in one call. |
+| `switchboard endpoint edit SLUG\|ID` | Change an endpoint's default claim lease (`--lease-ttl DUR\|default`). |
 | `switchboard endpoint revoke SLUG\|ID` | Kill an endpoint; its credential stops working immediately. |
 | `switchboard agent list` | List your registered agents. |
 | `switchboard todo push ENDPOINT TITLE` | Mint a todo on an endpoint you own and ring its doorbell. |
@@ -78,7 +79,7 @@ Print the build version. No flags.
 ### `switchboard endpoint list`
 
 List the vended endpoints you own. Credentials are never shown: a token is revealed exactly once,
-at vend time.
+at vend time. The LEASE column is each endpoint's default claim lease, or the server default.
 
 | Flag | Meaning |
 |---|---|
@@ -93,6 +94,18 @@ in one call. The credential is printed **once** — store it now (see
 | Flag | Meaning |
 |---|---|
 | `--queue` (short `-q`) | The queue the endpoint drains and the webhook feeds. Default `inbox`. |
+| `--lease-ttl` | The endpoint's default claim lease: a duration (`45m`, `1h`) or whole seconds, 60 to 86400. What a claim or heartbeat without `lease_ttl_seconds` gets. Default: the server's 300 seconds. |
+| `--json` | Print the raw API response. |
+
+### `switchboard endpoint edit SLUG|ID`
+
+Change an endpoint's default claim lease without re-vending it. New claims and heartbeats that pass
+no `lease_ttl_seconds` get it; leases already granted keep their expiry. Names by the slug
+`endpoint list` prints, or by the id.
+
+| Flag | Meaning |
+|---|---|
+| `--lease-ttl` | Required. A duration (`45m`, `1h`) or whole seconds, 60 to 86400; `default` resets it to the server default. The deployment refuses a value out of range. |
 | `--json` | Print the raw API response. |
 
 ### `switchboard endpoint revoke SLUG|ID`

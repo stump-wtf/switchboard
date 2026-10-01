@@ -19,7 +19,9 @@ job: draining the durable todo queue (`list_todos`, `claim`, `complete`, `fail`,
 endpoints those sources deliver to (`add_webhook_route`, `list_webhook_routes`,
 `remove_webhook_route`), and routing each delivery with jq rules (`list_webhook_rules`,
 `set_webhook_rules`, `add_webhook_rule`, `update_webhook_rule`, `move_webhook_rule`,
-`remove_webhook_rule`, `test_webhook_rules`; [SPEC-0020](../event-routing/spec.md)).
+`remove_webhook_rule`, `test_webhook_rules`; [SPEC-0020](../event-routing/spec.md)), and reading
+and setting its own default claim lease (`get_default_lease`, `set_default_lease`;
+[ADR-0043](../../../adrs/ADR-0043-per-endpoint-default-claim-lease.md)).
 
 Every request is authenticated by a bearer credential that resolves to an endpoint and its immutable
 scope (`internal/agentapi/agentapi.go`). Scope is enforced at the boundary: a verb outside the
@@ -144,27 +146,56 @@ without completion MUST be reclaimable — a background reaper MUST requeue expi
 dead-letter them when attempts are exhausted) so that a crashed agent does not strand work. Lease
 extension and completion MUST be permitted only to the endpoint that holds the lease.
 
+`claim`, `claim_next` and `heartbeat` MUST resolve their lease the same way
+([ADR-0043](../../../adrs/ADR-0043-per-endpoint-default-claim-lease.md)): an explicit
+`lease_ttl_seconds` on the call wins, clamped to the maximum (86400 seconds); without one, the
+endpoint's default lease applies ([SPEC-0007](../vended-endpoints/spec.md) REQ "Endpoint Default
+Lease"); without that, the server default (300 seconds). A `heartbeat` without `lease_ttl_seconds`
+MUST therefore extend by the endpoint's default, not by the server default. The endpoint's default
+MUST be read when the call is made, so a change applies to the next claim or heartbeat on every live
+session; a failure to read it MUST refuse the call rather than grant a lease the endpoint's human did
+not choose. Every agent-facing path that takes or extends a lease MUST apply the same rule.
+
 The surface MUST tell a worker this contract before it claims, because a worker that does not know
 it loses its todo to the reaper while still working on it. The session `instructions` (SPEC-0011
 REQ "Channel Capability on the Vended Session") MUST state: take work with `claim_next`, or `claim`
-for a known id; the default lease TTL and the maximum `lease_ttl_seconds`; that `heartbeat`
-extends the lease and is called before it runs out, before any slow step and before any
-irreversible action taken for the todo; that a lapsed lease is reaped and the todo requeued for
-another worker; that `conflict` from `heartbeat`, `complete`, `fail` or `release` means the caller
-no longer holds the todo and MUST make no further changes on its behalf; that every claim ends in
-`complete`, `fail` or `release`; and that workers sharing one credential claim with `require_fence`
-and present the `lease_token`. The `claim`, `claim_next` and `heartbeat` descriptions MUST state the
-default and maximum TTL and what losing the lease looks like. The instructions MUST NOT direct a
-worker to `list_todos`, which is allowlisted per endpoint like every verb. Every TTL the text states
-MUST be derived from, or tested against, the values the lease code enforces, so the text cannot
-drift from them.
+for a known id; the endpoint's effective default lease TTL, and whether it is the endpoint's own
+default or the server's; the maximum `lease_ttl_seconds`; that `heartbeat` extends the lease and is
+called before it runs out, before any slow step and before any irreversible action taken for the
+todo, and that a `heartbeat` without `lease_ttl_seconds` resets the lease to the default; that a
+lapsed lease is reaped and the todo requeued for another worker; that `conflict` from `heartbeat`,
+`complete`, `fail` or `release` means the caller no longer holds the todo and MUST make no further
+changes on its behalf; that every claim ends in `complete`, `fail` or `release`; and that workers
+sharing one credential claim with `require_fence` and present the `lease_token`. The `claim`,
+`claim_next` and `heartbeat` descriptions MUST state the endpoint's effective default and the
+maximum TTL and what losing the lease looks like. When the endpoint's default changes, the surface
+MUST re-register those three tools on the endpoint's live sessions so their descriptions state the
+new default; instructions are fixed at `initialize`, so a live session's instructions MAY keep the
+default it started with. The instructions MUST NOT direct a worker to `list_todos`, which is
+allowlisted per endpoint like every verb. Every TTL the text states MUST be derived from, or tested
+against, the values the lease code enforces, so the text cannot drift from them.
 
 #### Scenario: A connecting worker is told the lease contract
 
 - **WHEN** a harness initializes a session and lists its tools
 - **THEN** the instructions and the `claim`, `claim_next` and `heartbeat` descriptions MUST name the
-  default lease TTL and its maximum as the server enforces them, `heartbeat`, the requeue on lapse,
-  and `conflict` as the signal to stop acting on the todo
+  endpoint's effective default lease TTL and its maximum as the server enforces them, `heartbeat`,
+  the requeue on lapse, and `conflict` as the signal to stop acting on the todo
+
+#### Scenario: A configured endpoint's worker is told its own default
+
+- **GIVEN** an endpoint whose human set its default lease to 3600 seconds
+- **WHEN** a harness initializes a session on it and lists its tools
+- **THEN** the instructions and the three descriptions MUST state 3600 seconds as this endpoint's
+  default, and MUST NOT state 300 seconds as the default
+
+#### Scenario: Precedence on every claim path
+
+- **GIVEN** an endpoint whose default lease is 3600 seconds
+- **WHEN** a worker calls `claim_next` with no `lease_ttl_seconds`, then `heartbeat` with none, then
+  `claim` with `lease_ttl_seconds = 120`
+- **THEN** the first two leases MUST run 3600 seconds and the third 120 seconds; on an endpoint
+  with no default the first two MUST run 300 seconds
 
 #### Scenario: Expired lease is requeued
 
@@ -176,6 +207,41 @@ drift from them.
 
 - **WHEN** an endpoint that does not hold a todo's lease calls `heartbeat` on it
 - **THEN** the server MUST refuse it (`forbidden` or `conflict`) and MUST NOT extend the lease
+
+### Requirement: Endpoint Default Lease Verbs
+
+The surface MUST expose `get_default_lease` and `set_default_lease`, the endpoint's own read and
+write of its default lease ([SPEC-0007](../vended-endpoints/spec.md) REQ "Endpoint Default Lease").
+Both MUST act only on the calling endpoint: neither MAY take an endpoint argument, and a call naming
+one MUST be refused. `get_default_lease` MUST return `default_lease_ttl_seconds` (null when the
+server default applies), `effective_lease_ttl_seconds`, and the server default, minimum and maximum.
+`set_default_lease` MUST require `default_lease_ttl_seconds`, an integer from 60 to 86400 or null to
+reset it, MUST refuse a value out of range with `invalid_argument` and change nothing, and MUST
+return the same shape as `get_default_lease`. Both MUST be allowlisted per endpoint like every verb;
+they MUST be part of the default grant beside the webhook self-management verbs, and MUST NOT be
+grantable to a friend edge (SPEC-0033 REQ "Closing the Audited Surfaces", F3): a friend endpoint is
+vended on the approver's agent, so its settings are the approver's.
+
+#### Scenario: An endpoint sets its own default
+
+- **WHEN** an endpoint granted `set_default_lease` calls it with `default_lease_ttl_seconds = 3600`
+- **THEN** its default becomes 3600, the response states it, and its next `claim_next` without
+  `lease_ttl_seconds` holds a 3600-second lease
+
+#### Scenario: Out of range is refused
+
+- **WHEN** an endpoint calls `set_default_lease` with 59 or 86401
+- **THEN** the call fails with `invalid_argument` and the default is unchanged
+
+#### Scenario: Another endpoint is out of reach
+
+- **WHEN** an endpoint calls `set_default_lease` with an extra `endpoint_id` naming another endpoint
+- **THEN** the call is refused and neither endpoint's default changes
+
+#### Scenario: A friend grant cannot carry the verbs
+
+- **WHEN** a friend request asks for `set_default_lease`
+- **THEN** the verb is dropped from what the edge may grant
 
 ### Requirement: Webhook Self-Management Within a Vended Ceiling
 

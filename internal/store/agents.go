@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/stump-wtf/switchboard/internal/lease"
 )
 
 // Agent is a lightweight owned record; registration grants nothing. ADR-0008.
@@ -38,6 +40,10 @@ type Endpoint struct {
 	// ExpiresAt is the optional credential lifetime chosen at vend time; nil = valid until revoked.
 	// Enforced as revocation (auth + reaper). Governing: SPEC-0016 REQ "Credential Lifetime", ADR-0019.
 	ExpiresAt *time.Time
+	// DefaultLeaseTTLSeconds is the lease a claim or heartbeat on this endpoint gets when the call
+	// names no lease_ttl_seconds; nil = the server default (lease.DefaultTTL). It is not scope, so
+	// its human edits it in place. Governing: ADR-0043, SPEC-0007 REQ "Endpoint Default Lease".
+	DefaultLeaseTTLSeconds *int
 }
 
 // AuthEndpoint is the minimal view resolved from a presented credential to authorize an agent call.
@@ -58,6 +64,12 @@ type AuthEndpoint struct {
 	WebhookMax         int
 	WebhookSourceTypes []string
 	WebhookQueues      []string
+	// DefaultLeaseTTLSeconds is the endpoint's default claim lease as of authentication (nil = the
+	// server default). It feeds the lease numbers a new session's instructions and tool
+	// descriptions state; the lease verbs re-read the live value on every call
+	// (EndpointDefaultLease), so an edit applies to the next claim, not the next session.
+	// Governing: ADR-0043.
+	DefaultLeaseTTLSeconds *int
 }
 
 // CreateAgent registers an agent owned by a human.
@@ -219,6 +231,10 @@ type VendParams struct {
 	// each against the SSRF guard before vending: ownership never exempts a target from it.
 	// Governing: ADR-0038, SPEC-0033 REQ "Owned Replay Targets".
 	ReplayTargets []string
+	// DefaultLeaseTTLSeconds is the endpoint's default claim lease, chosen at vend time; nil = the
+	// server default. Validated against the lease bounds before anything is minted.
+	// Governing: ADR-0043, SPEC-0007 REQ "Endpoint Default Lease".
+	DefaultLeaseTTLSeconds *int
 }
 
 // VendResult is what VendAgentEndpoint returns: the backing agent's name (for the one-time reveal)
@@ -242,6 +258,12 @@ type VendResult struct {
 // Governing: ADR-0008 (URL + credential = the grant, minted atomically), ADR-0009 (persona_id scopes
 // a vended endpoint to a persona of the same agent), SPEC-0013 REQ "Endpoints View and Vend Modal".
 func (s *Store) VendAgentEndpoint(ctx context.Context, p VendParams) (VendResult, error) {
+	// An out-of-range default lease is refused before the transaction opens, so it mints nothing.
+	if p.DefaultLeaseTTLSeconds != nil {
+		if err := lease.ValidateDefault(*p.DefaultLeaseTTLSeconds); err != nil {
+			return VendResult{}, err
+		}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return VendResult{}, fmt.Errorf("store: vend begin: %w", err)
@@ -289,6 +311,13 @@ func (s *Store) VendAgentEndpoint(ctx context.Context, p VendParams) (VendResult
 			return VendResult{}, fmt.Errorf("store: vend replay targets: %w", err)
 		}
 	}
+	if p.DefaultLeaseTTLSeconds != nil {
+		if _, err := tx.Exec(ctx, `UPDATE endpoints SET default_lease_ttl_seconds = $2 WHERE id = $1`,
+			ep.ID, *p.DefaultLeaseTTLSeconds); err != nil {
+			return VendResult{}, fmt.Errorf("store: vend default lease: %w", err)
+		}
+		ep.DefaultLeaseTTLSeconds = p.DefaultLeaseTTLSeconds
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return VendResult{}, fmt.Errorf("store: vend commit: %w", err)
 	}
@@ -298,7 +327,8 @@ func (s *Store) VendAgentEndpoint(ctx context.Context, p VendParams) (VendResult
 // ListEndpoints returns an agent's endpoints, newest first.
 func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at, last_seen_at, expires_at
+		SELECT id::text, agent_id::text, slug, credential_prefix, scope_queues, scope_verbs, mutability, state, created_at, last_seen_at, expires_at,
+		       default_lease_ttl_seconds
 		FROM endpoints WHERE agent_id = $1 ORDER BY created_at DESC`, agentID)
 	if err != nil {
 		return nil, err
@@ -307,7 +337,8 @@ func (s *Store) ListEndpoints(ctx context.Context, agentID string) ([]Endpoint, 
 	var out []Endpoint
 	for rows.Next() {
 		var e Endpoint
-		if err := rows.Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt, &e.LastSeenAt, &e.ExpiresAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.AgentID, &e.Slug, &e.CredentialPrefix, &e.ScopeQueues, &e.ScopeVerbs, &e.Mutability, &e.State, &e.CreatedAt, &e.LastSeenAt, &e.ExpiresAt,
+			&e.DefaultLeaseTTLSeconds); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -339,6 +370,9 @@ type EndpointCard struct {
 	// ReplayTargets are the endpoint's owned replay destinations (SPEC-0033 REQ "Owned Replay
 	// Targets"), shown only to the owning human.
 	ReplayTargets []string
+	// DefaultLeaseTTLSeconds is the endpoint's default claim lease; nil = the server default.
+	// Governing: ADR-0043, SPEC-0007 REQ "Endpoint Default Lease".
+	DefaultLeaseTTLSeconds *int
 }
 
 // ListEndpointCards returns every endpoint owned by a human (via its agents), enriched with the
@@ -350,7 +384,8 @@ func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]E
 	rows, err := s.pool.Query(ctx, `
 		SELECT e.id::text, e.agent_id::text, ag.name, COALESCE(p.id::text, ''), COALESCE(p.name, ''),
 		       e.slug, e.credential_prefix, e.scope_queues, e.scope_verbs,
-		       e.state, e.created_at, e.revoked_at, e.last_seen_at, e.expires_at, e.replay_targets
+		       e.state, e.created_at, e.revoked_at, e.last_seen_at, e.expires_at, e.replay_targets,
+		       e.default_lease_ttl_seconds
 		FROM endpoints e
 		JOIN agents ag ON ag.id = e.agent_id
 		LEFT JOIN personas p ON p.id = e.persona_id
@@ -365,7 +400,7 @@ func (s *Store) ListEndpointCards(ctx context.Context, ownerHumanID string) ([]E
 		var c EndpointCard
 		if err := rows.Scan(&c.ID, &c.AgentID, &c.AgentName, &c.PersonaID, &c.PersonaName, &c.Slug,
 			&c.CredentialPrefix, &c.ScopeQueues, &c.ScopeVerbs, &c.State, &c.CreatedAt,
-			&c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt, &c.ReplayTargets); err != nil {
+			&c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt, &c.ReplayTargets, &c.DefaultLeaseTTLSeconds); err != nil {
 			return nil, fmt.Errorf("store: scan endpoint card: %w", err)
 		}
 		out = append(out, c)
@@ -513,13 +548,13 @@ func (s *Store) EndpointByCredHash(ctx context.Context, credHash string) (AuthEn
 	var a AuthEndpoint
 	err := s.pool.QueryRow(ctx, `
 		SELECT e.id::text, e.agent_id::text, ag.name, ag.owner_human_id::text, e.slug, e.scope_queues, e.scope_verbs,
-		       e.webhook_max, e.webhook_source_types, e.webhook_queues
+		       e.webhook_max, e.webhook_source_types, e.webhook_queues, e.default_lease_ttl_seconds
 		FROM endpoints e JOIN agents ag ON ag.id = e.agent_id
 		WHERE e.credential_hash = $1 AND e.state = 'active'
 		  AND (e.expires_at IS NULL OR e.expires_at > now())`,
 		credHash,
 	).Scan(&a.ID, &a.AgentID, &a.AgentName, &a.OwnerHumanID, &a.Slug, &a.ScopeQueues, &a.ScopeVerbs,
-		&a.WebhookMax, &a.WebhookSourceTypes, &a.WebhookQueues)
+		&a.WebhookMax, &a.WebhookSourceTypes, &a.WebhookQueues, &a.DefaultLeaseTTLSeconds)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AuthEndpoint{}, ErrNotFound
 	}

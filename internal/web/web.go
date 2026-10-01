@@ -82,6 +82,11 @@ type Handler struct {
 	// scenario "Revocation closes live streams", ADR-0008 (revoke is instant and total).
 	endpointRevoked func(endpointID string)
 
+	// endpointLeaseChanged, when set, observes a committed default-lease edit (endpoint id, new
+	// default or nil). The server wires it to the MCP mount so the endpoint's live sessions re-state
+	// the new default in their claim/claim_next/heartbeat descriptions. Governing: ADR-0043.
+	endpointLeaseChanged func(endpointID string, defaultLease *int)
+
 	// quarantine releases and discards held deliveries for the Quarantine view (quarantine.go). Nil
 	// until the server wires the intake service, and every action then answers "unavailable".
 	// Governing: SPEC-0026 REQ-9.
@@ -91,6 +96,12 @@ type Handler struct {
 // SetEndpointRevokedHook registers fn to observe successful endpoint revocations. Wire it before
 // the handler serves traffic; passing nil clears the hook.
 func (h *Handler) SetEndpointRevokedHook(fn func(endpointID string)) { h.endpointRevoked = fn }
+
+// SetEndpointLeaseChangedHook registers fn to observe committed default-lease edits from the
+// Endpoints view's lease form. Wire it before the handler serves traffic; nil clears it.
+func (h *Handler) SetEndpointLeaseChangedHook(fn func(endpointID string, defaultLease *int)) {
+	h.endpointLeaseChanged = fn
+}
 
 // New parses the templates and returns a Handler. A parse failure is returned to the caller, so
 // server startup fails loudly instead of serving broken pages (SPEC-0012 "fail startup if any
@@ -113,7 +124,7 @@ func New(st *store.Store, cfg config.Config, log *slog.Logger) (*Handler, error)
 
 // templateFuncs is the shared FuncMap wired into every page set and the standalone fragments.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"reltime": relTime, "tag": providerTag, "iconpath": providerIconPath, "eventiconpath": eventIconPath, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown, "trustdef": trustDef}
+	return template.FuncMap{"reltime": relTime, "tag": providerTag, "iconpath": providerIconPath, "eventiconpath": eventIconPath, "dict": dict, "lanestate": laneStateLabel, "join": joinScope, "countdown": countdown, "trustdef": trustDef, "leasehelp": func() string { return leaseHelp }}
 }
 
 // parsePages composes layout.html and the per-view fragment files (templates/fragments/*.html)

@@ -40,9 +40,23 @@
     {{/* The endpoint's address: possessing URL + credential IS the capability (SPEC-0007). */}}
     <div class="sb-epcard__row"><dt class="sb-microlabel">URL</dt><dd><code class="sb-code" data-sb-ep-url="{{$c.URL}}">{{$c.URL}}</code></dd></div>
     <div class="sb-epcard__row"><dt class="sb-microlabel">Credential</dt><dd><code class="sb-code">{{$c.CredPrefix}}…</code> <span class="sb-muted">hashed · shown once at vend</span></dd></div>
+    {{/* ADR-0043: the lease a claim or heartbeat on this endpoint gets when the call names no
+         lease_ttl_seconds, and whose default it is. */}}
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Lease</dt><dd data-sb-ep-lease>{{$c.LeaseLabel}}</dd></div>
     {{/* The endpoint's webhooks with their intake signals (SPEC-0026 REQ-9; fragments/quarantine.html). */}}
     {{template "endpoint_webhooks" $c.Webhooks}}
   </dl>
+  {{/* The default claim lease is not scope (SPEC-0007), so an active card edits it in place: a
+       plain POST form carrying the CSRF token, no JS. A refused value re-renders the page with the
+       entered text and the refusal here (role=alert). Blank = the server default. ADR-0043. */}}
+  {{if eq $c.State "active"}}<form method="post" action="/endpoints/{{$c.ID}}/lease" class="sb-epcard__lease" data-sb-ep-lease-form>
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label class="sb-microlabel" for="sb-ep-lease-{{$c.ID}}">Default claim lease</label>
+    <input id="sb-ep-lease-{{$c.ID}}" class="sb-input sb-epcard__lease-input" name="default_lease" value="{{$c.LeaseInput}}" placeholder="default" autocomplete="off" aria-describedby="sb-ep-lease-help-{{$c.ID}}"{{if $c.LeaseError}} aria-invalid="true"{{end}} data-sb-ep-lease-input>
+    <button type="submit" class="sb-btn sb-btn--secondary sb-btn--mono" aria-label="Save the default claim lease for {{$c.AgentName}}">save</button>
+    {{if $c.LeaseError}}<p class="sb-callout sb-callout--danger" role="alert" data-sb-ep-lease-error>{{$c.LeaseError}}</p>{{end}}
+    <p class="sb-help" id="sb-ep-lease-help-{{$c.ID}}">{{leasehelp}} · applies to new claims and heartbeats only</p>
+  </form>{{end}}
   {{if eq $c.State "active"}}{{template "endpoint_hooks" dict "C" $c "CSRF" .CSRF}}{{end}}
   <div class="sb-epcard__foot">
     {{if eq $c.State "revoked"}}
@@ -88,7 +102,7 @@
   <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-url-label">{{.URL}}</pre>
   <span class="sb-label" id="sb-reveal-cred-label">Credential · shown once</span>
   <pre class="sb-pre" tabindex="0" aria-labelledby="sb-reveal-cred-label">{{.Token}}</pre>
-  <p class="sb-muted sb-mono">queues: {{range .Queues}}<code>{{.}}</code> {{end}}· verbs: {{range .Verbs}}<code>{{.}}</code> {{end}}</p>
+  <p class="sb-muted sb-mono">queues: {{range .Queues}}<code>{{.}}</code> {{end}}· verbs: {{range .Verbs}}<code>{{.}}</code> {{end}}{{if .LeaseLabel}}· default lease: <code data-sb-reveal-lease>{{.LeaseLabel}}</code>{{end}}</p>
   {{/* Governing: SPEC-0014 — the reveal shows Streamable-HTTP wiring (type: http + /mcp/{slug} URL +
        bearer header) only. No local binary or stdio command. */}}
   <span class="sb-label" id="sb-reveal-wiring-label">Wire it into your MCP client</span>

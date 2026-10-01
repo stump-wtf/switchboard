@@ -136,10 +136,11 @@ func (s *Store) EndpointByOAuthToken(ctx context.Context, tokenHash string) (Aut
 		  AND e.id = t.endpoint_id AND e.state = 'active'
 		  AND (e.expires_at IS NULL OR e.expires_at > now())
 		RETURNING e.id::text, e.agent_id::text, ag.name, ag.owner_human_id::text, e.slug,
-		          e.scope_queues, e.scope_verbs, e.webhook_max, e.webhook_source_types, e.webhook_queues`,
+		          e.scope_queues, e.scope_verbs, e.webhook_max, e.webhook_source_types, e.webhook_queues,
+		          e.default_lease_ttl_seconds`,
 		tokenHash,
 	).Scan(&a.ID, &a.AgentID, &a.AgentName, &a.OwnerHumanID, &a.Slug, &a.ScopeQueues, &a.ScopeVerbs,
-		&a.WebhookMax, &a.WebhookSourceTypes, &a.WebhookQueues)
+		&a.WebhookMax, &a.WebhookSourceTypes, &a.WebhookQueues, &a.DefaultLeaseTTLSeconds)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AuthEndpoint{}, ErrNotFound
 	}

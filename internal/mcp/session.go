@@ -49,6 +49,11 @@ type mcpSession struct {
 	transport *sdk.StreamableServerTransport
 	session   *sdk.ServerSession
 	conn      sdk.Connection
+	// server is the session's own SDK server and ep the endpoint it was minted for, kept so an edit
+	// to the endpoint's default lease can re-register the lease-bound tools on it (lease.go
+	// RefreshEndpointLease). Governing: ADR-0043.
+	server *sdk.Server
+	ep     store.AuthEndpoint
 
 	// doorbells is the per-subscriber bounded buffer (SPEC-0011 "Slow subscriber is dropped, not
 	// blocked"): the publisher never blocks on it, and the pump drains it onto the stream.
@@ -206,7 +211,8 @@ func (h *Handler) createSession(r *http.Request, ep store.AuthEndpoint) (*mcpSes
 	capture := &connCapturingTransport{inner: tr}
 	// r.Context() lets middleware values reach the connect path; the jsonrpc2 layer detaches it
 	// for the long-lived session, so session lifetime is NOT bound to this one request.
-	ss, err := h.newServer(ep).Connect(r.Context(), capture, nil)
+	srv := h.newServer(ep)
+	ss, err := srv.Connect(r.Context(), capture, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: connect session: %w", err)
 	}
@@ -222,6 +228,8 @@ func (h *Handler) createSession(r *http.Request, ep store.AuthEndpoint) (*mcpSes
 		transport:  tr,
 		session:    ss,
 		conn:       capture.conn,
+		server:     srv,
+		ep:         ep,
 		doorbells:  make(chan store.Todo, doorbellBuffer),
 	}
 	s.lastSeen.Store(time.Now().UnixNano())

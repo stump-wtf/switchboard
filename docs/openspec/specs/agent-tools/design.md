@@ -89,6 +89,28 @@ worker's todo for longer; tailoring the text to each endpoint's granted verbs ma
 instructions different for one sentence's gain, so the text instead says what to do without
 `heartbeat`.
 
+### Each endpoint's default lease, read per call
+
+**Choice**: `claim`, `claim_next` and `heartbeat` resolve their lease with one function
+(`internal/lease.TTL`): the per-call `lease_ttl_seconds`, clamped to 86400, else the endpoint's
+`default_lease_ttl_seconds`, else 300. The default is read from the endpoint row on each call that
+passes no `lease_ttl_seconds`, not taken from the session's snapshot. The instructions and the three
+descriptions are built from the endpoint's default when the session starts; an edit re-registers
+the three tools on the endpoint's live sessions (`tools/list_changed`). `get_default_lease` and
+`set_default_lease` are allowlisted, default-granted, and not friend-grantable
+([ADR-0043](../../../adrs/ADR-0043-per-endpoint-default-claim-lease.md)).
+
+**Rationale**: the text from #552 helps only a worker that reads and obeys it. A worker whose jobs
+run an hour forgot `lease_ttl_seconds` and lost the todo, and a bare `heartbeat` cut a long lease
+back to 300 seconds. The endpoint's human knows the job length, so the default lives on the endpoint
+and applies when the call says nothing. Reading it per call makes an edit take effect on the next
+claim without a reconnect, at the cost of one primary-key read.
+
+**Alternatives rejected**: a server-wide default (one number for every worker); a per-queue default
+(queues are a shared namespace); using the session's snapshot (an edit would wait for every worker
+to reconnect); self verbs outside the allowlist, as presence uses (the human could not withhold the
+write).
+
 ### The payload ships once, at claim
 
 **Choice**: `list_todos`, `complete`, `fail` and `heartbeat` return compact rows (`payload_size`

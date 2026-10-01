@@ -240,6 +240,15 @@ func (a *apiClient) put(path string, body any) ([]byte, error) {
 	return readAPIResponse(resp, http.MethodPut, path, http.StatusOK)
 }
 
+// patch performs a JSON PATCH and returns the response body, accepting 200.
+func (a *apiClient) patch(path string, body any) ([]byte, error) {
+	resp, err := a.do(http.MethodPatch, path, body)
+	if err != nil {
+		return nil, err
+	}
+	return readAPIResponse(resp, http.MethodPatch, path, http.StatusOK)
+}
+
 func readAPIResponse(resp *http.Response, method, path string, want ...int) ([]byte, error) {
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

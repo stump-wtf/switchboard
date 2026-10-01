@@ -58,43 +58,52 @@ const (
 		`uniformly to any /a2ui URI.`
 )
 
-// instructions describe the doorbell-over-durable-queue contract to connecting harnesses, then the
-// lease contract: how to take work, how long a claim is held, how to keep it, what a lapse and a
+// instructionsFor describes the doorbell-over-durable-queue contract to connecting harnesses, then
+// the lease contract: how to take work, how long a claim is held, how to keep it, what a lapse and a
 // conflict mean, and how workers sharing one credential stay apart. It is injected into every
 // session's system prompt, so it stays short, one plain imperative sentence per rule, for the
-// smallest model that drains a queue. The lease numbers come from tools.go's constants.
+// smallest model that drains a queue. The lease numbers are the endpoint's own default (or the
+// server's) and the cap, from internal/lease.
 //
 // Governing: SPEC-0011 REQ "Channel Capability on the Vended Session", SPEC-0006 REQ "Lease
-// Lifecycle and Crash Safety".
+// Lifecycle and Crash Safety", ADR-0043.
 //
 // @joestump-agent 10/01/2026 - Added the lease contract. A worker that had never been told about
 // heartbeat claimed with the 300-second default, was reaped and requeued while still reviewing,
 // then approved and merged a pull request for a todo it no longer held; only the conflict from
 // its later complete told it so.
-var instructions = `Todos routed to you arrive as <channel source="switchboard"> doorbell events ` +
-	`(notifications/claude/channel) on this session's notification stream. The durable todo ` +
-	`queue is the record: a doorbell is only a hint, and a missed push is never a lost todo.` + "\n" +
-	`Take work with claim_next, or with claim for a specific todo id. list_todos, where this ` +
-	`endpoint grants it, shows waiting work; you do not need it to work the queue.` + "\n" +
-	`Every claim holds a lease for ` + defaultLeaseSeconds + ` seconds unless you pass ` +
-	`lease_ttl_seconds (at most ` + maxLeaseSeconds + `). Size the lease to the work you expect.` + "\n" +
-	`Call heartbeat to extend the lease before it runs out, before any slow step, and before any ` +
-	`irreversible action you take for the todo, such as a merge, a deploy or a message. If you ` +
-	`cannot call heartbeat, claim with a lease_ttl_seconds that covers the whole job.` + "\n" +
-	`When a lease lapses, the todo is reaped and goes back to the queue, where another worker can ` +
-	`claim it.` + "\n" +
-	`A conflict error from heartbeat, complete, fail or release means you no longer hold the todo. ` +
-	`Stop, and make no further changes on its behalf.` + "\n" +
-	`End every claim with complete, fail or release.` + "\n" +
-	`When several workers share this endpoint's credential, claim with require_fence: true and ` +
-	`pass the returned lease_token to heartbeat, complete, fail and release.`
+//
+// @joestump-agent 10/01/2026 - The default stated is the endpoint's own when its human set one
+// (ADR-0043), and a bare heartbeat is said to reset the lease to it.
+func instructionsFor(def *int) string {
+	seconds, whose := leaseDefault(def)
+	return `Todos routed to you arrive as <channel source="switchboard"> doorbell events ` +
+		`(notifications/claude/channel) on this session's notification stream. The durable todo ` +
+		`queue is the record: a doorbell is only a hint, and a missed push is never a lost todo.` + "\n" +
+		`Take work with claim_next, or with claim for a specific todo id. list_todos, where this ` +
+		`endpoint grants it, shows waiting work; you do not need it to work the queue.` + "\n" +
+		`Every claim holds a lease for ` + seconds + ` seconds (` + whose + `) unless you pass ` +
+		`lease_ttl_seconds (at most ` + maxLeaseSeconds + `). Size the lease to the work you expect.` + "\n" +
+		`Call heartbeat to extend the lease before it runs out, before any slow step, and before any ` +
+		`irreversible action you take for the todo, such as a merge, a deploy or a message. A heartbeat ` +
+		`without lease_ttl_seconds resets the lease to ` + seconds + ` seconds from now. If you ` +
+		`cannot call heartbeat, claim with a lease_ttl_seconds that covers the whole job.` + "\n" +
+		`When a lease lapses, the todo is reaped and goes back to the queue, where another worker can ` +
+		`claim it.` + "\n" +
+		`A conflict error from heartbeat, complete, fail or release means you no longer hold the todo. ` +
+		`Stop, and make no further changes on its behalf.` + "\n" +
+		`End every claim with complete, fail or release.` + "\n" +
+		`When several workers share this endpoint's credential, claim with require_fence: true and ` +
+		`pass the returned lease_token to heartbeat, complete, fail and release.`
+}
 
 // sessionInstructions is the instructions block a new session receives: the build banner line
-// ("switchboard v0.3.0 (built 2026-09-24)"), then the doorbell and lease contract, plus the A2UI
-// paragraph only while that surface is on.
-// Governing: SPEC-0027 REQ-2 "MCP Server Version and Session Instructions".
-func (h *Handler) sessionInstructions() string {
-	body := instructions
+// ("switchboard v0.3.0 (built 2026-09-24)"), then the doorbell and lease contract with the
+// endpoint's default lease as of the session's start, plus the A2UI paragraph only while that
+// surface is on.
+// Governing: SPEC-0027 REQ-2 "MCP Server Version and Session Instructions", ADR-0043.
+func (h *Handler) sessionInstructions(ep store.AuthEndpoint) string {
+	body := instructionsFor(ep.DefaultLeaseTTLSeconds)
 	if h.a2uiOn() {
 		body += a2uiInstructions
 	}
@@ -188,6 +197,12 @@ type ToolStore interface {
 	// targets, the first of which is the default when a replay names none. Always called with the
 	// authenticated endpoint's id. Governing: SPEC-0033 REQ "Owned Replay Targets".
 	EndpointReplayTargets(ctx context.Context, endpointID string) ([]string, error)
+	// EndpointDefaultLease and SetEndpointDefaultLease are the endpoint's own default lease (lease.go):
+	// the live read every claim and heartbeat without lease_ttl_seconds resolves through, and the
+	// set_default_lease write. Always called with the authenticated endpoint's id.
+	// Governing: ADR-0043.
+	EndpointDefaultLease(ctx context.Context, endpointID string) (*int, error)
+	SetEndpointDefaultLease(ctx context.Context, endpointID string, seconds *int) (*int, error)
 }
 
 // Handler mounts the per-endpoint Streamable HTTP MCP sessions, their scope-filtered tool
@@ -480,12 +495,14 @@ func (h *Handler) auth(next http.Handler) http.Handler {
 func (h *Handler) newServer(ep store.AuthEndpoint) *sdk.Server {
 	srv := sdk.NewServer(&sdk.Implementation{Name: serverName, Version: buildinfo.Get().Version}, &sdk.ServerOptions{
 		Logger:       h.log,
-		Instructions: h.sessionInstructions(),
+		Instructions: h.sessionInstructions(ep),
 		Capabilities: &sdk.ServerCapabilities{
 			Tools:        &sdk.ToolCapabilities{ListChanged: true},
 			Experimental: map[string]any{"claude/channel": map[string]any{}},
 		},
 	})
+	// The SPEC-0006 drain verbs, the lease-bound claim/claim_next/heartbeat descriptions built from
+	// the endpoint's default lease, and the endpoint's own lease verbs (lease.go).
 	h.registerTools(srv, ep)
 	// The SPEC-0005 event-history contract (list/get/replay/providers) shares the session and the
 	// same allowlist-filtered registration (events.go), plus the read-only recent-events resource.

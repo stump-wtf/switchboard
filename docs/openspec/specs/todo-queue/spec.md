@@ -97,8 +97,10 @@ lease (`lease_expires_at`), the todo MUST be invisible to every other consumer. 
 more time than its window MUST be able to extend the lease via a heartbeat
 (`ChangeMessageVisibility`) that updates `lease_expires_at`; only the current lease owner MAY
 heartbeat. `complete` and `fail` MUST likewise be permitted only for the current lease owner
-(guarded by `state='claimed' AND owner=$owner`). The lease TTL MUST be set per claim, defaulting to
-a configurable server value.
+(guarded by `state='claimed' AND owner=$owner`). The lease TTL MUST be set per claim; when the claim
+or heartbeat names none it MUST default to the claiming endpoint's default lease when that endpoint
+has one ([SPEC-0007](../vended-endpoints/spec.md) REQ "Endpoint Default Lease"), and otherwise to the
+server default.
 
 #### Scenario: Claimed todo is invisible to other consumers
 

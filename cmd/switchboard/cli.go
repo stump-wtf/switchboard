@@ -23,6 +23,9 @@ package main
 // @joestump-agent 09/29/2026 - A group may nest one more group (`webhook rules get`), so a
 // resource's sub-resource gets the same verb-listing usage and help as a top-level one. Added the
 // `webhook` group: list, and rules get/set/test (SPEC-0035).
+//
+// @joestump-agent 10/01/2026 - Added `endpoint edit` for the default claim lease (ADR-0043), and
+// `--lease-ttl` on `endpoint vend`.
 
 import (
 	"bufio"
@@ -104,6 +107,7 @@ func commands() []command {
 		{name: "endpoint", args: "<verb>", summary: "manage vended endpoints", subs: []command{
 			{name: "list", summary: "list the vended endpoints you own", run: cmdEndpoints},
 			{name: "vend", args: "NAME", summary: "register an agent and vend its endpoint in one call", run: cmdVend},
+			{name: "edit", args: "SLUG|ID", summary: "change an endpoint's default claim lease (--lease-ttl DUR|default)", run: cmdEndpointEdit},
 			{name: "revoke", args: "SLUG|ID", summary: "kill an endpoint: its credential stops working immediately", run: cmdEndpointRevoke},
 		}},
 		{name: "agent", args: "<verb>", summary: "manage registered agents", subs: []command{

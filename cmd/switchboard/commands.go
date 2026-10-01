@@ -22,6 +22,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/stump-wtf/switchboard/internal/lease"
 )
 
 // --- login / logout / status ---
@@ -139,6 +141,33 @@ type vendResponse struct {
 	} `json:"webhook"`
 	MCPJSON   json.RawMessage `json:"mcp_json"`
 	ExpiresAt *time.Time      `json:"expires_at"`
+	// The endpoint's default claim lease (ADR-0043): its own setting, null for the server default,
+	// and the lease a claim with no lease_ttl_seconds actually gets.
+	DefaultLease   *int `json:"default_lease_ttl_seconds"`
+	EffectiveLease int  `json:"effective_lease_ttl_seconds"`
+}
+
+// leaseTTLUsage is the --lease-ttl flag text vend and edit share.
+var leaseTTLUsage = fmt.Sprintf("default claim lease: a duration (45m, 1h) or seconds (3600), %d to %d seconds; "+
+	"what a claim or heartbeat without lease_ttl_seconds gets (the server default is %ds)",
+	lease.MinDefaultSeconds, lease.MaxSeconds, lease.DefaultSeconds)
+
+// parseLeaseFlag converts --lease-ttl to whole seconds client-side. The bounds are the server's to
+// enforce, so an out-of-range value travels and comes back as the server's refusal.
+func parseLeaseFlag(v string) (int, error) {
+	n, err := lease.ParseSeconds(v)
+	if err != nil {
+		return 0, fmt.Errorf("--lease-ttl %q: use a duration like 45m or 1h, or whole seconds", v)
+	}
+	return n, nil
+}
+
+// leaseText renders a default lease for the CLI's text output.
+func leaseText(def *int, effective int) string {
+	if def == nil {
+		return lease.Label(effective) + " (server default)"
+	}
+	return lease.Label(*def)
 }
 
 func cmdVend(c *cli, args []string) int {
@@ -146,6 +175,7 @@ func cmdVend(c *cli, args []string) int {
 		"ingestion webhook in one call. The credential is printed ONCE — store it now.")
 	queue := fs.String("queue", "inbox", "the queue the endpoint drains and the webhook feeds")
 	fs.StringVar(queue, "q", "inbox", "shorthand for --queue")
+	leaseTTL := fs.String("lease-ttl", "", leaseTTLUsage)
 	asJSON := fs.Bool("json", false, "print the raw API response")
 	pos, exit, ok := c.parseArgs(fs, args)
 	if !ok {
@@ -160,12 +190,20 @@ func cmdVend(c *cli, args []string) int {
 	if strings.TrimSpace(*queue) == "" {
 		return c.usageError(fs, "--queue must not be empty")
 	}
+	req := map[string]any{"name": strings.TrimSpace(pos[0]), "queue": strings.TrimSpace(*queue)}
+	if strings.TrimSpace(*leaseTTL) != "" {
+		seconds, err := parseLeaseFlag(*leaseTTL)
+		if err != nil {
+			return c.usageError(fs, err.Error())
+		}
+		req["default_lease_ttl_seconds"] = seconds
+	}
 
 	api, err := c.apiClient(context.Background())
 	if err != nil {
 		return c.fail(err)
 	}
-	body, err := api.post("/api/v1/endpoints", map[string]string{"name": strings.TrimSpace(pos[0]), "queue": strings.TrimSpace(*queue)})
+	body, err := api.post("/api/v1/endpoints", req)
 	if err != nil {
 		return c.fail(err)
 	}
@@ -201,6 +239,9 @@ func printVendReveal(w io.Writer, v vendResponse) {
 	} else {
 		fmt.Fprintf(tw, "  Expires\tnever (valid until revoked)\n")
 	}
+	if v.EffectiveLease > 0 {
+		fmt.Fprintf(tw, "  Lease\t%s\n", leaseText(v.DefaultLease, v.EffectiveLease))
+	}
 	_ = tw.Flush()
 	if len(v.MCPJSON) > 0 {
 		var pretty bytes.Buffer
@@ -235,11 +276,13 @@ func cmdEndpoints(c *cli, args []string) int {
 		return c.printJSON(body)
 	}
 	var rows []struct {
-		Slug      string     `json:"slug"`
-		AgentName string     `json:"agent_name"`
-		State     string     `json:"state"`
-		Queues    []string   `json:"queues"`
-		ExpiresAt *time.Time `json:"expires_at"`
+		Slug           string     `json:"slug"`
+		AgentName      string     `json:"agent_name"`
+		State          string     `json:"state"`
+		Queues         []string   `json:"queues"`
+		ExpiresAt      *time.Time `json:"expires_at"`
+		DefaultLease   *int       `json:"default_lease_ttl_seconds"`
+		EffectiveLease int        `json:"effective_lease_ttl_seconds"`
 	}
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return c.fail(fmt.Errorf("endpoints: malformed response: %w", err))
@@ -249,13 +292,18 @@ func cmdEndpoints(c *cli, args []string) int {
 		return exitOK
 	}
 	tw := tabwriter.NewWriter(c.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SLUG\tAGENT\tSTATE\tQUEUES\tEXPIRES")
+	fmt.Fprintln(tw, "SLUG\tAGENT\tSTATE\tQUEUES\tEXPIRES\tLEASE")
 	for _, r := range rows {
 		expires := "never"
 		if r.ExpiresAt != nil {
 			expires = r.ExpiresAt.UTC().Format(time.RFC3339)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.Slug, r.AgentName, r.State, strings.Join(r.Queues, ","), expires)
+		// An older server sends no lease fields; say nothing rather than a wrong number.
+		leaseCol := "-"
+		if r.EffectiveLease > 0 {
+			leaseCol = leaseText(r.DefaultLease, r.EffectiveLease)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Slug, r.AgentName, r.State, strings.Join(r.Queues, ","), expires, leaseCol)
 	}
 	_ = tw.Flush()
 	return exitOK
@@ -408,6 +456,67 @@ func cmdEndpointRevoke(c *cli, args []string) int {
 	}
 	fmt.Fprintf(c.stdout, "Revoked %s (%s). Its credential no longer authenticates.\n", out.Slug, out.AgentName)
 	fmt.Fprintln(c.stdout, "Anything wired to it needs a new endpoint: switchboard endpoint vend NAME --queue Q")
+	return exitOK
+}
+
+// cmdEndpointEdit edits an endpoint's settings that are not scope. Today that is its default claim
+// lease: what a claim, claim_next or heartbeat without lease_ttl_seconds gets. "default" resets it to
+// the server default. The value is converted to seconds here and range-checked by the server, which
+// answers an out-of-range value with its own refusal. Scope stays immutable (SPEC-0007): a scope
+// change is still a revoke and a re-vend.
+//
+// Governing: ADR-0043, SPEC-0007 REQ "Endpoint Default Lease", SPEC-0035 REQ "CLI Parity".
+//
+// @joestump-agent 10/01/2026 - Added with PATCH /api/v1/endpoints/{ref}.
+func cmdEndpointEdit(c *cli, args []string) int {
+	fs := c.flagSet("endpoint edit", "SLUG|ID",
+		"Change an endpoint's default claim lease without re-vending it. New claims and heartbeats\n"+
+			"that pass no lease_ttl_seconds get it; leases already granted keep their expiry.")
+	leaseTTL := fs.String("lease-ttl", "", leaseTTLUsage+"; \"default\" resets it")
+	asJSON := fs.Bool("json", false, "print the raw API response")
+	pos, exit, ok := c.parseArgs(fs, args)
+	if !ok {
+		return exit
+	}
+	switch {
+	case len(pos) == 0:
+		return c.usageError(fs, "name the endpoint to edit (its slug, from `switchboard endpoint list`)")
+	case len(pos) > 1:
+		return c.usageError(fs, fmt.Sprintf("unexpected argument %q", pos[1]))
+	case strings.TrimSpace(*leaseTTL) == "":
+		return c.usageError(fs, "nothing to change: pass --lease-ttl DUR, or --lease-ttl default to reset it")
+	}
+	var value any // nil marshals as null: the reset
+	if v := strings.TrimSpace(*leaseTTL); !strings.EqualFold(v, "default") {
+		seconds, err := parseLeaseFlag(v)
+		if err != nil {
+			return c.usageError(fs, err.Error())
+		}
+		value = seconds
+	}
+
+	api, err := c.apiClient(context.Background())
+	if err != nil {
+		return c.fail(err)
+	}
+	body, err := api.patch("/api/v1/endpoints/"+url.PathEscape(pos[0]), map[string]any{"default_lease_ttl_seconds": value})
+	if err != nil {
+		return c.fail(err)
+	}
+	if *asJSON {
+		return c.printJSON(body)
+	}
+	var out struct {
+		Slug           string `json:"slug"`
+		AgentName      string `json:"agent_name"`
+		DefaultLease   *int   `json:"default_lease_ttl_seconds"`
+		EffectiveLease int    `json:"effective_lease_ttl_seconds"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return c.fail(fmt.Errorf("endpoint edit: malformed response: %w", err))
+	}
+	fmt.Fprintf(c.stdout, "Updated %s (%s): default lease %s.\n", out.Slug, out.AgentName, leaseText(out.DefaultLease, out.EffectiveLease))
+	fmt.Fprintln(c.stdout, "New claims and heartbeats without lease_ttl_seconds get it; leases already granted keep their expiry.")
 	return exitOK
 }
 
