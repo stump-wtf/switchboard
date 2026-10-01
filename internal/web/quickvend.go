@@ -33,6 +33,9 @@ type quickVendView struct {
 	OutboundVerbOptions []vendVerbOption
 	LifetimePreset      string
 	LifetimeCustom      string
+	// DefaultLease is the default-claim-lease input, preserved on a rejected submission; "" is the
+	// server default. Governing: ADR-0043.
+	DefaultLease string
 }
 
 // QuickVendStart renders the one-step vend page. Requires human (the router's RequireHuman group).
@@ -60,12 +63,13 @@ func (h *Handler) QuickVendSubmit(w http.ResponseWriter, r *http.Request) {
 	if lifetime == "custom" {
 		lifetime = strings.TrimSpace(r.FormValue("lifetime_custom"))
 	}
+	defaultLease := strings.TrimSpace(r.FormValue("default_lease"))
 
 	// Value preservation on a rejected submission (SPEC-0015): the known-queue chips re-render
 	// with the operator's choices still checked, and only the queues the store does not know go
 	// back into the free-text field.
 	known := h.vendQueueOptions(r)
-	v := quickVendView{Name: name, ExtraQueues: strings.Join(extraQueues(known, queues), ", ")}
+	v := quickVendView{Name: name, ExtraQueues: strings.Join(extraQueues(known, queues), ", "), DefaultLease: defaultLease}
 	for _, q := range known {
 		v.QueueOptions = append(v.QueueOptions, vendChipOption{Name: q, Checked: slices.Contains(queues, q)})
 	}
@@ -103,6 +107,10 @@ func (h *Handler) QuickVendSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if _, msg := parseLeaseInput(defaultLease); msg != "" {
+		fail(msg)
+		return
+	}
 
 	// The quick page has no ceiling step, so it grants the basics webhook ceiling: a usable
 	// generic scope on the vended queues when create_webhook is granted, none otherwise — never
@@ -110,7 +118,7 @@ func (h *Handler) QuickVendSubmit(w http.ResponseWriter, r *http.Request) {
 	// ADR-0012, SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling".
 	whMax, whSources, whQueues := mcp.BasicWebhookCeiling(verbs, queues)
 	h.executeVendOn(w, r, &human, vendSubmission{
-		Name: name, Queues: queues, Verbs: verbs, Lifetime: lifetime,
+		Name: name, Queues: queues, Verbs: verbs, Lifetime: lifetime, DefaultLease: defaultLease,
 		WebhookMax: whMax, WebhookSourceTypes: whSources, WebhookQueues: whQueues,
 	}, "quickvend")
 }

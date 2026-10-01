@@ -405,6 +405,8 @@ func tenancyCovered() map[string]bool {
 		// Endpoint direct-id — deep (revoke/delete scoped; pinned so they cannot regress).
 		"GET /endpoints/{id}/revoke",
 		"POST /endpoints/{id}/revoke", "POST /endpoints/{id}/delete",
+		// Default claim lease form (ADR-0043) — deep in endpoint_lease_web_test.go.
+		"POST /endpoints/{id}/lease",
 		// Notify-hook card controls — deep (owner-scoped through the endpoint's agent).
 		"POST /endpoints/{id}/hooks/{hookID}/disable", "POST /endpoints/{id}/hooks/{hookID}/enable",
 		"GET /endpoints/{id}/hooks/{hookID}/delete", "POST /endpoints/{id}/hooks/{hookID}/delete",

@@ -120,6 +120,13 @@
       <input id="sb-vend-lifetime-custom" class="sb-input" name="lifetime_custom" value="{{$v.LifetimeCustom}}" placeholder="e.g. 90m, 12h, 14d, 4w" autocomplete="off" aria-label="Custom lifetime" data-sb-vend-lifetime-custom>
       <p class="sb-help">how long the credential lives · expiry revokes the endpoint (the reaper enforces it) · empty = until revoked</p>
     </div>
+    {{/* ADR-0043: the lease a claim or heartbeat gets when it names no lease_ttl_seconds. Not
+         scope: it stays editable on the endpoint's card after the vend. */}}
+    <div class="sb-field">
+      <label for="sb-vend-default-lease">Default claim lease</label>
+      <input id="sb-vend-default-lease" class="sb-input" name="default_lease" value="{{$v.DefaultLease}}" placeholder="e.g. 45m, 1h, 3600" autocomplete="off" aria-describedby="sb-vend-default-lease-help" data-sb-vend-default-lease>
+      <p class="sb-help" id="sb-vend-default-lease-help">{{leasehelp}} · applies when a claim or heartbeat passes no lease_ttl_seconds · editable later on the endpoint card</p>
+    </div>
 
     {{else if eq $v.Step "confirm"}}
     {{/* Confirm — the irreversible step (SPEC-0015: destructive and irreversible steps confirm
@@ -132,8 +139,9 @@
       <div class="sb-epcard__row"><dt class="sb-microlabel">Verbs</dt><dd>{{range $v.Verbs}}<span class="sb-chip sb-chip--verb">{{.}}</span> {{end}}</dd></div>
       <div class="sb-epcard__row"><dt class="sb-microlabel">Webhooks</dt><dd>{{$v.WebhookMaxLabel}}</dd></div>
       <div class="sb-epcard__row"><dt class="sb-microlabel">Lifetime</dt><dd data-sb-wiz-lifetime>{{$v.LifetimeLabel}}</dd></div>
+      <div class="sb-epcard__row"><dt class="sb-microlabel">Lease</dt><dd data-sb-wiz-default-lease>{{$v.DefaultLeaseLabel}}</dd></div>
     </dl>
-    <p class="sb-callout sb-callout--danger">Vending is irreversible: it mints a live credential shown exactly once, and the scope above is immutable for the endpoint's lifetime. To change scope later, revoke and re-vend.</p>
+    <p class="sb-callout sb-callout--danger">Vending is irreversible: it mints a live credential shown exactly once, and the scope above is immutable for the endpoint's lifetime. To change scope later, revoke and re-vend. The default claim lease is not scope: you can change it on the endpoint's card.</p>
     {{end}}
 
     <div class="sb-vend__foot">

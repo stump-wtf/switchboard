@@ -99,13 +99,17 @@ type vendStepView struct {
 	LifetimePresets []lifetimePreset
 	LifetimePreset  string // checked choice: "", one of lifetimePresets, or "custom"
 	LifetimeCustom  string
+	// DefaultLease is the default-claim-lease input, on the lifetime step beside the credential
+	// lifetime: both are how long something lasts. "" = the server default. Governing: ADR-0043.
+	DefaultLease string
 
 	// confirm step summary
-	PersonaName     string
-	Queues          []string
-	Verbs           []string
-	WebhookMaxLabel string
-	LifetimeLabel   string
+	PersonaName       string
+	Queues            []string
+	Verbs             []string
+	WebhookMaxLabel   string
+	LifetimeLabel     string
+	DefaultLeaseLabel string
 }
 
 // VendStart begins the vend wizard: it mints fresh server-side state (optionally seeded from an
@@ -119,8 +123,8 @@ func (h *Handler) VendStart(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	// Re-vend seeding: copy the source endpoint's name/persona/queues/verbs into the draft (never
-	// its lifetime — expiry is re-chosen each vend). Ownership is enforced by listing only the
+	// Re-vend seeding: copy the source endpoint's name/persona/queues/verbs and default claim lease
+	// into the draft (never its lifetime — expiry is re-chosen each vend). Ownership is enforced by listing only the
 	// human's own cards; an unknown or foreign id simply starts an unseeded wizard.
 	if from := r.URL.Query().Get("from"); from != "" {
 		if eps, err := h.store.ListEndpointCards(r.Context(), human.ID); err != nil {
@@ -134,6 +138,9 @@ func (h *Handler) VendStart(w http.ResponseWriter, r *http.Request) {
 					}
 					values["queues"] = append([]string(nil), ep.ScopeQueues...)
 					values["verbs"] = append([]string(nil), ep.ScopeVerbs...)
+					if ep.DefaultLeaseTTLSeconds != nil {
+						values.Set("default_lease", strconv.Itoa(*ep.DefaultLeaseTTLSeconds))
+					}
 					values.Set("revend_of", ep.AgentName)
 					break
 				}
@@ -241,14 +248,24 @@ func (h *Handler) VendStepSubmit(w http.ResponseWriter, r *http.Request) {
 		if lifetime == "custom" {
 			lifetime = strings.TrimSpace(r.FormValue("lifetime_custom"))
 		}
+		defaultLease := strings.TrimSpace(r.FormValue("default_lease"))
 		if lifetime != "" {
 			if _, err := parseLifetime(lifetime); err != nil {
+				values.Set("default_lease", defaultLease)
 				h.renderVendStep(w, r, &human, slug, values,
 					"invalid lifetime — use a duration like 90m, 24h, 7d, or 4w", http.StatusBadRequest)
 				return
 			}
 		}
+		if _, msg := parseLeaseInput(defaultLease); msg != "" {
+			// Re-render with the entered values, the lifetime included, so nothing typed is lost.
+			values.Set("lifetime", lifetime)
+			values.Set("default_lease", defaultLease)
+			h.renderVendStep(w, r, &human, slug, values, msg, http.StatusBadRequest)
+			return
+		}
 		values.Set("lifetime", lifetime)
+		values.Set("default_lease", defaultLease)
 	case "confirm":
 		// The irreversible step: mint from the SERVER-SIDE state (the confirm form carries only the
 		// CSRF token). An incomplete draft bounces to its first unfinished step instead of 400ing.
@@ -262,6 +279,7 @@ func (h *Handler) VendStepSubmit(w http.ResponseWriter, r *http.Request) {
 			Queues:             values["queues"],
 			Verbs:              values["verbs"],
 			Lifetime:           values.Get("lifetime"),
+			DefaultLease:       values.Get("default_lease"),
 			WebhookMax:         webhookMaxFromValues(values),
 			WebhookSourceTypes: values["webhook_source_types"],
 			WebhookQueues:      values["webhook_queues"],
@@ -363,6 +381,7 @@ func (h *Handler) renderVendStep(w http.ResponseWriter, r *http.Request, human *
 			v.LifetimePreset = "custom"
 			v.LifetimeCustom = lifetime
 		}
+		v.DefaultLease = values.Get("default_lease")
 	case "confirm":
 		v.Name = values.Get("name")
 		v.Queues = values["queues"]
@@ -378,6 +397,10 @@ func (h *Handler) renderVendStep(w http.ResponseWriter, r *http.Request, human *
 		} else {
 			v.LifetimeLabel = lifetime
 		}
+		// The draft was validated on the lifetime step; a value that no longer parses (never
+		// expected) reads as the server default here and is refused again by the mint.
+		def, _ := parseLeaseInput(values.Get("default_lease"))
+		v.DefaultLeaseLabel = leaseCardLabel(def)
 	}
 
 	h.renderStatus(w, status, "vend", view{

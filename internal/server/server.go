@@ -163,6 +163,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Revoking an endpoint in the web UI also closes its live notification streams promptly
 	// (SPEC-0014 scenario "Revocation closes live streams").
 	webh.SetEndpointRevokedHook(mcph.CloseEndpointSessions)
+	// Editing an endpoint's default lease in the web UI re-registers the lease-bound tools on its
+	// live MCP sessions, so their descriptions state the new default (ADR-0043).
+	webh.SetEndpointLeaseChangedHook(mcph.RefreshEndpointLease)
 	icfg := ingest.Config{}.Normalized()
 	ing := ingest.New(st, hub, log, icfg)
 	// Ephemeral received-lane instrumentation (SPEC-0015 REQ "Patch Panel Board"): the receivers
@@ -520,6 +523,9 @@ func newRouter(d routerDeps) chi.Router {
 		// Endpoints"). Store constrains to state='revoked' + ownership; active endpoints must be revoked
 		// first. CSRF arrives via the layout hx-headers / hidden field; the group's RequireCSRF validates.
 		pr.Post("/endpoints/{id}/delete", d.webh.DeleteEndpoint)
+		// The card's default-claim-lease form (ADR-0043): not scope, so an in-place edit. Ownership
+		// is bound in the store write; anything not the human's is a 404 and changes nothing.
+		pr.Post("/endpoints/{id}/lease", d.webh.SetEndpointLease)
 		// The endpoint card's notify-hook controls (SPEC-0024 REQ-10): owner-scoped in the store,
 		// CSRF-checked by the group, and 404 for anything the signed-in human does not own.
 		pr.Post("/endpoints/{id}/hooks/{hookID}/disable", d.webh.DisableNotifyHook)
