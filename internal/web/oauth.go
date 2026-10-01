@@ -416,6 +416,15 @@ func scopeBullets(queues, verbs []string) []string {
 	if events := inScope(mcp.EventVerbs()); len(events) > 0 {
 		bullets = append(bullets, "inspect event history & providers ("+strings.Join(events, " · ")+")")
 	}
+	// ADR-0043: the endpoint's own default claim lease. set_default_lease changes how long every
+	// claim on the endpoint is held, so the bullet says so rather than folding it into the lease line.
+	if leases := inScope(mcp.LeaseVerbs()); len(leases) > 0 {
+		line := "read its own default claim lease"
+		if has("set_default_lease") {
+			line = "read and change its own default claim lease"
+		}
+		bullets = append(bullets, line+" ("+strings.Join(leases, " · ")+")")
+	}
 	// SPEC-0024 REQ-2: the notify-hook verbs are labelled for what they grant — switchboard making
 	// outbound HTTP calls to hosts the agent chooses — never folded into the webhook bullet.
 	if hooks := inScope(mcp.NotifyHookVerbs()); len(hooks) > 0 {

@@ -85,6 +85,16 @@ func TestScopeBulletsNeverAdvertiseBeyondScope(t *testing.T) {
 	}
 
 	// A verb outside every known family renders verbatim, never embellished.
+	// ADR-0043: the lease verbs get their own line, saying whether the default can be changed.
+	if got := scopeBullets([]string{"ci"}, []string{"get_default_lease"}); len(got) != 1 ||
+		got[0] != "read its own default claim lease (get_default_lease)" {
+		t.Fatalf("get_default_lease bullets = %q", got)
+	}
+	if got := scopeBullets([]string{"ci"}, []string{"get_default_lease", "set_default_lease"}); len(got) != 1 ||
+		got[0] != "read and change its own default claim lease (get_default_lease · set_default_lease)" {
+		t.Fatalf("lease verb bullets = %q", got)
+	}
+
 	odd := scopeBullets([]string{"q"}, []string{"future_verb"})
 	if len(odd) != 1 || odd[0] != "future_verb" {
 		t.Fatalf("unknown-verb bullets = %q, want the verb verbatim", odd)
