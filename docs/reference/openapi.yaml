@@ -340,6 +340,70 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Problem' }
 
+  /api/v1/endpoints/{ref}:
+    patch:
+      tags: [operator-api]
+      operationId: editEndpoint
+      summary: Edit an endpoint's settings (its default claim lease)
+      description: |
+        Edits the settings of an endpoint you own that are not scope (ADR-0043). Today that is
+        `default_lease_ttl_seconds`: the lease a `claim`, `claim_next` or `heartbeat` on the
+        endpoint gets when the call passes no `lease_ttl_seconds`. An integer from 60 to 86400 sets
+        it; `null` resets it to the server default (300). Out of range is refused, never clamped.
+        The key is required, and any other key is refused: scope is fixed at vend (SPEC-0007).
+        The edit applies to claims and heartbeats made after it; leases already granted keep their
+        expiry. Draws from the per-human write bucket (429 with `Retry-After` when spent).
+      security:
+        - operatorOAuth: []
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          description: The endpoint's slug (as `endpoint list` prints it) or its id.
+          schema: { type: string }
+          example: my-agent-k3x9
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EditEndpointIn' }
+      responses:
+        '200':
+          description: The endpoint with its new setting.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EndpointOut' }
+        '400':
+          description: '`invalid_argument`: an absent key, a value out of range or not a whole number, an unknown key, or a body that does not decode.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`not_found`: no endpoint by that slug or id belongs to the caller (unknown and another human''s are the same answer).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '409':
+          description: '`conflict`: the endpoint is revoked; `state` says so.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '413':
+          description: The body is over 64 KiB.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '429':
+          description: '`rate_limited`: the per-human write bucket is spent.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
   /api/v1/endpoints/{ref}/todos:
     post:
       tags: [operator-api]
@@ -747,6 +811,15 @@ components:
             https on a public address; a target the SSRF guard refuses fails the vend with 400 and
             mints nothing.
           example: ['https://consumer.example.com/hook']
+        default_lease_ttl_seconds:
+          type: [integer, "null"]
+          minimum: 60
+          maximum: 86400
+          description: >-
+            The endpoint's default claim lease (ADR-0043): what a `claim`, `claim_next` or
+            `heartbeat` that passes no `lease_ttl_seconds` gets. Absent or null uses the server
+            default (300). Out of range fails the vend with 400 `invalid_argument` and mints nothing.
+          example: 3600
 
     VendEndpointOut:
       type: object
@@ -776,6 +849,13 @@ components:
             successful vend.
           additionalProperties: true
         expires_at: { type: [string, "null"], format: date-time }
+        default_lease_ttl_seconds:
+          type: [integer, "null"]
+          description: The endpoint's own default lease in seconds, or null for the server default.
+        effective_lease_ttl_seconds:
+          type: integer
+          description: The lease a claim or heartbeat with no `lease_ttl_seconds` gets.
+          example: 300
 
     VendWebhookOut:
       type: object
@@ -853,6 +933,26 @@ components:
           items: { type: string, format: uri }
           description: The endpoint's owned replay targets, returned only to its owner.
         expires_at: { type: [string, "null"], format: date-time }
+        default_lease_ttl_seconds:
+          type: [integer, "null"]
+          description: The endpoint's own default lease in seconds (ADR-0043), or null for the server default.
+          example: 3600
+        effective_lease_ttl_seconds:
+          type: integer
+          description: The lease a claim or heartbeat with no `lease_ttl_seconds` gets.
+          example: 3600
+
+    EditEndpointIn:
+      type: object
+      required: [default_lease_ttl_seconds]
+      additionalProperties: false
+      properties:
+        default_lease_ttl_seconds:
+          type: [integer, "null"]
+          minimum: 60
+          maximum: 86400
+          description: The new default lease in seconds, or null to use the server default (300).
+          example: 3600
 
     APIError:
       type: object

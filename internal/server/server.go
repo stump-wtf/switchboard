@@ -395,6 +395,7 @@ func newRouter(d routerDeps) chi.Router {
 	// Governing: ADR-0023 REQ "Registration Vends the Whole Happy Path"; ADR-0019.
 	api := newAPIHandler(d.st, d.cfg.BaseURL, d.log, apiRevokeHook(d))
 	api.rules.Router = apiRulesRouter(d)
+	api.endpointLeaseChanged = apiLeaseHook(d)
 	r.Mount("/api/v1", api.Routes())
 
 	// Native A2A task RPC surface (ADR-0021; SPEC-0018) mounted per vended endpoint at
@@ -605,6 +606,16 @@ func apiRevokeHook(d routerDeps) func(string) {
 		return nil
 	}
 	return d.mcp.CloseEndpointSessions
+}
+
+// apiLeaseHook gives the operator API the live-session refresh an endpoint default-lease edit rings,
+// the same one the web UI's lease form and the MCP set_default_lease verb use. Nil without an MCP
+// handler; the edit still commits and the lease verbs still read it live. Governing: ADR-0043.
+func apiLeaseHook(d routerDeps) func(string, *int) {
+	if d.mcp == nil {
+		return nil
+	}
+	return d.mcp.RefreshEndpointLease
 }
 
 // apiRulesRouter gives the human API's rule routes the evaluator the MCP rule verbs use, so a dry run
