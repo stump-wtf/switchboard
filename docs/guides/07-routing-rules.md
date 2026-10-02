@@ -85,8 +85,11 @@ The last three combine, and are only valid with `queue`. They are what handoff l
 
 A rule can only **narrow** where a delivery lands, never widen it. The queue must be the webhook's
 target queue or one of its owner's allowed webhook queues; every `endpoints` entry must already be a
-delivery target — add it with `add_webhook_route` first, which carries its own ownership and
-friendship checks. Both are re-checked on every delivery: if a route is revoked or the queue ceiling
+delivery target — add it first, which carries its own ownership and friendship checks. Over MCP that
+is `add_webhook_route` from the webhook's owning endpoint; as the human who owns the webhook it is
+`switchboard webhook route add WEBHOOK_ID ENDPOINT` (or `PUT /api/v1/webhooks/{id}/routes/{endpoint_id}`),
+which needs no endpoint credential. `webhook rules get` lists the current targets under
+`grant.endpoints`. Both are re-checked on every delivery: if a route is revoked or the queue ceiling
 shrinks after you saved a rule, a matching delivery takes the default instead (and the trace says
 `rule_not_granted`).
 
@@ -279,7 +282,8 @@ every lane pool, and rules that pick the pool. A handoff is an artifact tagged `
 1. On the router endpoint, `create_webhook` with `source_type: "cairn"`. It is `signed`: keep the
    revealed `signing_secret` for cairn's `CAIRN_OUTBOUND_WEBHOOK_SECRET`, and the `ingest_url` for
    `CAIRN_OUTBOUND_WEBHOOK_URLS`.
-2. `add_webhook_route` from that webhook to each lane pool endpoint.
+2. Route that webhook to each lane pool endpoint: `add_webhook_route` from the router endpoint, or
+   `switchboard webhook route add WEBHOOK_ID LANE_ENDPOINT` as its human.
 3. `set_webhook_rules` — in full, that is the [fleet pack](https://github.com/stump-wtf/switchboard/blob/main/docs/routing/rule-packs/README.md); its cairn
    half looks like this:
 

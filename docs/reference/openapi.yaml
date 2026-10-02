@@ -621,6 +621,156 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/APIError' }
 
+  /api/v1/webhooks/{webhook_id}/routes:
+    parameters:
+      - name: webhook_id
+        in: path
+        required: true
+        description: A webhook whose owning endpoint belongs to the caller (see listWebhooks).
+        schema: { type: string, format: uuid }
+    get:
+      tags: [operator-api]
+      operationId: listWebhookRoutes
+      summary: List the endpoints a webhook delivers to
+      description: |
+        `list_webhook_routes` (ADR-0022), from the same code: the owning endpoint, which is always a
+        target, and the explicit routes, newest grant first. A route whose target was revoked or
+        whose friendship lapsed is still listed so it can be removed; deliveries skip it.
+      security:
+        - operatorOAuth: []
+      responses:
+        '200':
+          description: The webhook's fan-out set.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookRoutes' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+        '404':
+          description: No such webhook in the caller's reach (another human's and an unknown id are the same answer).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+    post:
+      tags: [operator-api]
+      operationId: addWebhookRouteFromBody
+      summary: Add a route, naming the target in the body
+      description: |
+        The same operation as addWebhookRoute, for a client that holds the target id in a body as
+        `add_webhook_route`'s arguments do.
+      security:
+        - operatorOAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookRouteIn' }
+      responses:
+        '200':
+          description: The route exists (idempotent).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookRouteAdded' }
+        '400':
+          description: The body does not decode, or has no target_endpoint_id (`invalid_argument`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+        '403':
+          description: The target is not routable (`forbidden`); see addWebhookRoute.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '404':
+          description: No such webhook in the caller's reach.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '409':
+          description: The webhook's endpoint is not active (`state` names it).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '429':
+          description: The caller's per-human write budget is spent; see Retry-After.
+
+  /api/v1/webhooks/{webhook_id}/routes/{endpoint_id}:
+    parameters:
+      - name: webhook_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: endpoint_id
+        in: path
+        required: true
+        description: The target endpoint's id (slugs are resolved by the CLI, not here).
+        schema: { type: string, format: uuid }
+    put:
+      tags: [operator-api]
+      operationId: addWebhookRoute
+      summary: Make an endpoint a delivery target of a webhook
+      description: |
+        `add_webhook_route`, through the same checks: the target must be an active endpoint of the
+        caller, or of a human the caller may deliver to across an approved friend edge (ADR-0010).
+        Adding a route that exists changes nothing. Once routed, the endpoint is in the webhook's
+        `grant.endpoints`, so its rules may name it.
+      security:
+        - operatorOAuth: []
+      responses:
+        '200':
+          description: The route exists (idempotent).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookRouteAdded' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+        '403':
+          description: |
+            The target is not routable (`forbidden`): unknown, malformed, revoked, or another human's
+            without an approved edge. Every reason is the same body.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '404':
+          description: No such webhook in the caller's reach.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '409':
+          description: The webhook's endpoint is not active (`state` names it).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '429':
+          description: The caller's per-human write budget is spent; see Retry-After.
+    delete:
+      tags: [operator-api]
+      operationId: removeWebhookRoute
+      summary: Stop delivering a webhook to an endpoint
+      description: |
+        `remove_webhook_route`. Succeeds whether or not the route existed; the owning endpoint
+        always stays a target. Works on a revoked endpoint's webhook too, since its routes still
+        deliver.
+      security:
+        - operatorOAuth: []
+      responses:
+        '200':
+          description: The route is gone (idempotent).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookRouteRemoved' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+        '404':
+          description: No such webhook in the caller's reach.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '429':
+          description: The caller's per-human write budget is spent; see Retry-After.
+
   /healthz:
     get:
       tags: [ops]
@@ -1016,6 +1166,44 @@ components:
           properties:
             queues: { type: array, items: { type: string } }
             endpoints: { type: array, items: { type: string } }
+
+    WebhookRoutes:
+      type: object
+      required: [webhook_id, owner_endpoint_id, routes]
+      properties:
+        webhook_id: { type: string, format: uuid }
+        owner_endpoint_id: { type: string, format: uuid, description: 'Always a delivery target, implicitly and unremovably.' }
+        routes:
+          type: array
+          description: Explicit additional targets, newest grant first.
+          items:
+            type: object
+            required: [target_endpoint_id, granted_at]
+            properties:
+              target_endpoint_id: { type: string, format: uuid }
+              granted_at: { type: string, format: date-time }
+
+    WebhookRouteIn:
+      type: object
+      required: [target_endpoint_id]
+      properties:
+        target_endpoint_id: { type: string, format: uuid }
+
+    WebhookRouteAdded:
+      type: object
+      required: [webhook_id, target_endpoint_id, routed]
+      properties:
+        webhook_id: { type: string, format: uuid }
+        target_endpoint_id: { type: string, format: uuid }
+        routed: { type: boolean, description: 'Always true: the route exists, whether this call created it or not.' }
+
+    WebhookRouteRemoved:
+      type: object
+      required: [webhook_id, target_endpoint_id, removed]
+      properties:
+        webhook_id: { type: string, format: uuid }
+        target_endpoint_id: { type: string }
+        removed: { type: boolean, description: 'Always true: the route is gone, whether this call removed it or not.' }
 
     WebhookRulesIn:
       type: object

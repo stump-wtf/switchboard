@@ -67,6 +67,7 @@ The routes below MUST be mounted under `/api/v1` behind the existing human OAuth
 | POST | `/api/v1/webhooks/{webhook_id}/rules/test` | `test_webhook_rules` | Required |
 | GET | `/api/v1/webhooks/{webhook_id}/routes` | `list_webhook_routes` | Required |
 | PUT | `/api/v1/webhooks/{webhook_id}/routes/{endpoint_id}` | `add_webhook_route` | Required |
+| POST | `/api/v1/webhooks/{webhook_id}/routes` | `add_webhook_route` (`{"target_endpoint_id"}` body) | Required |
 | DELETE | `/api/v1/webhooks/{webhook_id}/routes/{endpoint_id}` | `remove_webhook_route` | Required |
 | GET | `/api/v1/events` | `list_webhook_events`, `recent_webhook_events` | Required |
 | GET | `/api/v1/events/{event_id}` | `get_webhook_event` | Required |
@@ -267,11 +268,37 @@ human has a friend edge authorizing delivery. Every refusal MUST be the same `40
 Adding an existing route MUST succeed without change. `DELETE …/routes/{endpoint_id}` MUST succeed
 whether or not the route existed.
 
+`POST …/routes` with the body `{"target_endpoint_id": …}` MUST be the same operation as
+`PUT …/routes/{target_endpoint_id}`, for a client that holds the id in a body, as
+`add_webhook_route`'s arguments do. Both MUST run the same function as `add_webhook_route`, with the
+signed-in human as the principal: a webhook is in reach when any of the human's endpoints owns it,
+which is wider than the MCP verb's own-endpoint rule (SPEC-0033 F19) and is why this is a human
+surface only.
+
+A route on a webhook whose owning endpoint is **revoked** MUST follow REQ "Reach on Every Route" for
+an add, which answers `409` with the `state`. `GET` and `DELETE` MUST still succeed: a revoked
+endpoint's routes still deliver (SPEC-0001), so withdrawing one is the only way to stop them short
+of deleting the webhook, and withdrawing delivery is always safe.
+
 #### Scenario: Routing to a stranger's endpoint
 
 - **WHEN** the human adds a route to an endpoint of a human with no friend edge, and then to a
   random UUID
 - **THEN** both responses are `403` with identical bodies
+
+#### Scenario: A rule names an endpoint only after it is routed
+
+- **GIVEN** the human owns webhook `W` and endpoint `E`, and `E` is not a route of `W`
+- **WHEN** they save rules on `W` whose action names `"endpoints": ["E"]`
+- **THEN** the save is `403 forbidden` and the rules are unchanged
+- **WHEN** they then call `PUT …/routes/E` and save the same rules
+- **THEN** `GET …/rules` lists `E` in `grant.endpoints`, and the save succeeds
+
+#### Scenario: Removing a route of a revoked endpoint's webhook
+
+- **GIVEN** endpoint E is revoked, owns webhook `W`, and `W` routes to endpoint F
+- **WHEN** its human calls `PUT …/routes/G` and then `DELETE …/routes/F`
+- **THEN** the add is `409` with `state: "revoked"`, and the remove succeeds and stops delivery to F
 
 ### Requirement: Delivery History
 
@@ -353,9 +380,9 @@ The `switchboard` binary MUST provide a command for every `/api/v1` route, group
 | `webhook rules move WEBHOOK RULE POSITION` | `POST …/rules/{rule}/move` |
 | `webhook rules remove WEBHOOK RULE` | `DELETE …/rules/{rule}` |
 | `webhook rules test WEBHOOK (--event ID\|--payload F) [--file F] [--header H]` | `POST …/rules/test` |
-| `route list WEBHOOK` | `GET …/routes` |
-| `route add WEBHOOK ENDPOINT` | `PUT …/routes/{endpoint}` |
-| `route remove WEBHOOK ENDPOINT` | `DELETE …/routes/{endpoint}` |
+| `webhook route list WEBHOOK` | `GET …/routes` |
+| `webhook route add WEBHOOK ENDPOINT` | `PUT …/routes/{endpoint}` |
+| `webhook route remove WEBHOOK ENDPOINT` | `DELETE …/routes/{endpoint}` |
 | `event list [--webhook W] [--endpoint REF] [--disposition D] [--provider P] [--type T] [--since S] [--limit N]` | `GET /events` |
 | `event show ID` | `GET /events/{id}` |
 | `event replay ID [--target URL]` | `POST /events/{id}/replay` |
@@ -373,6 +400,10 @@ non-zero. `webhook rules get --json` MUST print a document `webhook rules set --
 unchanged. `webhook rules set` MUST send the file as written, MUST refuse before sending a file with
 no `rules` key, and MUST say in its text output when the file had no `params` and the stored params
 were therefore kept. `webhook rules test --file` MUST treat the file's `params` the same way.
+`webhook route add` and `remove` MUST accept ENDPOINT as an endpoint id, or as the slug of one of the
+human's own endpoints, resolved through `GET /api/v1/endpoints` before any route is written; a slug
+that resolves to nothing MUST fail without a route call. `webhook route list` MUST print the owner
+endpoint first, then the routes in grant order, with slugs where the human has them.
 
 #### Scenario: Inspecting a lane's rules from a terminal
 

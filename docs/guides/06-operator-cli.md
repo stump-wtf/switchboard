@@ -224,9 +224,31 @@ clearing a router's params quietly drops every handoff that reads them.
 A webhook of another human's endpoint is `not found`, exactly like one that does not exist. A
 webhook whose endpoint was revoked stays readable and testable, but `set` answers `409`.
 
+## Managing webhook routes
+
+A rule's `endpoints` can only name a webhook's **delivery targets**: its owning endpoint, plus the
+endpoints it is routed to. Over MCP only the owning endpoint can add a route (`add_webhook_route`),
+so a webhook whose endpoint credential nobody kept could never gain one. From the CLI you route it as
+the human who owns that endpoint:
+
+```
+switchboard webhook route list WEBHOOK_ID                       # owner + routes, in delivery order
+switchboard webhook route add WEBHOOK_ID lane-s-worker-f3fecc1e   # a slug from `endpoint list`, or an id
+switchboard webhook rules get WEBHOOK_ID                        # the endpoint is now in grant.endpoints
+switchboard webhook route remove WEBHOOK_ID lane-s-worker-f3fecc1e
+```
+
+- Your own endpoints are routable freely, by slug or id. Another human's endpoint takes its id and
+  an approved friend request in your direction; everything else (unknown, revoked, not yours to
+  reach) is the same `forbidden`, so the command tells you nothing about anyone else's endpoints.
+- `add` and `remove` are idempotent. The owning endpoint is always a target, so removing it changes
+  nothing.
+- A webhook whose endpoint is revoked takes no new route (`409`), but its routes still deliver, so
+  `list` and `remove` keep working on it.
+
 ## The API, for other clients
 
-The CLI is a thin client over nine OAuth-guarded endpoints, documented in the site's
+The CLI is a thin client over these OAuth-guarded endpoints, documented in the site's
 [API reference](/api):
 
 | Method | Path | Does |
@@ -240,6 +262,9 @@ The CLI is a thin client over nine OAuth-guarded endpoints, documented in the si
 | `GET` | `/api/v1/webhooks/{id}/rules` | The webhook's rules, default, params and grant: `list_webhook_rules`' shape. |
 | `PUT` | `/api/v1/webhooks/{id}/rules` | Replaces them: `{rules, default_action?, params?}`. No `params` key keeps the stored params; `"params": null` clears them. `400`/`403` name a rule that fails validation or faults on a recent delivery, `409` if the webhook's endpoint is revoked or the rules changed meanwhile, `503` if the rule evaluator is down. The previous rules stay in force on any failure. |
 | `POST` | `/api/v1/webhooks/{id}/rules/test` | Dry run: exactly one of `event_id` or `payload`, plus optional candidate `rules`, `default_action`, `params`, `headers`, `omit_envelope`. Saves nothing. |
+| `GET` | `/api/v1/webhooks/{id}/routes` | The webhook's owner endpoint and routes: `list_webhook_routes`' shape. |
+| `PUT` | `/api/v1/webhooks/{id}/routes/{endpoint_id}` | Adds a route, idempotently (`POST /api/v1/webhooks/{id}/routes` with `{"target_endpoint_id": …}` is the same call). `403 forbidden` for any target you may not route to, `409` if the webhook's endpoint is revoked. |
+| `DELETE` | `/api/v1/webhooks/{id}/routes/{endpoint_id}` | Removes a route; succeeds whether or not it existed. |
 
 Errors on the webhook routes are JSON, `{"error": "…", "code": "…"}`, with the same `code` the
 matching MCP verb returns. A webhook you do not own is `404`, the same as an unknown id.

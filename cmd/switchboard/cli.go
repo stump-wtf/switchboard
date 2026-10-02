@@ -26,6 +26,9 @@ package main
 //
 // @joestump-agent 10/01/2026 - Added `endpoint edit` for the default claim lease (ADR-0043), and
 // `--lease-ttl` on `endpoint vend`.
+//
+// @joestump-agent 10/02/2026 - Added `webhook route list|add|remove` (SPEC-0035 REQ "Route
+// Management", #555).
 
 import (
 	"bufio"
@@ -116,12 +119,17 @@ func commands() []command {
 		{name: "todo", args: "<verb>", summary: "hand work to your agents", subs: []command{
 			{name: "push", args: "ENDPOINT TITLE", summary: "mint a todo on an endpoint you own and ring its doorbell", run: cmdTodoPush},
 		}},
-		{name: "webhook", args: "<verb>", summary: "manage your webhooks and their routing rules", subs: []command{
+		{name: "webhook", args: "<verb>", summary: "manage your webhooks, their routing rules and their routes", subs: []command{
 			{name: "list", summary: "list the webhooks your endpoints own (never their ingest URLs)", run: cmdWebhookList},
 			{name: "rules", args: "<verb>", summary: "read, test and replace a webhook's routing rules", subs: []command{
 				{name: "get", args: "WEBHOOK_ID", summary: "show a webhook's rules, default, params and grant", run: cmdWebhookRulesGet},
 				{name: "test", args: "WEBHOOK_ID", summary: "dry-run rules against a stored event or a sample payload; saves nothing", run: cmdWebhookRulesTest},
 				{name: "set", args: "WEBHOOK_ID", summary: "replace a webhook's rules from a file (the get --json shape)", run: cmdWebhookRulesSet},
+			}},
+			{name: "route", args: "<verb>", summary: "list, add and remove the endpoints a webhook delivers to", subs: []command{
+				{name: "list", args: "WEBHOOK_ID", summary: "show the endpoints a webhook delivers to: its owner and its routes", run: cmdWebhookRouteList},
+				{name: "add", args: "WEBHOOK_ID ENDPOINT", summary: "also deliver a webhook to an endpoint (slug or id)", run: cmdWebhookRouteAdd},
+				{name: "remove", args: "WEBHOOK_ID ENDPOINT", summary: "stop delivering a webhook to an endpoint (slug or id)", run: cmdWebhookRouteRemove},
 			}},
 		}},
 		{name: "login", args: "[URL]", summary: "sign in to a deployment over OAuth (opens your browser)", run: cmdLogin},

@@ -1,14 +1,20 @@
 package server
 
-// Human API: Webhooks And Their Routing Rules
+// Human API: Webhooks, Their Routing Rules And Their Routes
 //
-// The first slice of SPEC-0035 on /api/v1: list the webhooks in the signed-in human's reach, and
-// read, replace and dry-run a webhook's routing rules. A webhook's rules could previously be managed
-// only over MCP, by the endpoint that owns the webhook and only when that endpoint's scope carried
-// the rule verbs, so a webhook owned by an endpoint vended before those verbs existed had rules no
-// credential could edit. These routes are authorized by the human instead (ADR-0022: the endpoint's
-// human is the authorization principal): a webhook is in reach when its owning endpoint belongs to
-// the caller, and every other webhook is the same 404 as one that does not exist.
+// The first slice of SPEC-0035 on /api/v1: list the webhooks in the signed-in human's reach; read,
+// replace and dry-run a webhook's routing rules; and list, add and remove its routes (the extra
+// endpoints its deliveries fan out to). Both could previously be managed only over MCP, by the
+// endpoint that owns the webhook and only when that endpoint's scope carried the verbs, so a webhook
+// owned by an endpoint vended before those verbs existed, or whose credential nobody kept, had rules
+// and routes no credential could edit. These routes are authorized by the human instead (ADR-0022:
+// the endpoint's human is the authorization principal): a webhook is in reach when its owning
+// endpoint belongs to the caller, and every other webhook is the same 404 as one that does not exist.
+//
+// The route routes run internal/manage's route checks with the same human principal: any webhook in
+// reach, and a target that is the human's own active endpoint or one an approved friend edge lets
+// them deliver to. Every refused target is one 403 forbidden. Adding a route to a webhook whose
+// endpoint is revoked is 409; listing and removing still work (SPEC-0035 REQ "Route Management").
 //
 // The rule routes run internal/manage, the code the MCP rule verbs run, with a human principal:
 // the same grant, validation, save-time dry run and row-locked compare-and-write, and the same
@@ -19,11 +25,15 @@ package server
 // human-scoped surface, and an endpoint credential never reaches it (oauthGuard refuses sbk_).
 //
 // Governing: SPEC-0035 REQ "Human API Surface", REQ "Reach on Every Route", REQ "Shared
-// Implementation With MCP", REQ "Rule Management", REQ "Work Orders on the Human API", REQ "Error
-// Handling Standards"; ADR-0023; ADR-0022; ADR-0024; ADR-0038.
+// Implementation With MCP", REQ "Rule Management", REQ "Route Management", REQ "Work Orders on the
+// Human API", REQ "Error Handling Standards"; ADR-0023; ADR-0022; ADR-0024; ADR-0038.
 //
 // @joestump-agent 09/29/2026 - Added GET /webhooks and GET/PUT /webhooks/{id}/rules plus POST
 // /webhooks/{id}/rules/test, with a per-human rate limit and SPEC-0035's JSON error shape.
+//
+// @joestump-agent 10/02/2026 - Added GET /webhooks/{id}/routes, PUT and DELETE
+// /webhooks/{id}/routes/{endpoint_id}, and POST /webhooks/{id}/routes with a target_endpoint_id
+// body (#555). ruleErr became manageErr, which also maps forbidden.
 
 import (
 	"encoding/json"
@@ -50,11 +60,19 @@ func (a *apiHandler) webhookRoutes(r chi.Router) {
 		r.Use(maxBytes(64<<10), a.perHuman(a.readRL))
 		r.Get("/webhooks", a.ListWebhooks)
 		r.Get("/webhooks/{webhook_id}/rules", a.GetWebhookRules)
+		r.Get("/webhooks/{webhook_id}/routes", a.ListWebhookRoutes)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(maxBytes(rulesBodyLimit), a.perHuman(a.writeRL))
 		r.Put("/webhooks/{webhook_id}/rules", a.SetWebhookRules)
 		r.Post("/webhooks/{webhook_id}/rules/test", a.TestWebhookRules)
+	})
+	// Route writes carry at most a target id, so they keep the API's usual 64 KiB cap.
+	r.Group(func(r chi.Router) {
+		r.Use(maxBytes(64<<10), a.perHuman(a.writeRL))
+		r.Put("/webhooks/{webhook_id}/routes/{endpoint_id}", a.AddWebhookRoute)
+		r.Post("/webhooks/{webhook_id}/routes", a.AddWebhookRoute)
+		r.Delete("/webhooks/{webhook_id}/routes/{endpoint_id}", a.RemoveWebhookRoute)
 	})
 }
 
@@ -109,7 +127,7 @@ func (a *apiHandler) GetWebhookRules(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "webhook_id")
 	out, err := a.rules.Get(r.Context(), manage.HumanPrincipal(human.ID), id)
 	if err != nil {
-		a.ruleErr(w, r, "get webhook rules", id, err)
+		a.manageErr(w, r, "get webhook rules", id, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -154,7 +172,7 @@ func (a *apiHandler) SetWebhookRules(w http.ResponseWriter, r *http.Request) {
 	}
 	out, change, err := a.rules.Replace(r.Context(), manage.HumanPrincipal(human.ID), id, rep)
 	if err != nil {
-		a.ruleErr(w, r, "set webhook rules", id, err)
+		a.manageErr(w, r, "set webhook rules", id, err)
 		return
 	}
 	// One record per save. A save that adds, removes or keeps a work-order rule says which: a work
@@ -180,9 +198,70 @@ func (a *apiHandler) TestWebhookRules(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := a.rules.Test(r.Context(), manage.HumanPrincipal(human.ID), id, in)
 	if err != nil {
-		a.ruleErr(w, r, "test webhook rules", id, err)
+		a.manageErr(w, r, "test webhook rules", id, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ListWebhookRoutes is GET /api/v1/webhooks/{webhook_id}/routes: list_webhook_routes' shape, the
+// owner endpoint plus the explicit routes.
+func (a *apiHandler) ListWebhookRoutes(w http.ResponseWriter, r *http.Request) {
+	human, _ := operatorFromContext(r.Context())
+	id := chi.URLParam(r, "webhook_id")
+	out, err := a.routes.List(r.Context(), manage.HumanPrincipal(human.ID), id)
+	if err != nil {
+		a.manageErr(w, r, "list webhook routes", id, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// addRouteIn is POST /api/v1/webhooks/{webhook_id}/routes' body, add_webhook_route's argument.
+type addRouteIn struct {
+	TargetEndpointID string `json:"target_endpoint_id"`
+}
+
+// AddWebhookRoute is add_webhook_route, idempotent either way it is spelled: PUT
+// /api/v1/webhooks/{webhook_id}/routes/{endpoint_id} (SPEC-0035's route), or POST
+// /api/v1/webhooks/{webhook_id}/routes with {"target_endpoint_id": …} (#555's). A target the human
+// may not route to is 403 forbidden, one answer for an unknown, revoked or unfriended endpoint.
+func (a *apiHandler) AddWebhookRoute(w http.ResponseWriter, r *http.Request) {
+	human, _ := operatorFromContext(r.Context())
+	id := chi.URLParam(r, "webhook_id")
+	target := chi.URLParam(r, "endpoint_id")
+	if r.Method == http.MethodPost {
+		var in addRouteIn
+		if !decodeAPIBody(w, r, &in) {
+			return
+		}
+		target = in.TargetEndpointID
+	}
+	out, err := a.routes.Add(r.Context(), manage.HumanPrincipal(human.ID), id, target)
+	if err != nil {
+		a.manageErr(w, r, "add webhook route", id, err)
+		return
+	}
+	// A route hands this webhook's deliveries to another endpoint, possibly another human's, so every
+	// grant is on the record (an existing route re-granted included: the call is idempotent).
+	a.log.Info("api webhook route added", "human", human.ID, "webhook", out.WebhookID,
+		"target_endpoint", out.TargetEndpointID, "surface", "api")
+	writeJSON(w, http.StatusOK, out)
+}
+
+// RemoveWebhookRoute is DELETE /api/v1/webhooks/{webhook_id}/routes/{endpoint_id}:
+// remove_webhook_route. It succeeds whether or not the route existed, and for the owner endpoint
+// (always a target) it changes nothing.
+func (a *apiHandler) RemoveWebhookRoute(w http.ResponseWriter, r *http.Request) {
+	human, _ := operatorFromContext(r.Context())
+	id := chi.URLParam(r, "webhook_id")
+	out, err := a.routes.Remove(r.Context(), manage.HumanPrincipal(human.ID), id, chi.URLParam(r, "endpoint_id"))
+	if err != nil {
+		a.manageErr(w, r, "remove webhook route", id, err)
+		return
+	}
+	a.log.Info("api webhook route removed", "human", human.ID, "webhook", out.WebhookID,
+		"target_endpoint", out.TargetEndpointID, "surface", "api")
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -201,9 +280,9 @@ func decodeAPIBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-// ruleErr maps a rule failure onto SPEC-0035's status table and error shape. The code is the one the
-// MCP verb answers with for the same input, so a script can treat both surfaces alike.
-func (a *apiHandler) ruleErr(w http.ResponseWriter, r *http.Request, what, webhookID string, err error) {
+// manageErr maps a rule or route failure onto SPEC-0035's status table and error shape. The code is
+// the one the MCP verb answers with for the same input, so a script can treat both surfaces alike.
+func (a *apiHandler) manageErr(w http.ResponseWriter, r *http.Request, what, webhookID string, err error) {
 	human, _ := operatorFromContext(r.Context())
 	var me *manage.Error
 	if errors.As(err, &me) {
@@ -213,6 +292,10 @@ func (a *apiHandler) ruleErr(w http.ResponseWriter, r *http.Request, what, webho
 			status = http.StatusBadRequest
 		case manage.ErrNotFound, manage.ErrRuleNotFound:
 			status = http.StatusNotFound
+		case manage.ErrForbidden:
+			status = http.StatusForbidden
+			// One answer for every refused target; which one it was goes to the log only.
+			a.log.Warn("api "+what+" refused", "human", human.ID, "webhook", webhookID, "reason", me.Reason)
 		case manage.ErrConflict:
 			status = http.StatusConflict
 		case manage.ErrUnavailable:

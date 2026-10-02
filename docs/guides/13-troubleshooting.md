@@ -99,7 +99,8 @@ anything.
 - **A dry-run fails with `invalid_rule`.** Give every candidate rule an `id`. A save fills missing
   ids in; a dry-run doesn't.
 - **The save fails with `forbidden`.** The queue isn't one of the endpoint's webhook queues, or an
-  `endpoints` entry isn't a delivery target yet (`add_webhook_route` first). An `exclusive` rule
+  `endpoints` entry isn't a delivery target yet (`switchboard webhook route add`, or
+  `add_webhook_route`, first). An `exclusive` rule
   also fails to save when no delivery target is scoped to its queue.
 - **Everything drops after a rules change.** Check whether the save sent `"params": {}` (which
   clears them; leaving `params` out keeps the saved ones) or a params object missing a list. An

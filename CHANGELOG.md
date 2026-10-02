@@ -15,6 +15,18 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Webhook routes from the CLI and the human API.** The human who owns a webhook can now list, add
+  and remove the endpoints it delivers to without the owning endpoint's MCP credential:
+  `switchboard webhook route list|add|remove WEBHOOK_ID [ENDPOINT]` (ENDPOINT by slug or id, each
+  with `--json`), over `GET /api/v1/webhooks/{id}/routes`, `PUT` and `DELETE
+  /api/v1/webhooks/{id}/routes/{endpoint_id}`, and `POST /api/v1/webhooks/{id}/routes` with
+  `{"target_endpoint_id"}`. They run the MCP routing verbs' own checks: any webhook of your
+  endpoints is yours to route, another human's is `404`, and a target that is unknown, revoked or
+  another human's without an approved friend request is one `403 forbidden`. A route is what lets a
+  rule's `endpoints` name an endpoint, so `webhook rules set` now works for targets that were never
+  routed while someone held the owner's key. Adding a route to a revoked endpoint's webhook is
+  `409`; listing and removing still work. The MCP verbs are unchanged.
+
 - **A per-endpoint default claim lease.** An endpoint's human can now say how long its claims last
   when a call passes no `lease_ttl_seconds`: `default_lease_ttl_seconds`, 60 to 86400 seconds, or
   unset for the server's 300. `claim`, `claim_next` and `heartbeat` apply per-call >

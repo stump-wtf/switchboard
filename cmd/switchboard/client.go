@@ -249,6 +249,15 @@ func (a *apiClient) patch(path string, body any) ([]byte, error) {
 	return readAPIResponse(resp, http.MethodPatch, path, http.StatusOK)
 }
 
+// del performs a DELETE and returns the response body, accepting 200.
+func (a *apiClient) del(path string) ([]byte, error) {
+	resp, err := a.do(http.MethodDelete, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return readAPIResponse(resp, http.MethodDelete, path, http.StatusOK)
+}
+
 func readAPIResponse(resp *http.Response, method, path string, want ...int) ([]byte, error) {
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

@@ -61,6 +61,10 @@ type apiHandler struct {
 	// the calling human (api_webhooks.go). Its Router is the MCP handler's sandbox when one is wired
 	// (newRouter), and unavailable otherwise. Governing: SPEC-0035 REQ "Shared Implementation With MCP".
 	rules manage.Rules
+	// routes is the route management the MCP routing verbs also run (internal/manage), driven here by
+	// the calling human. Governing: SPEC-0035 REQ "Shared Implementation With MCP", REQ "Route
+	// Management".
+	routes manage.Routes
 	// readRL and writeRL are the per-human buckets on the webhook routes and the endpoint edit route
 	// (SPEC-0035 "Rate Limiting").
 	readRL, writeRL *rateLimiter
@@ -75,6 +79,7 @@ func newAPIHandler(st *store.Store, baseURL string, log *slog.Logger, onEndpoint
 	return &apiHandler{st: st, base: strings.TrimRight(baseURL, "/"), log: log, endpointRevoked: onEndpointRevoked,
 		replayGuard: push.New(),
 		rules:       manage.Rules{Store: st, Humans: st},
+		routes:      manage.Routes{Store: st, Humans: st},
 		readRL:      newRateLimiter(20, 40),
 		writeRL:     newRateLimiter(5, 20),
 	}

@@ -30,6 +30,9 @@ package manage
 // Typing"; ADR-0038, SPEC-0033 REQ "Closing the Audited Surfaces"; SPEC-0035 REQ "Shared
 // Implementation With MCP", REQ "Rule Management", REQ "Reach on Every Route".
 //
+// @joestump-agent 10/02/2026 - Added the forbidden kind, Error.Reason and Principal.OwnerHumanID,
+// which route management (routes.go) shares with this file (#555).
+//
 // @joestump-agent 09/29/2026 - Extracted from internal/mcp/webhook_rules.go (mutateRules,
 // dryRunSave, routingGrant, the dry-run body, and the I/O shapes) and parameterized by a Principal,
 // so the human API's rule routes run the MCP verbs' code rather than a copy of it.
@@ -69,6 +72,10 @@ const (
 	ErrNotFound        Kind = "not_found"
 	ErrRuleNotFound    Kind = "rule_not_found"
 	ErrConflict        Kind = "conflict"
+	// ErrForbidden refuses a route target. Every reason (unknown, revoked, unfriended) is this one
+	// kind and one message, so the refusal enumerates nothing. Governing: SPEC-0006 REQ "Webhook Route
+	// Fan-Out Under Ownership and Friendship".
+	ErrForbidden Kind = "forbidden"
 	// ErrUnavailable says the rule evaluator could not run, so a save could not be checked. It is
 	// transient and names no rule. Governing: SPEC-0026 REQ-3.
 	ErrUnavailable Kind = "unavailable"
@@ -76,11 +83,13 @@ const (
 
 // Error is a domain failure: a Kind plus a message that is safe to show the caller (it never carries
 // secret material or internal error text). State is set when a write was refused because the
-// webhook's owning endpoint is not active.
+// webhook's owning endpoint is not active. Reason, when set, says which of several refusals that
+// share one message this was; it is for the operator log only and never reaches the caller.
 type Error struct {
-	Kind  Kind
-	Msg   string
-	State string
+	Kind   Kind
+	Msg    string
+	State  string
+	Reason string
 }
 
 func (e *Error) Error() string { return string(e.Kind) + ": " + e.Msg }
@@ -109,16 +118,26 @@ type HumanReach interface {
 	WebhookOwnerForHuman(ctx context.Context, webhookID, ownerHumanID string) (store.WebhookOwner, error)
 }
 
-// Principal is who is asking. Exactly one field is set; anything else resolves nothing.
+// Principal is who is asking. Exactly one of EndpointID and HumanID is set; anything else resolves
+// nothing.
 type Principal struct {
 	// EndpointID is an MCP caller: the webhook must be this endpoint's own.
 	EndpointID string
 	// HumanID is a human API caller: the webhook's owning endpoint must belong to this human.
 	HumanID string
+	// OwnerHumanID is an endpoint principal's own human (agents.owner_human_id). Route management
+	// authorizes a target, and records the grant, on that human's authority (ADR-0022, ADR-0008);
+	// rule management ignores it. It never resolves anything on its own.
+	OwnerHumanID string
 }
 
 // EndpointPrincipal is the MCP caller.
 func EndpointPrincipal(endpointID string) Principal { return Principal{EndpointID: endpointID} }
+
+// EndpointPrincipalOf is the MCP caller together with its owning human, as route management needs it.
+func EndpointPrincipalOf(endpointID, ownerHumanID string) Principal {
+	return Principal{EndpointID: endpointID, OwnerHumanID: ownerHumanID}
+}
 
 // HumanPrincipal is the human API caller.
 func HumanPrincipal(humanID string) Principal { return Principal{HumanID: humanID} }

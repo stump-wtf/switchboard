@@ -76,9 +76,9 @@ to that lane's workers through their environment:
 On the router endpoint:
 
 1. `create_webhook` with `source_type: "gitea"` for each Gitea org, `"github"` if used, and `"cairn"`. All three are **signed**. Keep each `ingest_url` and the one-time `signing_secret`.
-2. For each router webhook, call `add_webhook_route` to each lane endpoint.
+2. For each router webhook, route it to each lane endpoint: `add_webhook_route` from the router endpoint, or, as the human who owns it, `switchboard webhook route add WEBHOOK_ID LANE_ENDPOINT` (no router credential needed).
 
-**Route order is precedence.** If two endpoints are ever scoped to the same lane, the first-routed one executes. `list_webhook_routes` shows the order.
+**Route order is precedence.** If two endpoints are ever scoped to the same lane, the first-routed one executes. `switchboard webhook route list WEBHOOK_ID` shows the order (`list_webhook_routes` lists the same routes, newest first).
 
 ## 4. Point the producers at the router
 

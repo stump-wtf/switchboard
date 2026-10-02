@@ -43,6 +43,9 @@ but are no longer advertised.
 | `switchboard webhook rules get WEBHOOK_ID` | Show a webhook's rules, default, params and grant. |
 | `switchboard webhook rules test WEBHOOK_ID` | Dry-run rules against a stored event or a sample payload; saves nothing. |
 | `switchboard webhook rules set WEBHOOK_ID` | Replace a webhook's rules from a file (the `get --json` shape). |
+| `switchboard webhook route list WEBHOOK_ID` | Show the endpoints a webhook delivers to: its owner and its routes. |
+| `switchboard webhook route add WEBHOOK_ID ENDPOINT` | Also deliver a webhook to an endpoint (slug or id). |
+| `switchboard webhook route remove WEBHOOK_ID ENDPOINT` | Stop delivering a webhook to an endpoint (slug or id). |
 
 Exit codes, everywhere: `0` success, `1` the deployment or your credentials refused, `2` a usage
 mistake (usage printed on stderr).
@@ -198,3 +201,37 @@ For the safe way to run this loop end to end — backup, dry-run, apply, verify,
 [Change webhook routing safely](/guides/webhook-routing-safely). Rule syntax is
 [routing rules](/guides/routing-rules); tested rule recipes are in the
 [routing cookbook](/guides/routing-cookbook).
+
+### `switchboard webhook route list WEBHOOK_ID`
+
+Show every endpoint a webhook delivers to: its owning endpoint, which is always a target, then its
+routes in grant order (the order an `exclusive` rule picks from), with the slug of each endpoint
+of yours. These are the endpoints a rule's `endpoints` may name.
+
+| Flag | Meaning |
+|---|---|
+| `--json` | Print the raw API response (`list_webhook_routes`' shape: routes newest grant first). |
+
+### `switchboard webhook route add WEBHOOK_ID ENDPOINT`
+
+Make `ENDPOINT` one of the webhook's delivery targets, beside its owning endpoint, so the webhook's
+rules may name it. `ENDPOINT` is one of your endpoints, by the slug `endpoint list` prints or by
+id, or another human's endpoint by id, when an approved friend request lets you deliver to them.
+Every refused target (unknown, revoked, or not yours to reach) is the same `forbidden`. Adding a
+route that exists changes nothing. You do not need the owning endpoint's credential: any webhook of
+any of your endpoints is yours to route, but one whose endpoint is revoked takes no new route
+(`409`).
+
+| Flag | Meaning |
+|---|---|
+| `--json` | Print the raw API response. |
+
+### `switchboard webhook route remove WEBHOOK_ID ENDPOINT`
+
+Stop delivering the webhook to `ENDPOINT` (slug or id). Removing a route that is not there
+succeeds, and the owning endpoint always stays a target. A rule that still names the endpoint takes
+the default action until you change it. Works on a revoked endpoint's webhook too.
+
+| Flag | Meaning |
+|---|---|
+| `--json` | Print the raw API response. |

@@ -48,6 +48,10 @@ type fakeDeployment struct {
 	ruleSets     []map[string]any  // PUT /api/v1/webhooks/{id}/rules bodies seen, "webhook" added
 	ruleTests    []map[string]any  // POST /api/v1/webhooks/{id}/rules/test bodies seen, "webhook" added
 	testAnswer   map[string]any    // the rules/test answer
+	routeOwners  map[string]string // webhook id → owner endpoint id; a webhook absent here is not_found
+	routeRows    map[string][]map[string]any
+	routeCalls   []string        // "PUT|DELETE webhook target" for every route write seen
+	unroutable   map[string]bool // targets the route add answers 403 forbidden for
 }
 
 func newFakeDeployment(t *testing.T) *fakeDeployment {
@@ -282,6 +286,10 @@ func (f *fakeDeployment) serveWebhooks(w http.ResponseWriter, r *http.Request) b
 		return false
 	}
 	id, verb, _ := strings.Cut(rest, "/")
+	if verb == "routes" || strings.HasPrefix(verb, "routes/") {
+		f.serveRoutes(w, r, id, strings.TrimPrefix(strings.TrimPrefix(verb, "routes"), "/"))
+		return true
+	}
 	notFound := func() { writeJSONResponse(w, 404, map[string]any{"error": "webhook not found", "code": "not_found"}) }
 	decode := func() (map[string]any, bool) {
 		var in map[string]any
@@ -341,4 +349,52 @@ func (f *fakeDeployment) serveWebhooks(w http.ResponseWriter, r *http.Request) b
 		http.NotFound(w, r)
 	}
 	return true
+}
+
+// serveRoutes answers the route routes the way the real handlers do: list_webhook_routes' shape, an
+// idempotent PUT, a DELETE that succeeds whether or not the route exists, 404 not_found for a webhook
+// out of reach and one 403 forbidden for every refused target.
+func (f *fakeDeployment) serveRoutes(w http.ResponseWriter, r *http.Request, id, target string) {
+	owner, ok := f.routeOwners[id]
+	if !ok {
+		writeJSONResponse(w, 404, map[string]any{"error": "webhook not found", "code": "not_found"})
+		return
+	}
+	if f.routeRows == nil {
+		f.routeRows = map[string][]map[string]any{}
+	}
+	switch {
+	case r.Method == http.MethodGet && target == "":
+		rows := f.routeRows[id]
+		if rows == nil {
+			rows = []map[string]any{}
+		}
+		writeJSONResponse(w, 200, map[string]any{"webhook_id": id, "owner_endpoint_id": owner, "routes": rows})
+	case r.Method == http.MethodPut && target != "":
+		f.routeCalls = append(f.routeCalls, "PUT "+id+" "+target)
+		if f.unroutable[target] {
+			writeJSONResponse(w, 403, map[string]any{"error": "target endpoint is not routable from this endpoint", "code": "forbidden"})
+			return
+		}
+		found := false
+		for _, row := range f.routeRows[id] {
+			found = found || row["target_endpoint_id"] == target
+		}
+		if !found {
+			f.routeRows[id] = append([]map[string]any{{"target_endpoint_id": target, "granted_at": "2026-10-02T12:00:00Z"}}, f.routeRows[id]...)
+		}
+		writeJSONResponse(w, 200, map[string]any{"webhook_id": id, "target_endpoint_id": target, "routed": true})
+	case r.Method == http.MethodDelete && target != "":
+		f.routeCalls = append(f.routeCalls, "DELETE "+id+" "+target)
+		var kept []map[string]any
+		for _, row := range f.routeRows[id] {
+			if row["target_endpoint_id"] != target {
+				kept = append(kept, row)
+			}
+		}
+		f.routeRows[id] = kept
+		writeJSONResponse(w, 200, map[string]any{"webhook_id": id, "target_endpoint_id": target, "removed": true})
+	default:
+		http.NotFound(w, r)
+	}
 }
