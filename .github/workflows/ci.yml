@@ -51,6 +51,8 @@ jobs:
         run: go build ./...
       - name: test (incl. Postgres store tests)
         run: go test -race ./...
+      - name: telemetry relay and validator regressions
+        run: python3 -m unittest discover -s examples/telemetry-relay -p 'test_*.py' -v
 
   lint:
     runs-on: ubuntu-latest

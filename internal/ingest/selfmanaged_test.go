@@ -495,6 +495,25 @@ func TestSummarizeSelfManagedTitleGitea(t *testing.T) {
 	}
 }
 
+// A telemetry delivery titles from its small, well-known envelope (service/signal/severity/summary)
+// and degrades to "telemetry delivery" when the body is not an envelope.
+func TestSummarizeSelfManagedTitleTelemetry(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"full", `{"service":"harness","signal":"metric","severity":"ERROR","summary":"worker wedged"}`, "telemetry harness metric ERROR: worker wedged"},
+		{"message fallback", `{"service":"harness","message":"late heartbeat"}`, "telemetry harness: late heartbeat"},
+		{"no fields", `{}`, "telemetry delivery"},
+		{"not json", `not json`, "telemetry delivery"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summarizeSelfManagedTitle("telemetry", "", []byte(tc.body)); got != tc.want {
+				t.Fatalf("telemetry title = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // A self-managed gitea delivery that presents only the GitHub-compatible signature header
 // (X-Hub-Signature-256: sha256=<hex>) verifies too — the operator-configured /webhooks/gitea
 // receiver has always keyed on that header, so both Gitea paths MUST accept it.
@@ -613,6 +632,35 @@ func TestSelfManagedGenericHonoursDeliveryID(t *testing.T) {
 	}
 	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 2 {
 		t.Fatalf("todos = %d, want 2", n)
+	}
+}
+
+// Telemetry uses the same bounded token-trust delivery ID contract as generic webhooks: retries
+// collapse, but an oversized caller-controlled ID falls back to the body hash. Governing:
+// SPEC-0001 REQ "Idempotency Key Extraction and Dedup".
+func TestSelfManagedTelemetryDeliveryIDBounded(t *testing.T) {
+	ing, _, pool, ctx, _ := testIngestDeps(t, Config{})
+	st := store.New(pool)
+	seedWebhook(t, st, ctx, "telemetry", "token", "reviews", "route-telemetry-delivery-id", "")
+
+	post := func(body string, hdr map[string]string) string {
+		id, _ := accepted202(t, postSelfManaged(ing, "route-telemetry-delivery-id", body, hdr))
+		return id
+	}
+
+	first := post(`{"message":"first"}`, map[string]string{"X-Delivery-Id": "signal-7"})
+	if retry := post(`{"message":"retried serialization"}`, map[string]string{"X-Delivery-Id": "signal-7"}); retry != first {
+		t.Fatalf("telemetry retry with same X-Delivery-Id = %s, want original todo %s", retry, first)
+	}
+
+	oversized := strings.Repeat("x", maxGenericDeliveryID+1)
+	a := post(`{"message":"a"}`, map[string]string{"X-Delivery-Id": oversized})
+	b := post(`{"message":"b"}`, map[string]string{"X-Delivery-Id": oversized})
+	if a == b {
+		t.Fatal("oversized telemetry delivery ID must fall back to body hash, not collapse distinct bodies")
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM todos`); n != 3 {
+		t.Fatalf("todos = %d, want 3", n)
 	}
 }
 

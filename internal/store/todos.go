@@ -178,7 +178,8 @@ type CreateTodoParams struct {
 // Governing: SPEC-0023 REQ-3 "Lifecycle counters", REQ-5 "Cardinality".
 var todoMetricSources = map[string]bool{
 	"gitea": true, "github": true, "stripe": true, "slack": true, "cairn": true, "generic": true,
-	"operator": true, "dev": true, "friend": true,
+	"telemetry": true,
+	"operator":  true, "dev": true, "friend": true,
 }
 
 // IsMetricSource reports whether source is a todo origin the created counter labels by name rather

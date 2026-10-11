@@ -15,6 +15,15 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Token-trusted runtime telemetry ingestion.** Self-managed webhooks can use source
+  type `telemetry`, with readable severity-aware todo titles and stable sender
+  delivery IDs. The operator's source-type ceiling explicitly grants telemetry;
+  oversized delivery IDs fall back to body-hash deduplication. A standard-library
+  [OTLP JSONL relay and validator](examples/telemetry-relay/README.md) handle compressed
+  rotations, redaction, retry checkpoints, and severity filtering. The
+  [deployment guide](docs/guides/18-telemetry-relay.md) covers grants, worker triage,
+  scheduling, and validation through a worker acknowledgement.
+
 - **Webhook routes from the CLI and the human API.** The human who owns a webhook can now list, add
   and remove the endpoints it delivers to without the owning endpoint's MCP credential:
   `switchboard webhook route list|add|remove WEBHOOK_ID [ENDPOINT]` (ENDPOINT by slug or id, each
