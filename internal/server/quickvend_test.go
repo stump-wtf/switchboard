@@ -23,8 +23,9 @@ func TestQuickVendOneStep(t *testing.T) {
 	c := newWizClient(t, r, session)
 
 	// Session-gated like the rest of the operator UI.
-	if anon := anonRequest(t, r, http.MethodGet, "/endpoints/quick"); anon.Code != http.StatusFound || anon.Header().Get("Location") != "/login" {
-		t.Fatalf("anonymous quick vend: got %d → %q, want 302 → /login", anon.Code, anon.Header().Get("Location"))
+	anon := anonRequest(t, r, http.MethodGet, "/endpoints/quick")
+	if wantBounce := "/login?return_to=" + url.QueryEscape("/endpoints/quick"); anon.Code != http.StatusFound || anon.Header().Get("Location") != wantBounce {
+		t.Fatalf("anonymous quick vend: got %d → %q, want 302 → %q", anon.Code, anon.Header().Get("Location"), wantBounce)
 	}
 
 	// Reachable from the Endpoints view, not only by URL.

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -140,6 +141,36 @@ type oidcState struct {
 	Nonce    string `json:"n"`
 	Verifier string `json:"v"`
 	Provider string `json:"p,omitempty"`
+	// ReturnTo is the validated same-origin path (with query) to send the
+	// browser to once the session is established — the /oauth/authorize (or
+	// other protected) URL the human was bounced from. It rides the same
+	// short-lived state cookie as the OIDC state, is validated again on use
+	// (SafeReturnPath), and falls back to "/" when empty or unsafe.
+	ReturnTo string `json:"r,omitempty"`
+}
+
+// SafeReturnPath validates a redirect target for use after login: a relative,
+// same-origin path (optionally with a query string), never an absolute URL, a
+// scheme- or protocol-relative reference ("//host", "/\\host"), a user-info
+// form, or control characters — so a crafted return_to cannot become an open
+// redirect. An unsafe or empty target returns ""; callers fall back to "/".
+func SafeReturnPath(target string) string {
+	if target == "" || len(target) > 2048 {
+		return ""
+	}
+	if !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") || strings.HasPrefix(target, "/\\") {
+		return ""
+	}
+	for i := 0; i < len(target); i++ {
+		if b := target[i]; b < 0x20 || b == 0x7f {
+			return ""
+		}
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil {
+		return ""
+	}
+	return target
 }
 
 // Login begins a login with the provider named by ?provider= (default: Pocket
@@ -160,6 +191,7 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	st.ReturnTo = SafeReturnPath(r.URL.Query().Get("return_to"))
 	raw, _ := json.Marshal(st)
 	http.SetCookie(w, a.cookie(stateCookie, base64.RawURLEncoding.EncodeToString(raw), 10*time.Minute))
 	http.Redirect(w, r, url, http.StatusFound)
@@ -233,6 +265,10 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "login failed", http.StatusInternalServerError)
 		return
 	}
+	if dest := SafeReturnPath(st.ReturnTo); dest != "" {
+		http.Redirect(w, r, dest, http.StatusFound)
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -291,6 +327,10 @@ func (a *Authenticator) DevLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dev login failed", http.StatusInternalServerError)
 		return
 	}
+	if dest := SafeReturnPath(r.FormValue("return_to")); dest != "" {
+		http.Redirect(w, r, dest, http.StatusFound)
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -323,8 +363,11 @@ func (a *Authenticator) establishSession(ctx context.Context, w http.ResponseWri
 	return nil
 }
 
-// RequireHuman is middleware that admits only authenticated humans; others are redirected to login.
-// It also stashes the per-session CSRF token so downstream handlers can embed it in forms.
+// RequireHuman is middleware that admits only authenticated humans; others are redirected to
+// login. The bounce carries the original request URI as a return_to query parameter — re-validated
+// at every later hop (SafeReturnPath) — so the sign-in round trip can land back on the protected
+// URL, e.g. a pending /oauth/authorize, instead of dropping it. It also stashes the per-session
+// CSRF token so downstream handlers can embed it in forms.
 // Governing: SPEC-0008 REQ "Session-Gated Human Surface", REQ "Server-Side Session Establishment"
 // (only live sessions admit access; expired sessions are treated as unauthenticated).
 func (a *Authenticator) RequireHuman(next http.Handler) http.Handler {
@@ -345,7 +388,11 @@ func (a *Authenticator) RequireHuman(next http.Handler) http.Handler {
 			default:
 				a.log.Warn("session lookup", "err", err)
 			}
-			http.Redirect(w, r, "/login", http.StatusFound)
+			if dest := SafeReturnPath(r.URL.RequestURI()); dest != "" && dest != "/" {
+				http.Redirect(w, r, "/login?return_to="+url.QueryEscape(dest), http.StatusFound)
+			} else {
+				http.Redirect(w, r, "/login", http.StatusFound)
+			}
 			return
 		}
 		ctx := context.WithValue(r.Context(), humanKey, h)

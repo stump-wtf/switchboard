@@ -101,9 +101,11 @@ func TestConsentFlowApprove(t *testing.T) {
 	authPath := "/oauth/authorize?" + q.Encode()
 
 	// Scenario "Human absent": no session → through login first, nothing rendered, nothing minted.
+	// The bounce carries the authorize request as the validated return path, so the sign-in round
+	// trip lands back here instead of dropping the flow.
 	anon := anonRequest(t, r, http.MethodGet, authPath)
-	if anon.Code != http.StatusFound || anon.Header().Get("Location") != "/login" {
-		t.Fatalf("anonymous authorize: got %d → %q, want 302 → /login", anon.Code, anon.Header().Get("Location"))
+	if wantBounce := "/login?return_to=" + url.QueryEscape(authPath); anon.Code != http.StatusFound || anon.Header().Get("Location") != wantBounce {
+		t.Fatalf("anonymous authorize: got %d → %q, want 302 → %q", anon.Code, anon.Header().Get("Location"), wantBounce)
 	}
 
 	// Authenticated: the consent screen renders client, workspace, principal, and ONLY the stored

@@ -82,6 +82,16 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   `move_webhook_rule` and `remove_webhook_rule` now always return a `params` object,
   `{}` when none are set (SPEC-0026 REQ-4, #213).
 
+- **Signing in no longer drops a pending `/oauth/authorize`.** A signed-out browser
+  that opened an authorize URL (`switchboard login --no-browser`, a URL-only MCP
+  client config) was bounced to a bare login page and then always landed on the
+  board after sign-in, losing the client's PKCE request and leaving the CLI to time
+  out. The login bounce now carries the original URI as a validated return path, the
+  login page forwards it through every login entry, and the session-establishing
+  redirects send the browser back to it. The path is re-validated at every hop and
+  accepts only rooted same-origin paths, so it can never become an open redirect.
+  (#199)
+
 ## [0.5.0] - 2026-09-28
 
 Friend-vended endpoints stop acting with the approver's authority, and a worker can end

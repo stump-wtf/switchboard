@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -241,8 +242,10 @@ func TestEveryRouteClassifiedAndAnonymousRejected(t *testing.T) {
 		switch {
 		case sessionRoutes[key]:
 			rec := anonRequest(t, r, method, routePath(route))
-			if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
-				t.Errorf("%s: anonymous got %d → %q, want 302 → /login", key, rec.Code, rec.Header().Get("Location"))
+			reqPath := (&url.URL{Path: routePath(route)}).EscapedPath()
+			wantBounce := "/login?return_to=" + url.QueryEscape(reqPath)
+			if rec.Code != http.StatusFound || rec.Header().Get("Location") != wantBounce {
+				t.Errorf("%s: anonymous got %d → %q, want 302 → %q", key, rec.Code, rec.Header().Get("Location"), wantBounce)
 			}
 		case strings.HasPrefix(route, "/mcp/"):
 			// Vended MCP surface (ADR-0017; SPEC-0014): bearer-credential auth, no Authorization header → 401.
