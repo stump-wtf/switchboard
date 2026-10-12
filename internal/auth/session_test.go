@@ -266,10 +266,11 @@ func TestSessionGroupRequiresCSRFOnPOST(t *testing.T) {
 		return rec
 	}
 
-	// Anonymous: RequireHuman redirects to /login before CSRF is ever consulted.
+	// Anonymous: RequireHuman redirects to /login before CSRF is ever consulted (carrying the
+	// bounced URI as the validated return path).
 	reached = false
-	if rec := post(csrfToken(tok), false); rec.Code != http.StatusFound || rec.Result().Header.Get("Location") != "/login" {
-		t.Fatalf("anonymous POST should redirect to /login, got %d", rec.Code)
+	if rec := post(csrfToken(tok), false); rec.Code != http.StatusFound || rec.Result().Header.Get("Location") != "/login?return_to=%2Flogout" {
+		t.Fatalf("anonymous POST should redirect to /login with the return path, got %d → %q", rec.Code, rec.Result().Header.Get("Location"))
 	} else if reached {
 		t.Fatal("anonymous POST must not reach the protected handler")
 	}

@@ -196,6 +196,7 @@ type view struct {
 	OIDCConfigured   bool
 	GitHubConfigured bool
 	DevLogin         bool
+	ReturnTo         string           // validated same-origin return path the login links and dev form carry back into the flow (empty when none)
 	Tiles            tilesView        // Board stat band (stats + activity bars)
 	Lanes            lanesView        // Board three-lane patch panel (SPEC-0015)
 	Counts           store.TodoCounts // Todos view filter-pill counts
@@ -302,9 +303,11 @@ func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "home", view{Landing: true, Title: "switchboard — receive · verify · patch through"})
 }
 
-// Login renders the public login page.
+// Login renders the public login page. A ?return_to= from the auth bounce (RequireHuman) is
+// validated (auth.SafeReturnPath) and handed to the template so every login button and the dev
+// form carry it into the flow, which redirects there once the session is established.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "login", view{Title: "Log in", OIDCConfigured: h.cfg.OIDCConfigured(), GitHubConfigured: h.cfg.GitHubConfigured(), DevLogin: h.cfg.DevLogin})
+	h.render(w, "login", view{Title: "Log in", OIDCConfigured: h.cfg.OIDCConfigured(), GitHubConfigured: h.cfg.GitHubConfigured(), DevLogin: h.cfg.DevLogin, ReturnTo: auth.SafeReturnPath(r.URL.Query().Get("return_to"))})
 }
 
 // Board renders the landing view: trust legend, stat tiles (throughput + activity bars), and the

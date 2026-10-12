@@ -302,7 +302,7 @@ func TestLogoutRevokesSessionAndClearsCookie(t *testing.T) {
 		t.Error("logout must clear the session cookie (empty value, negative Max-Age)")
 	}
 	// The server-side session is gone: the old cookie no longer authenticates.
-	if rec := getAs(t, r, token, "/endpoints"); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
-		t.Fatalf("replayed cookie after logout: got %d → %q, want 302 → /login", rec.Code, rec.Header().Get("Location"))
+	if rec := getAs(t, r, token, "/endpoints"); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login?return_to="+url.QueryEscape("/endpoints") {
+		t.Fatalf("replayed cookie after logout: got %d → %q, want 302 → /login carrying the return path", rec.Code, rec.Header().Get("Location"))
 	}
 }
