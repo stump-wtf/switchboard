@@ -59,12 +59,12 @@ func TestRingUnclaimedRepeatsAnUnpickedDoorbell(t *testing.T) {
 
 	// Freshly created: still inside the first backoff, so it must NOT be rung — a todo whose
 	// original doorbell may still be in flight must not be immediately doubled.
-	if got, err := s.RingUnclaimed(ctx); err != nil || len(got) != 0 {
+	if got, err := s.RingUnclaimed(ctx, []string{ep}); err != nil || len(got) != 0 {
 		t.Fatalf("fresh todo rung too early: %d rows, err %v", len(got), err)
 	}
 
 	age(t, s, ctx, td.ID, 10*time.Minute, 0, nil)
-	got, err := s.RingUnclaimed(ctx)
+	got, err := s.RingUnclaimed(ctx, []string{ep})
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestRingUnclaimedRepeatsAnUnpickedDoorbell(t *testing.T) {
 	}
 
 	// Marked in the same statement, so a second sweep immediately after does not re-select it.
-	if again, err := s.RingUnclaimed(ctx); err != nil || len(again) != 0 {
+	if again, err := s.RingUnclaimed(ctx, []string{ep}); err != nil || len(again) != 0 {
 		t.Fatalf("same todo rung twice in a row: %d rows, err %v", len(again), err)
 	}
 }
@@ -87,7 +87,7 @@ func TestRingUnclaimedRepeatsTokenTrustDoorbell(t *testing.T) {
 	td := seedRingingTodo(t, s, ctx, ep, "token-delivery", false, "token")
 	age(t, s, ctx, td.ID, 10*time.Minute, 0, nil)
 
-	got, err := s.RingUnclaimed(ctx)
+	got, err := s.RingUnclaimed(ctx, []string{ep})
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestRingUnclaimedNeverRingsUnverifiedOrEventlessTodos(t *testing.T) {
 	}
 	age(t, s, ctx, eventless.ID, 48*time.Hour, 0, &long)
 
-	got, err := s.RingUnclaimed(ctx)
+	got, err := s.RingUnclaimed(ctx, []string{ep})
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestRingUnclaimedStopsAtTheAttemptCap(t *testing.T) {
 	long := 24 * time.Hour
 	age(t, s, ctx, td.ID, 48*time.Hour, ringMaxAttempts, &long)
 
-	if got, err := s.RingUnclaimed(ctx); err != nil || len(got) != 0 {
+	if got, err := s.RingUnclaimed(ctx, []string{ep}); err != nil || len(got) != 0 {
 		t.Fatalf("a todo at the attempt cap was rung again: %d rows, err %v", len(got), err)
 	}
 }
@@ -159,7 +159,7 @@ func TestRingUnclaimedIgnoresClaimedAndDoneTodos(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	got, err := s.RingUnclaimed(ctx)
+	got, err := s.RingUnclaimed(ctx, []string{ep})
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestRingUnclaimedIsCappedPerSweep(t *testing.T) {
 		td := seedRingingTodo(t, s, ctx, ep, fmt.Sprintf("backlog-%d", i), true, "signed")
 		age(t, s, ctx, td.ID, 48*time.Hour, 1, &long)
 	}
-	got, err := s.RingUnclaimed(ctx)
+	got, err := s.RingUnclaimed(ctx, []string{ep})
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestRingUnclaimedSkipsRevokedEndpoints(t *testing.T) {
 		t.Fatalf("revoke: %v", err)
 	}
 
-	got, err := s.RingUnclaimed(ctx)
+	got, err := s.RingUnclaimed(ctx, []string{dead, live})
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestRingUnclaimedRoundRobinsAcrossEndpoints(t *testing.T) {
 	waiting := seedRingingTodo(t, s, ctx, quiet, "the one someone is waiting on", true, "signed")
 	age(t, s, ctx, waiting.ID, time.Hour, 1, &long)
 
-	got, err := s.RingUnclaimed(ctx)
+	got, err := s.RingUnclaimed(ctx, []string{hog, quiet})
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestRingUnclaimedUsesFullBudgetForASingleEndpoint(t *testing.T) {
 		td := seedRingingTodo(t, s, ctx, ep, fmt.Sprintf("solo-%d", i), true, "signed")
 		age(t, s, ctx, td.ID, 48*time.Hour, 1, &long)
 	}
-	got, err := s.RingUnclaimed(ctx)
+	got, err := s.RingUnclaimed(ctx, []string{ep})
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestRingOnAttachRingsWaitingWorkAtOnce(t *testing.T) {
 		t.Fatalf("re-attach inside the cooldown rang again: %d rows, err %v", len(again), err)
 	}
 	// The sweep sees it as just rung, not as due.
-	if due, err := s.RingUnclaimed(ctx); err != nil || len(due) != 0 {
+	if due, err := s.RingUnclaimed(ctx, []string{ep}); err != nil || len(due) != 0 {
 		t.Fatalf("sweep re-rang a todo the attach just rang: %d rows, err %v", len(due), err)
 	}
 	// Past the cooldown it is due on attach again.
@@ -375,5 +375,69 @@ func TestRingOnAttachIsCapped(t *testing.T) {
 	}
 	if len(got) != attachRingLimit {
 		t.Fatalf("rung %d rows, want the cap of %d", len(got), attachRingLimit)
+	}
+}
+
+// A ring that resolves to no attached session must not spend the re-ring budget. The sweep charged
+// every row it selected, whether or not anything could hear it, so an agent that was away for five
+// sweep cycles came back to a spent budget and silence — the rings had gone to an empty room, and
+// RingOnAttach, which shares the ledger, had nothing left to hand it. The sweep now selects only
+// rows whose endpoint has a session attached to the instance sweeping (SPEC-0011 REQ "Doorbell
+// Heartbeat"); everything else keeps its full budget for its consumer's return.
+// Regression: stump.wtf/switchboard#574.
+func TestRingUnclaimedSparesAnUnattachedEndpoint(t *testing.T) {
+	s, ctx := testStore(t)
+	away := seedEndpoint(t, s, ctx, "away-ep", "forge")
+	busy := seedEndpoint(t, s, ctx, "busy-ep", "forge")
+	long := 24 * time.Hour
+
+	absent := seedRingingTodo(t, s, ctx, away, "waiting for its agent", true, "signed")
+	age(t, s, ctx, absent.ID, 48*time.Hour, 0, &long)
+	present := seedRingingTodo(t, s, ctx, busy, "reachable right now", true, "signed")
+	age(t, s, ctx, present.ID, 48*time.Hour, 0, &long)
+
+	for i := 0; i < ringMaxAttempts; i++ {
+		got, err := s.RingUnclaimed(ctx, []string{busy})
+		if err != nil {
+			t.Fatalf("sweep %d: %v", i, err)
+		}
+		if len(got) == 0 {
+			t.Fatalf("sweep %d rang nothing while an endpoint was attached", i)
+		}
+		age(t, s, ctx, present.ID, 48*time.Hour, ringMaxAttempts-1, &long)
+	}
+
+	// The ledger is the proof, not the returned slice: an uncharged row keeps its attempt count and
+	// its aged last_ringed_at, while a charged one would have been stamped now().
+	var untouched bool
+	if err := s.pool.QueryRow(ctx, `SELECT ring_attempts = 0 AND last_ringed_at < now() - interval '1 hour'
+		FROM todos WHERE id = $1`, absent.ID).Scan(&untouched); err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	if !untouched {
+		t.Fatal("a sweep charged a row no session could receive")
+	}
+	if got, err := s.RingOnAttach(ctx, away, []string{"forge"}); err != nil || len(got) != 1 {
+		t.Fatalf("returning consumer got %d rows (%v), want its waiting todo", len(got), err)
+	}
+}
+
+// Nothing attached anywhere on this instance: the sweep does nothing at all, and the work is still
+// there when the consumer returns. Governing: SPEC-0011 REQ "Doorbell Heartbeat", ADR-0013 (the
+// queue is the ledger; a push nobody can hear is not a ring).
+func TestRingUnclaimedWithNoReceiversChargesNothing(t *testing.T) {
+	s, ctx := testStore(t)
+	ep := seedEndpoint(t, s, ctx, "dark", "forge")
+	td := seedRingingTodo(t, s, ctx, ep, "nobody is listening", true, "signed")
+	long := 24 * time.Hour
+	age(t, s, ctx, td.ID, 48*time.Hour, 0, &long)
+
+	for i := 0; i < ringMaxAttempts; i++ {
+		if got, err := s.RingUnclaimed(ctx, nil); err != nil || len(got) != 0 {
+			t.Fatalf("sweep %d with no receivers rang %d rows (%v)", i, len(got), err)
+		}
+	}
+	if got, err := s.RingOnAttach(ctx, ep, []string{"forge"}); err != nil || len(got) != 1 || got[0].ID != td.ID {
+		t.Fatalf("returning consumer got %d rows (%v): sweeps spent its budget ringing an empty room", len(got), err)
 	}
 }
