@@ -59,6 +59,14 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Fixed
 
+- **Idle notification streams stay open behind a proxy.** The MCP standalone GET stream wrote no
+  bytes at all while its queues were quiet, and a proxy with an idle timeout reads silence as a dead
+  connection (Cloudflare cancels about 125 s after connect). So a connected consumer was dropped on
+  a schedule and heard nothing during the down window: the queue kept filling, and the work only
+  surfaced when the agent pulled. The stream now emits an SSE comment every 15 s, the keep-alive the
+  web UI stream already uses, so a stream stays usable for the session's lifetime. Comments carry no
+  protocol meaning, so doorbell delivery, its catch-up ring and the web UI stream are unchanged. (#44)
+
 - **Connecting agents are told how leases work.** The MCP session instructions said only
   that a claim "sets a lease", so a worker could claim, never heartbeat, and lose the todo
   to the reaper mid-task. They now say: take work with `claim_next`; a claim holds a
