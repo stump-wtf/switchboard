@@ -189,7 +189,8 @@ type shell struct {
 
 type view struct {
 	Title            string
-	Landing          bool // public marketing landing (GET / when logged out): render the full-bleed home template, not the app shell
+	Landing          bool   // public marketing landing (GET / when logged out): render the full-bleed home template, not the app shell
+	DocsBase         string // landing-page docs links are absolute under this base — a self-hosted box has no local /docs (#563); config default is the hosted docs site
 	Human            *store.Human
 	CSRF             string
 	Shell            shell
@@ -298,9 +299,15 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 // Home renders the public marketing landing page (receive · verify · patch through) with the app's
 // own charm-web design language and day/night theme. It reads nothing from the store — it is a
 // static, unauthenticated surface — and renders the full-bleed home template (its own header/footer),
-// not the operator shell. Governing: ADR-0018 (charm-web design language).
+// not the operator shell. Docs links are absolute under cfg.DocsBaseURL: a self-hosted deployment
+// has no local /docs service, and relative links there 404 (#563). Governing: ADR-0018 (charm-web
+// design language).
 func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "home", view{Landing: true, Title: "switchboard — receive · verify · patch through"})
+	docsBase := h.cfg.DocsBaseURL
+	if docsBase == "" { // a Config built outside FromEnv: never leave dead relative links on the page (#563)
+		docsBase = config.DefaultDocsBaseURL
+	}
+	h.render(w, "home", view{Landing: true, DocsBase: docsBase, Title: "switchboard — receive · verify · patch through"})
 }
 
 // Login renders the public login page. A ?return_to= from the auth bounce (RequireHuman) is

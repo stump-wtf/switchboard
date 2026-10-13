@@ -59,6 +59,12 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Fixed
 
+- **Landing-page docs links resolve on self-hosted instances.** The docs image ships only to a
+  registry self-hosters cannot reach, so an instance from the published image served no `/docs`
+  and every docs and ADR link on the landing page was a dead relative link. The links are now
+  absolute under `SWITCHBOARD_DOCS_BASE_URL`, which defaults to the hosted docs site; operators
+  who serve the docs themselves point it at their own base (#563).
+
 - **Rings into an empty room no longer spend a todo's re-rings.** The doorbell heartbeat marked a
   row as rung whether or not anything could hear it, so an agent down for a few sweep cycles came
   back to a spent 5-ring budget and silence: the re-rings had gone to no session at all, and the
