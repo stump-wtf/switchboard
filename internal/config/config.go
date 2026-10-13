@@ -22,6 +22,13 @@ type Config struct {
 	// BaseURL is the externally-reachable base URL, used to build the OIDC redirect URL and the
 	// vended endpoint URLs handed to agents. No trailing slash.
 	BaseURL string
+	// DocsBaseURL is where the landing page's documentation links point. A self-hosted instance
+	// has no local /docs service — the docs image is not published to a registry self-hosters can
+	// reach — so relative /docs links would 404 (#563). The default is the hosted docs site;
+	// operators who serve the docs themselves (docs-site/ builds them, deploy/docker/
+	// docs.Dockerfile containers them) set this to their own base. No trailing slash.
+	// (SWITCHBOARD_DOCS_BASE_URL)
+	DocsBaseURL string
 	// DatabaseURL is the PostgreSQL DSN (ADR-0002).
 	DatabaseURL string
 
@@ -127,6 +134,10 @@ type Config struct {
 // unset (SPEC-0024 REQ-1).
 const DefaultNotifyHookMax = 5
 
+// DefaultDocsBaseURL is where the landing page's docs links point when SWITCHBOARD_DOCS_BASE_URL
+// is unset: the hosted docs site, which resolves for every deployment, self-hosted included (#563).
+const DefaultDocsBaseURL = "https://switchboard.stump.wtf/docs"
+
 // MinMetricsTokenLen is the shortest scrape token Validate accepts. The bound is on length only; the
 // documented generator (openssl rand -hex 32) yields 64 characters carrying 256 random bits.
 const MinMetricsTokenLen = 32
@@ -147,6 +158,7 @@ func FromEnv() Config {
 	return Config{
 		Addr:                     getenv("SWITCHBOARD_ADDR", "127.0.0.1:8080"),
 		BaseURL:                  base,
+		DocsBaseURL:              strings.TrimRight(getenv("SWITCHBOARD_DOCS_BASE_URL", DefaultDocsBaseURL), "/"),
 		DatabaseURL:              os.Getenv("SWITCHBOARD_DATABASE_URL"),
 		OIDCIssuer:               os.Getenv("SWITCHBOARD_OIDC_ISSUER"),
 		OIDCClientID:             os.Getenv("SWITCHBOARD_OIDC_CLIENT_ID"),

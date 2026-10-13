@@ -66,7 +66,7 @@ func TestRingUnclaimedCapSurvivesARescanPlan(t *testing.T) {
 		td := seedRingingTodo(t, s, ctx, ep, fmt.Sprintf("backlog-%d", i), true, "signed")
 		age(t, s, ctx, td.ID, 48*time.Hour, 1, &long)
 	}
-	got, err := rescanPlanStore(t, s, ctx).RingUnclaimed(ctx)
+	got, err := rescanPlanStore(t, s, ctx).RingUnclaimed(ctx, []string{ep})
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}

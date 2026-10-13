@@ -31,6 +31,7 @@ Everything comes from the environment; `serve` takes no flags.
 |---|---|---|
 | `SWITCHBOARD_DATABASE_URL` | — | **Required.** PostgreSQL DSN. |
 | `SWITCHBOARD_BASE_URL` | `http://127.0.0.1:8080` | **Set this.** The externally reachable base URL, with no trailing slash. It builds the OIDC redirect URL, the vended MCP endpoint URLs, and the webhook ingest URLs you hand to producers. |
+| `SWITCHBOARD_DOCS_BASE_URL` | `https://switchboard.stump.wtf/docs` | Where the landing page's docs links point, with no trailing slash. The default is the hosted docs site: the docs image is not published to a registry self-hosters can reach, so the app serves no `/docs` and relative links there would 404. Serve the docs yourself (`docs-site/` builds them) and point this at your own base. |
 | `SWITCHBOARD_ADDR` | `127.0.0.1:8080` | Listen address. The container image sets `0.0.0.0:8080`. |
 | `SWITCHBOARD_OIDC_ISSUER` | — | Issuer URL. Discovery runs at startup. |
 | `SWITCHBOARD_OIDC_CLIENT_ID` | — | |

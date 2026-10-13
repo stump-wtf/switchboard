@@ -57,6 +57,11 @@ services:
       # secrets sit in Postgres in the clear. Set it before creating self-managed webhooks:
       # `openssl rand -base64 32`. Governing: ADR-0002, SPEC-0006.
       SWITCHBOARD_SECRET_ENCRYPTION_KEY: ${SWITCHBOARD_SECRET_ENCRYPTION_KEY:-}
+      # Where the landing page's docs links point. The default is the hosted docs site — the docs
+      # image below is published only to a registry self-hosters cannot reach, so relative /docs
+      # links would 404 here (#563). Serve docs-site/ yourself (the commented service at the bottom
+      # of this file) and set this to your own base, e.g. https://docs.<your-domain>/docs.
+      # SWITCHBOARD_DOCS_BASE_URL: https://switchboard.stump.wtf/docs
       # SWITCHBOARD_DEV_LOGIN: "1"   # dev only — bypasses OIDC
     ports:
       # Bind to loopback on the host. switchboard is a self-contained OIDC relying party (ADR-011),

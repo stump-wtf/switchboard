@@ -944,3 +944,38 @@ func TestStreamAttachDropsOutOfScopeRows(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 }
+
+// AttachedEndpoints is the heartbeat sweep's receiver filter: it must name every endpoint with a
+// session in this process — once, sorted, and including an endpoint whose only session has no stream
+// open, because PublishTodoReady can still fall back to that session and a narrower list would leave
+// its todos rung by nothing. Governing: SPEC-0011 REQ "Doorbell Heartbeat".
+func TestAttachedEndpointsNamesEveryEndpointWithASession(t *testing.T) {
+	h := New(&fakeStore{byHash: map[string]store.AuthEndpoint{}},
+		slog.New(slog.NewTextHandler(&syncBuffer{}, nil)))
+	t.Cleanup(func() {
+		h.mu.Lock()
+		for id := range h.sessions {
+			delete(h.sessions, id)
+		}
+		h.mu.Unlock()
+		h.Close()
+	})
+
+	add := func(id, endpointID string) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.sessions[id] = &mcpSession{id: id, endpointID: endpointID, slug: id + "-slug",
+			queues: map[string]bool{"forge": true}, doorbells: make(chan store.Todo, doorbellBuffer)}
+	}
+	add("sess-b-1", "ep-b")
+	add("sess-a-1", "ep-a")
+	add("sess-a-2", "ep-a")
+	add("sess-system", "")
+
+	if got := h.AttachedEndpoints(); strings.Join(got, ",") != "ep-a,ep-b" {
+		t.Fatalf("AttachedEndpoints() = %v, want [ep-a ep-b] — deduplicated, sorted, no session-less endpoint", got)
+	}
+	if got := h.AttachedEndpoints(); len(got) != 2 {
+		t.Fatalf("the second call returned %v — reading the registry must not change it", got)
+	}
+}

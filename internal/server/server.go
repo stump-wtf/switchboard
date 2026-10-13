@@ -218,7 +218,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// passed is flipped to revoked in the store and its live MCP sessions are torn down through the
 	// SAME CloseEndpointSessions path the web UI's revoke uses — expiry IS revocation, not a
 	// parallel lifecycle. Governing: SPEC-0016 REQ "Credential Lifetime", ADR-0019.
-	go reaper(ctx, st, log, mcph.CloseEndpointSessions, mcph.PublishTodoReady, reapInterval)
+	go reaper(ctx, st, log, mcph.CloseEndpointSessions, mcph.PublishTodoReady, mcph.AttachedEndpoints, reapInterval)
 	// Retention pruner: the periodic task SPEC-0004 mandates so events and terminal todos cannot
 	// grow unbounded. Same lifecycle pattern as the reaper — context-managed, exits on shutdown.
 	go pruner(ctx, st, log, pruneInterval)
@@ -771,7 +771,7 @@ type reapStore interface {
 	ReapExpired(ctx context.Context) (int64, error)
 	RequeueDueRetries(ctx context.Context) (int64, error)
 	ExpireEndpoints(ctx context.Context) ([]string, error)
-	RingUnclaimed(ctx context.Context) ([]store.Todo, error)
+	RingUnclaimed(ctx context.Context, attached []string) ([]store.Todo, error)
 }
 
 // reaper periodically requeues (or dead-letters) todos with expired leases — crash safety (ADR-0002)
@@ -786,7 +786,7 @@ type reapStore interface {
 // Errors are logged and the loop keeps going, mirroring the pruner: a transient DB failure must not
 // disable enforcement for the life of the process. Governing: SPEC-0016 REQ "Credential Lifetime"
 // (scenario "Expiry enforcement"), SPEC-0007 revocation semantics reused, ADR-0019.
-func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions func(endpointID string), ring func(store.Todo), interval time.Duration) {
+func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions func(endpointID string), ring func(store.Todo), receivers func() []string, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -809,7 +809,16 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 			// was previously never repeated — so the todo sat pending forever with nothing to
 			// surface it. Bounded and backed off in the store; ring publishes through the same
 			// endpoint-scoped path a fresh delivery uses.
-			if due, err := st.RingUnclaimed(ctx); err != nil {
+			//
+			// receivers says which endpoints have a session attached to THIS instance, and the store
+			// charges only those rows: a ring that lands in an empty room used to spend an attempt the
+			// consumer needs when it returns. No receiver, no charge — the queue stays the ledger and
+			// pull still drains the row. Governing: SPEC-0011 REQ "Doorbell Heartbeat".
+			var attached []string
+			if receivers != nil {
+				attached = receivers()
+			}
+			if due, err := st.RingUnclaimed(ctx, attached); err != nil {
 				log.Warn("doorbell heartbeat", "err", err)
 			} else if len(due) > 0 && ring != nil {
 				for _, t := range due {
