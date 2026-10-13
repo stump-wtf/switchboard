@@ -298,7 +298,7 @@ func TestQuarantineDefaultFilterCoversEveryTodoMethod(t *testing.T) {
 		},
 		"RingUnclaimed": func(t *testing.T) error {
 			id := f.seedHeld(t, "pending")
-			got, err := s.RingUnclaimed(ctx)
+			got, err := s.RingUnclaimed(ctx, []string{ep})
 			if err != nil || containsTodo(got, id) {
 				return fmt.Errorf("RingUnclaimed rang the held todo (%v)", err)
 			}

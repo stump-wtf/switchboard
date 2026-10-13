@@ -119,6 +119,32 @@ func (h *Handler) PublishTodoReady(t store.Todo) {
 	// pull, which is the whole point of the queue being the ledger.
 }
 
+// AttachedEndpoints lists every endpoint that has at least one live session in this process,
+// deduplicated and sorted. The heartbeat sweep asks for it so it charges only the rows a ring can
+// actually land on: a todo rung while nothing is attached was marked as rung anyway, and those spent
+// re-rings are exactly what its consumer needs when it comes back (SPEC-0011 REQ "Doorbell
+// Heartbeat"). "Attached" is the same bar delivery already uses — a session whether or not its
+// notification stream is currently open — because PublishTodoReady falls back to a streamless
+// session, and a narrower list would leave such an endpoint's todos rung by nothing at all.
+func (h *Handler) AttachedEndpoints() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := make(map[string]struct{}, len(h.sessions))
+	out := make([]string, 0, len(h.sessions))
+	for _, s := range h.sessions {
+		if s.endpointID == "" {
+			continue // a session on no endpoint owns no todos and matches no uuid
+		}
+		if _, dup := seen[s.endpointID]; dup {
+			continue
+		}
+		seen[s.endpointID] = struct{}{}
+		out = append(out, s.endpointID)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // attachRingTimeout bounds the catch-up query. The stream is already open; a slow store must not
 // hold a goroutine per attach for long, and the sweep covers anything this misses.
 const attachRingTimeout = 5 * time.Second

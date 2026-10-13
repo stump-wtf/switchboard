@@ -59,6 +59,16 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Fixed
 
+- **Rings into an empty room no longer spend a todo's re-rings.** The doorbell heartbeat marked a
+  row as rung whether or not anything could hear it, so an agent down for a few sweep cycles came
+  back to a spent 5-ring budget and silence: the re-rings had gone to no session at all, and the
+  catch-up ring that serves a reconnecting consumer shares that same budget. The sweep now asks
+  which endpoints have a session attached to the instance running it, and selects and charges only
+  those rows. A todo whose consumer is away keeps its full budget for its return, and an instance
+  with nothing attached spends nothing. Ringing of attached endpoints, claimed rows and the pacing
+  between rings are unchanged, and the queue remains the ledger: pull still drains anything a sweep
+  skipped.
+
 - **Connecting agents are told how leases work.** The MCP session instructions said only
   that a claim "sets a lease", so a worker could claim, never heartbeat, and lose the todo
   to the reaper mid-task. They now say: take work with `claim_next`; a claim holds a

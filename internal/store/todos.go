@@ -1717,9 +1717,21 @@ const (
 // publish path filters on that, so the tenant boundary is enforced where the work is delivered and
 // claimed rather than where it ages.
 //
+// RECEIVER FILTER: attached is the set of endpoints that, right now, have at least one session
+// attached to THIS instance — the sweep loop owns the session registry and feeds it in, because the
+// store cannot see sessions. A ring that resolved to no session still charged the row, so a consumer
+// away for five sweep cycles came back to a spent budget and silence: the rings went to an empty
+// room. Only rows on an attached endpoint are selected and charged now; every other row keeps its
+// full budget for its consumer's return, where the attach catch-up reaches it. An empty attached
+// means nothing is listening anywhere on this instance, so the sweep selects nothing.
+//
 // Governing: ADR-0013 (queue is the ledger, push is a hint); SPEC-0003 REQ "Endpoint Ownership
-// (Tenant Isolation)" background-sweep exemption; SPEC-0011 REQ "Best-Effort Lossy Delivery".
-func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
+// (Tenant Isolation)" background-sweep exemption; SPEC-0011 REQ "Best-Effort Lossy Delivery",
+// REQ "Doorbell Heartbeat" (receiver filter).
+func (s *Store) RingUnclaimed(ctx context.Context, attached []string) ([]Todo, error) {
+	if len(attached) == 0 {
+		return nil, nil
+	}
 	rows, err := s.pool.Query(ctx, `
 		WITH ranked AS (
 			SELECT t.id,
@@ -1744,6 +1756,11 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 			JOIN endpoints ep ON ep.id = t.endpoint_id AND ep.state = 'active'
 			WHERE t.state = 'pending' AND t.queue <> 'quarantine'
 			  AND t.ring_attempts < $1
+			  -- Receiver filter (SPEC-0011 REQ "Doorbell Heartbeat"): charging a row whose ring has
+			  -- nowhere to land spends a re-ring the absent consumer will need when it returns, so a
+			  -- row is a candidate only for an instance that has a session attached to its endpoint.
+			  -- The caller holds the registry and feeds this in; empty attached never reaches here.
+			  AND t.endpoint_id = ANY($8::uuid[])
 			  -- Sender gate (SPEC-0011): only a todo whose delivery event exists AND passed
 			  -- per-source verification — or came from a token-trust self-managed webhook,
 			  -- whose credential is the unguessable ingest URL (SPEC-0006) — is ever
@@ -1792,7 +1809,7 @@ func (s *Store) RingUnclaimed(ctx context.Context) ([]Todo, error) {
 		RETURNING `+todoCols,
 		ringMaxAttempts,
 		ringBackoff(1), ringBackoff(2), ringBackoff(3), ringBackoff(4), ringBackoff(5),
-		ringSweepLimit)
+		ringSweepLimit, attached)
 	if err != nil {
 		return nil, fmt.Errorf("store: ring unclaimed: %w", err)
 	}
