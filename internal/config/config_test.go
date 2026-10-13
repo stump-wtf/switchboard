@@ -25,6 +25,20 @@ func TestFromEnvOverride(t *testing.T) {
 	}
 }
 
+// TestDocsBaseURL pins #563: unset lands on the hosted docs site so a self-hosted landing page
+// never emits relative /docs links; an override points the links at the operator's own docs
+// deployment, with the trailing slash trimmed like BaseURL.
+func TestDocsBaseURL(t *testing.T) {
+	t.Setenv("SWITCHBOARD_DOCS_BASE_URL", "")
+	if got := FromEnv().DocsBaseURL; got != DefaultDocsBaseURL {
+		t.Fatalf("default DocsBaseURL: got %q, want %q", got, DefaultDocsBaseURL)
+	}
+	t.Setenv("SWITCHBOARD_DOCS_BASE_URL", "https://docs.example.com/docs/")
+	if got := FromEnv().DocsBaseURL; got != "https://docs.example.com/docs" {
+		t.Fatalf("override DocsBaseURL: got %q, want trailing slash trimmed", got)
+	}
+}
+
 // TestMetricsTokenValidation pins SPEC-0023 REQ-1's startup contract for the scrape credential:
 // unset is valid (the endpoint is then closed), a set token shorter than 32 bytes or carrying
 // whitespace / non-ASCII fails startup, and the error never echoes the token.
