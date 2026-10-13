@@ -59,6 +59,14 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Fixed
 
+- **Idle notification streams stay open behind a proxy.** The MCP standalone GET stream wrote no
+  bytes at all while its queues were quiet, and a proxy with an idle timeout reads silence as a dead
+  connection (Cloudflare cancels about 125 s after connect). So a connected consumer was dropped on
+  a schedule and heard nothing during the down window: the queue kept filling, and the work only
+  surfaced when the agent pulled. The stream now emits an SSE comment every 15 s, the keep-alive the
+  web UI stream already uses, so a stream stays usable for the session's lifetime. Comments carry no
+  protocol meaning, so doorbell delivery, its catch-up ring and the web UI stream are unchanged. (#44)
+
 - **Landing-page docs links resolve on self-hosted instances.** The docs image ships only to a
   registry self-hosters cannot reach, so an instance from the published image served no `/docs`
   and every docs and ADR link on the landing page was a dead relative link. The links are now

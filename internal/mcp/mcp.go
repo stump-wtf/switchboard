@@ -249,6 +249,11 @@ type Handler struct {
 
 	idleTimeout time.Duration
 
+	// streamKeepAlive overrides defaultStreamKeepAlive: the gap between keep-alive comments on an
+	// idle standalone notification stream (keepalive.go). Nil reads as the default, and it is read
+	// per request so opening a stream never races the install.
+	streamKeepAlive atomic.Pointer[time.Duration]
+
 	// mu guards sessions and closed. sessions is the live Streamable HTTP session registry, keyed
 	// by Mcp-Session-Id and bound to the endpoint that minted each session.
 	mu       sync.Mutex
@@ -295,6 +300,20 @@ func New(st ToolStore, log *slog.Logger) *Handler {
 	h.wg.Add(1)
 	go h.janitor()
 	return h
+}
+
+// SetStreamKeepAlive sets the gap between keep-alive comments on an open standalone notification
+// stream (keepalive.go). Zero or less turns keep-alive off. It applies to streams opened after the
+// call; the default is defaultStreamKeepAlive.
+func (h *Handler) SetStreamKeepAlive(d time.Duration) { h.streamKeepAlive.Store(&d) }
+
+// streamKeepAliveInterval resolves the interval for a stream being opened: the installed override
+// when there is one, otherwise the default.
+func (h *Handler) streamKeepAliveInterval() time.Duration {
+	if d := h.streamKeepAlive.Load(); d != nil {
+		return *d
+	}
+	return defaultStreamKeepAlive
 }
 
 // SetA2UIEnabled toggles the A2UI resource surface (ADR-0023: advanced capabilities are hidden by

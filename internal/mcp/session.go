@@ -135,7 +135,16 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		// Hooked on the head write rather than fired ahead of ServeHTTP so the catch-up doorbells
 		// can never race the stream they are meant to land on. Governing: SPEC-0011 scenario
 		// "Reconnecting session is rung for waiting work".
-		w = &attachHook{ResponseWriter: w, onHead: func() { go h.ringOnAttach(s) }}
+		//
+		// The stream also needs a heartbeat: while the queue is quiet it carries no bytes at all,
+		// and a proxy with an idle timeout (Cloudflare cancels about 125 s after connect) reads
+		// that as a dead connection. The consumer reconnects into the next silence and the pushes
+		// it missed only surface when it pulls. Ticking SSE comments keep it provably alive;
+		// stop() runs when this request ends, so the ticker never outlives the stream.
+		// Governing: SPEC-0014 REQ "Channels Push over the HTTP Stream". (#44)
+		ka := newStreamKeepAliveWriter(w, h.streamKeepAliveInterval())
+		defer ka.stop()
+		w = &attachHook{ResponseWriter: ka, onHead: func() { go h.ringOnAttach(s) }}
 	case http.MethodPost:
 		if s == nil {
 			var err error
