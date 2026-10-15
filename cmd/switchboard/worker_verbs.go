@@ -459,8 +459,8 @@ func printClaim(c *cli, raw json.RawMessage, ca *claimArgs) int {
 	if err := json.Unmarshal(body, &td); err != nil {
 		return c.printJSON(stripPayloads(raw, *ca.payload))
 	}
-	fmt.Fprintf(c.stdout, "claimed %s (%s) queue=%s state=%s attempt=%d payload=%dB\n%s\n",
-		td.ID, td.State, td.Queue, td.State, td.AttemptSeq, td.PayloadSize, td.Title)
+	fmt.Fprintf(c.stdout, "claimed %s queue=%s state=%s attempt=%d payload=%dB\n%s\n",
+		td.ID, td.Queue, td.State, td.AttemptSeq, td.PayloadSize, td.Title)
 	if td.LeaseToken != "" {
 		fmt.Fprintf(c.stdout, "lease_token=%s — pass it as --lease-token to heartbeat/complete/fail/release\n", td.LeaseToken)
 	}
