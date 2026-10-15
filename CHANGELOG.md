@@ -23,6 +23,19 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   rotations, redaction, retry checkpoints, and severity filtering. The
   [deployment guide](docs/guides/18-telemetry-relay.md) covers grants, worker triage,
   scheduling, and validation through a worker acknowledgement.
+- **Queue-stall nudge: a queue with unclaimed work wakes its consumer again.** A queue could only wake
+  a consumer when something arrived upstream, so a consumer that claims one todo per invocation and is
+  started by an outbound notify hook could leave real, claimable work sitting `pending` indefinitely —
+  every such consumer had to reimplement "is my queue drained" itself. A sweep on the existing reaper
+  tick now asks the database that question: a queue whose oldest gate-passing pending todo is older than
+  two minutes, on an active endpoint with an enabled notify hook covering it, is woken once, naming its
+  oldest pending todo, as an ordinary `todo.ready` whose `reason` is now `stalled`. Nothing on the wire
+  changes and no consumer change is needed — an unknown `reason` is just a wake. Pacing lives in a small
+  per-`(endpoint, queue)` ledger: 5 minutes, then 20, 1 hour, 6 hours; a claim in that queue resets it,
+  a drained queue forgets it, and a queue that never gets claimed stops being woken after five tries
+  rather than paying a model turn forever. No new configuration, and no wake for a queue with no
+  receiver. Design decision recorded as proposed ADR-0045 with draft SPEC-0038. (#566)
+
 - **Worker verbs on the endpoint CLI.** A vended endpoint's worker verbs are now scriptable without
   carrying an MCP client: `switchboard todo list|next|claim|get|heartbeat|complete|fail|release`
   authenticate with the endpoint credential (`SWITCHBOARD_URL` + `SWITCHBOARD_API_KEY`, or

@@ -69,6 +69,7 @@ Two layers:
 | [ADR-0039](adrs/ADR-0039-attempt-history-on-todos.md) | **Attempt history on todos** | Every committed claim opens an attempt record; `get_todo`, `release` and an opt-in lease-token fence. |
 | [ADR-0042](adrs/ADR-0042-agent-activity-and-todo-audit-trail.md) | **Agent activity + todo audit trail** | OTLP/HTTP trace ingest bound to todos, heartbeat notes, a `todo_activity` log, the todo page and the Activity feed. |
 | [ADR-0044](adrs/ADR-0044-todo-lineage-subject-threads-and-tags.md) | **Todo lineage, threads + tags** | Thread keys for every delivery, `produced`/`spawned` links with provenance (never inferred), tags, and the `/graph` view. |
+| [ADR-0045](adrs/ADR-0045-queue-stall-nudge.md) | **Queue-stall nudge (proposed)** | A queue whose pending work nobody claims re-fires its notify-hook wake on a widening, progress-reset backoff, so a one-todo-per-invocation consumer drains without a new inbound webhook. |
 
 ### Later records
 
@@ -125,6 +126,7 @@ rationale). Grouped by layer, in dependency order.
 | [SPEC-0034](openspec/specs/todo-attempts/spec.md) | Attempt history | ADR-0039 | Attempt records, died-versus-failed, prior attempts on claim, `get_todo`, `release`, the lease-token fence. |
 | [SPEC-0036](openspec/specs/agent-activity/spec.md) | Agent activity + audit trail | ADR-0042 | `/otlp/{endpoint}/v1/traces`, span binding, masking, heartbeat notes, `todo_activity`, the todo page, waterfall and Activity feed. |
 | [SPEC-0037](openspec/specs/todo-lineage/spec.md) | Todo lineage, threads + tags | ADR-0044 | `ThreadKeyOf`, `NormalizeRef`, `todo_links`, `produced` and `tags` on drain verbs, `caused_by`, the lineage section and `/graph`. |
+| [SPEC-0038](openspec/specs/queue-stall-nudge/spec.md) | Queue-stall nudge (draft) | ADR-0045 | Stall detection with sender and receiver gates, one wake per queue, `reason = "stalled"` with the NOTIFY payload unchanged, and the ledger that paces, resets on progress and caps. |
 
 ## Reference Contracts
 

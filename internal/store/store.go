@@ -166,15 +166,24 @@ func (s *Store) SetTodoDoorbellHook(fn TodoDoorbellHook) {
 }
 
 // Reasons a TodoReadyHook is told why a todo became ready (SPEC-0024 REQ-6).
+//
+// ReadyStalled is not a transition: the todo was already pending. It says the queue it sits in has
+// held claimable work past the stall threshold with nothing claimed since the last wake, so the
+// consumer is told again (ADR-0045). A consumer that only reads todo_id is unaffected; one that
+// branches on reason must treat an unknown value as an ordinary wake, which is why the wake reuses
+// this hook instead of a new notification type.
 const (
 	ReadyCreated  = "created"
 	ReadyRequeued = "requeued"
+	ReadyStalled  = "stalled"
 )
 
 // TodoReadyHook observes a push-eligible todo entering `pending` after its statement committed:
 // reason is ReadyCreated for a new todo and ReadyRequeued when the lease reaper or the retry
 // scheduler returns one to pending. It fires once per transition, on the instance whose statement
 // performed it; never for a redelivery that dedups, a heartbeat re-ring or a todo leaving pending.
+// ReadyStalled is the one call that is not a transition: the queue-stall sweep fires it for a todo
+// that never moved, because its queue stopped making progress (ADR-0045).
 // Same contract as TodoDoorbellHook: never block, never authoritative.
 // Governing: SPEC-0024 REQ-6 "Trigger and Sender Gate", SPEC-0011 REQ "Sender Gate and Injection
 // Safety".

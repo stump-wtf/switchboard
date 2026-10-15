@@ -24,16 +24,38 @@ import (
 // fakeReapStore scripts ExpireEndpoints results per call and records everything; the todo-lease
 // verbs are inert so these tests bind only to the expiry wiring.
 type fakeReapStore struct {
-	mu       sync.Mutex
-	calls    int
-	expired  [][]string     // expired[i] returned on call i (nil past the end)
-	ring     [][]store.Todo // ring[i] returned by RingUnclaimed on call i
-	attached [][]string     // attached[i] is the receiver set RingUnclaimed saw on call i
-	errs     []error        // errs[i] returned on call i (nil past the end)
+	mu         sync.Mutex
+	calls      int
+	expired    [][]string     // expired[i] returned on call i (nil past the end)
+	ring       [][]store.Todo // ring[i] returned by RingUnclaimed on call i
+	attached   [][]string     // attached[i] is the receiver set RingUnclaimed saw on call i
+	errs       []error        // errs[i] returned on call i (nil past the end)
+	stallCalls int            // NudgeStalledQueues calls
+	stallErrs  []error        // stallErrs[i] returned by NudgeStalledQueues on call i
 }
 
 func (f *fakeReapStore) ReapExpired(ctx context.Context) (int64, error)       { return 0, nil }
 func (f *fakeReapStore) RequeueDueRetries(ctx context.Context) (int64, error) { return 0, nil }
+
+// NudgeStalledQueues records how often the tick asked, so a test can tell "rides every tick" from
+// "ran once and stopped". The store fires the wake itself, so there is nothing for the loop to
+// publish and nothing to script beyond an error. Governing: ADR-0045.
+func (f *fakeReapStore) NudgeStalledQueues(_ context.Context) ([]store.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := f.stallCalls
+	f.stallCalls++
+	if i < len(f.stallErrs) && f.stallErrs[i] != nil {
+		return nil, f.stallErrs[i]
+	}
+	return nil, nil
+}
+
+func (f *fakeReapStore) stallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stallCalls
+}
 
 // rung is what the heartbeat sweep hands back for re-publishing, scripted per call. The receiver set
 // it was called with is recorded: the sweep must charge only rows whose endpoint has a session
@@ -214,4 +236,22 @@ func TestReaperRingsOnlyAttachedEndpoints(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("reaper did not exit after context cancellation")
 	}
+}
+
+// TestReaperSweepsStalledQueuesEveryTick: the queue-stall nudge rides the reaper tick, and a failed
+// sweep is logged without killing the loop — the same posture the lease reaper, the retry scheduler
+// and the heartbeat already hold. The sweep's own SQL is covered by the DB-backed tests in
+// internal/store/queue_stall_test.go; this binds only the wiring. Governing: ADR-0045.
+func TestReaperSweepsStalledQueuesEveryTick(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake := &fakeReapStore{stallErrs: []error{errors.New("stall sweep hiccup")}}
+	var buf syncBuffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	done := startReaper(ctx, fake, log, nil, nil, nil, 2*time.Millisecond)
+	waitFor(t, func() bool { return fake.stallCount() >= 3 }, "the queue-stall sweep did not run on every tick")
+	waitFor(t, func() bool { return strings.Contains(buf.String(), "queue stall nudge") }, "the failed stall sweep was not logged")
+	cancel()
+	<-done
 }
