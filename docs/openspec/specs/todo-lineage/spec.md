@@ -272,8 +272,8 @@ SPEC-0036's todo page SHALL gain a "Lineage" section with a visible heading, sho
 * **Thread:** the other todos in its thread, newest first, up to 20, with a link to
   `/graph?thread=<key>`.
 
-Every edge SHALL show its provenance as text: "declared by <endpoint>", "added by <human>",
-"tagged on <artifact>" or "matched trace". Tags SHALL render as chips, with human add and remove
+Every edge SHALL show its provenance as text: "declared by `<endpoint>`", "added by `<human>`",
+"tagged on `<artifact>`" or "matched trace". Tags SHALL render as chips, with human add and remove
 controls.
 
 ### REQ-14: The Graph View
