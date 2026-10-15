@@ -39,6 +39,14 @@ but are no longer advertised.
 | `switchboard endpoint revoke SLUG\|ID` | Kill an endpoint; its credential stops working immediately. |
 | `switchboard agent list` | List your registered agents. |
 | `switchboard todo push ENDPOINT TITLE` | Mint a todo on an endpoint you own and ring its doorbell. |
+| `switchboard todo list` | List the endpoint's granted queues (endpoint credential). |
+| `switchboard todo next` | Claim the oldest available todo; empty queue prints `{"empty": true}`, exit `3`. |
+| `switchboard todo claim ID` | Claim one todo by id (payload hidden unless `--payload`). |
+| `switchboard todo get ID` | Read one todo without claiming it (payload hidden unless `--payload`). |
+| `switchboard todo heartbeat ID` | Extend this attempt's lease before a slow or irreversible step. |
+| `switchboard todo complete ID` | Close a claimed todo as done (`--result` is a JSON object or `@file`). |
+| `switchboard todo fail ID` | Fail a claimed todo: retried while attempts remain. |
+| `switchboard todo release ID` | Hand a claimed todo back to the queue without a verdict. |
 | `switchboard webhook list` | List the webhooks your endpoints own. |
 | `switchboard webhook rules get WEBHOOK_ID` | Show a webhook's rules, default, params and grant. |
 | `switchboard webhook rules test WEBHOOK_ID` | Dry-run rules against a stored event or a sample payload; saves nothing. |
@@ -48,7 +56,27 @@ but are no longer advertised.
 | `switchboard webhook route remove WEBHOOK_ID ENDPOINT` | Stop delivering a webhook to an endpoint (slug or id). |
 
 Exit codes, everywhere: `0` success, `1` the deployment or your credentials refused, `2` a usage
-mistake (usage printed on stderr).
+mistake (usage printed on stderr), and `3` from `switchboard todo next` when no work was available.
+
+## Worker verbs and the endpoint credential
+
+`todo next|claim|heartbeat|complete|fail|release|list|get` do not use the operator login. They
+authenticate with an **endpoint credential** — the `sbk_…` token vend prints — and act as that
+endpoint, with exactly its verb scope; the server enforces the same scope as the MCP tools. They
+never fall back to operator credentials: with no endpoint credential set they refuse.
+
+Set them once in the worker's environment:
+
+```sh
+export SWITCHBOARD_URL=https://switchboard.example/mcp/lane-worker   # the vend response's mcp_url
+export SWITCHBOARD_API_KEY=sbk_…                                     # shown once at vend
+switchboard todo next --lease-ttl 7200
+```
+
+`--url`/`--key`/`--slug` override per call (`--url` may name the deployment base when `--slug`
+names the endpoint). All verbs take `--json`; `next` and `claim` print the todo **without** the
+payload unless `--payload` is passed, and `next` on an empty queue prints `{"empty": true}` and
+exits `3`, so a one-shot can branch without reading a body.
 
 ## Session
 

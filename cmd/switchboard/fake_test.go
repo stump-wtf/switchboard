@@ -34,6 +34,7 @@ type fakeDeployment struct {
 	expiresIn    int64             // expires_in advertised on issuance
 	generation   int               // bumps on every issuance
 	revoked      map[string]bool   // access tokens the API rejects with 401
+	apiCalls     []string          // "METHOD path" for every /api/v1 request seen
 	vends        []map[string]any  // POST /api/v1/endpoints bodies seen
 	edits        []map[string]any  // PATCH /api/v1/endpoints/{ref} bodies seen, "ref" added
 	editStatus   int               // when non-zero, the status (and APIError body) the edit route answers with
@@ -143,6 +144,7 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 			writeJSONResponse(w, 400, map[string]any{"error": "unsupported_grant_type"})
 		}
 	case strings.HasPrefix(r.URL.Path, "/api/v1/"):
+		f.apiCalls = append(f.apiCalls, r.Method+" "+r.URL.Path)
 		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if bearer == "" || bearer != f.access || f.revoked[bearer] {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="switchboard-api"`)

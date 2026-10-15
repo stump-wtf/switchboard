@@ -29,9 +29,14 @@ package main
 //
 // @joestump-agent 10/02/2026 - Added `webhook route list|add|remove` (SPEC-0035 REQ "Route
 // Management", #555).
+//
+// @joestump-agent 10/15/2026 - Added the `todo` worker verbs (next|claim|heartbeat|complete|
+// fail|release|list), authenticated by the endpoint credential instead of the operator login
+// (#556).
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -44,6 +49,7 @@ import (
 	"strings"
 	"time"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stump-wtf/switchboard/internal/buildinfo"
 )
 
@@ -67,12 +73,15 @@ type cli struct {
 	// readFile resolves a --payload @file argument; an injected edge like the rest, so tests
 	// exercise the verb without touching the real filesystem.
 	readFile func(name string) ([]byte, error)
+	// connectWorker opens the endpoint MCP session the worker verbs drive; the edge tests point
+	// at an in-process server.
+	connectWorker func(ctx context.Context, w workerConn) (*sdk.ClientSession, error)
 
 	verbUsage map[*flag.FlagSet]verbUsage // per-verb synopsis, filled by flagSet
 }
 
 func newCLI() *cli {
-	return &cli{
+	c := &cli{
 		stdout:       os.Stdout,
 		stderr:       os.Stderr,
 		stdin:        os.Stdin,
@@ -83,8 +92,11 @@ func newCLI() *cli {
 		now:          time.Now,
 		loginTimeout: 5 * time.Minute,
 		readFile:     os.ReadFile,
-		verbUsage:    map[*flag.FlagSet]verbUsage{},
+
+		verbUsage: map[*flag.FlagSet]verbUsage{},
 	}
+	c.connectWorker = defaultWorkerConnect(c)
+	return c
 }
 
 // command is one verb of the CLI, or — when subs is non-empty — a resource that groups them.
@@ -116,8 +128,16 @@ func commands() []command {
 		{name: "agent", args: "<verb>", summary: "manage registered agents", subs: []command{
 			{name: "list", summary: "list your registered agents", run: cmdAgents},
 		}},
-		{name: "todo", args: "<verb>", summary: "hand work to your agents", subs: []command{
+		{name: "todo", args: "<verb>", summary: "push work, and — with an endpoint credential — drain your queues", subs: []command{
 			{name: "push", args: "ENDPOINT TITLE", summary: "mint a todo on an endpoint you own and ring its doorbell", run: cmdTodoPush},
+			{name: "list", summary: "list the endpoint's granted queues (endpoint credential, never the operator login)", run: cmdTodoList},
+			{name: "next", summary: "claim the oldest available todo; an empty queue prints {\"empty\": true} and exits 3", run: cmdTodoNext},
+			{name: "claim", args: "ID", summary: "claim one todo by id (payload hidden unless --payload)", run: cmdTodoClaim},
+			{name: "get", args: "ID", summary: "read one todo without claiming it (payload hidden unless --payload)", run: cmdTodoGet},
+			{name: "heartbeat", args: "ID", summary: "extend this attempt's lease before a slow or irreversible step", run: cmdTodoHeartbeat},
+			{name: "complete", args: "ID", summary: "close a claimed todo as done (--result is a JSON object or @file)", run: cmdTodoComplete},
+			{name: "fail", args: "ID", summary: "fail a claimed todo: retried while attempts remain", run: cmdTodoFail},
+			{name: "release", args: "ID", summary: "hand a claimed todo back to the queue without a verdict", run: cmdTodoRelease},
 		}},
 		{name: "webhook", args: "<verb>", summary: "manage your webhooks, their routing rules and their routes", subs: []command{
 			{name: "list", summary: "list the webhooks your endpoints own (never their ingest URLs)", run: cmdWebhookList},

@@ -129,6 +129,25 @@ prefers a session with an open notification stream. That keeps a pool from spend
 do one todo's work. Which clients act on it is covered in
 [Connect an agent over MCP](/getting-started/connect-an-agent).
 
+## Drain it from a script or a one-shot
+
+The same verbs the MCP tools expose — `claim_next`, `claim`, `heartbeat`, `complete`, `fail`,
+`release`, `list_todos`, `get_todo` — are also a plain CLI, authenticated by the endpoint
+credential rather than an operator login, so a subagent or a shell script can drain a queue without
+carrying an MCP client:
+
+```sh
+export SWITCHBOARD_URL=https://switchboard.example/mcp/lane-worker   # the vend response's mcp_url
+export SWITCHBOARD_API_KEY=sbk_…
+if switchboard todo next --lease-ttl 7200; then
+  # a todo was claimed; work it, then close it:
+  switchboard todo complete td_… --result '{"outcome":"ok"}'
+fi   # exit 3 = the queue was empty; exit 1 = the deployment refused
+```
+
+Flags, output shapes and the no-operator-fallback rule:
+[CLI reference](/guides/cli-reference#worker-verbs-and-the-endpoint-credential).
+
 ## Watch it live
 
 The operator board's **Todos** view shows the queue in real time over Server-Sent Events — claims,

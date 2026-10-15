@@ -15,6 +15,16 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Worker verbs on the endpoint CLI.** A vended endpoint's worker verbs are now scriptable without
+  carrying an MCP client: `switchboard todo list|next|claim|get|heartbeat|complete|fail|release`
+  authenticate with the endpoint credential (`SWITCHBOARD_URL` + `SWITCHBOARD_API_KEY`, or
+  `--url`/`--key`/`--slug`) and act as that endpoint with exactly its verb scope, over the endpoint's
+  own MCP session. They never fall back to the operator login: with no endpoint credential they
+  refuse (`todo next` on an empty queue prints `{"empty": true}` and exits 3, so a one-shot branches
+  without reading a body), and `next`/`claim`/`get` keep the webhook payload off the output unless
+  `--payload` is passed. `complete` and `fail` take `--result` as a JSON object or `@file`; every
+  verb takes `--json`. (#556)
+
 - **Webhook routes from the CLI and the human API.** The human who owns a webhook can now list, add
   and remove the endpoints it delivers to without the owning endpoint's MCP credential:
   `switchboard webhook route list|add|remove WEBHOOK_ID [ENDPOINT]` (ENDPOINT by slug or id, each
