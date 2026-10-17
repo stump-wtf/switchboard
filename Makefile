@@ -41,6 +41,7 @@ tidy-check:
 test:  ## Run tests (the sb.js behavioral suite needs node — jsharness_test.go)
 	@command -v node >/dev/null 2>&1 || echo "WARNING: node not found in PATH — TestJSModules will SKIP: the sb.js behavioral suite (jstest/) will NOT run. Install Node.js 20+ so the JS quality gate executes." >&2
 	go test ./...
+	@if command -v python3 >/dev/null 2>&1; then python3 -m unittest discover -s examples/telemetry-relay -p 'test_*.py'; else echo "WARNING: python3 not found in PATH — the telemetry-relay unittest suite (examples/telemetry-relay) will NOT run. Install Python 3 so the relay quality gate executes." >&2; fi
 
 tidy:  ## Sync go.mod/go.sum
 	go mod tidy

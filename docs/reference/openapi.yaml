@@ -6,8 +6,8 @@ openapi: 3.1.0
 # generating this spec. It is the contract the code session implements against.
 #
 # Trust model (ADR-0003, ADR-0012): every webhook is self-managed and served at
-# /webhooks/w/{token}. A signed source type is verified-or-401; a `generic` webhook is
-# authenticated by the unguessable token in its URL.
+# /webhooks/w/{token}. Signed source types are verified-or-401; `generic` and `telemetry` webhooks
+# are authenticated by the unguessable token in their URL.
 #
 # Live-update stream schema (SSE): docs/reference/asyncapi.yaml.
 # MCP tool contract: docs/openspec/specs/mcp-tools/spec.md. Vended MCP endpoints are served over
@@ -22,7 +22,7 @@ info:
     ## Three groups of endpoints
     - **Webhook ingestion** (`/webhooks/w/{token}`): producers POST to the ingest URL an endpoint's
       `create_webhook` returned. Signed source types are verified-or-rejected (401, not persisted);
-      a `generic` webhook is authenticated by the unguessable token in its URL.
+      `generic` and `telemetry` webhooks are authenticated by the unguessable token in their URL.
     - **Operator API** (`/api/v1/*`): OAuth-guarded (operator grants) — register agents, vend
       endpoints, list what you own. The `switchboard` CLI is its reference client.
     - **Web UI** (`/`, `/log`, `/settings`) + the SSE stream (`/events`):
@@ -35,7 +35,8 @@ info:
     therefore marked `security: []` (no in-app auth) **by design**, not by oversight.
 
     For **webhook** endpoints, "authentication" means per-provider signature verification
-    (`signed` providers) or a shared-secret token that authenticates the caller (`generic`). See ADR-0003.
+    (`signed` providers) or a shared-secret token that authenticates the caller (`generic` and
+    `telemetry`). See ADR-0003.
   license:
     name: MIT
     url: https://opensource.org/license/mit
@@ -80,8 +81,8 @@ paths:
           time, against the secret switchboard minted. A missing, malformed, or failing signature
           returns **401** and the payload is **NOT persisted**. Stripe, Slack, and Cairn additionally
           enforce a timestamp freshness window (default 300s) to blunt replay.
-        - **`generic`** (`trust_mode=token`): the token in the URL authenticates the caller; the body
-          is not verified, and the event persists with `verified=false`.
+        - **`generic` and `telemetry`** (`trust_mode=token`): the token in the URL authenticates the
+          caller; the body is not verified, and the event persists with `verified=false`.
 
         On success the event is persisted, routing rules pick a queue (or drop the delivery), and one
         todo is created per target endpoint — the webhook's owner plus any route fan-out (ADR-0022).
@@ -798,7 +799,7 @@ components:
       name: provider
       in: query
       required: false
-      description: Filter by source type (`github`, `gitea`, `stripe`, `slack`, `cairn`, `generic`).
+      description: Filter by source type (`github`, `gitea`, `stripe`, `slack`, `cairn`, `generic`, `telemetry`).
       schema: { type: string }
     FilterEventType:
       name: event_type

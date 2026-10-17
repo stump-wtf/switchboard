@@ -6,6 +6,10 @@
 *.out
 coverage.out
 
+# Python example/test bytecode
+__pycache__/
+*.pyc
+
 # Env / secrets — NEVER commit (secrets are injected via env/deployment config)
 .env
 .env.*

@@ -149,6 +149,15 @@ jobs:
         run: make vet
       - name: build
         run: go build ./...
+      - name: telemetry relay and validator regressions
+        # setup-python does not work on this runner; provision the stdlib interpreter
+        # in the root job container when absent, then execute the same local suite.
+        run: |
+          if ! command -v python3 >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y python3
+          fi
+          python3 -m unittest discover -s examples/telemetry-relay -p 'test_*.py' -v
       - name: resolve and wait for postgres
         # act puts the job and its services on the default docker bridge (no name DNS), but mounts
         # the docker socket into the job — so locate this job's service container via the socket

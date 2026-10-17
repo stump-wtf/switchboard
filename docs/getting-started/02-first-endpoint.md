@@ -38,7 +38,7 @@ There are two ways to vend from **Endpoints**:
 | 02 queues | **Scoped queues** / **Add queues** | `inbox`. Add every queue your routing rules will use, e.g. `reviews`. |
 | 03 verbs | **Allowed verbs** | The six todo verbs are pre-checked. Add `create_webhook`, `list_webhooks`, `rotate_webhook`, `delete_webhook`, and the seven rule verbs (`list_webhook_rules` … `test_webhook_rules`) if this agent will manage webhooks. Add `list_webhook_events` and `get_webhook_event` only if you need them (see [Security model](/guides/security-model)). |
 | 04 webhooks | **Max self-managed webhooks** | `2` or `3`. Leaving it at `0` disables webhooks. |
-| | **Allowed source types** | The producers you'll use: `github`, `gitea`, `cairn`, `generic`. |
+| | **Allowed source types** | The producers you'll use: `github`, `gitea`, `cairn`, `generic`, `telemetry`. |
 | | **Webhook target queues** | The same queues as step 02. A rule can only route to a queue listed here. |
 | 05 lifetime | **Credential lifetime** | `until revoked`, or `30 days` if you'd rather it expire. |
 | 06 confirm | | Check the summary and choose **Vend endpoint →**. |

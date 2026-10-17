@@ -58,5 +58,7 @@ becomes a todo the agent surface can drain.
   [working the queue well](/guides/working-the-queue), the [security model](/guides/security-model),
   and [troubleshooting](/guides/troubleshooting).
 - Want the HTTP contract? The [API reference](/api) renders every endpoint from the OpenAPI spec.
+- Runtime errors need a queue owner too: [Route runtime telemetry to a worker](/guides/telemetry-relay)
+  covers the source grant, scheduled relay, and validation through a worker acknowledgement.
 - Want the *why*? The [Decisions (ADRs)](/decisions) and [Specifications](/specs) are the canonical,
   governed design record this whole system is built from.

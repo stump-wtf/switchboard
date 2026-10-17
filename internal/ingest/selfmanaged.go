@@ -149,12 +149,15 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// collide. Prefer a provider delivery id where one exists; fall back to a body hash otherwise.
 	// Gitea uses X-Gitea-Delivery; GitHub uses X-GitHub-Delivery. Cairn's id is the event_id inside
 	// its SIGNED body, never an unsigned header, so a replay cannot mint a fresh key (routing.go).
-	// A generic webhook additionally honours the sender's own X-Delivery-Id / Webhook-Id
-	// (genericDeliveryID): a retry that re-serializes its body still collapses onto the original.
+	// Token-trust generic and telemetry webhooks honour the sender's own X-Delivery-Id / Webhook-Id
+	// (genericDeliveryID): retries collapse even when the body is re-serialized, and the key is bounded.
 	var deliveryID string
-	if wh.SourceType == routing.SourceCairn {
+	switch wh.SourceType {
+	case routing.SourceCairn:
 		deliveryID = cairnEventID(body)
-	} else {
+	case "telemetry":
+		deliveryID = genericDeliveryID(r.Header)
+	default:
 		deliveryID = r.Header.Get("X-GitHub-Delivery")
 		if deliveryID == "" {
 			deliveryID = r.Header.Get("X-Gitea-Delivery")
@@ -540,6 +543,36 @@ func verifyGitea(secret string, body []byte, sig string) bool {
 	return hmac.Equal([]byte(expected), []byte(sig))
 }
 
+// summarizeTelemetry builds a legible todo title from a telemetry/error-logging delivery. The
+// station's relay posts a small, well-known envelope (service, signal, severity, summary), so the
+// title carries what the board and the doorbell need without unpacking the todo. It degrades to
+// "telemetry delivery" for a body that does not parse or has no fields.
+func summarizeTelemetry(body []byte) string {
+	var t struct {
+		Service  string `json:"service"`
+		Signal   string `json:"signal"`
+		Severity string `json:"severity"`
+		Summary  string `json:"summary"`
+		Message  string `json:"message"`
+	}
+	if json.Unmarshal(body, &t) != nil {
+		return "telemetry delivery"
+	}
+	label := "telemetry"
+	for _, p := range []string{t.Service, t.Signal, t.Severity} {
+		if p != "" {
+			label += " " + p
+		}
+	}
+	if t.Summary != "" {
+		return label + ": " + t.Summary
+	}
+	if t.Message != "" {
+		return label + ": " + t.Message
+	}
+	return label + " delivery"
+}
+
 // summarizeSelfManaged builds a one-line, legible todo title for a self-managed webhook delivery.
 func summarizeSelfManaged(sourceType string) string {
 	if sourceType == "" {
@@ -583,6 +616,9 @@ func selfManagedEvent(r *http.Request) string {
 func summarizeSelfManagedTitle(sourceType, event string, body []byte) string {
 	if sourceType == routing.SourceCairn {
 		return summarizeCairn(body)
+	}
+	if sourceType == "telemetry" {
+		return summarizeTelemetry(body)
 	}
 	if event == "" {
 		return summarizeSelfManaged(sourceType)
