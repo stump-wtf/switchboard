@@ -257,6 +257,15 @@ that routed fan-out to N endpoints dedups per-target independently.
   queue namespace) referencing that event, the todo is published to the hub if newly created, and
   the response is HTTP 202 with the todo id and queue
 
+#### Scenario: An unlabelled delivery is titled from its own body
+
+- **WHEN** a delivery with no forge event header arrives whose body is a JSON object carrying a
+  top-level `title` string, or a sender and a `text` string
+- **THEN** the todo title is that `title`, or `sender: text` collapsed to one line and bounded, so
+  that the rows of a queue are distinguishable from one another; a body carrying neither (of any
+  type, or not a JSON object at all) titles as the source type's fallback, and no delivery is
+  rejected or delayed for want of a readable title
+
 The 202 body MUST represent the FULL set of todos the delivery produced, since a routed
 delivery yields N:
 

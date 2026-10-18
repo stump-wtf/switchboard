@@ -45,6 +45,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -477,6 +478,12 @@ func summarizeSelfManagedTitle(sourceType, event string, body []byte) string {
 		return summarizeCairn(body)
 	}
 	if event == "" {
+		// No event header, but the body usually names itself: every sbpush, the Telegram bridge and
+		// the scheduled sweeps all carry a title or a sender and their text. Read those two shapes,
+		// and keep the literal fallback when the body says nothing this package can read.
+		if derived := summarizeBodyTitle(body); derived != "" {
+			return derived
+		}
 		return summarizeSelfManaged(sourceType)
 	}
 	switch sourceType {
@@ -490,4 +497,59 @@ func summarizeSelfManagedTitle(sourceType, event string, body []byte) string {
 	// An explicitly non-forge source (stripe, slack, docker, ...) is taken at its word: its payload
 	// is not a forge payload, and a header that happens to look like one does not change that.
 	return summarizeSelfManaged(sourceType)
+}
+
+// bodyTitleMax bounds a title taken from a delivery body. The titles built elsewhere in this file
+// are short by construction; a body's own text is not, and a message that runs for a page should
+// not become the board row. 120 characters keeps a sentence or two and leaves the rest to the todo.
+const bodyTitleMax = 120
+
+// summarizeBodyTitle reads a title out of a self-managed delivery's own body, when one is plainly
+// there, and returns "" when it is not. Two shapes are read:
+//
+//   - a top-level "title" string, which is what sbpush and the scheduled sweeps send;
+//   - a sender with a "text" string, which is what the Telegram bridge sends, titled
+//     "Justin: no more hyper. update what's needed" so the row says who said it and what.
+//
+// Nothing is assumed. Each key is read only when it is a string, a body that carries neither (or
+// that is not a JSON object at all) returns "", and the caller keeps its literal fallback — an
+// unlabelled delivery is not guessed at, which is the caution ADR-0003 asks for. There is no error
+// path: a delivery that cannot be titled is still a delivery.
+//
+// Governing: webhook-ingestion REQ "Enqueue Accepted Delivery as Endpoint-Owned Todo" — an accepted
+// delivery MUST carry a human-legible title, and a queue of sixty rows all named "self-managed
+// generic delivery" does not carry one.
+func summarizeBodyTitle(body []byte) string {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return ""
+	}
+	if title, ok := m["title"].(string); ok {
+		if one := oneLine(title, bodyTitleMax); one != "" {
+			return one
+		}
+	}
+	from, _ := m["from"].(string)
+	text, _ := m["text"].(string)
+	one := oneLine(text, bodyTitleMax)
+	if from == "" || one == "" {
+		return ""
+	}
+	return oneLine(from+": "+one, bodyTitleMax)
+}
+
+// oneLine collapses runs of whitespace into single spaces — a chat message and a pasted log line
+// both arrive with newlines a board row cannot show — and bounds the result to max runes, marking
+// the cut with an ellipsis so a truncated title does not read as the whole thing. max must be at
+// least 2; nothing here errors.
+func oneLine(s string, max int) string {
+	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	if s == "" {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return strings.TrimSpace(string(r[:max-1])) + "…"
 }

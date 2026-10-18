@@ -10,6 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -558,6 +559,73 @@ func TestSummarizeSelfManagedTitleFallbacks(t *testing.T) {
 	}
 	if got := summarizeSelfManagedTitle("generic", "issues", []byte("not json at all")); got == "" {
 		t.Error("unparseable body produced an empty title")
+	}
+}
+
+// An unlabelled generic delivery is titled from its own body when the body plainly names itself, and
+// falls back to the literal when it does not. The two shapes are the ones the station sends: sbpush
+// and the scheduled sweeps carry a title; the Telegram bridge carries a sender and the text. A key
+// of the wrong type is ignored, not an error, and a delivery is never lost to a title it cannot read.
+func TestSummarizeBodyTitle(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"sbpush title", `{"title":"scheduled: daily station report"}`, "scheduled: daily station report"},
+		{"telegram message",
+			`{"key":"tg-392308180","kind":"message","from":"Justin","text":"no more hyper. update what's needed"}`,
+			"Justin: no more hyper. update what's needed"},
+		{"a title wins over a text", `{"title":"a name","from":"Justin","text":"something"}`, "a name"},
+		{"newlines become one line", `{"from":"Justin","text":"first line\n\nsecond line"}`, "Justin: first line second line"},
+		// Nothing to read: the empty answer is what makes the caller keep its literal fallback.
+		{"empty body", `{}`, ""},
+		{"title is not a string", `{"title":42}`, ""},
+		{"title is blank", `{"title":"   "}`, ""},
+		{"text without a sender", `{"text":"orphan"}`, ""},
+		{"sender without a text", `{"from":"Justin"}`, ""},
+		{"not an object", `[1,2,3]`, ""},
+		{"not json", `nonsense`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summarizeBodyTitle([]byte(tc.body)); got != tc.want {
+				t.Errorf("summarizeBodyTitle(%s) = %q, want %q", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+// The fallback is the caller's, and a body with nothing readable in it must still land on the board
+// under the literal title rather than an empty one.
+func TestSelfManagedTitleFallsBackWhenTheBodySaysNothing(t *testing.T) {
+	for _, body := range []string{`{}`, `{"title":42}`, `{"from":"Justin"}`, `[1,2,3]`, "nonsense"} {
+		if got := summarizeSelfManagedTitle("generic", "", []byte(body)); got != "self-managed generic delivery" {
+			t.Errorf("summarizeSelfManagedTitle(generic, \"\", %s) = %q, want the literal fallback", body, got)
+		}
+	}
+	// And the shapes that do name themselves land under their own title.
+	if got := summarizeSelfManagedTitle("generic", "", []byte(`{"title":"scheduled: daily station report"}`)); got != "scheduled: daily station report" {
+		t.Errorf("title from body: got %q", got)
+	}
+	if got := summarizeSelfManagedTitle("generic", "", []byte(`{"from":"Justin","text":"no more hyper"}`)); got != "Justin: no more hyper" {
+		t.Errorf("title from sender and text: got %q", got)
+	}
+}
+
+// A body's own text is not bounded the way a forge title is, so a long one is cut rather than
+// allowed to become the whole board row — and marked, so a truncated title does not read as the
+// whole message.
+func TestSummarizeBodyTitleBoundsLongText(t *testing.T) {
+	long := strings.Repeat("wort ", 100)
+	body, err := json.Marshal(map[string]string{"from": "Justin", "text": long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := summarizeBodyTitle(body)
+	if n := len([]rune(got)); n > bodyTitleMax {
+		t.Errorf("title is %d runes, want at most %d: %q", n, bodyTitleMax, got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("a truncated title should be marked: %q", got)
+	}
+	if !strings.HasPrefix(got, "Justin: wort ") {
+		t.Errorf("the sender should survive truncation: %q", got)
 	}
 }
 
