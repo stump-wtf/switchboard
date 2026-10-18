@@ -304,6 +304,20 @@ func TestQuarantineDefaultFilterCoversEveryTodoMethod(t *testing.T) {
 			}
 			return nil
 		},
+		// Aged past the stall threshold, so a missing quarantine filter would surface the held row as
+		// its queue's stalled work rather than passing for the wrong reason.
+		"NudgeStalledQueues": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			if _, err := s.pool.Exec(ctx,
+				`UPDATE todos SET created_at = now() - interval '10 minutes' WHERE id = $1`, id); err != nil {
+				t.Fatalf("age held row: %v", err)
+			}
+			got, err := s.NudgeStalledQueues(ctx)
+			if err != nil || containsTodo(got, id) {
+				return fmt.Errorf("NudgeStalledQueues named the held todo (%v)", err)
+			}
+			return unchanged(t, f, id, "quarantine/pending/")
+		},
 		"RingOnAttach": func(t *testing.T) error {
 			id := f.seedHeld(t, "pending")
 			got, err := s.RingOnAttach(ctx, ep, append(q, "q"))

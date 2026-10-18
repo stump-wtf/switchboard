@@ -780,6 +780,9 @@ type reapStore interface {
 	RequeueDueRetries(ctx context.Context) (int64, error)
 	ExpireEndpoints(ctx context.Context) ([]string, error)
 	RingUnclaimed(ctx context.Context, attached []string) ([]store.Todo, error)
+	// NudgeStalledQueues is the queue-stall sweep (ADR-0045): it both records the nudge and fires the
+	// ready hook for the todo it names, so the loop only has to log what woke.
+	NudgeStalledQueues(ctx context.Context) ([]store.Todo, error)
 }
 
 // reaper periodically requeues (or dead-letters) todos with expired leases — crash safety (ADR-0002)
@@ -833,6 +836,17 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 					ring(t)
 				}
 				log.Info("re-rang unclaimed todos", "count", len(due))
+			}
+			// Queue-stall nudge: the heartbeat above rings an attached session, so a consumer that is
+			// started by an outbound webhook and claims one todo per invocation has nothing telling it
+			// its queue still has work. This asks the database instead, and re-fires the notify-hook wake
+			// for a queue whose pending work is older than the stall threshold with nothing claimed since
+			// the last ask. Paced, progress-reset and capped in the ledger; the store fires the wake, so
+			// there is no publish to do here. Governing: ADR-0045, issue #566.
+			if nudged, err := st.NudgeStalledQueues(ctx); err != nil {
+				log.Warn("queue stall nudge", "err", err)
+			} else if len(nudged) > 0 {
+				log.Info("nudged stalled queues", "count", len(nudged))
 			}
 			if ids, err := st.ExpireEndpoints(ctx); err != nil {
 				log.Warn("endpoint expiry", "err", err)
