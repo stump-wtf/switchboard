@@ -32,6 +32,13 @@ type Config struct {
 	// DatabaseURL is the PostgreSQL DSN (ADR-0002).
 	DatabaseURL string
 
+	// Version is the build version, resolved by internal/buildinfo (ldflags stamp, then the module
+	// version, then "dev") and copied onto cfg in runServe. Reported on /healthz as the
+	// X-Switchboard-Version response
+	// header so an operator can confirm which build is running over HTTP (issue #25). Empty means
+	// unstamped — the header is omitted rather than sent empty.
+	Version string
+
 	// --- OIDC relying-party config (ADR-0011: switchboard is an RP against Pocket ID, a passkey IdP) ---
 	OIDCIssuer       string // e.g. https://pocket-id.stump.rocks
 	OIDCClientID     string

@@ -28,6 +28,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/stump-wtf/switchboard/internal/buildinfo"
 	"github.com/stump-wtf/switchboard/internal/config"
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/server"
@@ -55,6 +56,9 @@ func runServe(c *cli, args []string) int {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: config.LogLevel()}))
 	cfg := config.FromEnv()
+	// The build version reaches /healthz as the X-Switchboard-Version response header, so the
+	// Upgrading guide's "confirm the build actually took" step is checkable over HTTP (issue #25).
+	cfg.Version = buildinfo.Get().Version
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

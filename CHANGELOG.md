@@ -15,6 +15,10 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- `/healthz` reports the build version as the `X-Switchboard-Version` response header (the body
+  stays bare `ok`, so existing probes are untouched). The Upgrading guide's verify step — confirm
+  the new build actually took — is now executable over HTTP, without a shell in the container or
+  a vended endpoint. (#25)
 - **Token-trusted runtime telemetry ingestion.** Self-managed webhooks can use source
   type `telemetry`, with readable severity-aware todo titles and stable sender
   delivery IDs. The operator's source-type ceiling explicitly grants telemetry;
