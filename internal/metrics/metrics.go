@@ -114,8 +114,11 @@ type Metrics struct {
 	todosClaimed   *prometheus.CounterVec
 	todosCompleted *prometheus.CounterVec
 	leasesExpired  *prometheus.CounterVec
-	todoAttempts   *prometheus.CounterVec
-	attemptsClosed *prometheus.CounterVec
+	// interruptReclaimed is the cause marker for interrupt-TTL reclaims (ADR-0046); each one is also a
+	// leasesExpired increment.
+	interruptReclaimed *prometheus.CounterVec
+	todoAttempts       *prometheus.CounterVec
+	attemptsClosed     *prometheus.CounterVec
 
 	// REQ-4 ingest and routing counters.
 	deliveries       *prometheus.CounterVec
@@ -165,6 +168,10 @@ func New(opts Options) *Metrics {
 		leasesExpired: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_todo_leases_expired_total",
 			Help: "Claims whose lease lapsed before completion — each one is potential duplicate work.",
+		}, []string{"queue"}),
+		interruptReclaimed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchboard_interrupt_leases_reclaimed_total",
+			Help: "Interrupt-state todos the reaper reclaimed past the interrupt TTL because their holder never resumed them (ADR-0046).",
 		}, []string{"queue"}),
 		todoAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_todo_attempts_total",
@@ -221,7 +228,7 @@ func New(opts Options) *Metrics {
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		m.todosCreated, m.todosClaimed, m.todosCompleted, m.leasesExpired, m.todoAttempts, m.attemptsClosed,
+		m.todosCreated, m.todosClaimed, m.todosCompleted, m.leasesExpired, m.interruptReclaimed, m.todoAttempts, m.attemptsClosed,
 		m.deliveries, m.routingDecisions, m.verifyFailures, m.routingFaults,
 		m.quarantineItems, m.quarantineResolved,
 		m.collectionErrors,
@@ -316,6 +323,17 @@ func (m *Metrics) LeaseExpired(queue string) {
 		return
 	}
 	m.leasesExpired.WithLabelValues(m.QueueLabel(queue)).Inc()
+}
+
+// InterruptLeaseReclaimed counts one todo the reaper took back out of an interrupt state because its
+// holder never came back (ADR-0046). It is a cause marker beside LeaseExpired, not a substitute: every
+// increment is also a lease expiry, and the pair says how much of the duplicate-work signal is a wait
+// that outlived its holder rather than a worker losing a race.
+func (m *Metrics) InterruptLeaseReclaimed(queue string) {
+	if m == nil {
+		return
+	}
+	m.interruptReclaimed.WithLabelValues(m.QueueLabel(queue)).Inc()
 }
 
 // AttemptClosed counts one committed attempt close (SPEC-0034 REQ-14). outcome is one of the REQ-3

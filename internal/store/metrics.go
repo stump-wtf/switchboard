@@ -29,6 +29,10 @@ type Metrics interface {
 	TodoFinished(queue, outcome string)
 	// LeaseExpired counts one lapsed lease, reaped or taken over by a new claimant.
 	LeaseExpired(queue string)
+	// InterruptLeaseReclaimed counts one interrupt-state (input-required/auth-required) todo the reaper
+	// reclaimed past the interrupt TTL because its holder never resumed it (ADR-0046). It rides the same
+	// row as LeaseExpired — this is a lease death — and says what caused it.
+	InterruptLeaseReclaimed(queue string)
 	// QuarantineHeld counts one delivery newly held in quarantine (never a redelivery collapsing
 	// onto its item); reason is untrusted_actor, rule_fault or rule_action. Governing: SPEC-0026
 	// REQ-11.
@@ -65,5 +69,6 @@ func (nopMetrics) TodoCreated(string, string)        {}
 func (nopMetrics) TodoClaimed(string, int)           {}
 func (nopMetrics) TodoFinished(string, string)       {}
 func (nopMetrics) LeaseExpired(string)               {}
+func (nopMetrics) InterruptLeaseReclaimed(string)    {}
 func (nopMetrics) QuarantineHeld(string)             {}
 func (nopMetrics) QuarantineResolved(string, string) {}

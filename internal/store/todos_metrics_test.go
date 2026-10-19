@@ -30,6 +30,8 @@ type recMetrics struct {
 	claims   map[string][]int // queue -> attempt numbers, in claim order
 	finished map[string]int   // "queue/outcome"
 	expired  map[string]int   // queue
+	// ADR-0046: interrupt-lease reclaims, a cause marker that rides LeaseExpired.
+	interrupted map[string]int // queue
 	// SPEC-0026 REQ-11: held reasons, and "outcome/by" resolutions as the store recorded them.
 	held     map[string]int
 	resolved map[string]int
@@ -39,7 +41,7 @@ type recMetrics struct {
 func newRecMetrics() *recMetrics {
 	return &recMetrics{
 		created: map[string]int{}, claims: map[string][]int{},
-		finished: map[string]int{}, expired: map[string]int{},
+		finished: map[string]int{}, expired: map[string]int{}, interrupted: map[string]int{},
 		held: map[string]int{}, resolved: map[string]int{}, closed: map[string]int{},
 	}
 }
@@ -66,6 +68,12 @@ func (r *recMetrics) LeaseExpired(queue string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.expired[queue]++
+}
+
+func (r *recMetrics) InterruptLeaseReclaimed(queue string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.interrupted[queue]++
 }
 
 func (r *recMetrics) QuarantineHeld(reason string) {

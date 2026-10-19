@@ -1487,7 +1487,15 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 			s.countAttemptClosed(t.Queue, "reaped")
 		}
 	}
-	return int64(len(reaped)), nil
+	// The interrupt half of the same crash-safety duty: a row paused on the client keeps its owner and
+	// lease on purpose, so the predicate above never sees it and a holder that dies mid-interrupt would
+	// otherwise park the todo forever (ADR-0046). It rides this sweep rather than its own tick so crash
+	// recovery stays one mechanism with one interval and one log line.
+	interrupted, err := s.ReapInterrupted(ctx)
+	if err != nil {
+		return int64(len(reaped)), err
+	}
+	return int64(len(reaped)) + interrupted, nil
 }
 
 // classifyMiss distinguishes "todo absent" (ErrNotFound) from "todo present but not in the expected

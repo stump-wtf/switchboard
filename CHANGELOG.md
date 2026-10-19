@@ -15,6 +15,15 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **A todo interrupted on a client no longer parks forever when its holder dies.** A row in
+  `input-required`/`auth-required` keeps its owner and lease on purpose so the same worker can resume it,
+  which also made it invisible to the lease reaper and unclaimable — so a holder that crashed mid-wait
+  left the todo stranded until someone called `resume`. The reaper now ages that wait too: past 24 hours
+  it returns the row to `pending` (dead-lettering at the attempt cap, with the cause in `result`), and
+  `switchboard_interrupt_leases_reclaimed_total{queue}` says how much of the lease-expiry signal came
+  from a wait nobody answered. Set `interrupt_lease_ttl_seconds` in `settings` to tune the deadline, or to
+  `0` to leave interrupted todos interrupted indefinitely as before. Proposed as ADR-0046. (#594)
+
 - `/healthz` reports the build version as the `X-Switchboard-Version` response header (the body
   stays bare `ok`, so existing probes are untouched). The Upgrading guide's verify step — confirm
   the new build actually took — is now executable over HTTP, without a shell in the container or
