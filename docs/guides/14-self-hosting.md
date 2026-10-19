@@ -50,8 +50,11 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT` | off | Set to `true` so a `complete` or `fail` with no `summary` stores the compact JSON of its `result` as the attempt summary. Off because clients written before attempt history never expected anyone else to read `result`: turning it on replays it to every later claimer in `prior_attempts` and `get_todo`. See [Attempt history](/guides/attempt-history#summary-from-result). |
 
 A few limits live in the database's `settings` table rather than the environment: retention
-(`retention_max_age_days`, 30 by default, and `retention_max_rows`, 500000) and the per-todo attempt
-history cap (`attempt_history_max_per_todo`, 50 by default and never below 5). They are read while
+(`retention_max_age_days`, 30 by default, and `retention_max_rows`, 500000), the per-todo attempt
+history cap (`attempt_history_max_per_todo`, 50 by default and never below 5), and the interrupt-lease
+deadline (`interrupt_lease_ttl_seconds`, 86400 by default: how long a todo may sit waiting on a client
+for input or auth before the reaper returns it to the queue; any non-positive value leaves interrupted
+todos interrupted indefinitely). They are read while
 the service runs, so a change needs no restart. See
 [Attempt history](/guides/attempt-history#retention).
 
@@ -381,6 +384,12 @@ scrape_configs:
 `switchboard_todo_attempts_closed_total{queue,outcome}` counts how todo attempts end. Its
 `lease_expired` and `reaped` outcomes are deaths, and each also counts once in
 `switchboard_todo_leases_expired_total`. See [Attempt history](/guides/attempt-history#metrics).
+
+`switchboard_interrupt_leases_reclaimed_total{queue}` says how much of that lease-expiry signal is a
+wait that outlived its holder: a todo paused on a client (`input-required`/`auth-required`) whose holder
+never came back, taken past the interrupt deadline and returned to the queue. It is a cause marker, not
+a fourth outcome — every increment is also a `switchboard_todo_leases_expired_total` increment, so
+alerts keep reading one expiry series.
 
 A series appears only once there is something to count. A counter nothing has incremented yet is
 absent rather than zero, because a zero and an unmeasured value look identical once scraped. The

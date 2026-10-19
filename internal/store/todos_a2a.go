@@ -1,4 +1,5 @@
-// Governing: ADR-0021 (A2A task-delegation transport), SPEC-0018 REQ "Task State Machine Extension",
+// Governing: ADR-0021 (A2A task-delegation transport), ADR-0046 (proposed: the interrupt-lease TTL the
+// sweep at the end of this file applies), SPEC-0018 REQ "Task State Machine Extension",
 // SPEC-0018 REQ "Database Operation Standards".
 //
 // The store-level transition primitives for the four A2A states the 0012 migration added
@@ -17,8 +18,11 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/stump-wtf/switchboard/internal/lease"
 )
 
 // CancelTodo transitions a live (non-terminal) todo to the terminal `canceled` state — the durable
@@ -43,7 +47,7 @@ func (s *Store) CancelTodo(ctx context.Context, id string, result []byte) (Todo,
 	// (SPEC-0034 REQ-3); a pending todo has none.
 	row := s.pool.QueryRow(ctx, `
 		WITH upd AS (
-			UPDATE todos SET state='canceled', owner=NULL, lease_expires_at=NULL,
+			UPDATE todos SET state='canceled', owner=NULL, lease_expires_at=NULL, interrupted_at=NULL,
 				next_retry_at=NULL, result=$2, completed_at=now(), updated_at=now()
 			WHERE id=$1 AND queue <> 'quarantine' AND state IN ('pending', 'claimed', 'input-required', 'auth-required')
 			RETURNING todos.*
@@ -97,14 +101,16 @@ func (s *Store) RejectTodo(ctx context.Context, id string, result []byte) (Todo,
 // interrupt (guarded by state='claimed' AND owner), and it does not consume an attempt. The result
 // payload carries the interrupt detail (e.g. the input schema the client must satisfy). state is a
 // bound parameter validated against the interrupt set below, so this cannot be used to write an
-// arbitrary state. Returns ErrConflict if the todo exists but is not a live claim owned by owner,
+// arbitrary state. `interrupted_at` is stamped here: it is the only start time this wait has, because
+// the retained lease was set by the claim and a row in an interrupt state cannot be heartbeated
+// (ADR-0046). Returns ErrConflict if the todo exists but is not a live claim owned by owner,
 // ErrNotFound if absent.
 func (s *Store) InterruptTodo(ctx context.Context, id, owner, state string, result []byte) (Todo, error) {
 	if !IsInterruptState(state) {
 		return Todo{}, errors.New("store: InterruptTodo requires an interrupt state (input-required|auth-required)")
 	}
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state=$3, result=$4, updated_at=now()
+		UPDATE todos SET state=$3, result=$4, interrupted_at=now(), updated_at=now()
 		WHERE id=$1 AND queue <> 'quarantine' AND state='claimed' AND owner=$2
 		RETURNING `+todoCols, id, owner, state, result)
 	t, err := scanTodo(row)
@@ -123,11 +129,12 @@ func (s *Store) InterruptTodo(ctx context.Context, id, owner, state string, resu
 // is on the current owner and the UPDATE touches neither owner nor lease_expires_at nor attempt. The
 // lease continues on its original deadline (the worker was expected to heartbeat across the
 // interrupt); a lease that lapsed while interrupted is recovered by the normal reaper/claim path once
-// the todo is back in `claimed`. Returns ErrConflict if the todo exists but is not an interrupt state
-// owned by owner, ErrNotFound if absent.
+// the todo is back in `claimed`. Clearing `interrupted_at` here is what stops the interrupt-TTL sweep
+// from ever reclaiming a row somebody has come back for (ADR-0046). Returns ErrConflict if the todo
+// exists but is not an interrupt state owned by owner, ErrNotFound if absent.
 func (s *Store) ResumeTodo(ctx context.Context, id, owner string, result []byte) (Todo, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE todos SET state='claimed', result=$3, updated_at=now()
+		UPDATE todos SET state='claimed', result=$3, interrupted_at=NULL, updated_at=now()
 		WHERE id=$1 AND queue <> 'quarantine' AND owner=$2 AND state IN ('input-required', 'auth-required')
 		RETURNING `+todoCols, id, owner, result)
 	t, err := scanTodo(row)
@@ -138,4 +145,130 @@ func (s *Store) ResumeTodo(ctx context.Context, id, owner string, result []byte)
 		s.fireTodoHook("claimed", t)
 	}
 	return t, err
+}
+
+// Interrupt-lease reaping — the deadline on a wait whose holder is gone.
+//
+// InterruptTodo deliberately retains owner and lease so the SAME holder resumes (SPEC-0018 scenario
+// "Interrupt states return to claimed"), and while a row sits in an interrupt state that holder cannot
+// heartbeat: HeartbeatTodo is guarded on state='claimed'. The retained lease is therefore a clock set by
+// the claim, not by the wait, and it is the only clock there is.
+//
+// So when the holder dies mid-interrupt the row has no alarm left: the lease reaper's predicate needs
+// state='claimed', and the claim predicate covers pending, lapsed claimed and due failed. The todo is
+// neither reapable nor claimable and parks until someone calls resume — forever, which is the outcome
+// SPEC-0018's design.md lists as an unresolved Open Question. 0017 dead-letters the same shape for a
+// REVOKED endpoint; this is the live-endpoint half of that gap, which is #594.
+//
+// Governing: ADR-0046 (proposed — it sets the TTL, the past-TTL outcome and the override recorded here),
+// SPEC-0018 REQ "Task State Machine Extension", ADR-0002 (reaper), SPEC-0003 background-sweep exemption.
+
+const (
+	// interruptLeaseTTLDefault is how long a todo may wait in an interrupt state before the sweep
+	// concludes nobody is coming: 24h, which equals lease.MaxTTL, so the wait always outlives the
+	// longest claim that could still be alive to resume it. A day is also long enough that a human
+	// answering an input request from a weekday-evening phone is not racing it.
+	interruptLeaseTTLDefault = 24 * time.Hour
+
+	// settingInterruptLeaseTTLSeconds is the operator override, read the way sse_retry_ms is read: a
+	// settings row, a documented default, and a malformed value that logs and keeps the default. Any
+	// non-positive value switches the sweep off, which is SPEC-0018's other acceptable answer — "leaves
+	// it interrupted indefinitely" — now an operator's choice instead of an accident.
+	settingInterruptLeaseTTLSeconds = "interrupt_lease_ttl_seconds"
+)
+
+// interruptLeaseTTL resolves the override into a duration, or 0 when the sweep is disabled. A positive
+// value below lease.MinDefaultSeconds is raised to that floor: an interrupt deadline shorter than the
+// shortest lease an endpoint may be given would reap waits the lease itself would have honoured, which
+// would make the interrupt state strictly worse than working through.
+func (s *Store) interruptLeaseTTL(ctx context.Context) (time.Duration, error) {
+	secs, err := s.SettingInt(ctx, settingInterruptLeaseTTLSeconds, int(interruptLeaseTTLDefault/time.Second))
+	if err != nil {
+		return 0, err
+	}
+	if secs <= 0 {
+		return 0, nil
+	}
+	if secs < lease.MinDefaultSeconds {
+		secs = lease.MinDefaultSeconds
+	}
+	return time.Duration(secs) * time.Second, nil
+}
+
+// ReapInterrupted returns to the queue (or dead-letters, at the attempt cap) every todo still sitting in
+// an interrupt state past the interrupt TTL — the crash-safety counterpart of ReapExpired for a row whose
+// lease was retained on purpose. Same shape as that sweep, on purpose: the open attempt closes reaped
+// (requeued, or dead_lettered at the cap), the ready hook fires for whatever lands in pending, the
+// transition hook fires per row, and each row counts one lease expiry plus one interrupt reclaim.
+//
+// The owner and lease are dropped and the row goes to `pending` rather than back to `claimed`: nobody may
+// hold a row whose holder is gone, and the interrupt's detail stays in `result`, so the next claimant
+// reads what the client was asked for instead of starting blind. A dead-letter names its cause in
+// `result` the way migration 0017's backfill does, so a row found months later explains itself.
+//
+// DELIBERATELY NOT endpoint-scoped, for the reason ReapExpired and NudgeStalledQueues give: a timer-driven
+// system sweep has no authenticated caller to scope to, and crash recovery must not depend on someone
+// being logged in. Governing: SPEC-0003 REQ "Endpoint Ownership (Tenant Isolation)" (background-sweep
+// exemption), ADR-0022.
+//
+// Returns the number of todos reclaimed; 0 with no error when the TTL is switched off.
+func (s *Store) ReapInterrupted(ctx context.Context) (int64, error) {
+	ttl, err := s.interruptLeaseTTL(ctx)
+	if err != nil || ttl == 0 {
+		return 0, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		WITH upd AS (
+			UPDATE todos SET
+				state = CASE WHEN attempt >= max_attempts THEN 'failed' ELSE 'pending' END,
+				owner = NULL, lease_expires_at = NULL, interrupted_at = NULL,
+				result = CASE WHEN attempt >= max_attempts
+					THEN jsonb_build_object(
+						'error', 'interrupt_expired',
+						'detail', 'the todo waited past the interrupt TTL for input or auth that never arrived')
+					ELSE result END,
+				updated_at = now()
+			WHERE state IN ('input-required', 'auth-required') AND queue <> 'quarantine'
+			  AND interrupted_at < now() - $1::interval
+			RETURNING todos.*
+		),
+		`+closedArmUnreported("reaped", `CASE WHEN upd.state = 'failed' THEN 'dead_lettered' ELSE 'requeued' END`)+`
+		`+reapedSelect, ttl.String())
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var reclaimed []Todo
+	var closed []bool
+	var eligible []bool
+	for rows.Next() {
+		var f finalScan
+		var pushEligible bool
+		t, err := scanTodo(rows, append(f.dest(), &pushEligible)...)
+		if err != nil {
+			return 0, err
+		}
+		f.attach(&t) // reclaimed at the cap carries its final attempt (SPEC-0034 REQ-15)
+		reclaimed = append(reclaimed, t)
+		closed = append(closed, f.closed)
+		eligible = append(eligible, pushEligible)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	s.fireRequeued(reclaimed, eligible)
+	// One lease expiry per reclaimed row, like the lease reaper: the attempt close below is a `reaped`
+	// close, and every such close has exactly one matching LeaseExpired increment (SPEC-0034 REQ-14), so
+	// skipping it here would break the reconciliation. The second counter is the one that says WHY this
+	// expiry was not a worker losing a race: an interrupt reclaim means a wait lost its holder
+	// (ADR-0046). Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028.
+	for i, t := range reclaimed {
+		s.fireTodoHook(t.State, t)
+		s.metricsOrNop().LeaseExpired(t.Queue)
+		s.metricsOrNop().InterruptLeaseReclaimed(t.Queue)
+		if closed[i] {
+			s.countAttemptClosed(t.Queue, "reaped")
+		}
+	}
+	return int64(len(reclaimed)), nil
 }

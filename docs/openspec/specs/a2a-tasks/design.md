@@ -224,7 +224,9 @@ stateDiagram-v2
   are not fixed by this design; they need an operational starting point plus room to tune.
 - **`input-required`/`auth-required` timeout policy.** How long a todo may sit in an interrupt state
   before switchboard gives up and transitions it to `failed` (or leaves it interrupted indefinitely) is
-  unresolved.
+  addressed by [ADR-0046](../../adrs/ADR-0046-interrupt-lease-ttl.md) (**proposed**): a 24h deadline by
+  default, the row returned to `pending` rather than failed, and `interrupt_lease_ttl_seconds = 0` for
+  "indefinitely". It stays an open question here until that ADR is accepted.
 - **Cursor implementation for `ListTasks`.** Whether the pagination cursor is an opaque encoded offset,
   a keyset on `(created_at, id)`, or something else is an implementation detail to settle during coding,
   not an architectural choice this design needs to pin down.

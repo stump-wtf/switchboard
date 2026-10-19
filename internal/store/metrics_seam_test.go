@@ -15,12 +15,13 @@ import (
 	"testing"
 )
 
-type countingMetrics struct{ created, claimed, finished, expired atomic.Int64 }
+type countingMetrics struct{ created, claimed, finished, expired, interrupted atomic.Int64 }
 
 func (c *countingMetrics) TodoCreated(string, string)        { c.created.Add(1) }
 func (c *countingMetrics) TodoClaimed(string, int)           { c.claimed.Add(1) }
 func (c *countingMetrics) TodoFinished(string, string)       { c.finished.Add(1) }
 func (c *countingMetrics) LeaseExpired(string)               { c.expired.Add(1) }
+func (c *countingMetrics) InterruptLeaseReclaimed(string)    { c.interrupted.Add(1) }
 func (c *countingMetrics) QuarantineHeld(string)             {}
 func (c *countingMetrics) QuarantineResolved(string, string) {}
 
