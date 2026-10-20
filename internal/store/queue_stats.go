@@ -35,13 +35,17 @@ type QueueStat struct {
 	Failed  int64
 	// OldestPendingSeconds is the age of the oldest pending todo, or 0 when none is pending.
 	OldestPendingSeconds float64
+	// Paused says delivery is quiesced on this queue (ADR-0047): pending work is waiting by
+	// decision, not because nobody is coming. It is why the row's age keeps growing.
+	Paused bool
 }
 
 // QueueStats returns a snapshot row for every known queue, zero-filled, sorted by queue name. It is
 // one round trip and honours ctx, so the scrape-time collector can bound it with a deadline.
 //
 // Queues are a global namespace (SPEC-0003), like KnownQueues: the counts are fleet-wide and are
-// served only to the operator scrape credential, never to an endpoint.
+// served only to the operator scrape credential, never to an endpoint. A paused queue is known
+// even with no todos and no endpoint scope — the pause itself is the operator-visible state.
 func (s *Store) QueueStats(ctx context.Context) ([]QueueStat, error) {
 	// GREATEST clamps a row whose inserting transaction began after this statement's now() but
 	// committed before its snapshot — a few microseconds of negative age, never a real reading.
@@ -59,13 +63,17 @@ func (s *Store) QueueStats(ctx context.Context) ([]QueueStat, error) {
 			SELECT queue FROM counts
 			UNION
 			SELECT unnest(scope_queues) FROM endpoints
+			UNION
+			SELECT queue FROM queue_pause
 		)
 		SELECT k.queue,
 		       COALESCE(c.pending, 0), COALESCE(c.claimed, 0),
 		       COALESCE(c.done, 0),    COALESCE(c.failed, 0),
-		       COALESCE(GREATEST(EXTRACT(EPOCH FROM now() - c.oldest_pending), 0), 0)::float8
+		       COALESCE(GREATEST(EXTRACT(EPOCH FROM now() - c.oldest_pending), 0), 0)::float8,
+		       (qp.queue IS NOT NULL)
 		FROM known k
 		LEFT JOIN counts c ON c.queue = k.queue
+		LEFT JOIN queue_pause qp ON qp.queue = k.queue
 		WHERE k.queue IS NOT NULL
 		ORDER BY k.queue`)
 	if err != nil {
@@ -75,7 +83,7 @@ func (s *Store) QueueStats(ctx context.Context) ([]QueueStat, error) {
 	var out []QueueStat
 	for rows.Next() {
 		var q QueueStat
-		if err := rows.Scan(&q.Queue, &q.Pending, &q.Claimed, &q.Done, &q.Failed, &q.OldestPendingSeconds); err != nil {
+		if err := rows.Scan(&q.Queue, &q.Pending, &q.Claimed, &q.Done, &q.Failed, &q.OldestPendingSeconds, &q.Paused); err != nil {
 			return nil, fmt.Errorf("store: scan queue stats: %w", err)
 		}
 		out = append(out, q)
