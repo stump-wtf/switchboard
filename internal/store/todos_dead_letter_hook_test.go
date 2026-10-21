@@ -29,11 +29,13 @@ func (r *deadLetterRecorder) hook(t Todo, reason string) {
 	r.todos = append(r.todos, t)
 }
 
+// take drains the announcement log so the next step starts from silence. It keeps the todos: lastTodo
+// asks what the hook actually handed the dispatcher, and that must survive a take.
 func (r *deadLetterRecorder) take() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := r.got
-	r.got, r.todos = nil, nil
+	r.got = nil
 	return out
 }
 
