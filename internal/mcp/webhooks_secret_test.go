@@ -138,9 +138,10 @@ func TestSuppliedSecretRefusedForTokenSources(t *testing.T) {
 // TestStripeSuppliedSecretIsFormatChecked is REQ-3's scenario "Malformed Stripe secret": the field is
 // named, the value is not, and nothing is written.
 //
-// @joestump-agent 10/21/2026 - Reworded the malformed fixture so it stops matching gitleaks'
-// stripe-access-token rule: the old sk_test_ shape was never a real credential, but it red the CI
-// gate on this PR.
+// @joestump-agent 10/21/2026 - Reworded the malformed fixture so HEAD stops matching gitleaks'
+// stripe-access-token rule (it was never a real credential), and allowlisted the historical value in
+// .gitleaks.toml: the CI scan reads branch history, so the commit that introduced the old string
+// stays flagged no matter what HEAD carries.
 func TestStripeSuppliedSecretIsFormatChecked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
