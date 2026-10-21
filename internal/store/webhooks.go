@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/sourcekind"
 )
 
 // ErrCeilingExceeded is returned by CreateWebhook when creating another webhook would exceed the
@@ -48,6 +49,41 @@ type Webhook struct {
 	// always present on github, gitea and cairn webhooks (the trusted_actors_required CHECK) and nil
 	// elsewhere. Governing: SPEC-0026 REQ-5.
 	TrustedActors []byte
+	// SecretOrigin is how this webhook's signing secret originates: minted, provider or none
+	// (SPEC-0032 REQ-1). It is read off the row rather than recomputed from the source-type table, so
+	// a webhook keeps answering with what was decided when it was written even if the table changes.
+	SecretOrigin string
+	// SecretSet reports whether a signing secret is actually stored. A provider-origin signed webhook
+	// with none is awaiting its secret: deliveries are refused with 503 (SPEC-0032 REQ-2).
+	SecretSet bool
+	// SecretFingerprint is the first 12 hex of the stored secret's SHA-256 and SecretSetAt when it was
+	// written; both are empty/nil until a secret exists. Neither is the secret, which is the point of
+	// reporting them (SPEC-0032 REQ-2, REQ-3).
+	SecretFingerprint string
+	SecretSetAt       *time.Time
+	// SecretSupplied marks a minted-origin webhook whose secret a caller supplied under the operator
+	// opt-in (SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET, SPEC-0032 REQ-1). rotate_webhook mints a
+	// fresh secret and clears it.
+	SecretSupplied bool
+	// SecretSetByKind/SecretSetByID name the actor behind the latest audited secret write, for
+	// list_webhooks' secret_set_by (SPEC-0032 REQ-13). Both are empty while no caller-supplied secret
+	// has ever been written for the webhook.
+	SecretSetByKind string
+	SecretSetByID   string
+}
+
+// webhookRowColumns are the columns a webhook read returns, in scan order: the row's identity and
+// routing shape, then the SPEC-0032 secret fields. One list rather than five hand-copied SELECT lists,
+// because a column spelled into four of them is a field that silently reads empty on the fifth.
+const webhookRowColumns = `id::text, endpoint_id::text, source_type, target_queue, trust_mode,
+		ingest_token, created_at, rotated_at, trusted_actors,
+		secret_origin, secret_supplied, secret_set_at`
+
+// scanTargets returns the destinations matching webhookRowColumns, in order.
+func (w *Webhook) scanTargets() []any {
+	return []any{&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode,
+		&w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors,
+		&w.SecretOrigin, &w.SecretSupplied, &w.SecretSetAt}
 }
 
 // CreateWebhook inserts a webhook for an endpoint, enforcing the max-count ceiling under a
@@ -66,18 +102,80 @@ func (s *Store) CreateWebhook(ctx context.Context, endpointID, sourceType, targe
 
 // CreateWebhookWithTrust is CreateWebhook with the webhook's trust list. A nil trustedActors stores
 // the source's empty list on github, gitea and cairn (which trusts no one: new webhooks fail closed)
-// and NULL on other sources. Governing: SPEC-0026 REQ-5 ("omitting it MUST store an empty list").
+// and NULL on other sources. The secret is switchboard's own — minted for a minted-origin source,
+// none for the rest — so no audit row is written; see CreateWebhookWithOrigin for a secret the caller
+// supplied. Governing: SPEC-0026 REQ-5 ("omitting it MUST store an empty list").
 func (s *Store) CreateWebhookWithTrust(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int, trustedActors []byte) (Webhook, error) {
+	return s.CreateWebhookWithOrigin(ctx, CreateWebhookInput{
+		EndpointID: endpointID, SourceType: sourceType, TargetQueue: targetQueue, TrustMode: trustMode,
+		IngestToken: ingestToken, Secret: secret, Max: max, TrustedActors: trustedActors,
+	})
+}
+
+// CreateWebhookInput is one webhook insert, spelled as fields rather than eleven positional
+// arguments now that the secret's provenance matters as much as its value.
+type CreateWebhookInput struct {
+	EndpointID    string
+	SourceType    string
+	TargetQueue   string
+	TrustMode     string // switchboard-derived: signed|token, never caller-supplied
+	IngestToken   string
+	Secret        string // plaintext; empty stores NULL. Sealed here, never by the caller.
+	Max           int
+	TrustedActors []byte
+	// SecretSupplied says Secret came from the caller rather than from switchboard's mint. It is what
+	// makes the write auditable: a supplied secret needs an at-rest key, sets secret_supplied, and
+	// appends an audit row; a minted one does none of that (SPEC-0032 REQ-1, REQ-3, REQ-13).
+	SecretSupplied bool
+	// Actor is who is writing, recorded on the audit row. Ignored unless SecretSupplied.
+	Actor SecretActor
+}
+
+// CreateWebhookWithOrigin is the full webhook insert: it derives the row's secret_origin from the
+// SPEC-0032 source table, stores the secret under the same envelope the minted path uses, and — for a
+// secret the caller supplied — requires an at-rest key and appends the audit row inside this same
+// transaction.
+//
+// A provider-origin insert with no secret is the expected shape, not an error: the row is created with
+// a NULL secret, which is what `awaiting_secret` means, and the first delivery answers 503 until its
+// owner sets the provider-issued value (SPEC-0032 REQ-2).
+//
+// The ceiling is still enforced under the endpoint row lock, exactly as CreateWebhook documented: an
+// insert-then-count under READ COMMITTED does not serialize two concurrent creates, so both would
+// pass at the boundary.
+//
+// Governing: SPEC-0032 REQ-1, REQ-2, REQ-3, REQ-13; SPEC-0006 REQ "Webhook Self-Management Within a
+// Vended Ceiling" (ceiling, concurrency), SPEC-0026 REQ-5 (trust list).
+func (s *Store) CreateWebhookWithOrigin(ctx context.Context, in CreateWebhookInput) (Webhook, error) {
+	sourceType, targetQueue, trustMode, ingestToken, secret, max := in.SourceType, in.TargetQueue, in.TrustMode, in.IngestToken, in.Secret, in.Max
 	if err := CheckQueueNames(targetQueue); err != nil {
 		return Webhook{}, err // the reserved quarantine queue is never a target (SPEC-0026 REQ-6)
 	}
-	if trustedActors == nil {
+	if in.TrustedActors == nil {
 		if empty, ok := routing.DefaultTrustedActors(sourceType); ok {
 			raw, err := json.Marshal(empty)
 			if err != nil {
 				return Webhook{}, fmt.Errorf("store: create webhook trust list: %w", err)
 			}
-			trustedActors = raw
+			in.TrustedActors = raw
+		}
+	}
+	trustedActors := in.TrustedActors
+	origin := sourcekind.OriginOf(sourceType, trustMode)
+
+	// A secret somebody else issued is the one value switchboard cannot regenerate, so it is not
+	// stored in the clear the way a minted one is allowed to be. Both rules are enforced here rather
+	// than at one call site: the shape because a paste error is otherwise invisible until every
+	// delivery 401s, the key because a provider-issued value must never land unencrypted. Nothing is
+	// written either way. Governing: SPEC-0032 REQ-3, REQ-12.
+	if in.SecretSupplied {
+		if err := sourcekind.CheckSecret(sourceType, secret); err != nil {
+			s.logRefusedSecretWrite("", in.EndpointID, in.Actor.ID, "invalid_argument")
+			return Webhook{}, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+		}
+		if s.secretCipher == nil {
+			s.logRefusedSecretWrite("", in.EndpointID, in.Actor.ID, "encryption_required")
+			return Webhook{}, ErrEncryptionRequired
 		}
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -93,7 +191,7 @@ func (s *Store) CreateWebhookWithTrust(ctx context.Context, endpointID, sourceTy
 	// endpoint id affects no row and surfaces as ErrNotFound. Governing: SPEC-0006 REQ "Concurrency
 	// Safety" (check-then-act must serialize), matching todos.go's FOR UPDATE pattern.
 	var lockedID string
-	err = tx.QueryRow(ctx, `SELECT id::text FROM endpoints WHERE id = $1 FOR UPDATE`, endpointID).Scan(&lockedID)
+	err = tx.QueryRow(ctx, `SELECT id::text FROM endpoints WHERE id = $1 FOR UPDATE`, in.EndpointID).Scan(&lockedID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, ErrNotFound
 	}
@@ -110,23 +208,43 @@ func (s *Store) CreateWebhookWithTrust(ctx context.Context, endpointID, sourceTy
 		return Webhook{}, err
 	}
 
-	// The CASE keeps the invariant "signing_secret is non-NULL iff trust_mode='signed'": switchboard
-	// holds a secret only for a signed webhook (to recompute the HMAC); a token/open webhook is
-	// authenticated by its unguessable ingest URL and its secret column stays NULL.
+	// The CASE keeps the invariant "signing_secret is non-NULL only when trust_mode='signed'":
+	// switchboard holds a secret only where an HMAC is what verifies a delivery. SPEC-0032 loosens the
+	// other direction: a provider-origin signed webhook with no secret yet is a valid row, and NULL is
+	// exactly the state "awaiting its secret" reads from (design.md "awaiting_secret is derived").
 	var w Webhook
 	err = tx.QueryRow(ctx, `
-		INSERT INTO endpoint_webhooks (endpoint_id, source_type, target_queue, trust_mode, ingest_token, signing_secret, trusted_actors)
-		VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'signed' THEN NULLIF($6, '') ELSE NULL END, $7::jsonb)
-		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors`,
-		endpointID, sourceType, targetQueue, trustMode, ingestToken, storedSecret, trustedActors,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
+		INSERT INTO endpoint_webhooks (endpoint_id, source_type, target_queue, trust_mode, ingest_token,
+			signing_secret, trusted_actors, secret_origin, secret_set_at, secret_supplied)
+		VALUES ($1, $2, $3, $4, $5,
+			CASE WHEN $4 = 'signed' THEN NULLIF($6, '') ELSE NULL END,
+			$7::jsonb, $8,
+			CASE WHEN $4 = 'signed' AND NULLIF($6, '') IS NOT NULL THEN now() ELSE NULL END, $9)
+		RETURNING `+webhookRowColumns,
+		in.EndpointID, sourceType, targetQueue, trustMode, ingestToken, storedSecret, trustedActors,
+		origin, in.SecretSupplied,
+	).Scan(w.scanTargets()...)
 	if err != nil {
 		return Webhook{}, fmt.Errorf("store: create webhook insert: %w", err)
+	}
+	w.SecretSet = w.SecretSetAt != nil
+	if w.SecretSet {
+		w.SecretFingerprint = SecretFingerprint(secret)
+	}
+
+	// A caller-supplied secret is auditable; a minted one is not (SPEC-0032 REQ-13). The row goes in
+	// here, before the ceiling check can roll the insert back, so an audit row and its secret either
+	// both exist or neither does.
+	if in.SecretSupplied && w.SecretSet {
+		if err := appendSecretAudit(ctx, tx, w.ID, SecretActionSet, in.Actor, w.SecretFingerprint, ""); err != nil {
+			return Webhook{}, err
+		}
+		w.SecretSetByKind, w.SecretSetByID = in.Actor.Kind, in.Actor.ID
 	}
 
 	var count int
 	if err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM endpoint_webhooks WHERE endpoint_id = $1`, endpointID,
+		`SELECT count(*) FROM endpoint_webhooks WHERE endpoint_id = $1`, in.EndpointID,
 	).Scan(&count); err != nil {
 		return Webhook{}, fmt.Errorf("store: create webhook count: %w", err)
 	}
@@ -143,13 +261,25 @@ func (s *Store) CreateWebhookWithTrust(ctx context.Context, endpointID, sourceTy
 	return w, nil
 }
 
-// ListWebhooks returns an endpoint's self-managed webhooks, newest first. The signing secret is
-// deliberately not selected. Governing: SPEC-0006 REQ "Webhook Self-Management Within a Vended
-// Ceiling" (list returns metadata plus the ceiling, no secret values).
+// ListWebhooks returns an endpoint's self-managed webhooks, newest first, with the SPEC-0032 secret
+// fields a caller needs to see what state each webhook is in: which kind of secret it takes, whether
+// it has one, the fingerprint and moment of the current one, and who last wrote a supplied one.
+//
+// The secret value is read here only to hash it. It is scanned into a local, never leaves this
+// function, and a row whose stored value cannot be decrypted still reports secret_set with an empty
+// fingerprint rather than failing the whole list — the webhook's state is knowable even when the key
+// changed under it. Governing: SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling" (list
+// returns metadata, no secret values), SPEC-0032 REQ-2 (origin, set, fingerprint, set_at), REQ-13
+// (secret_set_by from the latest audited write).
 func (s *Store) ListWebhooks(ctx context.Context, endpointID string) ([]Webhook, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors
-		FROM endpoint_webhooks WHERE endpoint_id = $1 ORDER BY created_at DESC`, endpointID)
+		SELECT `+webhookRowColumns+`, w.signing_secret, aud.actor_kind, aud.actor_id::text
+		FROM endpoint_webhooks w
+		LEFT JOIN LATERAL (
+			SELECT actor_kind, actor_id FROM webhook_secret_audit s
+			WHERE s.webhook_id = w.id AND s.action IN ('set', 'replace')
+			ORDER BY s.at DESC LIMIT 1) aud ON true
+		WHERE w.endpoint_id = $1 ORDER BY w.created_at DESC`, endpointID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list webhooks: %w", err)
 	}
@@ -157,8 +287,21 @@ func (s *Store) ListWebhooks(ctx context.Context, endpointID string) ([]Webhook,
 	var out []Webhook
 	for rows.Next() {
 		var w Webhook
-		if err := rows.Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors); err != nil {
+		var stored *string
+		var setByKind, setByID *string
+		if err := rows.Scan(append(w.scanTargets(), &stored, &setByKind, &setByID)...); err != nil {
 			return nil, fmt.Errorf("store: list webhooks scan: %w", err)
+		}
+		if stored != nil {
+			s.secretStateFromStored(&w, stored)
+		} else {
+			w.SecretSet = false
+		}
+		if setByKind != nil {
+			w.SecretSetByKind = *setByKind
+		}
+		if setByID != nil {
+			w.SecretSetByID = *setByID
 		}
 		out = append(out, w)
 	}
@@ -174,9 +317,9 @@ func (s *Store) ListWebhooks(ctx context.Context, endpointID string) ([]Webhook,
 func (s *Store) GetWebhookByToken(ctx context.Context, ingestToken string) (Webhook, error) {
 	var w Webhook
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors
-		FROM endpoint_webhooks WHERE ingest_token = $1`, ingestToken,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
+		SELECT `+webhookRowColumns+`
+		FROM endpoint_webhooks w WHERE ingest_token = $1`, ingestToken,
+	).Scan(w.scanTargets()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, ErrNotFound
 	}
@@ -196,9 +339,9 @@ func (s *Store) GetWebhookSecretByToken(ctx context.Context, ingestToken string)
 	var w Webhook
 	var secret *string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors, signing_secret
-		FROM endpoint_webhooks WHERE ingest_token = $1`, ingestToken,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors, &secret)
+		SELECT `+webhookRowColumns+`, w.signing_secret
+		FROM endpoint_webhooks w WHERE ingest_token = $1`, ingestToken,
+	).Scan(append(w.scanTargets(), &secret)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, "", ErrNotFound
 	}
@@ -208,6 +351,7 @@ func (s *Store) GetWebhookSecretByToken(ctx context.Context, ingestToken string)
 	s2 := ""
 	if secret != nil {
 		s2 = *secret
+		w.SecretSet = true
 	}
 	// Decrypt transparently on the delivery path: the receiver needs the plaintext to recompute the
 	// provider HMAC. openSecret returns legacy plaintext unchanged, so mixed (pre/post-encryption) rows
@@ -215,6 +359,9 @@ func (s *Store) GetWebhookSecretByToken(ctx context.Context, ingestToken string)
 	plaintext, err := s.openSecret(s2)
 	if err != nil {
 		return Webhook{}, "", err
+	}
+	if w.SecretSet {
+		w.SecretFingerprint = SecretFingerprint(plaintext)
 	}
 	return w, plaintext, nil
 }
@@ -268,11 +415,13 @@ func (s *Store) openSecret(stored string) (string, error) {
 // RotateWebhookSecret stores a freshly minted signing secret and a new ingest token for a webhook the
 // given endpoint owns, retiring the old secret/URL in a single conditional UPDATE. The endpoint_id
 // guard in the WHERE clause is the ownership check: another endpoint's (or an unknown) id affects no
-// rows and returns ErrNotFound. The secret is retained only for a signed webhook (the CASE keeps the
-// invariant "signing_secret is non-NULL iff trust_mode='signed'"): a token/open webhook is
-// authenticated by its unguessable ingest URL and its secret column stays NULL even though the caller
-// always mints one. Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency"
-// (rotate mints a new secret and retires the old), ADR-0003 (per-source trust model).
+// rows and returns ErrNotFound. The secret is retained only for a signed webhook whose secret
+// switchboard mints: a provider-origin webhook keeps whatever secret its owner pasted (minting one
+// there would replace a value the provider signs with by a value it has never heard of), and
+// secret_supplied is cleared because the minted value is no longer the caller's. Governing:
+// SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency" (rotate mints a new secret
+// and retires the old), SPEC-0032 REQ-1 (a minted webhook that had a supplied secret goes back to
+// minted), ADR-0003 (per-source trust model).
 func (s *Store) RotateWebhookSecret(ctx context.Context, id, endpointID, newSecret, newIngestToken string) (Webhook, error) {
 	// Encrypt the freshly minted secret at rest when a cipher is configured (same envelope as create).
 	storedSecret, err := s.sealSecret(newSecret)
@@ -280,24 +429,53 @@ func (s *Store) RotateWebhookSecret(ctx context.Context, id, endpointID, newSecr
 		return Webhook{}, err
 	}
 	var w Webhook
+	var stored *string
 	err = s.pool.QueryRow(ctx, `
 		UPDATE endpoint_webhooks
-		SET signing_secret = CASE WHEN trust_mode = 'signed' THEN NULLIF($3, '') ELSE NULL END,
-			ingest_token = $4, rotated_at = now()
+		SET signing_secret = CASE WHEN trust_mode = 'signed' AND secret_origin <> 'provider'
+				THEN NULLIF($3, '') ELSE signing_secret END,
+			ingest_token = $4, rotated_at = now(),
+			secret_supplied = false,
+			secret_set_at = CASE WHEN trust_mode = 'signed' AND secret_origin <> 'provider'
+				THEN now() ELSE secret_set_at END
 		WHERE id = $1 AND endpoint_id = $2
-		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors`,
+		RETURNING `+webhookRowColumns+`, signing_secret`,
 		id, endpointID, storedSecret, newIngestToken,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
+	).Scan(append(w.scanTargets(), &stored)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, ErrNotFound
 	}
 	if err != nil {
 		return Webhook{}, fmt.Errorf("store: rotate webhook: %w", err)
 	}
-	// Rotate mints a secret for every webhook but the CASE above stores one only for a signed
-	// webhook, so the trust mode comes from the row we just wrote, not from the caller.
-	s.warnPlaintextSigningSecret(w.TrustMode, newSecret, w.ID, w.EndpointID)
+	// The fingerprint describes what the row holds now, which is not necessarily what rotate was asked
+	// to store: a provider-origin row keeps the producer's secret and ignores the minted one, so
+	// hashing the minted value here would report a secret that is not in the row.
+	s.secretStateFromStored(&w, stored)
+	// Rotate mints a secret for every webhook but the CASE above stores one only for a signed webhook
+	// switchboard mints for, so the trust mode comes from the row we just wrote, not from the caller.
+	if w.SecretOrigin != sourcekind.OriginProvider {
+		s.warnPlaintextSigningSecret(w.TrustMode, newSecret, w.ID, w.EndpointID)
+	}
 	return w, nil
+}
+
+// secretStateFromStored fills SecretSet and SecretFingerprint from the value a row actually holds. A
+// stored secret that no longer decrypts (the at-rest key changed under it) still counts as set, with an
+// empty fingerprint, rather than failing the whole read: the state is the part a caller can act on.
+func (s *Store) secretStateFromStored(w *Webhook, stored *string) {
+	w.SecretFingerprint = ""
+	w.SecretSet = stored != nil
+	if stored == nil {
+		return
+	}
+	plaintext, err := s.openSecret(*stored)
+	if err == nil {
+		w.SecretFingerprint = SecretFingerprint(plaintext)
+	} else if s.log != nil {
+		s.log.Warn("webhook secret unreadable for fingerprint", "webhook", w.ID,
+			"reason", "the stored secret does not decrypt with the configured key")
+	}
 }
 
 // SetWebhookTrustedActors replaces the trust list of a webhook the given endpoint owns. The
@@ -313,9 +491,9 @@ func (s *Store) SetWebhookTrustedActors(ctx context.Context, id, endpointID stri
 	err := s.pool.QueryRow(ctx, `
 		UPDATE endpoint_webhooks SET trusted_actors = $3::jsonb
 		WHERE id = $1 AND endpoint_id = $2
-		RETURNING id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors`,
+		RETURNING `+webhookRowColumns,
 		id, endpointID, trustedActors,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
+	).Scan(w.scanTargets()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, ErrNotFound
 	}
@@ -333,9 +511,9 @@ func (s *Store) WebhookForEndpoint(ctx context.Context, id, endpointID string) (
 	}
 	var w Webhook
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, endpoint_id::text, source_type, target_queue, trust_mode, ingest_token, created_at, rotated_at, trusted_actors
-		FROM endpoint_webhooks WHERE id = $1 AND endpoint_id = $2`, id, endpointID,
-	).Scan(&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode, &w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors)
+		SELECT `+webhookRowColumns+`
+		FROM endpoint_webhooks w WHERE id = $1 AND endpoint_id = $2`, id, endpointID,
+	).Scan(w.scanTargets()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Webhook{}, ErrNotFound
 	}
