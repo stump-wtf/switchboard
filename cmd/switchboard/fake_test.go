@@ -171,7 +171,7 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 			doc := map[string]any{
 				"agent_name": in["name"], "slug": slug,
 				"mcp_url": base + "/mcp/" + slug, "token": "sbk_" + strings.Repeat("x", 40),
-				"queue": in["queue"], "verbs": []string{"list_todos", "claim", "complete"},
+				"queue": in["queue"], "verbs": echoedVerbs(in["verbs"]),
 				"webhook": map[string]any{"webhook_id": "wh-1", "ingest_url": base + "/webhooks/w/deadbeef", "trust_mode": "token"},
 				"mcp_json": map[string]any{"mcpServers": map[string]any{"switchboard": map[string]any{
 					"type": "http", "url": base + "/mcp/" + slug,
@@ -269,6 +269,24 @@ func writeJSONResponse(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// echoedVerbs answers the vend response's grant with whatever the request named, so a test can see
+// what the CLI asked the server to grant. A request naming no verbs gets the three-verb sample this
+// fixture has always answered with — the narrow default lives in the server, not in this fake, so
+// omitting the field and echoing a default here would let the CLI's own defaulting go untested.
+func echoedVerbs(named any) []string {
+	list, _ := named.([]any)
+	if len(list) == 0 {
+		return []string{"list_todos", "claim", "complete"}
+	}
+	verbs := make([]string, 0, len(list))
+	for _, entry := range list {
+		if verb, ok := entry.(string); ok {
+			verbs = append(verbs, verb)
+		}
+	}
+	return verbs
 }
 
 // serveWebhooks answers the human API's webhook routes the way the real handlers do: the rules

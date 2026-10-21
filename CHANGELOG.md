@@ -15,6 +15,15 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Verb-scoped endpoint vend.** `switchboard endpoint vend` takes `--verbs`, accepting verb names
+  and/or the presets `todo` (the eight todo verbs), `webhook-admin` (the webhook, routing, rule,
+  trusted-actor and event verbs) and `all`, plus `--allow-webhook-admin` as the one-flag opt-in for a
+  lane that administers its own webhooks; an unknown name is refused before the deployment mints
+  anything, so a typo cannot leave behind a quieter credential than you asked for. `endpoint list`
+  gained a VERBS column — a verb count with the administration verbs called out (`29 (19
+  webhook-admin)`), or the names under `-v` — so auditing which lanes can rewrite routing is one
+  command. Proposed as ADR-0047. (#589)
+
 - **A todo interrupted on a client no longer parks forever when its holder dies.** A row in
   `input-required`/`auth-required` keeps its owner and lease on purpose so the same worker can resume it,
   which also made it invisible to the lease reaper and unclaimable — so a holder that crashed mid-wait
@@ -100,6 +109,19 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   the pages an agent needs to connect (connect, security model, self-hosting, operator
   CLI, routing), and the connect page gains a **Paste this to your agent** block that
   points the agent at it. (#340)
+
+### Changed
+
+- **`endpoint vend` defaults to a worker's verbs, not every verb.** A vend that names no verbs now
+  grants the eight todo verbs plus the two that read and set that endpoint's own default lease, and
+  nothing else. It used to grant all 29, including the ability to rotate or delete webhooks, rewrite
+  the routing rules every lane depends on, and replay events — so a lane credential that leaked, or a
+  lane agent that was prompt-injected, could reach the whole routing setup. This is the one behavior
+  change to expect when upgrading a script: a `switchboard endpoint vend router --queue q` that was
+  counting on webhook administration now needs `--allow-webhook-admin`, or `--verbs` naming exactly
+  what that lane needs. The ingestion webhook the command mints is unchanged, so a narrowed lane still
+  receives deliveries and its queue still drains. The web wizard and quick vend are unchanged: a human
+  ticking verbs there has already made the choice. Proposed as ADR-0047. (#589)
 
 ### Fixed
 

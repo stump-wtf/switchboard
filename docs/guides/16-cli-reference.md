@@ -110,10 +110,14 @@ Print the build version. No flags.
 ### `switchboard endpoint list`
 
 List the vended endpoints you own. Credentials are never shown: a token is revealed exactly once,
-at vend time. The LEASE column is each endpoint's default claim lease, or the server default.
+at vend time. The LEASE column is each endpoint's default claim lease, or the server default. The
+VERBS column is each endpoint's grant: a verb count, with the webhook-admin verbs called out — `29
+(19 webhook-admin)` — so an operator can see at a glance which lanes hold credentials that can rewrite
+routing.
 
 | Flag | Meaning |
 |---|---|
+| `-v` (long `--verbose`) | Print each endpoint's verbs by name instead of counting them. |
 | `--json` | Print the raw API response. |
 
 ### `switchboard endpoint vend NAME`
@@ -122,9 +126,16 @@ Register an agent and vend its scoped MCP endpoint, its queue, and a token-trust
 in one call. The credential is printed **once** — store it now (see
 [Store the credential without printing it](/guides/vend-an-endpoint#store-the-credential-without-printing-it)).
 
+With no verb flags the endpoint is granted the eight todo verbs plus its own two default-lease verbs,
+and nothing else: that is what a worker lane does, and a leaked or injected lane credential should not
+be able to rotate a webhook, rewrite routing or replay an event (ADR-0047). The ingestion webhook the
+call mints still feeds the queue whatever the grant is.
+
 | Flag | Meaning |
 |---|---|
 | `--queue` (short `-q`) | The queue the endpoint drains and the webhook feeds. Default `inbox`. |
+| `--verbs` | The verbs to grant: verb names and/or the presets `todo` (the eight todo verbs), `webhook-admin` (webhook lifecycle, routing, rules, trusted actors, event history) and `all` (every default-grantable verb). Comma-separated, case-insensitive. A name that is neither a verb nor a preset is refused before anything is minted. Notify-hook verbs belong to no preset: name them. Default: the todo verbs plus `get_default_lease`, `set_default_lease`. |
+| `--allow-webhook-admin` | Add the `webhook-admin` preset to the grant. The explicit opt-in for a lane that administers its own webhooks; the reveal then prints how many verbs are administration. |
 | `--lease-ttl` | The endpoint's default claim lease: a duration (`45m`, `1h`) or whole seconds, 60 to 86400. What a claim or heartbeat without `lease_ttl_seconds` gets. Default: the server's 300 seconds. |
 | `--json` | Print the raw API response. |
 

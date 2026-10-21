@@ -366,8 +366,8 @@ The `switchboard` binary MUST provide a command for every `/api/v1` route, group
 
 | Command | Route |
 | --- | --- |
-| `endpoint vend NAME [--lease-ttl DUR]` | `POST /endpoints` |
-| `endpoint list` (with a LEASE column) | `GET /endpoints` |
+| `endpoint vend NAME [--queue Q] [--verbs SPEC\|todo\|webhook-admin\|all] [--allow-webhook-admin] [--lease-ttl DUR]` | `POST /endpoints` |
+| `endpoint list` (with LEASE and VERBS columns; `-v` names the verbs) | `GET /endpoints` |
 | `endpoint edit REF --lease-ttl DUR\|default` | `PATCH /endpoints/{ref}` |
 | `webhook list [--endpoint REF]` | `GET /webhooks`, or `GET /endpoints/{ref}/webhooks` |
 | `webhook create REF --source TYPE --queue Q` | `POST /endpoints/{ref}/webhooks` |

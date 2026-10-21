@@ -160,6 +160,11 @@ type vendEndpointIn struct {
 	// names none). Optional; each must pass the SSRF guard. Governing: SPEC-0033 REQ "Owned Replay
 	// Targets".
 	ReplayTargets []string `json:"replay_targets,omitempty"`
+	// Verbs is the endpoint's MCP verb grant: verb names and/or preset names (todo, webhook-admin,
+	// all), expanded and de-duplicated server-side. Absent or empty vends the narrow default — the
+	// eight todo verbs — so a scripted vend no longer hands a worker lane the webhook-admin surface.
+	// Unknown names are refused before anything is minted. Governing: ADR-0047.
+	Verbs []string `json:"verbs,omitempty"`
 	// DefaultLeaseTTLSeconds is the endpoint's default claim lease, 60 to 86400 seconds. Absent or
 	// null vends with the server default (300). Out of range is refused before anything is minted.
 	// Governing: ADR-0043, SPEC-0007 REQ "Endpoint Default Lease".
@@ -275,10 +280,15 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The basics scope: mcp.AllVerbs() — the full todo-drain surface (the core scope an endpoint
-	// exists to carry) plus webhook self-management and the event history — so the vended loop
-	// needs no second call. Governing: SPEC-0006 REQ "Todo Drain Verbs".
-	verbs := mcp.AllVerbs()
+	// The verb grant: what the spec names, or the narrow default when it names nothing (ADR-0047), so
+	// an operator POSTing just a name gets a working todo-drain endpoint and nothing more. A name that
+	// is neither a verb nor a preset is refused here, BEFORE anything is minted, in SPEC-0035's error
+	// shape — a typo that silently granted less than the operator meant is the failure mode to avoid.
+	verbs, err := mcp.VendVerbGrant(in.Verbs)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_argument", "verbs: "+err.Error(), nil)
+		return
+	}
 
 	token, hash, prefix, err := cred.Mint()
 	if err != nil {
