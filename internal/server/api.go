@@ -135,6 +135,7 @@ func (a *apiHandler) Routes() chi.Router {
 		r.Post("/endpoints", a.VendEndpoint)
 		r.Get("/endpoints", a.ListEndpoints)
 		r.Post("/endpoints/{ref}/revoke", a.RevokeEndpoint)
+		r.Get("/endpoints/{ref}/scope/widenings", a.ListEndpointScopeWidenings)
 		r.Post("/endpoints/{ref}/todos", a.PushTodo)
 		r.Get("/agents", a.ListAgents)
 	})
@@ -143,6 +144,9 @@ func (a *apiHandler) Routes() chi.Router {
 	r.Group(func(r chi.Router) {
 		r.Use(maxBytes(64<<10), a.perHuman(a.writeRL))
 		r.Patch("/endpoints/{ref}", a.EditEndpoint)
+		// A widen changes an endpoint's grant, so it shares the edit route's write bucket.
+		// Governing: ADR-0048 (proposed).
+		r.Post("/endpoints/{ref}/scope/widen", a.WidenEndpointScope)
 	})
 	a.webhookRoutes(r)
 	return r

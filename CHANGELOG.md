@@ -15,6 +15,18 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Add-only endpoint scope widening.** Giving an existing lane one more route no longer costs a re-vend.
+  `switchboard endpoint scope widen SLUG --add-queue merge` (or `--add-source-type`, `--add-verb`,
+  `--webhook-max`) adds to an endpoint's grant instead of replacing it, and
+  `switchboard endpoint scope add-queue SLUG QUEUE` is that command with one flag. It prints the old and
+  the new grant and asks before writing; the endpoint's credential is untouched, so the ingest URL and
+  signing secret the producer already points at keep working — which was the whole problem, since a
+  webhook belongs to the endpoint that created it. The command cannot remove anything: arrays are unioned,
+  a `--webhook-max` below the current ceiling is refused rather than clamped, and any key that would
+  replace a list is rejected before it is read. Every field that moves is recorded with the value it
+  replaced, in the same transaction as the change, and `GET /api/v1/endpoints/{ref}/scope/widenings` reads
+  that trail back. Narrowing a grant is still a revoke and a re-vend. Proposed as ADR-0048. (#590)
+
 - **Verb-scoped endpoint vend.** `switchboard endpoint vend` takes `--verbs`, accepting verb names
   and/or the presets `todo` (the eight todo verbs), `webhook-admin` (the webhook, routing, rule,
   trusted-actor and event verbs) and `all`, plus `--allow-webhook-admin` as the one-flag opt-in for a

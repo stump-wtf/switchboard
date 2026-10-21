@@ -36,6 +36,9 @@ but are no longer advertised.
 | `switchboard endpoint list` | List the vended endpoints you own. |
 | `switchboard endpoint vend NAME` | Register an agent and vend its endpoint in one call. |
 | `switchboard endpoint edit SLUG\|ID` | Change an endpoint's default claim lease (`--lease-ttl DUR\|default`). |
+| `switchboard endpoint scope widen SLUG\|ID` | Add to an endpoint's scope — a queue, an ingest source type, a verb, a bigger webhook ceiling — without re-vending it. |
+| `switchboard endpoint scope add-queue SLUG\|ID QUEUE` | Give an endpoint one more ingest queue. |
+| `switchboard endpoint scope history SLUG\|ID` | Print the scope widenings an endpoint has had, newest first. |
 | `switchboard endpoint revoke SLUG\|ID` | Kill an endpoint; its credential stops working immediately. |
 | `switchboard agent list` | List your registered agents. |
 | `switchboard todo push ENDPOINT TITLE` | Mint a todo on an endpoint you own and ring its doorbell. |
@@ -148,6 +151,52 @@ no `lease_ttl_seconds` get it; leases already granted keep their expiry. Names b
 | Flag | Meaning |
 |---|---|
 | `--lease-ttl` | Required. A duration (`45m`, `1h`) or whole seconds, 60 to 86400; `default` resets it to the server default. The deployment refuses a value out of range. |
+| `--json` | Print the raw API response. |
+
+### `switchboard endpoint scope widen SLUG|ID`
+
+Add to an endpoint's scope without re-vending it (ADR-0048). Use it when a lane that already works needs
+one more ingest queue, one more source type, one more verb, or room for more webhooks: re-vending would
+mint a new endpoint with a new ingest URL and signing secret, and the producer's hook configuration would
+have to be edited to match, for a change that breaks nothing.
+
+The call shows you the diff first and asks. What it prints is the old value and the new value of every
+field it would move; nothing is written until you answer `y`, pass `--yes`, or the API call itself passes
+`confirm: true`. Naming a value the endpoint already has is fine — it succeeds, changes nothing, and
+writes nothing to the audit trail.
+
+This command can only **add**. A removal has no spelling here on purpose: dropping a queue or a verb can
+break a route that works today, so that stays a revoke and a re-vend. A `--webhook-max` lower than the
+endpoint's current ceiling is refused rather than clamped. An endpoint's `scope_queues` — the queues it
+may *claim* — are not reachable from here either: that changes which work the lane can take.
+
+| Flag | Meaning |
+|---|---|
+| `--add-queue` | Queue names to add to the endpoint's allowed ingest `webhook_queues`. Comma-separated. The routing grant is a union computed on read, so the next delivery on the new queue is honored without a restart. |
+| `--add-source-type` | Ingest source types to add (`github`, …), validated against the server's set. |
+| `--add-verb` | MCP verbs to add, resolved by the same resolver `endpoint vend --verbs` uses, so a widen cannot name a verb the vend path would refuse. |
+| `--webhook-max` | A webhook ceiling **above** the endpoint's current one. A decrease is refused. |
+| `--yes` | Apply without asking, after showing the change (for scripts). |
+| `--json` | Print the raw API response — the preview, and then the applied result. |
+
+The endpoint's credential is never touched: the token revealed at vend keeps working, which is the whole
+point of widening instead of re-vending.
+
+### `switchboard endpoint scope add-queue SLUG|ID QUEUE`
+
+The one-flag form of the command above, for the case that prompted it: a delivery arrives on a queue the
+endpoint is not granted, and the fix is to grant it. Same preview, same prompt, `--yes` and `--json`
+work the same way.
+
+### `switchboard endpoint scope history SLUG|ID`
+
+Print what was added to an endpoint after it was vended, newest first: the field, the value it replaced,
+the value it became, and when. A widen that changed nothing is not recorded, so this reads as a list of
+changes rather than a list of calls — and an endpoint with no rows here still has exactly the scope it
+was vended with.
+
+| Flag | Meaning |
+|---|---|
 | `--json` | Print the raw API response. |
 
 ### `switchboard endpoint revoke SLUG|ID`

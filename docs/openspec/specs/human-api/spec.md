@@ -369,7 +369,9 @@ The `switchboard` binary MUST provide a command for every `/api/v1` route, group
 | `endpoint vend NAME [--queue Q] [--verbs SPEC\|todo\|webhook-admin\|all] [--allow-webhook-admin] [--lease-ttl DUR]` | `POST /endpoints` |
 | `endpoint list` (with LEASE and VERBS columns; `-v` names the verbs) | `GET /endpoints` |
 | `endpoint edit REF --lease-ttl DUR\|default` | `PATCH /endpoints/{ref}` |
-| `webhook list [--endpoint REF]` | `GET /webhooks`, or `GET /endpoints/{ref}/webhooks` |
+| `endpoint scope widen REF [--add-queue A,B] [--add-source-type T] [--add-verb V] [--webhook-max N] [--yes]` | `POST /endpoints/{ref}/scope/widen` |
+| `endpoint scope add-queue REF QUEUE` | `POST /endpoints/{ref}/scope/widen` (the one-flag shape) |
+| `endpoint scope history REF` | `GET /endpoints/{ref}/scope/widenings` || `webhook list [--endpoint REF]` | `GET /webhooks`, or `GET /endpoints/{ref}/webhooks` |
 | `webhook create REF --source TYPE --queue Q` | `POST /endpoints/{ref}/webhooks` |
 | `webhook rotate WEBHOOK` | `POST /webhooks/{id}/rotate` |
 | `webhook delete WEBHOOK` | `DELETE /webhooks/{id}` |

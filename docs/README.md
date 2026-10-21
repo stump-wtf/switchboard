@@ -71,6 +71,7 @@ Two layers:
 | [ADR-0044](adrs/ADR-0044-todo-lineage-subject-threads-and-tags.md) | **Todo lineage, threads + tags** | Thread keys for every delivery, `produced`/`spawned` links with provenance (never inferred), tags, and the `/graph` view. |
 | [ADR-0045](adrs/ADR-0045-queue-stall-nudge.md) | **Queue-stall nudge (proposed)** | A queue whose pending work nobody claims re-fires its notify-hook wake on a widening, progress-reset backoff, so a one-todo-per-invocation consumer drains without a new inbound webhook. |
 | [ADR-0047](adrs/ADR-0047-verb-scoped-endpoint-vend.md) | **Verb-scoped endpoint vend (proposed)** | `endpoint vend` defaults to the verbs a lane actually uses, `--verbs` names verb lists and presets, `--allow-webhook-admin` is the explicit opt-in, and `endpoint list` reveals what each credential holds. |
+| [ADR-0048](adrs/ADR-0048-add-only-endpoint-scope-widening.md) | **Add-only endpoint scope widening (proposed)** | Adding a lane stops costing a re-vend: a widen route and CLI command that can only union webhook queues, source types and verbs and raise the webhook ceiling — never narrow — with every moved field audited beside the change. |
 
 ### Later records
 

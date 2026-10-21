@@ -123,6 +123,11 @@ func commands() []command {
 			{name: "list", summary: "list the vended endpoints you own", run: cmdEndpoints},
 			{name: "vend", args: "NAME", summary: "register an agent and vend its endpoint in one call", run: cmdVend},
 			{name: "edit", args: "SLUG|ID", summary: "change an endpoint's default claim lease (--lease-ttl DUR|default)", run: cmdEndpointEdit},
+			{name: "scope", args: "<verb>", summary: "widen an endpoint's scope additively, without re-vending", subs: []command{
+				{name: "widen", args: "SLUG|ID", summary: "add allowed webhook queues / source types / verbs, or raise the webhook ceiling (--add-queue Q,...)", run: cmdEndpointScopeWiden},
+				{name: "add-queue", args: "SLUG|ID QUEUE", summary: "let this endpoint's webhooks route to one more queue", run: cmdEndpointScopeAddQueue},
+				{name: "history", args: "SLUG|ID", summary: "print the scope widenings recorded for an endpoint, newest first", run: cmdEndpointScopeHistory},
+			}},
 			{name: "revoke", args: "SLUG|ID", summary: "kill an endpoint: its credential stops working immediately", run: cmdEndpointRevoke},
 		}},
 		{name: "agent", args: "<verb>", summary: "manage registered agents", subs: []command{
