@@ -286,6 +286,10 @@ type routerDeps struct {
 	// rulesRouter overrides the evaluator the human API's rule routes use (tests install
 	// routing.InProcess); nil shares the MCP handler's sandbox. See apiRulesRouter.
 	rulesRouter routing.Router
+	// writeRL overrides the operator API's per-human write limiter; a DB suite installing a
+	// deterministic clock on it can assert 429s without racing bucket refill against runner speed
+	// (issue #598). nil keeps the production default.
+	writeRL *rateLimiter
 }
 
 // newRouter builds the full switchboard route table. Route grouping is the security baseline:
@@ -407,6 +411,9 @@ func newRouter(d routerDeps) chi.Router {
 	api := newAPIHandler(d.st, d.cfg.BaseURL, d.log, apiRevokeHook(d))
 	api.rules.Router = apiRulesRouter(d)
 	api.endpointLeaseChanged = apiLeaseHook(d)
+	if d.writeRL != nil {
+		api.writeRL = d.writeRL
+	}
 	r.Mount("/api/v1", api.Routes())
 
 	// Native A2A task RPC surface (ADR-0021; SPEC-0018) mounted per vended endpoint at
