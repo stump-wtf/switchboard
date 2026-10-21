@@ -188,9 +188,16 @@ func (s *Store) ListQueuePauses(ctx context.Context) ([]QueuePause, error) {
 // oldestPendingInQueue picks the row to name a resume wake. The wake carries only a todo id (the
 // consumer pulls), so one representative per queue is the whole signal — the backlog itself is the
 // queue, and the doorbell half of the resume re-rings up to nudgeBatch pending rows per instance.
+// The pick applies the SPEC-0011 sender gate, the same one every other ready-wake path applies
+// (creation, the requeues, the reaper's ready pass, the stall sweep): a row whose delivery never
+// passed per-source verification — and a row with no delivery at all — is never named.
 func (s *Store) oldestPendingInQueue(ctx context.Context, queue string) (Todo, bool) {
-	row := s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos
-		WHERE queue = $1 AND state = 'pending' ORDER BY created_at LIMIT 1`, queue)
+	row := s.pool.QueryRow(ctx, `SELECT `+todoCols+` FROM todos t
+		WHERE t.queue = $1 AND t.state = 'pending'
+		  AND t.event_id IS NOT NULL
+		  AND EXISTS (SELECT 1 FROM events ev
+		               WHERE ev.id = t.event_id AND (ev.verified OR ev.trust_mode = 'token'))
+		ORDER BY t.created_at LIMIT 1`, queue)
 	t, err := scanTodo(row)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) && s.log != nil {

@@ -111,6 +111,59 @@ func TestResumeRingsTheBacklogOnce(t *testing.T) {
 	}
 }
 
+// The resume wake names only rows that pass the SPEC-0011 sender gate, the same rule every other
+// ready-wake path applies: a queue whose oldest pending row is an unverified sender's todo wakes
+// with the gated row behind it, and a queue whose whole backlog is unverified resumes quietly —
+// the pause lifts and the backlog stays claimable, the wake just names nothing.
+func TestResumeWakeNamesOnlyGatePassingRows(t *testing.T) {
+	s, ctx := hookStore(t)
+	ep := seedEndpoint(t, s, ctx, "pause-gate", "inbox")
+	rec := &readyRecorder{}
+	s.SetTodoReadyHook(rec.hook)
+	defer s.SetTodoReadyHook(nil)
+
+	if err := s.PauseQueue(ctx, "inbox", "", ""); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	unverified := createEventTodo(t, s, ctx, ep, "pg-1", false, "signed")
+	gated := createEventTodo(t, s, ctx, ep, "pg-2", true, "signed")
+	if fires := rec.take(); len(fires) != 0 {
+		t.Fatalf("paused creates fired the ready hook: %v", fires)
+	}
+
+	resumed, err := s.ResumeQueue(ctx, "inbox")
+	if err != nil || !resumed {
+		t.Fatalf("resume = (%v, %v), want true", resumed, err)
+	}
+	if fires := rec.take(); len(fires) != 1 || fires[0] != gated.ID+":resumed:0" {
+		t.Fatalf("resume wakes = %v, want one wake naming the gated todo, not the unverified one", fires)
+	}
+
+	// Drain the gated row, re-pause, and resume into a backlog of unverified rows only.
+	if _, err := s.ClaimNext(ctx, ep, []string{"inbox"}, "w", time.Minute); err != nil {
+		t.Fatalf("claim after resume: %v", err)
+	}
+	if _, err := s.CompleteTodo(ctx, ep, gated.ID, "w", nil); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if err := s.PauseQueue(ctx, "inbox", "", ""); err != nil {
+		t.Fatalf("re-pause: %v", err)
+	}
+	resumed, err = s.ResumeQueue(ctx, "inbox")
+	if err != nil || !resumed {
+		t.Fatalf("second resume = (%v, %v), want true", resumed, err)
+	}
+	if fires := rec.take(); len(fires) != 0 {
+		t.Fatalf("resume with only unverified backlog fired wakes: %v", fires)
+	}
+
+	// The gate silences the wake, not the work: the unverified row is still claimable.
+	taken, err := s.ClaimNext(ctx, ep, []string{"inbox"}, "w", time.Minute)
+	if err != nil || taken.ID != unverified.ID {
+		t.Fatalf("claim of the unverified backlog = (%v, %v), want it claimable", taken.ID, err)
+	}
+}
+
 func TestPauseSilencesTheStallSweepAndResumeRestoresIt(t *testing.T) {
 	s, ctx := hookStore(t)
 	ep := stallStore(t, s, ctx, "pause-stall", "inbox")
