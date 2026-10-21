@@ -245,9 +245,13 @@ func (h *Handler) Todos(w http.ResponseWriter, r *http.Request) {
 			// Suppressed to a log so the view still renders (degraded pill counts); a reload recovers.
 			h.log.Warn("todos counts", "err", err)
 		}
-		items, err := h.store.ListTodoItems(r.Context(), human.ID, filterState(filter), query, todoListCap)
+		// One read per view: the dead chip has no state filter, so running the state-filtered
+		// listing first would fetch and discard up to a whole page of rows on every Dead view.
+		var items []store.TodoItem
 		if filter == "dead" {
 			items, err = h.store.ListDeadLetters(r.Context(), human.ID, query, todoListCap)
+		} else {
+			items, err = h.store.ListTodoItems(r.Context(), human.ID, filterState(filter), query, todoListCap)
 		}
 		if err != nil {
 			h.log.Warn("todos list", "err", err)
