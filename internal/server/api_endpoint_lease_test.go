@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stump-wtf/switchboard/internal/lease"
 )
@@ -199,23 +200,31 @@ func TestAPIPatchEndpointReachAndRevoked(t *testing.T) {
 }
 
 // TestAPIPatchEndpointIsRateLimitedPerHuman: the route draws from the per-human write bucket and
-// answers 429 with Retry-After in the API's error shape once it is spent.
+// answers 429 with Retry-After in the API's error shape once it is spent. A frozen limiter clock
+// makes the burst deterministic: exactly the 20-token burst passes and every later PATCH is a 429
+// by bucket arithmetic alone, whatever the runner speed (issue #598).
 func TestAPIPatchEndpointIsRateLimitedPerHuman(t *testing.T) {
-	r, st, ctx := newDBRouter(t)
+	const burst = 20
+	frozen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rl := newRateLimiter(5, burst)
+	rl.SetClock(func() time.Time { return frozen })
+	r, st, ctx := newDBRouterWriteRL(t, rl)
 	owner, _ := mintSession(t, st, ctx, "test|lease-rl", "Owner", "o@example.com")
 	bearer := mintOperatorBearer(t, st, ctx, owner.ID, "cid-lease-rl")
 	ep := consentFixture(t, st, ctx, owner.ID, "limited", "limited-ab12cd34", "cid-lease-rl-fx")
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 2*burst; i++ {
 		rec := apiCall(t, r, http.MethodPatch, "/api/v1/endpoints/"+ep.Slug, bearer, `{"default_lease_ttl_seconds":600}`)
-		if rec.Code == http.StatusTooManyRequests {
-			if rec.Header().Get("Retry-After") == "" || decodeLeaseRow(t, rec.Body.Bytes()).Code != "rate_limited" {
-				t.Fatalf("429 without Retry-After or the rate_limited code: %v %s", rec.Header(), rec.Body.String())
+		if i < burst {
+			if rec.Code != http.StatusOK {
+				t.Fatalf("PATCH %d before the burst is spent: %d %s", i, rec.Code, rec.Body.String())
 			}
-			return
+			continue
 		}
-		if rec.Code != http.StatusOK {
-			t.Fatalf("PATCH %d: %d %s", i, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("PATCH %d after the burst is spent: %d, want 429: %s", i, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Retry-After") == "" || decodeLeaseRow(t, rec.Body.Bytes()).Code != "rate_limited" {
+			t.Fatalf("429 without Retry-After or the rate_limited code: %v %s", rec.Header(), rec.Body.String())
 		}
 	}
-	t.Fatal("40 PATCHes in a burst were never rate limited")
 }

@@ -67,6 +67,21 @@ func newDBRouterWithIngest(t *testing.T) (chi.Router, *store.Store, context.Cont
 
 // newDBRouterFull is newDBRouter returning every seam the variants above hand out.
 func newDBRouterFull(t *testing.T) (chi.Router, *store.Store, context.Context, *web.Handler, *ingest.Ingest) {
+	return newDBRouterFullDeps(t, nil)
+}
+
+// newDBRouterWriteRL is newDBRouter with the given per-human write limiter installed on the
+// operator API: a suite that freezes its clock asserts 429s by bucket arithmetic alone, never
+// racing the refill against runner speed (issue #598).
+func newDBRouterWriteRL(t *testing.T, writeRL *rateLimiter) (chi.Router, *store.Store, context.Context) {
+	t.Helper()
+	r, st, ctx, _, _ := newDBRouterFullDeps(t, func(d *routerDeps) { d.writeRL = writeRL })
+	return r, st, ctx
+}
+
+// newDBRouterFullDeps is newDBRouterFull with one more seam: before newRouter runs, mutate may
+// override a dep (a deterministic clock on the write limiter); nil keeps every production default.
+func newDBRouterFullDeps(t *testing.T, mutate func(*routerDeps)) (chi.Router, *store.Store, context.Context, *web.Handler, *ingest.Ingest) {
 	t.Helper()
 	dsn := os.Getenv("SWITCHBOARD_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -119,7 +134,7 @@ func newDBRouterFull(t *testing.T) (chi.Router, *store.Store, context.Context, *
 	webh.SetPersonasEnabled(true)
 	hub := ingest.NewHub()
 	ing := ingest.New(st, hub, log, ingest.Config{})
-	r := newRouter(routerDeps{
+	d := routerDeps{
 		cfg:   cfg,
 		st:    st,
 		authr: authr,
@@ -133,7 +148,11 @@ func newDBRouterFull(t *testing.T) (chi.Router, *store.Store, context.Context, *
 		// The human API's rule routes dry-run candidates; in-process evaluation keeps these suites
 		// free of the sandbox's child processes (the MCP suites cover the sandbox itself).
 		rulesRouter: routing.InProcess{},
-	})
+	}
+	if mutate != nil {
+		mutate(&d)
+	}
+	r := newRouter(d)
 	return r, st, ctx, webh, ing
 }
 
