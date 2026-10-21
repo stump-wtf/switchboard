@@ -19,6 +19,9 @@ type rateLimiter struct {
 	rate    float64 // tokens refilled per second
 	burst   float64 // bucket capacity
 	last    time.Time
+	// now is the limiter's clock, default time.Now. A test swaps it for a frozen or stepped
+	// function so bucket refill no longer races runner speed.
+	now func() time.Time
 }
 
 type bucket struct {
@@ -28,7 +31,24 @@ type bucket struct {
 
 // newRateLimiter builds a limiter allowing `burst` requests immediately and refilling at `rps`/sec.
 func newRateLimiter(rps, burst float64) *rateLimiter {
-	return &rateLimiter{buckets: map[string]*bucket{}, rate: rps, burst: burst}
+	return &rateLimiter{buckets: map[string]*bucket{}, rate: rps, burst: burst, now: time.Now}
+}
+
+// SetClock swaps the limiter's clock (production stays on time.Now). A suite installing a frozen
+// clock decides a burst by bucket arithmetic alone, deterministically.
+func (rl *rateLimiter) SetClock(now func() time.Time) {
+	rl.mu.Lock()
+	rl.now = now
+	rl.mu.Unlock()
+}
+
+// clock returns the limiter's time, with the SetClock swap atomic. The function is read under the
+// lock and called outside it, so a slow or locking clock can never hold the bucket mutex.
+func (rl *rateLimiter) clock() time.Time {
+	rl.mu.Lock()
+	now := rl.now
+	rl.mu.Unlock()
+	return now()
 }
 
 // allow reports whether a request from key may proceed, consuming one token when it does. The clock
@@ -57,7 +77,7 @@ func (rl *rateLimiter) allowAt(key string, now time.Time) bool {
 	return false
 }
 
-func (rl *rateLimiter) allow(key string) bool { return rl.allowAt(key, time.Now()) }
+func (rl *rateLimiter) allow(key string) bool { return rl.allowAt(key, rl.clock()) }
 
 // prune evicts buckets idle for more than a minute, at most once per minute, so the map can't grow
 // unboundedly with unique client IPs. Caller holds rl.mu.
