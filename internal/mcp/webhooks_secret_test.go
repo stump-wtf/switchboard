@@ -137,13 +137,17 @@ func TestSuppliedSecretRefusedForTokenSources(t *testing.T) {
 
 // TestStripeSuppliedSecretIsFormatChecked is REQ-3's scenario "Malformed Stripe secret": the field is
 // named, the value is not, and nothing is written.
+//
+// @joestump-agent 10/21/2026 - Reworded the malformed fixture so it stops matching gitleaks'
+// stripe-access-token rule: the old sk_test_ shape was never a real credential, but it red the CI
+// gate on this PR.
 func TestStripeSuppliedSecretIsFormatChecked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	f := newFakeStore()
 	cs, _ := secretSession(t, ctx, f, strings.Fields(allWebhookVerbs), secretCeilingTypes)
 
-	const bad = "sk_test_NotAStripeSigningSecret"
+	const bad = "not-a-stripe-signing-secret"
 	msg := callErr(t, ctx, cs, "create_webhook", map[string]any{
 		"source_type": "stripe", "target_queue": "reviews", "signing_secret": bad,
 	}, "invalid_argument")
