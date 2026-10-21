@@ -5,7 +5,7 @@ package server
 // These tests pin the contract the `switchboard queue` verbs depend on: the pause is visible in the
 // listing with its reason, it suppresses claims through the store, resume reports whether it lifted
 // anything, and the quarantine queue — already never delivered — refuses a pause. Skipped without
-// SWITCHBOARD_TEST_DATABASE_URL. Governing: ADR-0047 (proposed), SPEC-0035 REQ "Human API Surface".
+// SWITCHBOARD_TEST_DATABASE_URL. Governing: ADR-0048 (proposed), SPEC-0035 REQ "Human API Surface".
 
 import (
 	"context"

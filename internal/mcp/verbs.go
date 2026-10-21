@@ -10,7 +10,11 @@ package mcp
 // Governing: SPEC-0006 REQ "Todo Drain Verbs", REQ "Webhook Self-Management"; SPEC-0005 (event
 // history tools); SPEC-0014 REQ "Agent Tool Surface over MCP".
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+	"strings"
+)
 
 // DrainVerbs returns the SPEC-0006 todo drain surface in display order.
 //
@@ -62,6 +66,15 @@ func EventVerbs() []string {
 	return []string{"list_webhook_events", "get_webhook_event", "replay_webhook_event"}
 }
 
+// WebhookAdminVerbs returns the verbs that change how deliveries reach endpoints, rather than how
+// one endpoint works: the webhook lifecycle, routing, rules and trusted-actor verbs, then the event
+// history including replay. It is the blast-radius set issue #589 describes, the grant a worker lane
+// never needs, and it stays a contiguous slice of AllVerbs so the vend default and the audit view
+// can name it without carrying a copy of the verb list that could drift. Governing: ADR-0047.
+func WebhookAdminVerbs() []string {
+	return append(append([]string{}, WebhookVerbs()...), EventVerbs()...)
+}
+
 // NotifyHookVerbs returns the SPEC-0024 notify-hook surface in display order. These verbs make
 // Switchboard dial tenant-chosen URLs, so they are grantable per endpoint but deliberately NOT part
 // of AllVerbs or any default grant: the grant surfaces list them as their own "outbound HTTP calls"
@@ -78,8 +91,137 @@ func NotifyHookVerbs() []string {
 // families by hand, so the composition cannot drift between them. Governing: SPEC-0006 REQ
 // "Todo Drain Verbs", REQ "Webhook Self-Management"; SPEC-0014 REQ "Agent Tool Surface over MCP".
 func AllVerbs() []string {
-	out := append(append(append([]string{}, DrainVerbs()...), WebhookVerbs()...), EventVerbs()...)
+	out := append(append([]string{}, DrainVerbs()...), WebhookAdminVerbs()...)
 	return append(out, LeaseVerbs()...)
+}
+
+// VendPresets are the named verb groups an operator may name in a vend verb spec instead of listing
+// verbs one at a time. The order here is the order help text and refusal messages list them in.
+var VendPresets = []struct {
+	Name  string
+	Verbs []string
+}{
+	{"todo", DrainVerbs()},
+	{"webhook-admin", WebhookAdminVerbs()},
+	{"all", AllVerbs()},
+}
+
+// DefaultVendVerbs is the grant a vend hands out when its spec names none: the eight todo verbs, plus
+// the endpoint's own default-lease verbs. Narrow-by-default is the posture ADR-0047 proposes, and this
+// is its single source, so the CLI and the API cannot disagree about what "no verbs named" means.
+//
+// The lease verbs belong here because SPEC-0006 requires them in the default grant, and they add
+// nothing a caller could not already ask for on a single call: lease_ttl_seconds carries the same
+// ceiling either way. The webhook, routing, rule, trusted-actor and event verbs are the ones a lane
+// has to ask for by name. Governing: ADR-0047, SPEC-0006 REQ "Endpoint Default Lease Verbs".
+func DefaultVendVerbs() []string {
+	return append(append([]string{}, DrainVerbs()...), LeaseVerbs()...)
+}
+
+// VerbOrder returns every grantable verb in canonical display order, notify-hook verbs last: the
+// order a resolved grant is stored and printed in, whatever order the operator typed them in.
+func VerbOrder() []string {
+	return append(append([]string{}, AllVerbs()...), NotifyHookVerbs()...)
+}
+
+// VendVerbGrant resolves a vend verb spec into the grant to store. A spec that names nothing — absent,
+// empty, or blank entries a script left behind — is the narrow default (DefaultVendVerbs); anything
+// else is expanded by ResolveVerbSpec. Presets resolve here too, so one spec works as a CLI flag and
+// as a scripted POST against the operator API.
+func VendVerbGrant(spec []string) ([]string, error) {
+	named := make([]string, 0, len(spec))
+	for _, entry := range spec {
+		if strings.TrimSpace(entry) != "" {
+			named = append(named, entry)
+		}
+	}
+	if len(named) == 0 {
+		return DefaultVendVerbs(), nil
+	}
+	return ResolveVerbSpec(named)
+}
+
+// ResolveVerbSpec expands entries that are verb names and/or preset names (case-insensitive, commas
+// and spaces allowed between them) into one de-duplicated grant in canonical order. An entry naming
+// neither a verb nor a preset is refused: a mistyped verb would otherwise silently grant less than
+// the operator meant, which is the one failure this surface must not have. A spec that resolves to
+// nothing is refused for the same reason.
+func ResolveVerbSpec(spec []string) ([]string, error) {
+	known := verbSet(VerbOrder())
+	wanted := map[string]bool{}
+	var unknown []string
+	for _, entry := range spec {
+		for _, part := range strings.Split(entry, ",") {
+			name := strings.ToLower(strings.TrimSpace(part))
+			if name == "" {
+				continue
+			}
+			if preset, ok := presetVerbs(name); ok {
+				for _, v := range preset {
+					wanted[v] = true
+				}
+				continue
+			}
+			if !known[name] {
+				unknown = append(unknown, name)
+				continue
+			}
+			wanted[name] = true
+		}
+	}
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf("unknown verb %q: not a verb or a preset (%s)",
+			strings.Join(unknown, ", "), strings.Join(presetNames(), ", "))
+	}
+	grant := make([]string, 0, len(wanted))
+	for _, v := range VerbOrder() {
+		if wanted[v] {
+			grant = append(grant, v)
+		}
+	}
+	if len(grant) == 0 {
+		return nil, fmt.Errorf("the verb spec grants no verbs")
+	}
+	return grant, nil
+}
+
+// WebhookAdminVerbsIn returns the verbs of a grant that belong to the webhook-admin family, in
+// canonical order: what an audit view lists when it flags an endpoint that can rewrite routing.
+func WebhookAdminVerbsIn(grant []string) []string {
+	admin := WebhookAdminVerbs()
+	held := make([]string, 0, len(admin))
+	for _, v := range VerbOrder() {
+		if slices.Contains(admin, v) && slices.ContainsFunc(grant, func(g string) bool {
+			return strings.EqualFold(g, v)
+		}) {
+			held = append(held, v)
+		}
+	}
+	return held
+}
+
+// GrantHasWebhookAdmin reports whether a grant holds any verb from the webhook-admin family, so the
+// vend reveal and the audit view can flag the endpoints that can rewrite routing without printing a
+// verb list. Governing: ADR-0047.
+func GrantHasWebhookAdmin(grant []string) bool {
+	return len(WebhookAdminVerbsIn(grant)) > 0
+}
+
+func presetVerbs(name string) ([]string, bool) {
+	for _, p := range VendPresets {
+		if p.Name == name {
+			return p.Verbs, true
+		}
+	}
+	return nil, false
+}
+
+func presetNames() []string {
+	names := make([]string, 0, len(VendPresets))
+	for _, p := range VendPresets {
+		names = append(names, p.Name)
+	}
+	return names
 }
 
 // verbSet builds the membership map the scope guard consults from an ordered verb list.

@@ -2,7 +2,7 @@ package main
 
 // Queue Verbs
 //
-// `switchboard queue ls|pause|resume` drive the human API's queue routes (ADR-0047) as the logged-in
+// `switchboard queue ls|pause|resume` drive the human API's queue routes (ADR-0048) as the logged-in
 // human, so an operator can quiesce a queue's delivery from a terminal while a downstream consumer
 // drains: inbound webhooks keep landing as pending todos — nothing is dropped or failed — but claim,
 // claim_next, the doorbell and the wake hooks hand out nothing for a paused queue. Resume re-rings
@@ -10,7 +10,7 @@ package main
 //
 // Every verb takes --json, which prints the API response verbatim.
 //
-// Governing: ADR-0047 (proposed), SPEC-0035 REQ "CLI Parity".
+// Governing: ADR-0048 (proposed), SPEC-0035 REQ "CLI Parity".
 //
 // @joestump-agent 10/20/2026 - Added for stump.wtf/switchboard#581.
 

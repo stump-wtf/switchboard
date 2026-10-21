@@ -50,15 +50,20 @@ Every endpoint carries a scope you set at vend time. An agent can never widen it
   so these verbs are never part of any default grant. The wizard and quick vend list them as their
   own "Outbound HTTP calls" group, unticked. `create_notify_hook` returns the Standard Webhooks
   signing secret (`whsec_…`) once. `list_notify_hooks` shows each hook's health, and never a secret
-  or a URL's query string. `switchboard endpoint vend` grants every group except outbound HTTP
-  calls.
+  or a URL's query string. No vend path grants them by default: name them in `--verbs`, or tick them
+  in the wizard.
 
-  The web wizard pre-checks the eight todo verbs. `switchboard endpoint vend` grants all of them.
+  The web wizard pre-checks the eight todo verbs, and so does `switchboard endpoint vend`: with no
+  verb flags it grants those eight, plus the two verbs that read and set the endpoint's own default
+  lease, and nothing else (ADR-0047) — the credential a lane holds should be what the lane does. Ask
+  for more with `--verbs`, naming verbs and/or the presets `todo`, `webhook-admin` and `all`, or add
+  the webhook, routing and event groups with `--allow-webhook-admin`; `endpoint list` shows what each
+  lane ended up holding.
   `list_todos` also grants `get_todo`, so an endpoint vended before `get_todo` existed has it.
   `release` changes state, so no other verb grants it: an older endpoint needs a re-vend to get it.
   The default-lease verbs let the agent read and change its own endpoint's default lease (below).
-  `switchboard endpoint vend` grants them; the wizard leaves them unticked; a friend endpoint can
-  never hold them.
+  `switchboard endpoint vend` grants them, because a claim can already ask for the same lease on the
+  call; the wizard leaves them unticked, and a friend endpoint can never hold them.
 - **A webhook ceiling** — how many webhooks the endpoint may create, which source types (`github`,
   `gitea`, `cairn`, `generic`; `stripe` and `slack` exist but
   [aren't usable yet](/getting-started/first-webhook#1-create-a-webhook)), and which queues those webhooks and their routing

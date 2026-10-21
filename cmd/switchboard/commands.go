@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/stump-wtf/switchboard/internal/lease"
+	"github.com/stump-wtf/switchboard/internal/mcp"
 )
 
 // --- login / logout / status ---
@@ -170,11 +171,26 @@ func leaseText(def *int, effective int) string {
 	return lease.Label(*def)
 }
 
+// verbPresetNames renders the vend presets for help text, straight from the table the server
+// resolves them with, so the CLI cannot advertise a preset that does not exist.
+func verbPresetNames() string {
+	names := make([]string, 0, len(mcp.VendPresets))
+	for _, p := range mcp.VendPresets {
+		names = append(names, p.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
 func cmdVend(c *cli, args []string) int {
 	fs := c.flagSet("endpoint vend", "NAME", "Register an agent and vend its scoped MCP endpoint, its queue, and a token-trust\n"+
-		"ingestion webhook in one call. The credential is printed ONCE — store it now.")
+		"ingestion webhook in one call. The credential is printed ONCE — store it now.\n"+
+		"The verb grant defaults narrow: the eight todo verbs and the endpoint's own lease verbs. See --verbs.")
 	queue := fs.String("queue", "inbox", "the queue the endpoint drains and the webhook feeds")
 	fs.StringVar(queue, "q", "inbox", "shorthand for --queue")
+	verbs := fs.String("verbs", "", "the MCP verbs to grant: verb names and/or presets ("+verbPresetNames()+"), "+
+		"comma-separated; unknown names are refused before anything is minted (default: the todo verbs plus the lease verbs)")
+	webhookAdmin := fs.Bool("allow-webhook-admin", false, "add the webhook, routing, rule, trusted-actor and event verbs to the grant; "+
+		"a worker lane needs none of them, and without this the endpoint cannot administer webhooks")
 	leaseTTL := fs.String("lease-ttl", "", leaseTTLUsage)
 	asJSON := fs.Bool("json", false, "print the raw API response")
 	pos, exit, ok := c.parseArgs(fs, args)
@@ -191,6 +207,23 @@ func cmdVend(c *cli, args []string) int {
 		return c.usageError(fs, "--queue must not be empty")
 	}
 	req := map[string]any{"name": strings.TrimSpace(pos[0]), "queue": strings.TrimSpace(*queue)}
+	// The verb grant: named verbs and/or the admin opt-in, resolved HERE so a mistyped verb stops the
+	// command before the deployment mints an agent, an endpoint and a webhook. With neither, the field
+	// is omitted and the server's narrow default applies — one default, not two (ADR-0047).
+	spec := []string{}
+	if s := strings.TrimSpace(*verbs); s != "" {
+		spec = append(spec, s)
+	}
+	if *webhookAdmin {
+		spec = append(spec, "webhook-admin")
+	}
+	if len(spec) > 0 {
+		grant, err := mcp.VendVerbGrant(spec)
+		if err != nil {
+			return c.usageError(fs, err.Error())
+		}
+		req["verbs"] = grant
+	}
 	if strings.TrimSpace(*leaseTTL) != "" {
 		seconds, err := parseLeaseFlag(*leaseTTL)
 		if err != nil {
@@ -243,6 +276,15 @@ func printVendReveal(w io.Writer, v vendResponse) {
 		fmt.Fprintf(tw, "  Lease\t%s\n", leaseText(v.DefaultLease, v.EffectiveLease))
 	}
 	_ = tw.Flush()
+	// The audit line issue #589 asked for, on the surface where the credential is printed: an
+	// operator vending from a script sees that this token can rewrite routing, not just drain a
+	// queue. The narrow default never trips it. Governing: ADR-0047.
+	if held := mcp.WebhookAdminVerbsIn(v.Verbs); len(held) > 0 {
+		fmt.Fprintf(w, "\nWarning: %d of these %d verbs administer webhooks, routing and event history — they\n"+
+			"can rotate or delete a webhook, rewrite routing rules and replay events. A worker lane needs\n"+
+			"none of them, and the default grant names none of them: ask for what a lane needs with --verbs.\n",
+			len(held), len(v.Verbs))
+	}
 	if len(v.MCPJSON) > 0 {
 		var pretty bytes.Buffer
 		if json.Indent(&pretty, v.MCPJSON, "", "  ") == nil {
@@ -259,6 +301,8 @@ func cmdEndpoints(c *cli, args []string) int {
 	fs := c.flagSet("endpoint list", "", "List the vended endpoints you own. Credentials are never shown: a token is revealed\n"+
 		"exactly once, at vend time.")
 	asJSON := fs.Bool("json", false, "print the raw API response")
+	verbose := fs.Bool("verbose", false, "print the verbs each endpoint holds by name, not just the count")
+	fs.BoolVar(verbose, "v", false, "shorthand for --verbose")
 	if pos, exit, ok := c.parseArgs(fs, args); !ok {
 		return exit
 	} else if len(pos) > 0 {
@@ -281,6 +325,7 @@ func cmdEndpoints(c *cli, args []string) int {
 		State          string     `json:"state"`
 		Queues         []string   `json:"queues"`
 		ExpiresAt      *time.Time `json:"expires_at"`
+		Verbs          []string   `json:"verbs"`
 		DefaultLease   *int       `json:"default_lease_ttl_seconds"`
 		EffectiveLease int        `json:"effective_lease_ttl_seconds"`
 	}
@@ -292,7 +337,7 @@ func cmdEndpoints(c *cli, args []string) int {
 		return exitOK
 	}
 	tw := tabwriter.NewWriter(c.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SLUG\tAGENT\tSTATE\tQUEUES\tEXPIRES\tLEASE")
+	fmt.Fprintln(tw, "SLUG\tAGENT\tSTATE\tQUEUES\tEXPIRES\tLEASE\tVERBS")
 	for _, r := range rows {
 		expires := "never"
 		if r.ExpiresAt != nil {
@@ -303,10 +348,28 @@ func cmdEndpoints(c *cli, args []string) int {
 		if r.EffectiveLease > 0 {
 			leaseCol = leaseText(r.DefaultLease, r.EffectiveLease)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Slug, r.AgentName, r.State, strings.Join(r.Queues, ","), expires, leaseCol)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Slug, r.AgentName, r.State, strings.Join(r.Queues, ","), expires,
+			leaseCol, verbsColumn(r.Verbs, *verbose))
 	}
 	_ = tw.Flush()
 	return exitOK
+}
+
+// verbsColumn renders the VERBS audit column of `endpoint list`: the verb count, with the
+// webhook-admin verbs called out so an operator scanning lanes sees which credentials can rewrite
+// routing, and the verb names themselves under -v. An older server sends no verbs field: say nothing
+// rather than a wrong number, the way the LEASE column does. Governing: ADR-0047.
+func verbsColumn(verbs []string, verbose bool) string {
+	if verbs == nil {
+		return "-"
+	}
+	if verbose {
+		return strings.Join(verbs, " ")
+	}
+	if held := mcp.WebhookAdminVerbsIn(verbs); len(held) > 0 {
+		return fmt.Sprintf("%d (%d webhook-admin)", len(verbs), len(held))
+	}
+	return fmt.Sprintf("%d", len(verbs))
 }
 
 func cmdAgents(c *cli, args []string) int {

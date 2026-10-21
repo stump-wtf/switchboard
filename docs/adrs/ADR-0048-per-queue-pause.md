@@ -6,7 +6,7 @@ extends: [ADR-0007, ADR-0002]
 related: [ADR-0013, ADR-0022, ADR-0029, ADR-0035, ADR-0045]
 ---
 
-# ADR-0047: Per-Queue Pause — Quiesce Delivery, Never Intake
+# ADR-0048: Per-Queue Pause — Quiesce Delivery, Never Intake
 
 **Status note:** this ADR is **proposed**. It ships with an implementation so the choices can be
 argued against working code rather than prose; nothing here is settled until Joe accepts it. It

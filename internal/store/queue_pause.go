@@ -1,6 +1,6 @@
 // Per-queue pause: quiesce delivery to a queue's consumers without stopping intake.
 //
-// Governing: ADR-0047 (proposed), ADR-0007 (todos are the durable queue), SPEC-0003 (queues are a
+// Governing: ADR-0048 (proposed), ADR-0007 (todos are the durable queue), SPEC-0003 (queues are a
 // global namespace).
 //
 // An operator draining a downstream consumer needs "stop handing out work from this queue for now",

@@ -136,7 +136,7 @@ func (s *Store) NudgeStalledQueues(ctx context.Context) ([]Todo, error) {
 			JOIN endpoints ep ON ep.id = t.endpoint_id AND ep.state = 'active'
 			WHERE t.state = 'pending'
 			  AND t.queue <> 'quarantine'
-			  -- A paused queue is quiet on purpose (ADR-0047): nudging it would spend the queue's
+			  -- A paused queue is quiet on purpose (ADR-0048): nudging it would spend the queue's
 			  -- wake budget on a consumer the operator has deliberately stilled, and the resume
 			  -- re-rings the backlog anyway. Its ledger row waits, untouched.
 			  AND NOT EXISTS (SELECT 1 FROM queue_pause qp WHERE qp.queue = t.queue)

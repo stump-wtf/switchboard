@@ -312,7 +312,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/VendEndpointOut' }
         '400':
-          description: Invalid body, missing name, or a replay target the SSRF guard refuses.
+          description: Invalid body, missing name, an unknown verb or preset, or a replay target the SSRF guard refuses.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -962,6 +962,18 @@ components:
             https on a public address; a target the SSRF guard refuses fails the vend with 400 and
             mints nothing.
           example: ['https://consumer.example.com/hook']
+        verbs:
+          type: array
+          items: { type: string }
+          description: >-
+            The MCP verbs to grant (ADR-0047): verb names and/or the presets `todo` (the eight todo
+            verbs), `webhook-admin` (webhook lifecycle, routing, rules, trusted actors, event history)
+            and `all`, expanded server-side and de-duplicated in canonical order. Absent or empty
+            vends the default grant — the todo verbs plus the endpoint's own lease verbs — so a lane
+            credential no longer holds the webhook-administration surface by default. A name that is
+            neither a verb nor a preset fails the vend with 400 `invalid_argument` and mints nothing.
+            Notify-hook verbs (SPEC-0024) belong to no preset and are grantable by name only.
+          example: ['todo', 'add_webhook_route']
         default_lease_ttl_seconds:
           type: [integer, "null"]
           minimum: 60

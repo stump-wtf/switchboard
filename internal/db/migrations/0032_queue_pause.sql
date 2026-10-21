@@ -19,7 +19,7 @@
 -- unpaused fleet behaves exactly as before. Rollback is DROP TABLE queue_pause, which loses
 -- only pause state — every todo stays pending and claimable, exactly as before.
 --
--- Governing: ADR-0047 (proposed), ADR-0007, SPEC-0003 REQ "Endpoint Ownership".
+-- Governing: ADR-0048 (proposed), ADR-0007, SPEC-0003 REQ "Endpoint Ownership".
 --
 -- @joestump-agent 10/20/2026 - Added for stump.wtf/switchboard#581.
 CREATE TABLE IF NOT EXISTS queue_pause (

@@ -1,11 +1,11 @@
 package store
 
-// DB-backed tests for the per-queue pause (ADR-0047): a paused queue keeps its intake and loses
+// DB-backed tests for the per-queue pause (ADR-0048): a paused queue keeps its intake and loses
 // its delivery, and the resume re-rings exactly what the pause held back. Each test drives the
 // same entry points the server does — the claim verbs, the hooks, and the stall sweep — so the
 // whole lifecycle is exercised, not just one predicate.
 //
-// Skipped without SWITCHBOARD_TEST_DATABASE_URL. Governing: ADR-0047 (proposed).
+// Skipped without SWITCHBOARD_TEST_DATABASE_URL. Governing: ADR-0048 (proposed).
 
 import (
 	"context"

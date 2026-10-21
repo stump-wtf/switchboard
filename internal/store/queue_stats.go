@@ -35,7 +35,7 @@ type QueueStat struct {
 	Failed  int64
 	// OldestPendingSeconds is the age of the oldest pending todo, or 0 when none is pending.
 	OldestPendingSeconds float64
-	// Paused says delivery is quiesced on this queue (ADR-0047): pending work is waiting by
+	// Paused says delivery is quiesced on this queue (ADR-0048): pending work is waiting by
 	// decision, not because nobody is coming. It is why the row's age keeps growing.
 	Paused bool
 }

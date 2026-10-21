@@ -16,7 +16,7 @@ package server
 // draw from the per-human write bucket; the quarantine queue — already never delivered — refuses a
 // pause with invalid_argument.
 //
-// Governing: ADR-0047 (proposed), SPEC-0035 REQ "Human API Surface", ADR-0007.
+// Governing: ADR-0048 (proposed), SPEC-0035 REQ "Human API Surface", ADR-0007.
 //
 // @joestump-agent 10/20/2026 - Added for stump.wtf/switchboard#581.
 

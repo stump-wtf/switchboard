@@ -725,7 +725,7 @@ func (s *Store) ClaimTodoWith(ctx context.Context, endpointID, id, owner string,
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
 						AND attempt < max_attempts))
-				-- A paused queue hands out nothing (ADR-0047): the rows stay pending and the pause
+				-- A paused queue hands out nothing (ADR-0048): the rows stay pending and the pause
 				-- is read in the same statement that locks the candidate, so no claim races a pause.
 				AND NOT EXISTS (SELECT 1 FROM queue_pause qp WHERE qp.queue = todos.queue)
 			FOR UPDATE
@@ -803,7 +803,7 @@ func (s *Store) ClaimNextWith(ctx context.Context, endpointID string, queues []s
 					OR (state='claimed' AND lease_expires_at < now() AND attempt < max_attempts)
 					OR (state='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()
 						AND attempt < max_attempts))
-				-- A paused queue hands out nothing (ADR-0047): claim_next finds no candidate while
+				-- A paused queue hands out nothing (ADR-0048): claim_next finds no candidate while
 				-- paused, and the read is inside the locking pick, so a pause cannot be raced past.
 				AND NOT EXISTS (SELECT 1 FROM queue_pause qp WHERE qp.queue = todos.queue)
 			ORDER BY created_at
@@ -1249,7 +1249,7 @@ func (s *Store) PendingDoorbellTodos(ctx context.Context, endpointID, queue stri
 	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
 		WHERE endpoint_id = $1 AND queue = $2 AND queue <> 'quarantine' AND state = 'pending' AND event_id IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM events e WHERE e.id = todos.event_id AND e.verified)
-		  -- A paused queue rings nothing (ADR-0047); the resume's notify runs after the pause row is
+		  -- A paused queue rings nothing (ADR-0048); the resume's notify runs after the pause row is
 		  -- deleted, so the backlog rings then.
 		  AND NOT EXISTS (SELECT 1 FROM queue_pause qp WHERE qp.queue = todos.queue)
 		ORDER BY created_at LIMIT $3`, endpointID, queue, limit)
@@ -1284,7 +1284,7 @@ func (s *Store) PendingDoorbellTodosByQueue(ctx context.Context, queue string, l
 	rows, err := s.pool.Query(ctx, `SELECT `+todoCols+` FROM todos
 		WHERE queue = $1 AND queue <> 'quarantine' AND state = 'pending' AND event_id IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM events e WHERE e.id = todos.event_id AND e.verified)
-		  AND NOT EXISTS (SELECT 1 FROM queue_pause qp WHERE qp.queue = todos.queue) -- ADR-0047
+		  AND NOT EXISTS (SELECT 1 FROM queue_pause qp WHERE qp.queue = todos.queue) -- ADR-0048
 		ORDER BY created_at LIMIT $2`, queue, limit)
 	if err != nil {
 		return nil, err
@@ -1793,7 +1793,7 @@ func (s *Store) RingUnclaimed(ctx context.Context, attached []string) ([]Todo, e
 			  -- surface verified deliveries.
 			AND t.event_id IS NOT NULL
 			  AND EXISTS (SELECT 1 FROM events ev WHERE ev.id = t.event_id AND (ev.verified OR ev.trust_mode = 'token'))
-			  -- A paused queue is not re-rung (ADR-0047): the heartbeat would spend ring budget on
+			  -- A paused queue is not re-rung (ADR-0048): the heartbeat would spend ring budget on
 			  -- a backlog the consumer is forbidden to claim until resume.
 			  AND NOT EXISTS (SELECT 1 FROM queue_pause qp WHERE qp.queue = t.queue)
 			  AND (
@@ -1894,7 +1894,7 @@ func (s *Store) RingOnAttach(ctx context.Context, endpointID string, queues []st
 			  -- Sender gate (SPEC-0011): the predicate RingUnclaimed applies, unchanged.
 			  AND t.event_id IS NOT NULL
 			  AND EXISTS (SELECT 1 FROM events ev WHERE ev.id = t.event_id AND (ev.verified OR ev.trust_mode = 'token'))
-			  AND NOT EXISTS (SELECT 1 FROM queue_pause qp WHERE qp.queue = t.queue) -- ADR-0047
+			  AND NOT EXISTS (SELECT 1 FROM queue_pause qp WHERE qp.queue = t.queue) -- ADR-0048
 			  AND (t.last_ringed_at IS NULL OR t.last_ringed_at < now() - $4::interval)
 			ORDER BY t.created_at
 			LIMIT $5
