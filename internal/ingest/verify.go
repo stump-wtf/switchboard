@@ -209,10 +209,14 @@ const (
 	reasonEventIDMismatch    = "event_id_mismatch"   // an unsigned event id disagreeing with the signed one
 
 	// Refusals before or around the check itself.
-	reasonTooLarge          = "too_large"          // over maxBody (413)
-	reasonUnreadable        = "unreadable"         // the body could not be read (400)
-	reasonUnknownWebhook    = "unknown_webhook"    // no webhook holds the path token (404)
-	reasonNotConfigured     = "not_configured"     // a signed webhook with no stored secret (503)
+	reasonTooLarge       = "too_large"       // over maxBody (413)
+	reasonUnreadable     = "unreadable"      // the body could not be read (400)
+	reasonUnknownWebhook = "unknown_webhook" // no webhook holds the path token (404)
+	reasonNotConfigured  = "not_configured"  // a signed webhook with no stored secret (503)
+	// reasonAwaitingSecret is a provider-origin webhook whose owner has not pasted the secret the
+	// producer actually signs with (SPEC-0032 REQ-2): the refusal is a webhook waiting on a human, not
+	// a delivery that was wrong, and the difference is the whole point of counting it separately.
+	reasonAwaitingSecret    = "awaiting_secret"    // a provider-origin signed webhook with no secret (503)
 	reasonUnsupportedSource = "unsupported_source" // a signed source type with no verifier (500)
 
 	// reasonOther is the label for a failure mode not named above. It matches the metrics side's

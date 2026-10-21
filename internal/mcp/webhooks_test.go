@@ -18,6 +18,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stump-wtf/switchboard/internal/cred"
+	"github.com/stump-wtf/switchboard/internal/sourcekind"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -235,9 +236,11 @@ func TestListWebhooksReturnsCeilingAndNoSecrets(t *testing.T) {
 			t.Fatalf("webhook row missing trust_mode: %+v", w)
 		}
 	}
-	raw := rawJSONOf(t, res)
-	for _, banned := range []string{"secret", "sbk_"} {
-		if strings.Contains(strings.ToLower(raw), banned) {
+	// SPEC-0032 REQ-13 keeps the secret *state* visible (origin, set, fingerprint, set_at), so the
+	// guard is against values and the input field name, not against the word "secret" in a key.
+	raw := strings.ToLower(rawJSONOf(t, res))
+	for _, banned := range []string{"whsec_", "sbk_", `"signing_secret"`} {
+		if strings.Contains(raw, banned) {
 			t.Fatalf("list_webhooks leaked %q: %s", banned, raw)
 		}
 	}
@@ -379,12 +382,13 @@ func TestCreateWebhookGiteaSourceType(t *testing.T) {
 }
 
 // TestWebhookSourceTypesAreMetricSources: every source type create_webhook accepts is one the todo
-// created counter labels by name. The store keeps its own allowlist (it cannot import this
-// package), so a source type added to webhookTrustModes alone would count every todo it mints as
-// source="__other__"; this fails first.
-// Governing: SPEC-0023 REQ-5 "Cardinality", ADR-0028.
+// created counter labels by name. The store keeps its own allowlist (it cannot import this package),
+// so a source type added to the SPEC-0032 descriptor table as selectable alone would count every todo
+// it mints as source="__other__"; this fails first. A declared-but-not-selectable row (linear, plain)
+// mints no todos yet, so it is not required here.
+// Governing: SPEC-0023 REQ-5 "Cardinality", ADR-0028, SPEC-0032 REQ-1.
 func TestWebhookSourceTypesAreMetricSources(t *testing.T) {
-	for sourceType := range webhookTrustModes {
+	for _, sourceType := range sourcekind.Selectable() {
 		if !store.IsMetricSource(sourceType) {
 			t.Errorf("webhook source type %q is missing from store's todoMetricSources: its todos would count as source=\"__other__\"", sourceType)
 		}
@@ -398,10 +402,11 @@ func TestWebhookSourceTypesAreMetricSources(t *testing.T) {
 // "Endpoints View And Vend Wizard".
 func TestWebhookSourceTypesMatchesTrustModes(t *testing.T) {
 	got := WebhookSourceTypes()
-	if len(got) != len(webhookTrustModes) {
-		t.Fatalf("WebhookSourceTypes() = %v, want the %d keys of webhookTrustModes", got, len(webhookTrustModes))
+	want := sourcekind.Selectable()
+	if len(got) != len(want) {
+		t.Fatalf("WebhookSourceTypes() = %v, want the %d selectable source kinds", got, len(want))
 	}
-	for sourceType := range webhookTrustModes {
+	for _, sourceType := range want {
 		if !slices.Contains(got, sourceType) {
 			t.Errorf("WebhookSourceTypes() = %v, missing accepted source type %q", got, sourceType)
 		}

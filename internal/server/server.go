@@ -128,6 +128,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	mcph.SetA2UIEnabled(cfg.A2UIEnabled)
 	// SPEC-0034 REQ-5: deriving an attempt summary from result is an operator opt-in, off by default.
 	mcph.SetAttemptSummaryFromResult(cfg.AttemptSummaryFromResult)
+	// SPEC-0032 REQ-1: accepting a caller-supplied secret for a minted-origin webhook is an operator
+	// opt-in too, off by default. Provider-origin types (stripe, slack) take one either way, because
+	// those sign with a secret only the provider knows.
+	mcph.SetAllowSuppliedSecret(cfg.WebhookAllowSuppliedSecret)
 	// Same committed-transition publish source as the web SSE hub, one consumer per surface:
 	// the store's doorbell hook fans verified todo creations out to in-scope MCP sessions as
 	// notifications/claude/channel doorbells. Governing: SPEC-0014 REQ "Channels Push over the
