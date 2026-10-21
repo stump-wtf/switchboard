@@ -15,6 +15,14 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **The inbound webhook throttle is an operator setting.** The per-client-IP bucket on the ingest surface
+  was hardcoded to 10 requests/second with a burst of 20, and the "throttling never drops work" promise
+  only holds for senders that retry a `429` — Gitea does not, so a burst of deliveries that outruns the
+  bucket was silent event loss. `SWITCHBOARD_WEBHOOK_RATE_RPS` and `SWITCHBOARD_WEBHOOK_BURST` now set
+  the rate and burst, defaulting to the old 10/20; a non-positive value fails startup rather than
+  mounting a bucket that rejects everything. Per-webhook bucketing after signature verification is the
+  tracked follow-up. (#586)
+
 - **Every webhook states who issues its signing secret.** A Stripe or Slack webhook used to be created
   with a secret Switchboard invented, which that provider has never signed anything with: the ingest URL
   looked fine and every delivery failed with 401. Those source types are now `secret_origin: provider`
