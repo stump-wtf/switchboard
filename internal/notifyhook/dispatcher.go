@@ -232,19 +232,35 @@ func (d *Dispatcher) Enqueue(t store.Todo, reason string) {
 	case d.queue <- newNotice(t, reason):
 	default:
 		// No hook is matched yet, so the endpoint id stands in for the hook id (never the URL).
-		d.drop("queue_full", "endpoint", t.EndpointID, "todo", t.ID)
+		d.drop(TypeTodoReady, "queue_full", "endpoint", t.EndpointID, "todo", t.ID)
+	}
+}
+
+// EnqueueDeadLetter hands a todo that just dead-lettered to the workers, on the same queue and with
+// the same non-blocking contract as Enqueue. Its signature matches store.TodoDeadLetteredHook, and
+// it fires for a real dead letter only: a retryable failure or a lease lapse below the cap requeues
+// and announces nothing new (issue #588).
+func (d *Dispatcher) EnqueueDeadLetter(t store.Todo, reason string) {
+	if d.opts.Max <= 0 || t.EndpointID == "" {
+		return // the kill switch, and a system todo no endpoint owns (REQ-1)
+	}
+	select {
+	case d.queue <- newDeadLetterNotice(t, reason):
+	default:
+		d.drop(TypeTodoDeadLettered, "queue_full", "endpoint", t.EndpointID, "todo", t.ID)
 	}
 }
 
 // drop counts a notification shed before any attempt and logs it, coalescing the warning to one
-// line per reason per dropLogEvery. Attrs name hook, endpoint and todo ids only, never a URL. The
-// units differ by where it was shed, and the metric's help text says so: "rate_limited", and a
+// line per reason per dropLogEvery. typ is the event the notification would have carried, so the
+// counter keeps the two event kinds apart. Attrs name hook, endpoint and todo ids only, never a URL.
+// The units differ by where it was shed, and the metric's help text says so: "rate_limited", and a
 // "queue_full" on the delivery queue, are one hook's notification; a "queue_full" in Enqueue is one
-// ready todo, shed before its hooks were matched (that needs a store read Enqueue must not make), so
+// todo, shed before its hooks were matched (that needs a store read Enqueue must not make), so
 // it counts once whether the todo would have fanned out to zero hooks or several.
-func (d *Dispatcher) drop(reason string, attrs ...any) {
+func (d *Dispatcher) drop(typ, reason string, attrs ...any) {
 	d.dropped.Add(1)
-	d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "dropped")
+	d.opts.Metrics.NotifyHookNotification(typ, "dropped")
 	if d.opts.OnDrop != nil {
 		d.opts.OnDrop(reason)
 	}
@@ -332,13 +348,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, n notice) {
 			continue
 		}
 		if !d.limiter.allow(h.ID, time.Now()) {
-			d.drop("rate_limited", "hook", h.ID, "todo", n.todoID)
+			d.drop(n.eventType, "rate_limited", "hook", h.ID, "todo", n.todoID)
 			continue
 		}
 		select {
 		case d.deliveries <- delivery{n: n, hookID: h.ID}:
 		default:
-			d.drop("queue_full", "hook", h.ID, "todo", n.todoID)
+			d.drop(n.eventType, "queue_full", "hook", h.ID, "todo", n.todoID)
 		}
 	}
 }
@@ -380,7 +396,7 @@ func (d *Dispatcher) deliver(ctx context.Context, dj delivery) {
 			break
 		}
 		if body == nil {
-			if body, err = buildReadyBody(n, slug, now); err != nil {
+			if body, err = buildBody(n, slug, now); err != nil {
 				d.log.Error("notify hook: body", "hook", hookID, "notification", msgID, "err", err)
 				return
 			}
@@ -406,9 +422,9 @@ func (d *Dispatcher) deliver(ctx context.Context, dj delivery) {
 		return // stopped before anything was sent: no attempt, so no outcome and no health
 	}
 	if out.Delivered {
-		d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "delivered")
+		d.opts.Metrics.NotifyHookNotification(n.eventType, "delivered")
 	} else {
-		d.opts.Metrics.NotifyHookNotification(TypeTodoReady, "failed")
+		d.opts.Metrics.NotifyHookNotification(n.eventType, "failed")
 		attrs := []any{"hook", hookID, "notification", msgID, "attempts", out.Attempts, "result", out.Result}
 		if stopped != "" {
 			attrs = append(attrs, "stopped", stopped)

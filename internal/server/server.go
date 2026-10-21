@@ -865,18 +865,19 @@ func reaper(ctx context.Context, st reapStore, log *slog.Logger, closeSessions f
 }
 
 // notifyDispatchStore is the store surface the dispatcher wiring needs: the dispatcher's reads plus
-// the ready hook it subscribes to. *store.Store satisfies it.
+// the ready and dead-letter hooks it subscribes to. *store.Store satisfies it.
 type notifyDispatchStore interface {
 	notifyhook.Store
 	SetTodoReadyHook(store.TodoReadyHook)
+	SetTodoDeadLetteredHook(store.TodoDeadLetteredHook)
 }
 
-// startNotifyDispatcher subscribes a notify-hook dispatcher to st's ready hook and runs it on ctx,
-// returning it; with ceiling at 0 it subscribes nothing and returns nil (the SPEC-0024 REQ-1 kill
-// switch). It counts into mtr and creates the notify-hook series at zero, so /metrics shows them
-// from the first scrape, and a process with no dispatcher leaves them honestly absent. It is split
-// out of Run so a test drives the real wiring rather than a dispatcher it built itself.
-// Governing: SPEC-0024 REQ-1, REQ-6, REQ-11.
+// startNotifyDispatcher subscribes a notify-hook dispatcher to st's ready and dead-letter hooks and
+// runs it on ctx, returning it; with ceiling at 0 it subscribes nothing and returns nil (the
+// SPEC-0024 REQ-1 kill switch). It counts into mtr and creates the notify-hook series at zero, so
+// /metrics shows them from the first scrape, and a process with no dispatcher leaves them honestly
+// absent. It is split out of Run so a test drives the real wiring rather than a dispatcher it built
+// itself. Governing: SPEC-0024 REQ-1, REQ-6, REQ-11; issue #588.
 func startNotifyDispatcher(ctx context.Context, st notifyDispatchStore, v *push.Validator, ceiling int, mtr *metrics.Metrics, log *slog.Logger) *notifyhook.Dispatcher {
 	if ceiling <= 0 {
 		return nil
@@ -884,6 +885,7 @@ func startNotifyDispatcher(ctx context.Context, st notifyDispatchStore, v *push.
 	mtr.InitNotifyHookSeries()
 	d := notifyhook.NewDispatcher(notifyhook.Options{Store: st, Validator: v, Log: log, Max: ceiling, Metrics: mtr})
 	st.SetTodoReadyHook(d.Enqueue)
+	st.SetTodoDeadLetteredHook(d.EnqueueDeadLetter)
 	go d.Run(ctx)
 	return d
 }

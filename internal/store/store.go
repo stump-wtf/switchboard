@@ -86,6 +86,9 @@ type Store struct {
 	// readyHook observes push-eligible transitions into pending — creations AND requeues — for the
 	// SPEC-0024 notify-hook dispatcher (SetTodoReadyHook).
 	readyHook atomic.Pointer[TodoReadyHook]
+	// deadLetterHook observes the transitions that dead-letter a todo, for the notify-hook
+	// dispatcher (SetTodoDeadLetteredHook, issue #588).
+	deadLetterHook atomic.Pointer[TodoDeadLetteredHook]
 	// requeuedHook observes retries the scheduler re-queued, before their wakeup (todos.go).
 	requeuedHook atomic.Pointer[TodoRequeuedHook]
 	// metricsSink receives the SPEC-0023 REQ-3 lifecycle counters (metrics.go). Nil = no-op.
@@ -207,6 +210,50 @@ func (s *Store) fireReady(t Todo, reason string) {
 		return
 	}
 	if fn := s.readyHook.Load(); fn != nil {
+		(*fn)(t, reason)
+	}
+}
+
+// Reasons a TodoDeadLetteredHook is told why the todo stopped for want of a person.
+//
+// DeadLetteredExhausted is a claimant's fail at the attempt cap; DeadLetteredLeaseExpired is the
+// lease reaper reclaiming a claimed todo at the cap; DeadLetteredInterruptExpired is the same sweep
+// reclaiming an interrupted wait at the cap (ADR-0046). A plain lease lapse below the cap requeues
+// and fires none of these; it fires ReadyRequeued instead. The revocation cascade is deliberately
+// absent: it dead-letters inside the revocation transaction, and the revoked endpoint's hooks are
+// gone with it, so there is nothing left to tell.
+const (
+	DeadLetteredExhausted = "attempts_exhausted"
+	DeadLetteredLease     = "lease_expired"
+	DeadLetteredInterrupt = "interrupt_expired"
+)
+
+// TodoDeadLetteredHook observes a committed transition that left a todo dead-lettered: failed with
+// no scheduled retry, so nothing surfaces it again until an operator acts. reason says which path
+// got there, and t carries its FinalAttempt (SPEC-0034 REQ-15) so a notification can say what was
+// tried. It fires once per dead letter, on the instance whose statement performed it, and only for
+// rows that pass the same SPEC-0011 sender gate the ready hook carries: a dead letter's summary is
+// sender-written text. Same contract as TodoReadyHook: never block, never authoritative.
+// Governing: SPEC-0024 REQ-6 "Trigger and Sender Gate"; issue #588.
+type TodoDeadLetteredHook func(t Todo, reason string)
+
+// SetTodoDeadLetteredHook registers fn (nil clears it).
+func (s *Store) SetTodoDeadLetteredHook(fn TodoDeadLetteredHook) {
+	if fn == nil {
+		s.deadLetterHook.Store(nil)
+		return
+	}
+	s.deadLetterHook.Store(&fn)
+}
+
+func (s *Store) fireDeadLettered(t Todo, reason string, pushEligible bool) {
+	// A dead letter is only ever announced with the sender gate applied (issue #588): the reaper
+	// sweeps carry it explicitly because their statements never had one for a row that lands in
+	// failed rather than pending. Quarantine is excluded by every statement that reaches here.
+	if !pushEligible || t.Queue == QueueQuarantine {
+		return
+	}
+	if fn := s.deadLetterHook.Load(); fn != nil {
 		(*fn)(t, reason)
 	}
 }

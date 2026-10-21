@@ -63,13 +63,14 @@ const (
 	ResolvedBySystem     = "system"
 
 	// SPEC-0024 REQ-11 notify-hook label values.
-	NotifyTypeReady      = "todo.ready"
-	NotifyTypeBacklog    = "todos.backlog"
-	NotifyDelivered      = "delivered"
-	NotifyFailed         = "failed"
-	NotifyDropped        = "dropped"
-	NotifyDisabledFailed = "consecutive_failures"
-	NotifyDisabledByOp   = "operator"
+	NotifyTypeReady        = "todo.ready"
+	NotifyTypeDeadLettered = "todo.dead_lettered"
+	NotifyTypeBacklog      = "todos.backlog"
+	NotifyDelivered        = "delivered"
+	NotifyFailed           = "failed"
+	NotifyDropped          = "dropped"
+	NotifyDisabledFailed   = "consecutive_failures"
+	NotifyDisabledByOp     = "operator"
 )
 
 // attemptOutcomes is the SPEC-0034 REQ-3 outcome set, the only values the attempts-closed counter's
@@ -209,7 +210,7 @@ func New(opts Options) *Metrics {
 
 		notifyNotifications: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_notify_hook_notifications_total",
-			Help: "Outbound notify-hook notifications, by type (todo.ready|todos.backlog) and outcome (delivered|failed|dropped). delivered, failed and rate-limited drops count one per hook, as does a full per-hook delivery queue; a full ready queue drops before hooks are matched, so it counts one per ready todo, whatever its hook count (zero included).",
+			Help: "Outbound notify-hook notifications, by type (todo.ready|todo.dead_lettered|todos.backlog) and outcome (delivered|failed|dropped). delivered, failed and rate-limited drops count one per hook, as does a full per-hook delivery queue; a full inbound queue drops before hooks are matched, so it counts one per todo, whatever its hook count (zero included).",
 		}, []string{"type", "outcome"}),
 		notifyAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_notify_hook_attempts_total",
@@ -486,7 +487,7 @@ func (m *Metrics) InitNotifyHookSeries() {
 	if m == nil {
 		return
 	}
-	for _, typ := range []string{NotifyTypeReady, NotifyTypeBacklog} {
+	for _, typ := range []string{NotifyTypeReady, NotifyTypeDeadLettered, NotifyTypeBacklog} {
 		for _, outcome := range []string{NotifyDelivered, NotifyFailed, NotifyDropped} {
 			m.notifyNotifications.WithLabelValues(typ, outcome)
 		}
@@ -513,7 +514,7 @@ func (m *Metrics) NotifyHookNotification(typ, outcome string) {
 	if m == nil {
 		return
 	}
-	m.notifyNotifications.WithLabelValues(oneOf(typ, NotifyTypeReady, NotifyTypeBacklog),
+	m.notifyNotifications.WithLabelValues(oneOf(typ, NotifyTypeReady, NotifyTypeDeadLettered, NotifyTypeBacklog),
 		oneOf(outcome, NotifyDelivered, NotifyFailed, NotifyDropped)).Inc()
 }
 

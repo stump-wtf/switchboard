@@ -36,11 +36,11 @@
      state), matching shell.TodoCount. Data: web.countsView. */}}
 {{define "counts"}}{{template "tiles" .Tiles}}{{template "todo_count" dict "Count" .Todos.All "OOB" true}}{{template "live_pill" dict "Rate" .Tiles.Stats.EventsPerMin "OOB" true}}{{template "todo_pill_counts" dict "C" .Todos "OOB" true}}{{template "lane_counts" dict "C" .Lanes "OOB" true}}{{end}}
 
-{{/* todo_pill_counts — the five Todos-view filter-pill count numbers, each an independent OOB swap
+{{/* todo_pill_counts: the six Todos-view filter-pill count numbers, each an independent OOB swap
      target (ignored on pages that don't render the pills). Each span is a polite live region — the
      numbers update via SSE counts frames (SPEC-0013 "Dynamic Content Regions" — count pills).
      Args via dict: C store.TodoCounts, OOB bool. */}}
-{{define "todo_pill_counts"}}<span id="sb-tc-all" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.All}}</span><span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Pending}}</span><span id="sb-tc-claimed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Claimed}}</span><span id="sb-tc-done" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Done}}</span><span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Failed}}</span>{{end}}
+{{define "todo_pill_counts"}}<span id="sb-tc-all" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.All}}</span><span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Pending}}</span><span id="sb-tc-claimed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Claimed}}</span><span id="sb-tc-done" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Done}}</span><span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.Failed}}</span><span id="sb-tc-dead" class="sb-fpill__n" aria-live="polite"{{if .OOB}} hx-swap-oob="true"{{end}}>{{.C.DeadLettered}}</span>{{end}}
 
 {{/* toast — a transient announcement prepended into the aria-live toast region. Data: toastMsg
      (Kind drives the accent color + icon, Text is the one-line summary).
