@@ -169,11 +169,11 @@ type CreateTodoParams struct {
 	origin string
 }
 
-// todoMetricSources is the bounded set of origins switchboard_todos_created_total labels by name:
-// the webhook source types (internal/mcp webhookTrustModes), the operator push API, the dev helper,
+// todoMetricSources is the bounded set of origins switchboard_todos_created_total labels by name: the
+// webhook source types (internal/sourcekind's selectable rows), the operator push API, the dev helper,
 // and friend handoffs. Anything else reports as "__other__" (the literal internal/metrics uses; this
-// package must not import it), so a caller-chosen string can never become a label value. A webhook
-// source type added to webhookTrustModes but not here fails internal/mcp's
+// package must not import it), so a caller-chosen string can never become a label value. A selectable
+// source type added to that table but not here fails internal/mcp's
 // TestWebhookSourceTypesAreMetricSources rather than silently counting as "__other__".
 // Governing: SPEC-0023 REQ-3 "Lifecycle counters", REQ-5 "Cardinality".
 var todoMetricSources = map[string]bool{

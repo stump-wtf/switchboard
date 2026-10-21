@@ -38,12 +38,14 @@ The source type decides how deliveries are checked:
 | `github` | signed | `X-Hub-Signature-256: sha256=<hex>`, an HMAC-SHA256 of the raw body |
 | `gitea` | signed | `X-Gitea-Signature: <hex>` (no prefix), or the GitHub-style header |
 | `cairn` | signed | `X-Cairn-Signature: sha256=<hex>`, plus a signed `event_id` and a `created_at` within 5 minutes |
-| `stripe`, `slack` | signed | **Not usable yet: the provider issues the secret.** Stripe and Slack sign with a secret they generate, and switchboard only verifies against the one it minted, so every delivery fails with `401`. Slack's Events API can't save the URL either, because switchboard doesn't answer its `url_verification` challenge. See [ADR-0037](/decisions/ADR-0037-provider-issued-signing-secrets) |
+| `stripe`, `slack` | signed | an HMAC with **the secret the provider shows you** — Stripe's `whsec_…` (`X-Stripe-Signature`-style header), Slack's Request Signing Secret (`X-Slack-Signature`). Create the webhook, then give it that secret; until you do, deliveries answer `503 webhook awaiting signing secret`. Slack's Events API still can't save the URL, because switchboard doesn't answer its `url_verification` challenge yet. See [ADR-0037](/decisions/ADR-0037-provider-issued-signing-secrets) |
 | `generic` | token | nothing: the unguessable URL is the credential |
 
-A **signed** webhook's result also includes a `signing_secret` (`whsec_…`). **It is shown once**,
-exactly like an endpoint credential: copy it into the producer right away. `list_webhooks` never
-returns it again.
+A **signed** webhook whose secret switchboard mints (`github`, `gitea`, `cairn`) also returns a
+`signing_secret` (`whsec_…`) in its create result. **It is shown once**, exactly like an endpoint
+credential: copy it into the producer right away. `list_webhooks` never returns it again — it reports
+`secret_origin`, `secret_set`, a 12-character fingerprint and the moment the current secret was written,
+which is enough to confirm which secret is in place.
 
 ## 2. Send a test delivery
 

@@ -114,6 +114,29 @@ func TestAttemptSummaryFromResult(t *testing.T) {
 	}
 }
 
+// TestWebhookAllowSuppliedSecret pins SPEC-0032 REQ-1's opt-in: unset or unparseable is off, so
+// create_webhook refuses a caller-supplied secret for a source switchboard mints for unless the
+// operator asked otherwise.
+func TestWebhookAllowSuppliedSecret(t *testing.T) {
+	for value, want := range map[string]bool{
+		"":      false,
+		"false": false,
+		"0":     false,
+		"maybe": false,
+		"true":  true,
+		"1":     true,
+	} {
+		t.Setenv("SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET", value)
+		if got := FromEnv().WebhookAllowSuppliedSecret; got != want {
+			t.Errorf("SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET=%q: %v, want %v", value, got, want)
+		}
+	}
+	_ = os.Unsetenv("SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET")
+	if FromEnv().WebhookAllowSuppliedSecret {
+		t.Fatal("unset SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET turned the option on; it defaults to off")
+	}
+}
+
 // TestNotifyHookMax pins SPEC-0024 REQ-1's operator bound: unset is 5, 0 is a valid kill switch,
 // and a malformed or negative value fails startup rather than silently becoming the default.
 func TestNotifyHookMax(t *testing.T) {

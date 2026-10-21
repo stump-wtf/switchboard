@@ -15,6 +15,21 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Every webhook states who issues its signing secret.** A Stripe or Slack webhook used to be created
+  with a secret Switchboard invented, which that provider has never signed anything with: the ingest URL
+  looked fine and every delivery failed with 401. Those source types are now `secret_origin: provider`
+  and are created in state `awaiting_secret` — the URL works, deliveries answer
+  `503 webhook awaiting signing secret` and persist nothing — until you paste the secret the provider
+  displays. `create_webhook` gained a `signing_secret` argument for exactly those sources (Stripe's must
+  start with `whsec_`), `list_webhooks` reports `secret_origin`, `secret_set`, a 12-character
+  fingerprint, `secret_set_at` and who last wrote it, and every supplied secret is encrypted at rest and
+  recorded in a new `webhook_secret_audit` table. Rotating a provider webhook now replaces the ingest URL
+  and leaves its secret alone. Forge webhooks are unchanged unless the operator sets
+  `SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET=true`, which lets an agent hand over a secret for a source
+  Switchboard would otherwise mint. Upgrading marks existing Stripe and Slack webhooks as provider-origin:
+  see [Upgrading](https://github.com/stump-wtf/switchboard/blob/main/docs/guides/15-upgrading.md).
+  Proposed as ADR-0037. (#391)
+
 - **Verb-scoped endpoint vend.** `switchboard endpoint vend` takes `--verbs`, accepting verb names
   and/or the presets `todo` (the eight todo verbs), `webhook-admin` (the webhook, routing, rule,
   trusted-actor and event verbs) and `all`, plus `--allow-webhook-admin` as the one-flag opt-in for a
