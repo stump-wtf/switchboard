@@ -167,7 +167,7 @@ func TestDeadLetterHookOnInterruptReclaim(t *testing.T) {
 
 	id := createEventTodo(t, s, ctx, ep, "dl-interrupt-1", true, "signed").ID
 	rec.take()
-	if _, err := s.ClaimTodo(ctx, ep, id, "agent:a1", time.Hour); err != nil {
+	if _, err := s.ClaimTodo(ctx, ep, id, "w", time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	exhaust(t, s, ctx, id)

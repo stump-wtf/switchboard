@@ -247,10 +247,15 @@ func (s *Store) SetTodoDeadLetteredHook(fn TodoDeadLetteredHook) {
 }
 
 func (s *Store) fireDeadLettered(t Todo, reason string, pushEligible bool) {
-	// A dead letter is only ever announced with the sender gate applied (issue #588): the reaper
+	// Only a row that actually stopped retrying is a dead letter. Every call site can reach here with
+	// a row that merely failed again below the attempt cap, or with a reaped row that went back to
+	// pending, and those announce nothing: the retry countdown, and the ready re-ring, are their
+	// signals (issue #588).
+	//
+	// A dead letter is only ever announced with the sender gate applied (SPEC-0024 REQ-6): the reaper
 	// sweeps carry it explicitly because their statements never had one for a row that lands in
 	// failed rather than pending. Quarantine is excluded by every statement that reaches here.
-	if !pushEligible || t.Queue == QueueQuarantine {
+	if !t.DeadLetter() || !pushEligible || t.Queue == QueueQuarantine {
 		return
 	}
 	if fn := s.deadLetterHook.Load(); fn != nil {
