@@ -151,12 +151,13 @@ type webhookMetaOut struct {
 	AllowAll      bool                   `json:"allow_all" jsonschema:"true when this webhook trusts every verified sender (flagged: prefer a list)"`
 	Quarantined   int                    `json:"quarantined" jsonschema:"open quarantine items this webhook's deliveries are waiting in (SPEC-0026)"`
 	// The secret state, reported so an agent can tell "working" from "waiting for me to paste Stripe's
-	// secret" without sending a test delivery. secret_supplied marks a minted-origin webhook taking a
-	// caller-supplied secret under the operator's opt-in; secret_set_by names who last wrote a supplied
-	// one. None of these is the secret. Governing: SPEC-0032 REQ-1, REQ-2, REQ-13.
+	// secret" without sending a test delivery. secret_supplied marks a secret that came from its caller
+	// (a provider kind's normal state, or a minted kind under the operator's opt-in); secret_set_by
+	// names who last wrote a supplied one. None of these is the secret. Governing: SPEC-0032 REQ-1,
+	// REQ-2, REQ-13.
 	SecretOrigin      string       `json:"secret_origin" jsonschema:"who issues the signing secret: minted, provider, or none"`
 	SecretSet         bool         `json:"secret_set" jsonschema:"false for a provider-origin webhook awaiting its secret: deliveries answer 503 until it is set"`
-	SecretSupplied    bool         `json:"secret_supplied" jsonschema:"true when a minted-origin webhook's secret was supplied by a caller under SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET; rotate clears it"`
+	SecretSupplied    bool         `json:"secret_supplied" jsonschema:"true when the stored signing secret was supplied by its caller rather than minted by switchboard (a provider kind's normal state; a minted kind's only under SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET); rotate clears it"`
 	SecretFingerprint string       `json:"secret_fingerprint,omitempty" jsonschema:"first 12 hex of the stored secret's SHA-256"`
 	SecretSetAt       string       `json:"secret_set_at,omitempty" jsonschema:"RFC 3339 time the current secret was written"`
 	SecretSetBy       *secretSetBy `json:"secret_set_by,omitempty" jsonschema:"who wrote the current secret, for a webhook whose secret a caller supplied (SPEC-0032 REQ-13)"`

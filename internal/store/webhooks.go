@@ -1,16 +1,22 @@
 package store
 
 // Self-managed webhook records: an agent creates/rotates/deletes its own ingestion webhooks through
-// the vended MCP endpoint, bounded by the endpoint's ceiling. For a signed-type webhook switchboard
-// MINTS the HMAC signing secret and HOLDS the plaintext here — it must recompute the provider HMAC
-// over every inbound body to verify the delivery per SPEC-0003, which a one-way hash could not do.
-// The plaintext is revealed to the agent exactly once (at create/rotate) so it can configure the
-// producer; the ListWebhooks path deliberately never selects it. The count ceiling is enforced under
-// a per-endpoint row lock (SELECT … FOR UPDATE on endpoints) inside CreateWebhook, so two concurrent
-// creates at a full ceiling serialize behind that lock and can never both slip past.
+// the vended MCP endpoint, bounded by the endpoint's ceiling. For a signed webhook whose secret
+// switchboard mints, that secret is generated here and held in plaintext — it must recompute the
+// provider HMAC over every inbound body to verify the delivery per SPEC-0003, which a one-way hash
+// could not do. A provider-origin webhook (stripe, slack) instead holds the value its owner pasted,
+// sealed under the same envelope (SPEC-0032). The minted plaintext is revealed to the agent exactly
+// once (at create/rotate) so it can configure the producer; ListWebhooks selects the stored secret
+// only to fingerprint it and never returns it. The count ceiling is enforced under a per-endpoint row
+// lock (SELECT … FOR UPDATE on endpoints) inside CreateWebhook, so two concurrent creates at a full
+// ceiling serialize behind that lock and can never both slip past.
 //
 // Governing: SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling",
-// SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency", ADR-0012, ADR-0003.
+// SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency", ADR-0012, ADR-0003, ADR-0037.
+//
+// @joestump-agent 10/21/2026 - secret_supplied's doc now says it marks any caller-supplied secret,
+// provider kinds included, which is what the column and rotate_webhook actually do; the TL;DR now
+// reflects SPEC-0032's provider-origin rows and ListWebhooks' fingerprint-only secret read.
 
 import (
 	"context"
@@ -61,9 +67,10 @@ type Webhook struct {
 	// reporting them (SPEC-0032 REQ-2, REQ-3).
 	SecretFingerprint string
 	SecretSetAt       *time.Time
-	// SecretSupplied marks a minted-origin webhook whose secret a caller supplied under the operator
-	// opt-in (SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET, SPEC-0032 REQ-1). rotate_webhook mints a
-	// fresh secret and clears it.
+	// SecretSupplied says the stored signing secret came from its caller: always for a provider-origin
+	// row (the provider signs with a value only it knows), and for a minted-origin row only under the
+	// operator opt-in (SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET, SPEC-0032 REQ-1). rotate_webhook
+	// mints a fresh secret and clears it.
 	SecretSupplied bool
 	// SecretSetByKind/SecretSetByID name the actor behind the latest audited secret write, for
 	// list_webhooks' secret_set_by (SPEC-0032 REQ-13). Both are empty while no caller-supplied secret
