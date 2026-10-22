@@ -38,7 +38,7 @@ Rules MUST evaluate against a single JSON document, the routing envelope, built 
 | `.size` | the payload size in bytes |
 | `.headers` | the **sanitized** request headers (as persisted), names lower-cased |
 | `.payload` | the body parsed as exactly one JSON value, or `null`; integers that fit int64 stay exact |
-| `.artifact` | `cairn` sources only, `null` otherwise: `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id`, `on_behalf_of`, `expires_at`, `tags` (cairn's string list), `metadata` (absent fields are `null`) |
+| `.artifact` | `cairn` sources only, `null` otherwise: `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id`, `on_behalf_of`, `expires_at`, `tags` (cairn's string list), `metadata`, `assignee` (assigned user's display handle), `assignment` (`{previous}` on an `artifact.assigned` event; `null` on a kind that carries none) (absent fields are `null`) |
 | `.issue` | a Gitea/GitHub `issues` event only, `null` otherwise (pull requests included): `provider`, `action`, `event_type`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels` (names), `label`, `body_size`, `label_event`, `key` — see "Issue Envelope Projection" |
 
 #### Scenario: A forged header does not change a verified cairn kind
@@ -245,6 +245,27 @@ These depend on the cairn tags contract (`data.tags` on `artifact.created`, bund
 
 - **WHEN** a cairn delivery carries `data.tags: ["handoff", "lane:m"]`
 - **THEN** `.artifact.tags` contains `"lane:m"` (e.g. `[.artifact.tags[]? | select(startswith("lane:"))][0] == "lane:m"`), and nothing in `.artifact.tags` affects `.verified` or `.artifact.actor_id`
+
+### Requirement: Cairn Artifact Assignee
+
+For `cairn` sources, `.artifact` MUST additionally expose `assignee` (the assigned user's display handle, passed through), and where the delivered `data` carries an `assignment` object — the `artifact.assigned` event — MUST expose `assignment` as `{previous}`: the prior assignee, `null` on a first assignment. On a kind whose `data` carries no `assignment`, `.artifact.assignment` MUST be `null`. The assignee is projection only: it grants no trust, and provenance checks MUST keep using the authenticated `.artifact.actor_id`.
+
+This depends on cairn's assignee contract (cairn SPEC-0025, stump.wtf/cairn#441): until the producer emits it, `.artifact.assignee` and `.artifact.assignment` are `null`, so a rule written against `.artifact.assignee` simply does not match. Unlike a handoff's `lane:` tag, fixed at creation, the assignee is reassignable, so re-routing a handoff needs no re-share and keeps its comment thread.
+
+#### Scenario: A re-assigned artifact routes on its new assignee
+
+- **WHEN** cairn delivers `artifact.assigned` whose `data` carries `assignee: "joestump"` and `assignment: {"previous": "joestump-agent"}`
+- **THEN** `.artifact.assignee == "joestump"` and `.artifact.assignment.previous == "joestump-agent"`
+
+#### Scenario: A first assignment has no previous
+
+- **WHEN** cairn delivers `artifact.assigned` for an artifact that had no assignee before
+- **THEN** `.artifact.assignee` is the new assignee and `.artifact.assignment.previous` is `null`
+
+#### Scenario: An un-upgraded producer does not match an assignee rule
+
+- **WHEN** a cairn delivery's `data` carries no `assignee`
+- **THEN** `.artifact.assignee` is `null`, and a rule matching `.artifact.assignee == "someone"` does not match
 
 ### Requirement: Exclusive Delivery
 

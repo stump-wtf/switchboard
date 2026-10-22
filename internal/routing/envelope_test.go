@@ -64,6 +64,50 @@ func TestEnvelopeCairnPaths(t *testing.T) {
 	}
 }
 
+// The assignee projection (cairn SPEC-0025): `.artifact.assignee` on both artifact.created and
+// artifact.assigned, `.artifact.assignment.previous` only when the delivery carries an assignment,
+// and an assignee rule that simply does not match a producer which sends neither key.
+func TestEnvelopeCairnAssignee(t *testing.T) {
+	created := Envelope(EnvelopeInput{Source: SourceCairn, Kind: "artifact.created", WebhookID: "wh-1",
+		TrustMode: "signed", Verified: true,
+		Body: []byte(`{"source":"cairn","kind":"artifact.created","data":{"id":"abc123","title":"handoff","assignee":"joestump"}}`)})
+	if !matches(t, created, `.kind == "artifact.created" and .artifact.assignee == "joestump" and .artifact.assignment == null`) {
+		t.Fatalf("artifact.created artifact = %v, want the assignee projected and no assignment", created["artifact"])
+	}
+
+	assigned := func(body string) map[string]any {
+		return Envelope(EnvelopeInput{Source: SourceCairn, Kind: "artifact.assigned", WebhookID: "wh-1",
+			TrustMode: "signed", Verified: true, Body: []byte(body)})
+	}
+	reassigned := assigned(`{"source":"cairn","kind":"artifact.assigned","event_id":"evt-1",` +
+		`"data":{"id":"abc123","title":"handoff","assignee":"joestump",` +
+		`"assignment":{"previous":"joestump-agent","assigned_at":"2026-10-22T12:00:00Z"}}}`)
+	if !matches(t, reassigned, `.kind == "artifact.assigned" and .artifact.assignee == "joestump" and .artifact.assignment.previous == "joestump-agent"`) {
+		t.Fatalf("artifact.assigned artifact = %v, want the new and the previous assignee", reassigned["artifact"])
+	}
+	projection, ok := reassigned["artifact"].(map[string]any)
+	if !ok {
+		t.Fatalf("artifact projection = %v, want an object", reassigned["artifact"])
+	}
+	assignment, ok := projection["assignment"].(map[string]any)
+	if !ok || len(assignment) != 1 || assignment["previous"] != "joestump-agent" {
+		t.Fatalf("assignment = %v, want only {previous: joestump-agent}: a producer's own nesting must not reach the envelope", projection["assignment"])
+	}
+
+	first := assigned(`{"source":"cairn","kind":"artifact.assigned","data":{"id":"abc123","assignee":"joestump","assignment":{"previous":null}}}`)
+	if !matches(t, first, `.artifact.assignee == "joestump" and .artifact.assignment.previous == null`) {
+		t.Fatalf("first assignment artifact = %v, want the new assignee and a null previous", first["artifact"])
+	}
+
+	unupgraded := assigned(`{"source":"cairn","kind":"artifact.assigned","data":{"id":"abc123","title":"notes"}}`)
+	if !matches(t, unupgraded, `.artifact.assignee == null and .artifact.assignment == null`) {
+		t.Fatalf("un-upgraded producer = %v, want both keys null", unupgraded["artifact"])
+	}
+	if matches(t, unupgraded, `.artifact.assignee == "joestump"`) {
+		t.Fatalf("an assignee rule matched a producer that sends no assignee: %v", unupgraded["artifact"])
+	}
+}
+
 func TestEnvelopeNonCairnAndNonJSON(t *testing.T) {
 	env := Envelope(EnvelopeInput{Source: "gitea", Kind: "issues", TrustMode: "token", Body: []byte("not json {")})
 	if !matches(t, env, `.payload == null and .artifact == null and .kind == "issues" and .verified == false`) {
