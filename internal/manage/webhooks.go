@@ -35,6 +35,9 @@ package manage
 // @joestump-agent 10/22/2026 - Extracted from internal/mcp/webhooks.go (the three verb bodies) and
 // parameterized by a Principal and a Ceiling, so the human API runs the verbs' checks rather than a
 // copy of them (stump.wtf/switchboard#584).
+//
+// @joestump-agent 10/22/2026 - Create refuses a non-active endpoint itself, so a future surface
+// cannot mint on a revoked or paused endpoint by forgetting the handler-level check (#607 review).
 
 import (
 	"context"
@@ -135,6 +138,13 @@ func (w Webhooks) Create(ctx context.Context, p Principal, c Ceiling, actor stor
 	// switchboard's decision, never by being routed there.
 	if store.CheckQueueNames(targetQueue) != nil {
 		return Created{}, fail(ErrInvalidArgument, `target_queue "quarantine" is reserved for held deliveries`)
+	}
+	// The endpoint's state is part of the ceiling: a revoked or paused endpoint has no working delivery
+	// target, so minting on it fails closed here rather than trusting every surface to remember the
+	// handler-level check. Governing: SPEC-0035 REQ "Shared Implementation With MCP".
+	if c.EndpointState != "active" {
+		return Created{}, &Error{Kind: ErrConflict, State: c.EndpointState,
+			Msg: "the endpoint is not active, so a webhook on it would deliver nothing"}
 	}
 	// The ceiling is the vended answer to "what may this endpoint create"; a type it never granted is
 	// refused with its own code, because the fix (vend it wider) is a different one than a queue mistake.

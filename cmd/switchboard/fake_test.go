@@ -226,11 +226,18 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 					if supplied != "" {
 						secret, origin = supplied, "supplied"
 					}
-					writeJSONResponse(w, 201, map[string]any{
+					out := map[string]any{
 						"webhook_id": "wh-new", "endpoint_slug": "router", "source_type": in["source_type"],
 						"target_queue": in["target_queue"], "trust_mode": "signed", "secret_origin": origin,
 						"secret_set": true, "signing_secret": secret, "ingest_url": base + "/webhooks/w/token123",
-					})
+					}
+					// A provider-origin source (stripe) reveals nothing: the producer signs with a secret
+					// only it issued, so the create carries no signing_secret at all.
+					if in["source_type"] == "stripe" {
+						delete(out, "signing_secret")
+						out["secret_origin"], out["secret_set"] = "provider", false
+					}
+					writeJSONResponse(w, 201, out)
 					return
 				}
 			}

@@ -138,6 +138,38 @@ func TestCreateRefusesBeforeWritingAnything(t *testing.T) {
 	}
 }
 
+// TestCreateRefusesANonActiveEndpoint pins the endpoint-state check inside Create itself, not only in
+// the route handler that happens to check first today: a surface that forgets the handler's check must
+// still fail closed here, because a webhook minted on a revoked or paused endpoint delivers nothing.
+func TestCreateRefusesANonActiveEndpoint(t *testing.T) {
+	for _, tcase := range []struct {
+		name  string
+		state string
+	}{
+		{"revoked", "revoked"},
+		{"paused", "paused"},
+		{"unset", ""},
+	} {
+		st := newMemWebhooks()
+		w := Webhooks{Store: st}
+		ceiling := Ceiling{EndpointID: epCeiling, EndpointState: tcase.state, WebhookMax: 2,
+			SourceTypes: []string{"github"}, WebhookQueues: []string{"q"}}
+		_, err := w.Create(context.Background(), EndpointPrincipal(epCeiling), ceiling, store.SecretActor{},
+			CreateIn{SourceType: "github", TargetQueue: "q"})
+		var me *Error
+		if !errors.As(err, &me) || me.Kind != ErrConflict {
+			t.Errorf("%s: err = %v, want conflict", tcase.name, err)
+			continue
+		}
+		if me.State != tcase.state {
+			t.Errorf("%s: State = %q, want %q", tcase.name, me.State, tcase.state)
+		}
+		if len(st.creates) != 0 {
+			t.Errorf("%s: %d creates reached the store for a non-active endpoint", tcase.name, len(st.creates))
+		}
+	}
+}
+
 func TestCreateMintsWhereTheSourceTypeSaysTo(t *testing.T) {
 	st := newMemWebhooks()
 	w := Webhooks{Store: st}

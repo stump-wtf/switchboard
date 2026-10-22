@@ -19,6 +19,10 @@ package main
 // "Webhook Self-Management Within a Vended Ceiling"; SPEC-0032 REQ-2, REQ-3; ADR-0012.
 //
 // @joestump-agent 10/22/2026 - Added webhook create/rotate/delete for stump.wtf/switchboard#584.
+//
+// @joestump-agent 10/22/2026 - A --secret-file on a provider-origin source now says on stderr that
+// the file holds the ingest URL, not a signing secret, and --json stops claiming a secret was
+// written when none exists (#607 review).
 
 import (
 	"context"
@@ -254,6 +258,7 @@ func (c *cli) reportSecret(action string, dest secretDest, doc webhookDoc) error
 		if err := writeSecretFile(dest, doc); err != nil {
 			return err
 		}
+		warnNonSecretFile(c, dest, doc)
 	}
 	fmt.Fprintf(c.stdout, "%s %s webhook %s, delivering to queue %s.\n", action, doc.SourceType, doc.WebhookID, doc.TargetQueue)
 	fmt.Fprintf(c.stdout, "Ingest URL: %s\n", doc.IngestURL)
@@ -287,8 +292,23 @@ func (c *cli) revealJSON(body []byte, dest secretDest, what string) int {
 	if err := writeSecretFile(dest, doc); err != nil {
 		return c.fail(err)
 	}
-	fmt.Fprintf(c.stderr, "switchboard: the signing secret was written to %s (mode 0600) and is not in the printed body\n", dest.path)
+	warnNonSecretFile(c, dest, doc)
+	if doc.SigningSecret != "" {
+		fmt.Fprintf(c.stderr, "switchboard: the signing secret was written to %s (mode 0600) and is not in the printed body\n", dest.path)
+	}
 	return c.printJSON(redactSecret(body))
+}
+
+// warnNonSecretFile tells a caller whose --secret-file got something other than a secret: a
+// provider-origin source (stripe, slack) has no switchboard-issued signing secret, so the 0600 file
+// named for one holds the ingest URL instead. The write itself is kept, because the URL is what the
+// producer setup needs next, but a file quietly holding something other than what its flag promised
+// is how a setup step gets skipped and every delivery 401s. Governing: SPEC-0032 REQ-2.
+func warnNonSecretFile(c *cli, dest secretDest, doc webhookDoc) {
+	if dest.path == "" || dest.env || doc.SigningSecret != "" {
+		return
+	}
+	fmt.Fprintf(c.stderr, "switchboard: note: %s holds the ingest URL, not a signing secret — %s's producer signs with a secret only it issues\n", dest.path, doc.SourceType)
 }
 
 // redactSecret replaces a signing_secret value in a JSON body with a marker, so `--json` combined with

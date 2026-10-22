@@ -93,6 +93,31 @@ func TestWebhookCreateEnvFileCarriesURLAndSecret(t *testing.T) {
 	}
 }
 
+// TestWebhookCreateProviderOriginSecretFileNamesItsContents pins the kindness nit: a --secret-file on a
+// provider-origin source (stripe) can only ever hold the ingest URL, because the producer signs with a
+// secret only it issued. The file is still written (the URL is what the producer setup needs next), but
+// stderr says what the file actually holds, and stdout never claims a secret went into it.
+func TestWebhookCreateProviderOriginSecretFileNamesItsContents(t *testing.T) {
+	tc := newTestCLI(t)
+	f := newFakeDeployment(t)
+	tc.loggedIn(t, f, tc.clock.Add(time.Hour))
+	seedRouter(f)
+	path := filepath.Join(t.TempDir(), "webhook.secret")
+
+	if code := tc.run(t, "webhook", "create", routeOwnerID, "--source", "stripe", "--queue", "inbox", "--secret-file", path); code != exitOK {
+		t.Fatalf("webhook create: code %d, stderr %q", code, tc.stderr.String())
+	}
+	if strings.Contains(tc.stdout.String(), "Signing secret written to") {
+		t.Errorf("stdout claims a secret was written:\n%s", tc.stdout.String())
+	}
+	mustContain(t, "provider-origin note", tc.stderr.String(),
+		"holds the ingest URL, not a signing secret", "stripe")
+	got := strings.Join(assertSecretFile(t, path, nil), "\n")
+	if !strings.Contains(got, "/webhooks/w/token123") || strings.Contains(got, mintedSecret) {
+		t.Errorf("secret file = %q, want the ingest URL and no secret", got)
+	}
+}
+
 func TestWebhookSecretFlagsAreMutuallyExclusive(t *testing.T) {
 	tc := newTestCLI(t)
 	f := newFakeDeployment(t)
