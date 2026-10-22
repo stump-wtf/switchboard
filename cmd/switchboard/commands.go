@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -191,28 +192,69 @@ func cmdVend(c *cli, args []string) int {
 		"comma-separated; unknown names are refused before anything is minted (default: the todo verbs plus the lease verbs)")
 	webhookAdmin := fs.Bool("allow-webhook-admin", false, "add the webhook, routing, rule, trusted-actor and event verbs to the grant; "+
 		"a worker lane needs none of them, and without this the endpoint cannot administer webhooks")
+	sourceTypes := fs.String("source-types", "", "source types the endpoint may create webhooks for, comma-separated; "+
+		"naming any ceiling flag below replaces the basics defaults (generic, max 1, --queue) with the scope you name")
+	allowedQueues := fs.String("allowed-queues", "", "queues those webhooks may deliver to, comma-separated (default: --queue)")
+	webhookMax := fs.Int("webhook-max", 0, "how many webhooks the endpoint may create itself; named as 0 it vends an MCP-only "+
+		"endpoint with no webhook at all")
+	ttl := fs.String("ttl", "", "credential lifetime: a duration (90m, 24h) or a whole coarse count (7d, 4w); blank means valid until revoked")
+	fromFile := fs.String("from-file", "", "JSON scope file carrying name, queue, verbs, replay_targets, source_types, allowed_queues, "+
+		"webhook_max, ttl and default_lease_ttl_seconds; a flag here overrides what the file says")
+	secretFile := fs.String("secret-file", "", "write the bearer token to this file (mode 0600) instead of printing it")
+	envFile := fs.String("env-file", "", "write SWITCHBOARD_MCP_URL and SWITCHBOARD_ENDPOINT_TOKEN to this file (mode 0600) instead of printing them")
 	leaseTTL := fs.String("lease-ttl", "", leaseTTLUsage)
 	asJSON := fs.Bool("json", false, "print the raw API response")
 	pos, exit, ok := c.parseArgs(fs, args)
 	if !ok {
 		return exit
 	}
-	switch {
-	case len(pos) == 0 || strings.TrimSpace(pos[0]) == "":
-		return c.usageError(fs, "an agent name is required (switchboard vend NAME)")
-	case len(pos) > 1:
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if len(pos) > 1 {
 		return c.usageError(fs, fmt.Sprintf("unexpected argument %q", pos[1]))
 	}
-	if strings.TrimSpace(*queue) == "" {
+	// What the scope file says, where the flags that were not typed take their value from. A field
+	// neither flag nor file names stays out of the request, so the server's default applies to it: one
+	// default, not two that can drift.
+	var scopeFile *vendScopeFile
+	if p := strings.TrimSpace(*fromFile); p != "" {
+		f, err := readVendScopeFile(p)
+		if err != nil {
+			return c.usageError(fs, err.Error())
+		}
+		scopeFile = f
+	}
+	name := ""
+	if len(pos) == 1 {
+		name = strings.TrimSpace(pos[0])
+	}
+	if name == "" && scopeFile != nil {
+		name = strings.TrimSpace(scopeFile.Name)
+	}
+	if name == "" {
+		return c.usageError(fs, "an agent name is required (switchboard endpoint vend NAME, or name in --from-file)")
+	}
+	drain := strings.TrimSpace(*queue)
+	if !flagWasSet(set, "queue", "q") && scopeFile != nil && strings.TrimSpace(scopeFile.Queue) != "" {
+		drain = strings.TrimSpace(scopeFile.Queue)
+	}
+	if drain == "" {
 		return c.usageError(fs, "--queue must not be empty")
 	}
-	req := map[string]any{"name": strings.TrimSpace(pos[0]), "queue": strings.TrimSpace(*queue)}
+	req := map[string]any{"name": name, "queue": drain}
+	var sentSources, sentQueues []string
+	var sentMax *int
+	if scopeFile != nil && len(scopeFile.ReplayTargets) > 0 {
+		req["replay_targets"] = scopeFile.ReplayTargets
+	}
 	// The verb grant: named verbs and/or the admin opt-in, resolved HERE so a mistyped verb stops the
 	// command before the deployment mints an agent, an endpoint and a webhook. With neither, the field
 	// is omitted and the server's narrow default applies — one default, not two (ADR-0047).
 	spec := []string{}
-	if s := strings.TrimSpace(*verbs); s != "" {
-		spec = append(spec, s)
+	if set["verbs"] {
+		spec = append(spec, splitCSV(*verbs)...)
+	} else if scopeFile != nil {
+		spec = append(spec, scopeFile.Verbs...)
 	}
 	if *webhookAdmin {
 		spec = append(spec, "webhook-admin")
@@ -224,12 +266,46 @@ func cmdVend(c *cli, args []string) int {
 		}
 		req["verbs"] = grant
 	}
+	if v, ok := scopeList(set, "source-types", *sourceTypes, fileSourceTypes(scopeFile)); ok {
+		sentSources = v
+		req["source_types"] = v
+	}
+	if v, ok := scopeList(set, "allowed-queues", *allowedQueues, fileAllowedQueues(scopeFile)); ok {
+		sentQueues = v
+		req["allowed_queues"] = v
+	}
+	if set["webhook-max"] {
+		max := *webhookMax
+		sentMax = &max
+		req["webhook_max"] = max
+	} else if scopeFile != nil && scopeFile.WebhookMax != nil {
+		sentMax = scopeFile.WebhookMax
+		req["webhook_max"] = *scopeFile.WebhookMax
+	}
+	// The credential lifetime is read here, in the wizard's vocabulary, so a mistyped ttl is a usage
+	// error rather than a minted endpoint. Blank means valid until revoked; it is never a zero duration.
+	lifetime := strings.TrimSpace(*ttl)
+	if !set["ttl"] && scopeFile != nil {
+		lifetime = strings.TrimSpace(scopeFile.TTL)
+	}
+	if lifetime != "" {
+		req["ttl"] = lifetime
+	}
+	if err := checkVendScope(sentSources, sentQueues, sentMax, lifetime); err != nil {
+		return c.usageError(fs, err.Error())
+	}
+	dest, err := secretDestination(*secretFile, *envFile)
+	if err != nil {
+		return c.usageError(fs, err.Error())
+	}
 	if strings.TrimSpace(*leaseTTL) != "" {
 		seconds, err := parseLeaseFlag(*leaseTTL)
 		if err != nil {
 			return c.usageError(fs, err.Error())
 		}
 		req["default_lease_ttl_seconds"] = seconds
+	} else if scopeFile != nil && scopeFile.DefaultLeaseTTLSeconds != nil {
+		req["default_lease_ttl_seconds"] = *scopeFile.DefaultLeaseTTLSeconds
 	}
 
 	api, err := c.apiClient(context.Background())
@@ -241,25 +317,49 @@ func cmdVend(c *cli, args []string) int {
 		return c.fail(err)
 	}
 	if *asJSON {
-		return c.printJSON(body)
+		if dest.path == "" {
+			return c.printJSON(body)
+		}
+		var probe struct {
+			MCPURL string `json:"mcp_url"`
+			Token  string `json:"token"`
+		}
+		if err := json.Unmarshal(body, &probe); err != nil {
+			return c.fail(fmt.Errorf("vend: malformed response: %w", err))
+		}
+		if err := writeVendSecret(dest, probe.MCPURL, probe.Token); err != nil {
+			return c.fail(err)
+		}
+		fmt.Fprintf(c.stderr, "switchboard: the endpoint credential was written to %s (mode 0600) and is not in the printed body\n", dest.path)
+		return c.printJSON(redactVendBody(body))
 	}
 	var v vendResponse
 	if err := json.Unmarshal(body, &v); err != nil {
 		return c.fail(fmt.Errorf("vend: malformed response: %w", err))
 	}
-	printVendReveal(c.stdout, v)
+	if dest.path != "" {
+		if err := writeVendSecret(dest, v.MCPURL, v.Token); err != nil {
+			return c.fail(err)
+		}
+	}
+	printVendReveal(c.stdout, v, dest)
 	return exitOK
 }
 
 // printVendReveal renders the one-time reveal: the same fields, warning, and .mcp.json wiring the
-// web wizard's reveal shows (SPEC-0007, SPEC-0015).
-func printVendReveal(w io.Writer, v vendResponse) {
+// web wizard's reveal shows (SPEC-0007, SPEC-0015). With a destination file named the credential is in
+// that file, so neither the token line nor the wiring block that embeds the same token is printed.
+func printVendReveal(w io.Writer, v vendResponse, dest secretDest) {
 	fmt.Fprintf(w, "Vended %s (slug %s) on queue %s.\n", v.AgentName, v.Slug, v.Queue)
 	fmt.Fprintln(w, "This credential is shown ONCE and cannot be recovered — store it now.")
 	fmt.Fprintln(w)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "  MCP endpoint\t%s\n", v.MCPURL)
-	fmt.Fprintf(tw, "  Bearer token\t%s\n", v.Token)
+	if dest.path != "" {
+		fmt.Fprintf(tw, "  Bearer token\twritten to %s (mode 0600), not printed\n", dest.path)
+	} else {
+		fmt.Fprintf(tw, "  Bearer token\t%s\n", v.Token)
+	}
 	if v.Webhook.IngestURL != "" {
 		fmt.Fprintf(tw, "  Ingest URL\t%s\n", v.Webhook.IngestURL)
 		fmt.Fprintf(tw, "  \t(any producer POSTs here; the unguessable URL is its credential)\n")
@@ -285,7 +385,7 @@ func printVendReveal(w io.Writer, v vendResponse) {
 			"none of them, and the default grant names none of them: ask for what a lane needs with --verbs.\n",
 			len(held), len(v.Verbs))
 	}
-	if len(v.MCPJSON) > 0 {
+	if len(v.MCPJSON) > 0 && dest.path == "" {
 		var pretty bytes.Buffer
 		if json.Indent(&pretty, v.MCPJSON, "", "  ") == nil {
 			fmt.Fprintln(w)

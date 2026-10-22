@@ -112,3 +112,53 @@ func (s *Store) WebhookOwnerForHuman(ctx context.Context, webhookID, ownerHumanI
 	}
 	return o, nil
 }
+
+// EndpointCeiling is one endpoint's webhook ceiling: the source types it may create webhooks for, the
+// queues those webhooks may route to, and how many it may hold. It is the ceiling the wizard vends
+// and create_webhook enforces, read for a human who is allowed to administer the endpoint on its owner's
+// behalf. State is the endpoint's state so a caller can refuse a write against a revoked endpoint instead
+// of minting a credential nothing delivers to.
+type EndpointCeiling struct {
+	ID            string
+	Slug          string
+	State         string
+	WebhookMax    int
+	SourceTypes   []string
+	WebhookQueues []string
+}
+
+// EndpointCeilingForHuman resolves an endpoint by id or slug, strictly within ownerHumanID's ownership,
+// and returns its webhook ceiling. Unknown, malformed and another human's refs are ALL ErrNotFound, so
+// POST /api/v1/endpoints/{ref}/webhooks cannot be used as an existence oracle for endpoints outside the
+// caller's reach. A revoked endpoint still resolves: deleting and rotating its webhooks stays possible,
+// and the caller refuses only a create.
+//
+// Governing: SPEC-0035 REQ "Webhook Management", REQ "Reach on Every Route"; SPEC-0007 REQ
+// "Human as Accountable Principal".
+//
+// @joestump-agent 10/22/2026 - Added for stump.wtf/switchboard#584: the human CLI and API need the
+// ceiling a create runs against without holding an endpoint credential.
+func (s *Store) EndpointCeilingForHuman(ctx context.Context, ref, ownerHumanID string) (EndpointCeiling, error) {
+	if ref == "" || !isUUID(ownerHumanID) {
+		return EndpointCeiling{}, ErrNotFound
+	}
+	var c EndpointCeiling
+	// A slug is never a valid uuid, so the id half of the predicate is only added for a ref that parses
+	// as one; otherwise the cast would abort the query rather than miss it.
+	where := "e.slug = $1"
+	if isUUID(ref) {
+		where = "(e.id::text = $1 OR e.slug = $1)"
+	}
+	err := s.pool.QueryRow(ctx, `
+		SELECT e.id::text, e.slug, e.state, e.webhook_max, e.webhook_source_types, e.webhook_queues
+		FROM endpoints e JOIN agents a ON a.id = e.agent_id
+		WHERE `+where+` AND a.owner_human_id = $2`, ref, ownerHumanID,
+	).Scan(&c.ID, &c.Slug, &c.State, &c.WebhookMax, &c.SourceTypes, &c.WebhookQueues)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return EndpointCeiling{}, ErrNotFound
+	}
+	if err != nil {
+		return EndpointCeiling{}, fmt.Errorf("store: endpoint ceiling for human: %w", err)
+	}
+	return c, nil
+}

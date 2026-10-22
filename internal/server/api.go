@@ -41,6 +41,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/mcp"
 	"github.com/stump-wtf/switchboard/internal/push"
 	"github.com/stump-wtf/switchboard/internal/store"
+	"github.com/stump-wtf/switchboard/internal/vend"
 )
 
 // apiHandler serves the /api/v1 operator surface.
@@ -65,6 +66,11 @@ type apiHandler struct {
 	// the calling human. Governing: SPEC-0035 REQ "Shared Implementation With MCP", REQ "Route
 	// Management".
 	routes manage.Routes
+	// webhooks is the webhook lifecycle (create one, rotate its secret and URL, delete it) that the
+	// create_webhook, rotate_webhook and delete_webhook verbs also run (internal/manage), driven here by
+	// the calling human against the ceiling on the caller's own endpoint. Governing: SPEC-0035 REQ
+	// "Webhook Management", REQ "Shared Implementation With MCP".
+	webhooks manage.Webhooks
 	// readRL and writeRL are the per-human buckets on the webhook routes and the endpoint edit route
 	// (SPEC-0035 "Rate Limiting").
 	readRL, writeRL *rateLimiter
@@ -80,6 +86,7 @@ func newAPIHandler(st *store.Store, baseURL string, log *slog.Logger, onEndpoint
 		replayGuard: push.New(),
 		rules:       manage.Rules{Store: st, Humans: st},
 		routes:      manage.Routes{Store: st, Humans: st},
+		webhooks:    manage.Webhooks{Store: st, Humans: st},
 		readRL:      newRateLimiter(20, 40),
 		writeRL:     newRateLimiter(5, 20),
 	}
@@ -169,11 +176,25 @@ type vendEndpointIn struct {
 	// null vends with the server default (300). Out of range is refused before anything is minted.
 	// Governing: ADR-0043, SPEC-0007 REQ "Endpoint Default Lease".
 	DefaultLeaseTTLSeconds *int `json:"default_lease_ttl_seconds,omitempty"`
+	// SourceTypes, AllowedQueues and WebhookMax name the endpoint's webhook ceiling instead of
+	// taking the basics ceiling a plain vend grants. Sending any of them switches the request from
+	// "basics" to "named": the fields left out keep the basics defaults (max 1, generic source
+	// type, the vended queue), and every value is checked by the same rules the web wizard applies
+	// before it mints. WebhookMax 0 means this endpoint gets no webhook at all, not even the vend's
+	// own ingestion webhook. Governing: SPEC-0006 REQ "Webhook Self-Management Within a Vended
+	// Ceiling", ADR-0012, ADR-0023.
+	SourceTypes   []string `json:"source_types,omitempty"`
+	AllowedQueues []string `json:"allowed_queues,omitempty"`
+	WebhookMax    *int     `json:"webhook_max,omitempty"`
+	// TTL is the credential lifetime, in the wizard's vocabulary (90m, 24h, 7d, 4w). Absent or empty
+	// means valid until revoked. A lifetime that cannot be read is refused before anything is minted.
+	// Governing: SPEC-0016 REQ "Credential Lifetime".
+	TTL string `json:"ttl,omitempty"`
 }
 
 type vendWebhookOut struct {
-	WebhookID string `json:"webhook_id"`
-	IngestURL string `json:"ingest_url"`
+	WebhookID string `json:"webhook_id,omitempty"`
+	IngestURL string `json:"ingest_url,omitempty"`
 	// TrustMode is always "token" for the vended webhook: the unguessable ingest URL is the
 	// credential. Governing: ADR-0003 (per-source trust model).
 	TrustMode string `json:"trust_mode"`
@@ -290,6 +311,26 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The webhook ceiling and the credential lifetime are validated here, BEFORE anything is minted,
+	// by the same rules the web wizard applies (internal/vend): an endpoint vended by a script with a
+	// scope the wizard would have refused is a permanent artifact carrying the looser rule, and the
+	// only repair is to revoke it. Governing: SPEC-0007 (scope is immutable), SPEC-0006, SPEC-0016.
+	ceiling, err := resolveVendCeiling(in, verbs, in.Queue)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_argument", err.Error(), nil)
+		return
+	}
+	var expiresAt *time.Time
+	if ttl := strings.TrimSpace(in.TTL); ttl != "" {
+		d, err := vend.ParseLifetime(ttl)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_argument", "ttl: "+err.Error(), nil)
+			return
+		}
+		exp := time.Now().Add(d).UTC()
+		expiresAt = &exp
+	}
+
 	token, hash, prefix, err := cred.Mint()
 	if err != nil {
 		a.fail(w, "mint credential", err)
@@ -301,16 +342,16 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The basics webhook ceiling, shared with the one-step quick vend so the two basics paths
-	// grant the same usable scope. Governing: ADR-0023, SPEC-0006.
-	whMax, whSources, whQueues := mcp.BasicWebhookCeiling(verbs, []string{in.Queue})
+	// The ceiling this endpoint is vended with, resolved (and validated) above. Governing: ADR-0023,
+	// SPEC-0006.
 	res, err := a.st.VendAgentEndpoint(r.Context(), store.VendParams{
 		OwnerHumanID: human.ID, Name: in.Name,
 		CredHash: hash, CredPrefix: prefix, Slug: slug,
 		Queues: []string{in.Queue}, Verbs: verbs,
-		WebhookMax:             whMax,
-		WebhookSourceTypes:     whSources,
-		WebhookQueues:          whQueues,
+		ExpiresAt:              expiresAt,
+		WebhookMax:             ceiling.Max,
+		WebhookSourceTypes:     ceiling.SourceTypes,
+		WebhookQueues:          ceiling.Queues,
 		ReplayTargets:          replayTargets,
 		DefaultLeaseTTLSeconds: in.DefaultLeaseTTLSeconds,
 	})
@@ -320,9 +361,25 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	ep := res.Endpoint
 
-	// The ingestion webhook, minted through the same store path the MCP create_webhook verb uses.
-	// Generic source type → token trust mode → no signing secret; the unguessable URL is the
-	// credential. Governing: SPEC-0006, ADR-0012.
+	// The vend's own ingestion webhook, minted through the same store path the MCP create_webhook verb
+	// uses. Generic source type → token trust mode → no signing secret; the unguessable URL is the
+	// credential. An operator who names webhook_max 0 has asked for an MCP-only endpoint, so nothing
+	// is minted and the response carries no webhook. Governing: SPEC-0006, ADR-0012.
+	out := vendEndpointOut{
+		AgentName: res.AgentName, Slug: ep.Slug,
+		MCPURL: mcp.EndpointURL(a.base, ep.Slug),
+		Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs, ReplayTargets: replayTargets,
+		MCPJSON:          json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
+		endpointLeaseOut: leaseOut(ep.DefaultLeaseTTLSeconds),
+	}
+	if ep.ExpiresAt != nil {
+		s := ep.ExpiresAt.UTC().Format(time.RFC3339)
+		out.ExpiresAt = &s
+	}
+	if !ceiling.AutoWebhook {
+		writeJSON(w, http.StatusCreated, out)
+		return
+	}
 	ingestToken, err := mintAPIIngestToken()
 	if err != nil {
 		a.fail(w, "mint ingest token", err)
@@ -332,30 +389,13 @@ func (a *apiHandler) VendEndpoint(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// The endpoint exists and works over MCP; say so instead of a bare 500.
 		a.log.Error("api vend webhook mint", "slug", ep.Slug, "err", err)
-		writeJSON(w, http.StatusCreated, vendEndpointOut{
-			AgentName: res.AgentName, Slug: ep.Slug,
-			MCPURL: mcp.EndpointURL(a.base, ep.Slug),
-			Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs, ReplayTargets: replayTargets,
-			MCPJSON:          json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
-			endpointLeaseOut: leaseOut(ep.DefaultLeaseTTLSeconds),
-		})
+		writeJSON(w, http.StatusCreated, out)
 		return
 	}
-
-	var expiresAt *string
-	if ep.ExpiresAt != nil {
-		s := ep.ExpiresAt.UTC().Format(time.RFC3339)
-		expiresAt = &s
+	out.Webhook = vendWebhookOut{
+		WebhookID: webhook.ID, IngestURL: a.base + "/webhooks/w/" + ingestToken, TrustMode: "token",
 	}
-	writeJSON(w, http.StatusCreated, vendEndpointOut{
-		AgentName: res.AgentName, Slug: ep.Slug,
-		MCPURL: mcp.EndpointURL(a.base, ep.Slug),
-		Token:  token, Queue: in.Queue, Verbs: ep.ScopeVerbs, ReplayTargets: replayTargets,
-		Webhook:          vendWebhookOut{WebhookID: webhook.ID, IngestURL: a.base + "/webhooks/w/" + ingestToken, TrustMode: "token"},
-		MCPJSON:          json.RawMessage(mcp.ClientConfigJSON(a.base, ep.Slug, token)),
-		ExpiresAt:        expiresAt,
-		endpointLeaseOut: leaseOut(ep.DefaultLeaseTTLSeconds),
-	})
+	writeJSON(w, http.StatusCreated, out)
 }
 
 // ListEndpoints returns the authenticated operator's vended endpoints — the machine twin of the

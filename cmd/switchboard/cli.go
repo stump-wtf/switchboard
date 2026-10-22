@@ -141,6 +141,9 @@ func commands() []command {
 		}},
 		{name: "webhook", args: "<verb>", summary: "manage your webhooks, their routing rules and their routes", subs: []command{
 			{name: "list", summary: "list the webhooks your endpoints own (never their ingest URLs)", run: cmdWebhookList},
+			{name: "create", args: "ENDPOINT", summary: "create a webhook on an endpoint you own, inside the ceiling it was vended with", run: cmdWebhookCreate},
+			{name: "rotate", args: "WEBHOOK_ID", summary: "retire a webhook's ingest URL and signing secret, which is the fix for a leaked one", run: cmdWebhookRotate},
+			{name: "delete", args: "WEBHOOK_ID", summary: "delete a webhook: its ingest URL stops working at once", run: cmdWebhookDelete},
 			{name: "rules", args: "<verb>", summary: "read, test and replace a webhook's routing rules", subs: []command{
 				{name: "get", args: "WEBHOOK_ID", summary: "show a webhook's rules, default, params and grant", run: cmdWebhookRulesGet},
 				{name: "test", args: "WEBHOOK_ID", summary: "dry-run rules against a stored event or a sample payload; saves nothing", run: cmdWebhookRulesTest},

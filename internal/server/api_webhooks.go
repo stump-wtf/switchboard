@@ -74,6 +74,14 @@ func (a *apiHandler) webhookRoutes(r chi.Router) {
 		r.Post("/webhooks/{webhook_id}/routes", a.AddWebhookRoute)
 		r.Delete("/webhooks/{webhook_id}/routes/{endpoint_id}", a.RemoveWebhookRoute)
 	})
+	// The lifecycle writes (api_webhook_admin.go): a create carries a source type, a queue and at most a
+	// trust list and a supplied secret, so the usual 64 KiB cap holds for these three too.
+	r.Group(func(r chi.Router) {
+		r.Use(maxBytes(64<<10), a.perHuman(a.writeRL))
+		r.Post("/endpoints/{ref}/webhooks", a.CreateWebhookForEndpoint)
+		r.Post("/webhooks/{webhook_id}/rotate", a.RotateWebhook)
+		r.Delete("/webhooks/{webhook_id}", a.DeleteWebhook)
+	})
 }
 
 // webhookListOut is one webhook in reach. It never carries the ingest URL or a secret: both were
@@ -301,6 +309,19 @@ func (a *apiHandler) manageErr(w http.ResponseWriter, r *http.Request, what, web
 		case manage.ErrUnavailable:
 			status = http.StatusServiceUnavailable
 			a.log.Warn("api "+what+" unavailable", "human", human.ID, "webhook", webhookID, "cause", me.Msg)
+		case manage.ErrCeilingExceeded:
+			// The endpoint's count cap, which is a state of the endpoint rather than a bad request: the
+			// fix is to delete a webhook or vend a wider ceiling (SPEC-0035 REQ "Webhook Management").
+			status = http.StatusConflict
+		case manage.ErrForbiddenSourceType:
+			// Named apart from a plain forbidden on purpose: the fix for a source type the ceiling never
+			// granted is to vend it in, which the fix for a queue outside the grant is not.
+			status = http.StatusForbidden
+		case manage.ErrEncryptionRequired:
+			// SPEC-0032 REQ-12: the refusal is the operator's configuration, not the caller's request, and
+			// nothing was stored. The code tells an operator which knob to turn.
+			status = http.StatusInternalServerError
+			a.log.Error("api "+what+" needs an at-rest key", "human", human.ID, "webhook", webhookID)
 		}
 		var extra map[string]any
 		if me.State != "" {

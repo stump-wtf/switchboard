@@ -417,6 +417,7 @@ func newRouter(d routerDeps) chi.Router {
 	// Governing: ADR-0023 REQ "Registration Vends the Whole Happy Path"; ADR-0019.
 	api := newAPIHandler(d.st, d.cfg.BaseURL, d.log, apiRevokeHook(d))
 	api.rules.Router = apiRulesRouter(d)
+	api.webhooks.AllowSuppliedSecret = func() bool { return d.cfg.WebhookAllowSuppliedSecret }
 	api.endpointLeaseChanged = apiLeaseHook(d)
 	if d.writeRL != nil {
 		api.writeRL = d.writeRL

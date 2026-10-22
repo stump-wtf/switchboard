@@ -53,6 +53,12 @@ type fakeDeployment struct {
 	routeRows    map[string][]map[string]any
 	routeCalls   []string        // "PUT|DELETE webhook target" for every route write seen
 	unroutable   map[string]bool // targets the route add answers 403 forbidden for
+	// The human webhook lifecycle (SPEC-0035): what the create/rotate/delete routes saw.
+	webhookCreates []map[string]any // POST /api/v1/endpoints/{ref}/webhooks bodies seen, "endpoint" added
+	createdRef     string           // the endpoint ref the last create targeted
+	rotateCalls    []string         // webhook ids seen on POST /api/v1/webhooks/{id}/rotate
+	deleteCalls    []string         // webhook ids seen on DELETE /api/v1/webhooks/{id}
+	createStatus   int              // when non-zero, the status the create route answers with
 }
 
 func newFakeDeployment(t *testing.T) *fakeDeployment {
@@ -198,6 +204,36 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSONResponse(w, 200, rows)
 		default:
+			// POST /api/v1/endpoints/{ref}/webhooks (SPEC-0035): the reveal shape, with the minted
+			// secret once, and the ceiling refusal when the test asks for it.
+			if rest, ok := strings.CutPrefix(r.URL.Path, "/api/v1/endpoints/"); ok && r.Method == http.MethodPost {
+				if ref, ok := strings.CutSuffix(rest, "/webhooks"); ok && ref != "" {
+					var in map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+						http.Error(w, "invalid JSON body", 400)
+						return
+					}
+					in["endpoint"] = ref
+					f.createdRef = ref
+					f.webhookCreates = append(f.webhookCreates, in)
+					if f.createStatus != 0 {
+						writeJSONResponse(w, f.createStatus, map[string]any{
+							"error": "the endpoint already has the webhooks its ceiling allows", "code": "ceiling_exceeded"})
+						return
+					}
+					supplied, _ := in["signing_secret"].(string)
+					secret, origin := "whsec_mintedonce", "minted"
+					if supplied != "" {
+						secret, origin = supplied, "supplied"
+					}
+					writeJSONResponse(w, 201, map[string]any{
+						"webhook_id": "wh-new", "endpoint_slug": "router", "source_type": in["source_type"],
+						"target_queue": in["target_queue"], "trust_mode": "signed", "secret_origin": origin,
+						"secret_set": true, "signing_secret": secret, "ingest_url": base + "/webhooks/w/token123",
+					})
+					return
+				}
+			}
 			// PATCH /api/v1/endpoints/{ref}
 			if ref, ok := strings.CutPrefix(r.URL.Path, "/api/v1/endpoints/"); ok && r.Method == http.MethodPatch && ref != "" && !strings.Contains(ref, "/") {
 				var in map[string]any
@@ -320,6 +356,15 @@ func (f *fakeDeployment) serveWebhooks(w http.ResponseWriter, r *http.Request) b
 		return in, true
 	}
 	switch r.Method + " " + verb {
+	case "POST rotate":
+		f.rotateCalls = append(f.rotateCalls, id)
+		writeJSONResponse(w, 200, map[string]any{
+			"webhook_id": id, "endpoint_slug": "router", "source_type": "github", "target_queue": "inbox",
+			"trust_mode": "signed", "secret_origin": "minted", "secret_set": true, "signing_secret": "whsec_rotated",
+		})
+	case "DELETE ":
+		f.deleteCalls = append(f.deleteCalls, id)
+		writeJSONResponse(w, 200, map[string]any{"webhook_id": id, "deleted": true})
 	case "GET rules":
 		doc, ok := f.rulesDocs[id]
 		if !ok {
