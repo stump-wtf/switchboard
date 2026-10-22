@@ -170,7 +170,12 @@ func TestWatchdogExitsOverItsMemoryLimit(t *testing.T) {
 func TestSandboxDeadlineKillsTheChild(t *testing.T) {
 	s := testSandbox(t)
 	s.deadline = time.Millisecond
-	d := s.Route(context.Background(), Config{Rules: []Rule{rule("ok", `true`, Action{Queue: "forge"})}}, grant(), cairnInput(`{}`))
+	// The rule must provably outlast the deadline, or the test races: a trivial `true` can finish
+	// inside the 1ms window on a fast or momentarily idle runner, the child exits cleanly before the
+	// deadline fires, and the assertion meets faults=[] instead of the deadline fault (seen as a red
+	// merge-train run while nothing in the sandbox had changed). A flat-memory CPU loop keeps the
+	// child busy for as long as it lives — the deadline, not the rule, decides when that is.
+	d := s.Route(context.Background(), Config{Rules: []Rule{rule("spin", `reduce range(0; 100000000) as $i (0; . + $i)`, Action{Queue: "forge"})}}, grant(), cairnInput(`{}`))
 	if f := onlySandboxFault(t, d); f.Cause != FaultSandbox || !strings.Contains(f.Detail, "deadline") {
 		t.Fatalf("fault = %+v, want a deadline sandbox failure", f)
 	}
