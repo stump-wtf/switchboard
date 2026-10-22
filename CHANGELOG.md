@@ -15,6 +15,20 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **A scripted vend grants the scope the wizard asks for, and a revealed secret can go to a file.**
+  `switchboard endpoint vend` takes `--source-types`, `--allowed-queues`, `--webhook-max` and `--ttl`, or
+  all of them from `--from-file scope.json`, so a router endpoint (webhooks from named source types,
+  delivered to several queues, a credential that expires) is reproducible in a playbook instead of
+  clickable only. Every value is checked by the rules the wizard applies, moved to `internal/vend` where
+  both surfaces reach them — scope is immutable after vend, so a looser rule accepted by a script would be
+  a permanent endpoint. Naming no ceiling field keeps today's defaults exactly; `webhook_max: 0` is how
+  you say "MCP only, no webhook at all". `switchboard webhook create ENDPOINT --source TYPE --queue Q`,
+  `webhook rotate WEBHOOK` and `webhook delete WEBHOOK` reach SPEC-0035's human API routes, which run the
+  same ceiling, trust and ownership checks as the MCP verbs, so managing your own webhooks no longer needs
+  the endpoint's MCP credential. And `--secret-file` / `--env-file` on those commands and on `vend` write
+  the revealed credential to a file created 0600 and print the path: no secret on stdout, including in the
+  `.mcp.json` stanza and the `--json` body, which are scrubbed of it. (#584, ADR-0049 proposed)
+
 - **The inbound webhook throttle is an operator setting.** The per-client-IP bucket on the ingest surface
   was hardcoded to 10 requests/second with a burst of 20, and the "throttling never drops work" promise
   only holds for senders that retry a `429` — Gitea does not, so a burst of deliveries that outruns the

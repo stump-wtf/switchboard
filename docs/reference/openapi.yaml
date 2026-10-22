@@ -460,6 +460,90 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Problem' }
 
+  /api/v1/endpoints/{ref}/webhooks:
+    post:
+      tags: [operator-api]
+      operationId: createEndpointWebhook
+      summary: Create an ingestion webhook on an endpoint you own
+      description: |
+        `create_webhook` over the human API (SPEC-0035 REQ "Webhook Management", ADR-0049), running the same
+        lifecycle code the MCP tool runs with the calling human as the principal. The ceilings are therefore
+        identical: the source type must be one the endpoint was vended with, the target queue one of its
+        allowed queues, and the endpoint's webhook count must stay within its `webhook_max`. A refused write
+        leaves nothing: validation happens before any mint, so a 403 or 409 creates no row and orphans no
+        secret. The signing secret appears in this response and nowhere else ever (SPEC-0032 REQ-3), so the
+        CLI writes it to a file the operator named instead of printing it.
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          description: The slug or id of an endpoint that belongs to the caller (see listEndpoints).
+          schema: { type: string }
+      security:
+        - operatorOAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_type, target_queue]
+              properties:
+                source_type:
+                  type: string
+                  description: A selectable source type within the endpoint's allowed source types.
+                  example: gitea
+                target_queue:
+                  type: string
+                  description: A queue within the endpoint's allowed queues. "quarantine" is reserved.
+                  example: triage
+                signing_secret:
+                  type: [string, "null"]
+                  description: >-
+                    The producer's own secret, where the source type and the deployment's
+                    WebhookAllowSuppliedSecret allow it (SPEC-0032 REQ-1); omit to have Switchboard mint one.
+      responses:
+        '201':
+          description: Created. The webhook's metadata, with the signing secret revealed once, here.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookCreated' }
+        '400':
+          description: Invalid body, a missing source_type or target_queue, or a source type that is not selectable here.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer (an sbk_ endpoint credential included).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '403':
+          description: source_type is outside the endpoint's grant (forbidden_source_type), or the queue is outside it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '404':
+          description: No endpoint by that slug or id belongs to the caller; no webhook by that id is theirs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '409':
+          description: The endpoint's webhook ceiling is spent (ceiling_exceeded), or the endpoint is not active.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '429':
+          description: The caller's per-human write budget is spent; see Retry-After.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '500':
+          description: The deployment has no webhook encryption key, so a minted secret could not be stored (encryption_required).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
   /api/v1/webhooks:
     get:
       tags: [operator-api]
@@ -487,6 +571,101 @@ paths:
           description: Missing, expired, revoked, or non-operator bearer (an sbk_ endpoint credential included).
         '429':
           description: The caller's per-human read budget is spent; see Retry-After.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
+  /api/v1/webhooks/{webhook_id}/rotate:
+    post:
+      tags: [operator-api]
+      operationId: rotateWebhook
+      summary: Replace a webhook's ingest URL and signing secret
+      description: |
+        `rotate_webhook` over the human API (SPEC-0035 REQ "Webhook Management", ADR-0049): the route that turns
+        "a signing secret leaked" back into a working webhook without the owning endpoint's credential. It is
+        reachable for a webhook on a revoked endpoint too, because rotating a leaked secret is never the wrong
+        answer. The new secret is revealed once, in this response. For a source type whose secret the provider
+        issues, rotate replaces the ingest URL only and the response carries a `warning` saying so.
+      parameters:
+        - name: webhook_id
+          in: path
+          required: true
+          description: A webhook whose owning endpoint belongs to the caller (see listWebhooks).
+          schema: { type: string, format: uuid }
+      security:
+        - operatorOAuth: []
+      responses:
+        '200':
+          description: Rotated. The new ingest URL and, where Switchboard mints the secret, the new secret.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookCreated' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer (an sbk_ endpoint credential included).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '404':
+          description: No webhook by that id belongs to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '409':
+          description: A concurrent rotate won; the row is unchanged and a retry is safe.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '429':
+          description: The caller's per-human write budget is spent; see Retry-After.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '500':
+          description: The deployment has no webhook encryption key, so a minted secret could not be stored (encryption_required).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
+  /api/v1/webhooks/{webhook_id}:
+    delete:
+      tags: [operator-api]
+      operationId: deleteWebhook
+      summary: Delete a webhook you own, its routes with it
+      description: |
+        `delete_webhook` over the human API (SPEC-0035 REQ "Webhook Management", ADR-0049). Deliveries stop at
+        once and the routing rules and routes aimed at the webhook go with it. The CLI asks before it gets here
+        unless `--force` is given, because unlike a rotate this is not reversible from the terminal.
+      parameters:
+        - name: webhook_id
+          in: path
+          required: true
+          description: A webhook whose owning endpoint belongs to the caller (see listWebhooks).
+          schema: { type: string, format: uuid }
+      security:
+        - operatorOAuth: []
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhook_id, deleted]
+                properties:
+                  webhook_id: { type: string, format: uuid }
+                  deleted: { type: boolean, example: true }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer (an sbk_ endpoint credential included).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '404':
+          description: No webhook by that id belongs to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '429':
+          description: The caller's per-human write budget is spent; see Retry-After.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/APIError' }
@@ -983,6 +1162,46 @@ components:
             `heartbeat` that passes no `lease_ttl_seconds` gets. Absent or null uses the server
             default (300). Out of range fails the vend with 400 `invalid_argument` and mints nothing.
           example: 3600
+        source_types:
+          type: array
+          items: { type: string }
+          description: >-
+            Names the endpoint's webhook ceiling instead of taking the basics ceiling a plain vend
+            grants. Sending any of source_types, allowed_queues or webhook_max switches the request
+            from basics to a named ceiling, where every field left out keeps the basics default (max
+            1, `generic`, the vended queue), so naming one source type widens the grant rather than
+            dropping the webhook the endpoint would otherwise have gotten. Each entry must be a
+            source type Switchboard can verify a delivery for. An empty list means no self-managed
+            webhooks of any kind. Scope is immutable after vend (SPEC-0007), and a value the web
+            wizard would refuse fails the vend with 400 `invalid_argument` and mints nothing.
+            Governing: SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling", ADR-0049.
+          example: ['gitea', 'generic']
+        allowed_queues:
+          type: array
+          items: { type: string }
+          description: >-
+            The queues a webhook created by this endpoint may target. Defaults to the vended queue.
+            `quarantine` is reserved for held deliveries and is refused. Entries are trimmed and
+            de-duplicated, keeping order.
+          example: ['triage', 'review']
+        webhook_max:
+          type: [integer, "null"]
+          minimum: 0
+          description: >-
+            How many webhooks this endpoint may create for itself (SPEC-0006). Absent or null on a
+            named ceiling keeps the basics cap of 1. Zero means no webhook at all, including the
+            vend's own ingestion webhook: the response's `webhook` is then empty, which is how a
+            script vends an MCP-only endpoint. A negative value fails the vend with 400
+            `invalid_argument` and mints nothing.
+          example: 3
+        ttl:
+          type: string
+          description: >-
+            The credential lifetime in the wizard's vocabulary: a Go duration (90m, 24h, 168h) or a
+            whole number of days or weeks (7d, 4w). Absent or empty means valid until revoked. A
+            lifetime that cannot be read, or one that is zero or negative, fails the vend with 400
+            `invalid_argument` and mints nothing. Governing: SPEC-0016 REQ "Credential Lifetime".
+          example: 24h
 
     VendEndpointOut:
       type: object
@@ -1022,7 +1241,9 @@ components:
 
     VendWebhookOut:
       type: object
-      required: [webhook_id, ingest_url, trust_mode]
+      required: [trust_mode]
+      description: >-
+        The ingestion webhook the vend minted, empty when the vend's ceiling set `webhook_max` to 0.
       properties:
         webhook_id: { type: string }
         ingest_url: { type: string, format: uri }
@@ -1143,6 +1364,31 @@ components:
         has_params: { type: boolean }
         created_at: { type: string, format: date-time }
         rotated_at: { type: string, format: date-time }
+
+    WebhookCreated:
+      type: object
+      description: >-
+        A create or rotate response, identical to what the endpoint's own create_webhook and rotate_webhook
+        tools return, so an operator scripting either surface reads one set of names. `signing_secret` is
+        present only here and only when Switchboard minted one (SPEC-0032 REQ-2, REQ-3).
+      required: [webhook_id, endpoint_id, ingest_url, source_type, target_queue, trust_mode, secret_origin, secret_set]
+      properties:
+        webhook_id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        endpoint_slug: { type: string, example: forge-router-ab12cd34 }
+        ingest_url: { type: string, format: uri, description: The one-time reveal of the delivery URL. }
+        source_type: { type: string, example: gitea }
+        target_queue: { type: string, example: triage }
+        trust_mode: { type: string, enum: [signed, token] }
+        signing_secret:
+          type: string
+          description: The minted signing secret, revealed once and never again. Absent when the provider issues it.
+        secret_origin: { type: string, enum: [switchboard, provider] }
+        secret_set: { type: boolean, description: Whether a signature can be verified now; false means awaiting_secret. }
+        secret_fingerprint: { type: string, description: Non-secret checksum for telling two secrets apart. }
+        secret_set_at: { type: string, format: date-time }
+        rotated_at: { type: string, format: date-time }
+        warning: { type: string, description: Set when a rotate could not replace a provider-issued secret. }
 
     RuleAction:
       type: object

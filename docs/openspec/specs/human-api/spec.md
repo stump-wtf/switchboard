@@ -366,13 +366,13 @@ The `switchboard` binary MUST provide a command for every `/api/v1` route, group
 
 | Command | Route |
 | --- | --- |
-| `endpoint vend NAME [--queue Q] [--verbs SPEC\|todo\|webhook-admin\|all] [--allow-webhook-admin] [--lease-ttl DUR]` | `POST /endpoints` |
+| `endpoint vend NAME [--queue Q] [--verbs SPEC\|todo\|webhook-admin\|all] [--allow-webhook-admin] [--source-types L] [--allowed-queues L] [--webhook-max N] [--ttl DUR] [--from-file PATH] [--secret-file PATH\|--env-file PATH] [--lease-ttl DUR]` | `POST /endpoints` |
 | `endpoint list` (with LEASE and VERBS columns; `-v` names the verbs) | `GET /endpoints` |
 | `endpoint edit REF --lease-ttl DUR\|default` | `PATCH /endpoints/{ref}` |
 | `webhook list [--endpoint REF]` | `GET /webhooks`, or `GET /endpoints/{ref}/webhooks` |
-| `webhook create REF --source TYPE --queue Q` | `POST /endpoints/{ref}/webhooks` |
-| `webhook rotate WEBHOOK` | `POST /webhooks/{id}/rotate` |
-| `webhook delete WEBHOOK` | `DELETE /webhooks/{id}` |
+| `webhook create REF --source TYPE --queue Q [--secret-file PATH\|--env-file PATH]` | `POST /endpoints/{ref}/webhooks` |
+| `webhook rotate WEBHOOK [--secret-file PATH\|--env-file PATH]` | `POST /webhooks/{id}/rotate` |
+| `webhook delete WEBHOOK [--force]` | `DELETE /webhooks/{id}` |
 | `webhook rules get WEBHOOK` | `GET …/rules` |
 | `webhook rules set WEBHOOK --file F` | `PUT …/rules` |
 | `webhook rules add WEBHOOK --expr E --queue Q\|--drop [--id ID] [--name N] [--work-order] [--position N]` | `POST …/rules` |
