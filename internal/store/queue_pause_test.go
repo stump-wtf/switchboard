@@ -140,8 +140,10 @@ func TestResumeWakeNamesOnlyGatePassingRows(t *testing.T) {
 	}
 
 	// Drain the gated row, re-pause, and resume into a backlog of unverified rows only.
-	if _, err := s.ClaimNext(ctx, ep, []string{"inbox"}, "w", time.Minute); err != nil {
-		t.Fatalf("claim after resume: %v", err)
+	// Claimed by id: claim_next hands out the oldest pending row whatever its verification, so
+	// it would take the unverified row created first and leave the gated one still pending.
+	if _, err := s.ClaimTodo(ctx, ep, gated.ID, "w", time.Minute); err != nil {
+		t.Fatalf("claim the gated row: %v", err)
 	}
 	if _, err := s.CompleteTodo(ctx, ep, gated.ID, "w", nil); err != nil {
 		t.Fatalf("complete: %v", err)
