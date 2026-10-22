@@ -15,6 +15,17 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **A queue can now be paused without stopping its intake.** An operator draining a downstream
+  consumer had no lever short of disabling the endpoint (which drops or fails inbound webhooks) or
+  killing the consumer (which still left doorbells and wake hooks starting runs).
+  `switchboard queue pause <queue> --reason "..."` now keeps webhooks landing as pending todos —
+  nothing lost, no attempts spent — while claims, the channel doorbell, the ready-hook wakes and
+  the stall nudge all treat the queue as empty. `switchboard queue resume <queue>` lifts it and
+  re-rings the backlog once through the ordinary wake chain; claims already in flight finish
+  untouched. Pause state lives in Postgres, survives restarts, and shows up in `list_todos`'s
+  `paused_queues`, `GET /api/v1/queues`, `switchboard queue list` and the queue metrics, so a
+  quiet queue reads as paused rather than broken. Proposed as ADR-0048. (#581)
+
 - **A scripted vend grants the scope the wizard asks for, and a revealed secret can go to a file.**
   `switchboard endpoint vend` takes `--source-types`, `--allowed-queues`, `--webhook-max` and `--ttl`, or
   all of them from `--from-file scope.json`, so a router endpoint (webhooks from named source types,

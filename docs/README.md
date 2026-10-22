@@ -72,6 +72,7 @@ Two layers:
 | [ADR-0045](adrs/ADR-0045-queue-stall-nudge.md) | **Queue-stall nudge (proposed)** | A queue whose pending work nobody claims re-fires its notify-hook wake on a widening, progress-reset backoff, so a one-todo-per-invocation consumer drains without a new inbound webhook. |
 | [ADR-0047](adrs/ADR-0047-verb-scoped-endpoint-vend.md) | **Verb-scoped endpoint vend (proposed)** | `endpoint vend` defaults to the verbs a lane actually uses, `--verbs` names verb lists and presets, `--allow-webhook-admin` is the explicit opt-in, and `endpoint list` reveals what each credential holds. |
 | [ADR-0049](adrs/ADR-0049-scripted-vend-scope-and-webhook-lifecycle-from-the-cli.md) | **Scripted vend scope + webhook lifecycle from the CLI (proposed)** | `endpoint vend` takes the wizard's scope from flags or a scope file through one shared rule set, `webhook create/rotate/delete` reach the human API, and a revealed secret can go to a 0600 file instead of stdout. |
+| [ADR-0048](adrs/ADR-0048-per-queue-pause.md) | **Per-queue pause (proposed)** | `switchboard queue pause` / `resume`: a paused queue keeps accepting webhooks as pending todos while claims, doorbells and wakes go quiet; resume re-rings the backlog. |
 
 ### Later records
 

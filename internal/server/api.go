@@ -144,12 +144,16 @@ func (a *apiHandler) Routes() chi.Router {
 		r.Post("/endpoints/{ref}/revoke", a.RevokeEndpoint)
 		r.Post("/endpoints/{ref}/todos", a.PushTodo)
 		r.Get("/agents", a.ListAgents)
+		r.Get("/queues", a.ListQueues) // ADR-0048
 	})
 	// Editing an endpoint's settings draws from the per-human write bucket, like the other SPEC-0035
 	// writes. Governing: ADR-0043, SPEC-0035 "Rate Limiting".
 	r.Group(func(r chi.Router) {
 		r.Use(maxBytes(64<<10), a.perHuman(a.writeRL))
 		r.Patch("/endpoints/{ref}", a.EditEndpoint)
+		// Pausing a queue is an operator write (ADR-0048): same bucket as the others.
+		r.Post("/queues/{queue}/pause", a.PauseQueue)
+		r.Post("/queues/{queue}/resume", a.ResumeQueue)
 	})
 	a.webhookRoutes(r)
 	return r

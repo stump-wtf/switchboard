@@ -155,6 +155,11 @@ func commands() []command {
 				{name: "remove", args: "WEBHOOK_ID ENDPOINT", summary: "stop delivering a webhook to an endpoint (slug or id)", run: cmdWebhookRouteRemove},
 			}},
 		}},
+		{name: "queue", args: "<verb>", summary: "pause and resume delivery on a queue without stopping intake", subs: []command{
+			{name: "list", summary: "list every known queue with its counts and whether it is paused", run: cmdQueueLs},
+			{name: "pause", args: "QUEUE", summary: "quiesce delivery on a queue: webhooks keep landing, nothing is delivered", run: cmdQueuePause},
+			{name: "resume", args: "QUEUE", summary: "lift a pause and re-ring the queue's backlog", run: cmdQueueResume},
+		}},
 		{name: "login", args: "[URL]", summary: "sign in to a deployment over OAuth (opens your browser)", run: cmdLogin},
 		{name: "status", summary: "show where you are logged in and whether the credentials are live", run: cmdStatus},
 		{name: "logout", summary: "forget the local credentials", run: cmdLogout},
