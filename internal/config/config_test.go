@@ -179,3 +179,51 @@ func TestNotifyHookAllowCIDRs(t *testing.T) {
 		t.Fatalf("malformed allowlist: %v", err)
 	}
 }
+
+// TestWebhookRateLimitSettings pins #586: unset keeps the values the limiter was hardcoded to
+// (10 rps, burst 20), a positive override is applied, and a zero/negative/malformed value fails
+// startup naming the variable rather than silently defaulting a typo — a bucket that 429s
+// everything (rate or burst 0) would silently drop every inbound delivery.
+func TestWebhookRateLimitSettings(t *testing.T) {
+	t.Setenv("SWITCHBOARD_WEBHOOK_RATE_RPS", "")
+	t.Setenv("SWITCHBOARD_WEBHOOK_BURST", "")
+	cfg := FromEnv()
+	if cfg.WebhookRateRPS != DefaultWebhookRateRPS || cfg.WebhookBurst != DefaultWebhookBurst {
+		t.Fatalf("defaults: got %d/%d, want %d/%d", cfg.WebhookRateRPS, cfg.WebhookBurst, DefaultWebhookRateRPS, DefaultWebhookBurst)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("defaults must validate: %v", err)
+	}
+	rps, burst := cfg.WebhookLimiterBounds()
+	if rps != DefaultWebhookRateRPS || burst != DefaultWebhookBurst {
+		t.Fatalf("WebhookLimiterBounds on a literal Config: got %v/%v, want %d/%d", rps, burst, DefaultWebhookRateRPS, DefaultWebhookBurst)
+	}
+
+	t.Setenv("SWITCHBOARD_WEBHOOK_RATE_RPS", " 50 ")
+	t.Setenv("SWITCHBOARD_WEBHOOK_BURST", "100")
+	cfg = FromEnv()
+	if cfg.WebhookRateRPS != 50 || cfg.WebhookBurst != 100 {
+		t.Fatalf("override: got %d/%d, want 50/100", cfg.WebhookRateRPS, cfg.WebhookBurst)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("override must validate: %v", err)
+	}
+	if rps, burst := cfg.WebhookLimiterBounds(); rps != 50 || burst != 100 {
+		t.Fatalf("WebhookLimiterBounds: got %v/%v, want 50/100", rps, burst)
+	}
+
+	for _, key := range []string{"SWITCHBOARD_WEBHOOK_RATE_RPS", "SWITCHBOARD_WEBHOOK_BURST"} {
+		other := "SWITCHBOARD_WEBHOOK_BURST"
+		if key == "SWITCHBOARD_WEBHOOK_BURST" {
+			other = "SWITCHBOARD_WEBHOOK_RATE_RPS"
+		}
+		for _, bad := range []string{"0", "-1", "ten", "1.5"} {
+			t.Setenv(key, bad)
+			t.Setenv(other, "")
+			err := FromEnv().Validate()
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Errorf("%s=%q: Validate() = %v, want an error naming %s", key, bad, err, key)
+			}
+		}
+	}
+}

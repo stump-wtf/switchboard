@@ -43,6 +43,8 @@ Everything comes from the environment; `serve` takes no flags.
 | `SWITCHBOARD_SECRET_ENCRYPTION_KEY` | — | Recommended. Encrypts webhook signing secrets at rest. 32 bytes, base64 or hex. **Empty stores them in plaintext**; see [Secrets at rest](/guides/security-model#secrets-at-rest). |
 | `SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET` | off | Lets `create_webhook` accept a `signing_secret` for a source Switchboard normally mints secrets for (GitHub, Gitea, Cairn). Off, such a call is refused with `invalid_argument`, because a secret you pasted is one more secret to track and rotate. Provider-issued secrets — Stripe's and Slack's — are always accepted, are never stored in plaintext (they need `SWITCHBOARD_SECRET_ENCRYPTION_KEY`), and are recorded in `webhook_secret_audit` with a fingerprint of who wrote which. Such a webhook reports `secret_supplied: true`, and `rotate_webhook` replaces its secret with a minted one. |
 | `SWITCHBOARD_DEV_LOGIN` | off | Unauthenticated local login. Never in production. |
+| `SWITCHBOARD_WEBHOOK_RATE_RPS` | `10` | Per-client-IP refill rate (requests/second) of the inbound webhook throttle. Raise it if a producer's bursts outrun the bucket: a sender that never retries a `429` — Gitea deliveries among them — loses every event the limiter rejects. Per-webhook bucketing after signature verification is a tracked follow-up. Must be a positive integer. |
+| `SWITCHBOARD_WEBHOOK_BURST` | `20` | Per-client-IP bucket capacity of the same throttle: how many deliveries may arrive at once before throttling starts. Raise it together with the rate for a sender that files batches. Must be a positive integer. |
 | `SWITCHBOARD_NOTIFY_HOOK_MAX` | `5` | Per-endpoint ceiling on outbound notify hooks. `0` turns notify hooks off. Notify hooks also require `SWITCHBOARD_SECRET_ENCRYPTION_KEY`: without it, no hook can be created, because a hook secret is never stored in plaintext. |
 | `SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS` | empty | Comma-separated CIDRs that notify hooks may target despite the private-address rule. Off by default. **Read the warning below before setting it.** |
 | `SWITCHBOARD_PUSH_ALLOW_HTTP` | off | Allows plain `http://` notify-hook targets. Never in production: notifications then travel unencrypted. |
@@ -195,6 +197,8 @@ network, use `sslmode=verify-full`.
 | `config: SWITCHBOARD_METRICS_TOKEN is N bytes; it must be at least 32 …` | The scrape token is too short. It must also be printable ASCII with no spaces. |
 | `config: SWITCHBOARD_NOTIFY_HOOK_MAX="…" must be a non-negative integer` | The notify-hook ceiling is not a whole number. Use `0` to turn notify hooks off. |
 | `config: SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS: … is not a CIDR range or IP address` | An allowlist entry is malformed. Use CIDRs such as `127.0.0.1/32`, separated by commas. |
+| `config: SWITCHBOARD_WEBHOOK_RATE_RPS="…" must be a positive integer …` | The inbound webhook throttle's refill rate is not a positive whole number. Leave it unset for the default (`10`). |
+| `config: SWITCHBOARD_WEBHOOK_BURST="…" must be a positive integer …` | The inbound webhook throttle's burst is not a positive whole number. Leave it unset for the default (`20`). |
 
 Each of these exits immediately and says which one it is.
 

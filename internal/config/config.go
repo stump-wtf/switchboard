@@ -143,11 +143,38 @@ type Config struct {
 	// notifyHookMaxRaw keeps the env value so Validate can reject a malformed one instead of
 	// silently applying the default to a typo.
 	notifyHookMaxRaw string
+
+	// --- Inbound webhook throttle (SPEC-0001): per-client-IP token bucket on the ingest surface ---
+
+	// WebhookRateRPS is the per-client-IP refill rate of the inbound webhook limiter, in requests
+	// per second. Senders that do not retry a 429 (Gitea deliveries among them) lose every event the
+	// bucket rejects, so an operator whose producer bursts above the default raises this (and the
+	// burst below) instead of accepting silent event loss. Unset means DefaultWebhookRateRPS; a
+	// non-positive or malformed value fails startup (Validate). (SWITCHBOARD_WEBHOOK_RATE_RPS)
+	// Governing: SPEC-0001 REQ "Rate Limiting".
+	WebhookRateRPS int
+	// WebhookBurst is the inbound webhook limiter's bucket capacity per client IP: how many
+	// deliveries may arrive at once before throttling starts. Unset means DefaultWebhookBurst; a
+	// non-positive or malformed value fails startup (Validate). (SWITCHBOARD_WEBHOOK_BURST)
+	// Governing: SPEC-0001 REQ "Rate Limiting".
+	WebhookBurst int
+	// webhookRateRaw/webhookBurstRaw keep the env values so Validate can reject a malformed one
+	// instead of silently applying the default to a typo.
+	webhookRateRaw  string
+	webhookBurstRaw string
 }
 
 // DefaultNotifyHookMax is the per-endpoint notify-hook ceiling when SWITCHBOARD_NOTIFY_HOOK_MAX is
 // unset (SPEC-0024 REQ-1).
 const DefaultNotifyHookMax = 5
+
+// DefaultWebhookRateRPS and DefaultWebhookBurst are the inbound webhook limiter's per-client-IP
+// refill rate and bucket capacity when SWITCHBOARD_WEBHOOK_RATE_RPS / SWITCHBOARD_WEBHOOK_BURST
+// are unset — the values the limiter was hardcoded to before they became settings (#586).
+const (
+	DefaultWebhookRateRPS = 10
+	DefaultWebhookBurst   = 20
+)
 
 // DefaultDocsBaseURL is where the landing page's docs links point when SWITCHBOARD_DOCS_BASE_URL
 // is unset: the hosted docs site, which resolves for every deployment, self-hosted included (#563).
@@ -166,6 +193,8 @@ func FromEnv() Config {
 	}
 	notifyHookMaxRaw := strings.TrimSpace(os.Getenv("SWITCHBOARD_NOTIFY_HOOK_MAX"))
 	notifyHookMax := parseNotifyHookMax(notifyHookMaxRaw)
+	webhookRateRaw := strings.TrimSpace(os.Getenv("SWITCHBOARD_WEBHOOK_RATE_RPS"))
+	webhookBurstRaw := strings.TrimSpace(os.Getenv("SWITCHBOARD_WEBHOOK_BURST"))
 	githubRedirect := os.Getenv("SWITCHBOARD_GITHUB_REDIRECT_URL")
 	if githubRedirect == "" {
 		githubRedirect = base + "/auth/callback"
@@ -193,6 +222,10 @@ func FromEnv() Config {
 		NotifyHookMax:              notifyHookMax,
 		NotifyHookAllowCIDRs:       strings.TrimSpace(os.Getenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS")),
 		notifyHookMaxRaw:           notifyHookMaxRaw,
+		WebhookRateRPS:             parsePositiveInt(webhookRateRaw, DefaultWebhookRateRPS),
+		WebhookBurst:               parsePositiveInt(webhookBurstRaw, DefaultWebhookBurst),
+		webhookRateRaw:             webhookRateRaw,
+		webhookBurstRaw:            webhookBurstRaw,
 		AttemptSummaryFromResult:   envBool("SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT"),
 		WebhookAllowSuppliedSecret: envBool("SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET"),
 	}
@@ -203,6 +236,20 @@ func FromEnv() Config {
 func envBool(key string) bool {
 	v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(key)))
 	return err == nil && v
+}
+
+// parsePositiveInt reads a limiter-style setting: unset is the default, anything else must be a
+// positive integer. A bad value maps to -1, which Validate turns into a startup error rather than
+// silently applying the default to a typo.
+func parsePositiveInt(raw string, def int) int {
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return -1
+	}
+	return n
 }
 
 // parseNotifyHookMax reads SWITCHBOARD_NOTIFY_HOOK_MAX: unset is the default, anything else must be
@@ -240,7 +287,28 @@ func (c Config) Validate() error {
 	if c.NotifyHookMax < 0 {
 		return fmt.Errorf("config: SWITCHBOARD_NOTIFY_HOOK_MAX=%q must be a non-negative integer (0 disables notify hooks)", c.notifyHookMaxRaw)
 	}
+	if c.WebhookRateRPS < 1 && c.webhookRateRaw != "" {
+		return fmt.Errorf("config: SWITCHBOARD_WEBHOOK_RATE_RPS=%q must be a positive integer (requests per second per client IP; the default is %d)", c.webhookRateRaw, DefaultWebhookRateRPS)
+	}
+	if c.WebhookBurst < 1 && c.webhookBurstRaw != "" {
+		return fmt.Errorf("config: SWITCHBOARD_WEBHOOK_BURST=%q must be a positive integer (deliveries per client IP before throttling; the default is %d)", c.webhookBurstRaw, DefaultWebhookBurst)
+	}
 	return nil
+}
+
+// WebhookLimiterBounds resolves the inbound webhook limiter's (rps, burst). A production Config
+// comes from FromEnv, where Validate has already rejected a malformed value; a Config built as a
+// literal (test harnesses) leaves the fields zero, which resolves to the defaults rather than a
+// dead bucket that 429s every delivery.
+func (c Config) WebhookLimiterBounds() (float64, float64) {
+	rps, burst := float64(c.WebhookRateRPS), float64(c.WebhookBurst)
+	if rps < 1 {
+		rps = DefaultWebhookRateRPS
+	}
+	if burst < 1 {
+		burst = DefaultWebhookBurst
+	}
+	return rps, burst
 }
 
 // OIDCConfigured reports whether the OIDC relying-party settings are present.
