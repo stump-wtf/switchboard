@@ -114,6 +114,29 @@ func TestAttemptSummaryFromResult(t *testing.T) {
 	}
 }
 
+// TestWebhookAllowSuppliedSecret pins SPEC-0032 REQ-1's opt-in: unset or unparseable is off, so
+// create_webhook refuses a caller-supplied secret for a source switchboard mints for unless the
+// operator asked otherwise.
+func TestWebhookAllowSuppliedSecret(t *testing.T) {
+	for value, want := range map[string]bool{
+		"":      false,
+		"false": false,
+		"0":     false,
+		"maybe": false,
+		"true":  true,
+		"1":     true,
+	} {
+		t.Setenv("SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET", value)
+		if got := FromEnv().WebhookAllowSuppliedSecret; got != want {
+			t.Errorf("SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET=%q: %v, want %v", value, got, want)
+		}
+	}
+	_ = os.Unsetenv("SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET")
+	if FromEnv().WebhookAllowSuppliedSecret {
+		t.Fatal("unset SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET turned the option on; it defaults to off")
+	}
+}
+
 // TestNotifyHookMax pins SPEC-0024 REQ-1's operator bound: unset is 5, 0 is a valid kill switch,
 // and a malformed or negative value fails startup rather than silently becoming the default.
 func TestNotifyHookMax(t *testing.T) {
@@ -154,5 +177,53 @@ func TestNotifyHookAllowCIDRs(t *testing.T) {
 	t.Setenv("SWITCHBOARD_NOTIFY_HOOK_ALLOW_CIDRS", "10.0.0.0/8, lan")
 	if err := FromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "lan") {
 		t.Fatalf("malformed allowlist: %v", err)
+	}
+}
+
+// TestWebhookRateLimitSettings pins #586: unset keeps the values the limiter was hardcoded to
+// (10 rps, burst 20), a positive override is applied, and a zero/negative/malformed value fails
+// startup naming the variable rather than silently defaulting a typo — a bucket that 429s
+// everything (rate or burst 0) would silently drop every inbound delivery.
+func TestWebhookRateLimitSettings(t *testing.T) {
+	t.Setenv("SWITCHBOARD_WEBHOOK_RATE_RPS", "")
+	t.Setenv("SWITCHBOARD_WEBHOOK_BURST", "")
+	cfg := FromEnv()
+	if cfg.WebhookRateRPS != DefaultWebhookRateRPS || cfg.WebhookBurst != DefaultWebhookBurst {
+		t.Fatalf("defaults: got %d/%d, want %d/%d", cfg.WebhookRateRPS, cfg.WebhookBurst, DefaultWebhookRateRPS, DefaultWebhookBurst)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("defaults must validate: %v", err)
+	}
+	rps, burst := cfg.WebhookLimiterBounds()
+	if rps != DefaultWebhookRateRPS || burst != DefaultWebhookBurst {
+		t.Fatalf("WebhookLimiterBounds on a literal Config: got %v/%v, want %d/%d", rps, burst, DefaultWebhookRateRPS, DefaultWebhookBurst)
+	}
+
+	t.Setenv("SWITCHBOARD_WEBHOOK_RATE_RPS", " 50 ")
+	t.Setenv("SWITCHBOARD_WEBHOOK_BURST", "100")
+	cfg = FromEnv()
+	if cfg.WebhookRateRPS != 50 || cfg.WebhookBurst != 100 {
+		t.Fatalf("override: got %d/%d, want 50/100", cfg.WebhookRateRPS, cfg.WebhookBurst)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("override must validate: %v", err)
+	}
+	if rps, burst := cfg.WebhookLimiterBounds(); rps != 50 || burst != 100 {
+		t.Fatalf("WebhookLimiterBounds: got %v/%v, want 50/100", rps, burst)
+	}
+
+	for _, key := range []string{"SWITCHBOARD_WEBHOOK_RATE_RPS", "SWITCHBOARD_WEBHOOK_BURST"} {
+		other := "SWITCHBOARD_WEBHOOK_BURST"
+		if key == "SWITCHBOARD_WEBHOOK_BURST" {
+			other = "SWITCHBOARD_WEBHOOK_RATE_RPS"
+		}
+		for _, bad := range []string{"0", "-1", "ten", "1.5"} {
+			t.Setenv(key, bad)
+			t.Setenv(other, "")
+			err := FromEnv().Validate()
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Errorf("%s=%q: Validate() = %v, want an error naming %s", key, bad, err, key)
+			}
+		}
 	}
 }

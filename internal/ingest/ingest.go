@@ -161,7 +161,7 @@ func (i *Ingest) readBody(w http.ResponseWriter, r *http.Request) (body []byte, 
 //
 // provider and trust_mode start as "unknown": a 413 or an unknown token names no webhook. Once the
 // token resolves they are the webhook's source type and trust mode, both switchboard-derived at
-// create time from a fixed map (mcp webhookTrustModes; the push API mints generic/token), so the
+// create time from a fixed table (internal/sourcekind; the push API mints generic/token), so the
 // label set stays bounded. The metrics side coerces anything off its alphabet as a backstop.
 //
 // These literals are the documented values of ingest.Metrics (metrics.go); this package does not

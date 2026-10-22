@@ -12,6 +12,41 @@ To find your version, run `switchboard version`, or read the `X-Switchboard-Vers
 header from `/healthz` (e.g. `curl -sI http://127.0.0.1:8080/healthz | grep -i switchboard-version`).
 Newer builds also report it over MCP as `serverInfo.version`.
 
+## Upgrading past v0.5.0 (unreleased): Stripe and Slack webhooks await their signing secret
+
+:::warning Existing `stripe` and `slack` webhooks stop accepting deliveries until you paste the
+provider's secret
+Stripe and Slack sign with a secret **they** issued. Before this release Switchboard minted a secret for
+those webhooks anyway, so every delivery failed with `401 signature verification failed` while the
+webhook looked healthy. Migration `0032_webhook_secret_origin` marks those rows `secret_origin =
+provider` and drops the minted value, which puts them in `awaiting_secret`: deliveries now answer
+`503 webhook awaiting signing secret` and persist nothing, so the provider retries instead of
+silently giving up. Every other source type is unchanged.
+:::
+
+**Who is affected:** any deployment with a `stripe` or `slack` webhook. Check before upgrading with this
+read-only query:
+
+```sql
+SELECT source_type, count(*) FROM endpoint_webhooks
+ WHERE source_type IN ('stripe', 'slack') GROUP BY source_type;
+```
+
+**What to do after upgrading:** give each affected webhook the secret the producer displays (Stripe:
+Developers → Webhooks → endpoint → *Signing secret*, a `whsec_…` value; Slack: the app's Request Signing
+Secret). A supplied secret is never stored in plaintext, so `SWITCHBOARD_SECRET_ENCRYPTION_KEY` must be
+set. Until the `set_webhook_secret` verb and its web field land, do it by creating a replacement webhook
+with the secret inline and pointing the producer at its URL:
+
+```
+create_webhook { source_type: "stripe", target_queue: "payments", signing_secret: "whsec_…" }
+```
+
+Then delete the old webhook. `list_webhooks` reports the state you are in: `secret_origin: provider` with
+`secret_set: false` means awaiting, and a set secret is shown as a 12-character fingerprint and the
+moment it was written — never as the value. Rotating a provider-origin webhook replaces its ingest URL
+and leaves its secret alone, and says so in the result's `warning`.
+
 ## Upgrading to v0.5.0
 
 ### Read this first

@@ -27,14 +27,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
+	"log/slog"
 	"strings"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/stump-wtf/switchboard/internal/redact"
 	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/sourcekind"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -44,6 +45,9 @@ import (
 const (
 	codeCeilingExceeded     = "ceiling_exceeded"
 	codeForbiddenSourceType = "forbidden_source_type"
+	// codeEncryptionRequired is SPEC-0032 REQ-12's sentinel in the stable error shape: no at-rest key is
+	// configured, so a caller-supplied secret cannot be stored and nothing was written.
+	codeEncryptionRequired = "encryption_required"
 )
 
 // trustModeSigned is the switchboard-derived trust mode for HMAC-signed providers (github/stripe/
@@ -56,32 +60,21 @@ const trustModeSigned = "signed"
 // "forbidden" code via scopeGuard), distinguishable from an unknown tool.
 var webhookVerbs = verbSet(WebhookVerbs())
 
-// webhookTrustModes maps a source type to the trust mode switchboard verifies it under. The mapping
-// is switchboard's alone: the agent never supplies a trust mode, so a self-created `signed` webhook
-// (github/stripe/slack) can never be downgraded to token/open, and `generic` / `telemetry` webhooks
-// are token, not open (open is operator-only, out of reach of self-management). A source type
-// outside this map is unsupported even if a ceiling names it. cairn is signed: its outbound
-// webhooks carry an HMAC over the body and a signed event_id/created_at (cairn SPEC-0012;
-// ingest/routing.go verifyCairn).
+// webhookTrustModes is gone: its one column became SPEC-0032 REQ-1's per-source descriptor, which
+// lives in internal/sourcekind so the MCP layer, the store and the delivery receiver read the same
+// answer about who issues a secret. The mapping is still switchboard's alone: the agent never supplies
+// a trust mode, so a self-created signed webhook can never be downgraded to token/open, and a source
+// type outside the table is unsupported even if a ceiling names it.
 // Governing: ADR-0012 (switchboard owns verification; no agent trust downgrade), ADR-0003 (per-source
-// trust model), ADR-0024.
-var webhookTrustModes = map[string]string{
-	"github":    "signed",
-	"stripe":    "signed",
-	"slack":     "signed",
-	"gitea":     "signed",
-	"cairn":     "signed",
-	"generic":   "token",
-	"telemetry": "token",
-}
+// trust model), ADR-0024, ADR-0037, SPEC-0032 REQ-1.
 
-// WebhookSourceTypes returns every source type create_webhook accepts — the keys of
-// webhookTrustModes — sorted, as a fresh slice the caller may keep. The vend wizard (internal/web)
-// offers exactly these as its source-type chips, so a type added to webhookTrustModes is pickable
-// in the ceiling step without a second, drift-prone list.
+// WebhookSourceTypes returns every source type create_webhook accepts — the selectable rows of the
+// SPEC-0032 descriptor table — sorted, as a fresh slice the caller may keep. The vend wizard
+// (internal/web) offers exactly these as its source-type chips, so a type made selectable in
+// internal/sourcekind is pickable in the ceiling step without a second, drift-prone list.
 // Governing: SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling", SPEC-0015 REQ
 // "Endpoints View And Vend Wizard", ADR-0012.
-func WebhookSourceTypes() []string { return slices.Sorted(maps.Keys(webhookTrustModes)) }
+func WebhookSourceTypes() []string { return sourcekind.Selectable() }
 
 // SetBaseURL installs the externally-reachable origin used to build the ingest_url returned by
 // create_webhook/rotate_webhook. Called at wiring time (internal/server) with cfg.BaseURL; safe to
@@ -107,6 +100,12 @@ type createWebhookIn struct {
 	// TrustedActors is who may start work through a github, gitea or cairn webhook (SPEC-0026
 	// REQ-5). Omitted, the list is empty and trusts no one.
 	TrustedActors *routing.TrustedActorsInput `json:"trusted_actors,omitempty" jsonschema:"github/gitea/cairn only: who may start work here ({logins, match} for github/gitea, {actor_ids} for cairn, or {allow_all: true}); omitted means an empty list, which holds every delivery until actors are set"`
+	// SigningSecret is the producer's own signing secret, for a source whose deliveries it signs with a
+	// value IT chose (stripe, slack). Write-only: no response ever carries it back. It is accepted only
+	// where SPEC-0032 REQ-1 allows a supplied secret — a provider-origin type always, a minted-origin
+	// type only once the operator sets SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET=true.
+	// Governing: SPEC-0032 REQ-1, REQ-3.
+	SigningSecret *string `json:"signing_secret,omitempty" jsonschema:"stripe/slack only: the producer's own signing secret, exactly as it displayed it (stripe's starts with whsec_); refused for a source whose secret switchboard mints unless the operator opted into supplied secrets"`
 }
 
 // webhookOut is the create/rotate result: the ingest URL, trust mode, and — for a signed-type
@@ -120,7 +119,16 @@ type webhookOut struct {
 	SourceType    string `json:"source_type" jsonschema:"the webhook's source type"`
 	TargetQueue   string `json:"target_queue" jsonschema:"the queue delivered events route to"`
 	TrustMode     string `json:"trust_mode" jsonschema:"trust mode switchboard verifies under: signed or token (derived, not agent-supplied)"`
-	SigningSecret string `json:"signing_secret,omitempty" jsonschema:"signed webhooks only: the HMAC signing secret, revealed once — paste it into the producer's webhook config; switchboard will not show it again"`
+	SigningSecret string `json:"signing_secret,omitempty" jsonschema:"signed webhooks whose secret switchboard mints only: the HMAC signing secret, revealed once — paste it into the producer's webhook config; switchboard will not show it again"`
+	// SecretOrigin says who issues this webhook's signing secret: minted (switchboard generates and
+	// reveals it once) or provider (the producer signs with a value only it knows, which someone must
+	// paste in). SecretSet is whether one is stored: false means the webhook is awaiting its secret and
+	// every delivery to it answers 503. Fingerprint and SetAt describe the stored secret without being
+	// it. Governing: SPEC-0032 REQ-2, REQ-3.
+	SecretOrigin      string `json:"secret_origin" jsonschema:"who issues the signing secret: minted, provider, or none"`
+	SecretSet         bool   `json:"secret_set" jsonschema:"false for a provider-origin webhook whose secret has not been set yet — it is awaiting_secret and refuses deliveries until it is"`
+	SecretFingerprint string `json:"secret_fingerprint,omitempty" jsonschema:"first 12 hex of the stored signing secret's SHA-256; how to confirm which secret is in place without revealing it"`
+	SecretSetAt       string `json:"secret_set_at,omitempty" jsonschema:"RFC 3339 time the current signing secret was written"`
 	// Governing: SPEC-0026 REQ-5 (the create result says an empty list holds every delivery).
 	TrustedActors *routing.TrustedActors `json:"trusted_actors,omitempty" jsonschema:"github/gitea/cairn only: the stored trust list"`
 	Warning       string                 `json:"warning,omitempty" jsonschema:"what the trust list means for deliveries, when it deserves attention"`
@@ -142,6 +150,24 @@ type webhookMetaOut struct {
 	TrustedActors *routing.TrustedActors `json:"trusted_actors,omitempty" jsonschema:"github/gitea/cairn only: who may start work through this webhook"`
 	AllowAll      bool                   `json:"allow_all" jsonschema:"true when this webhook trusts every verified sender (flagged: prefer a list)"`
 	Quarantined   int                    `json:"quarantined" jsonschema:"open quarantine items this webhook's deliveries are waiting in (SPEC-0026)"`
+	// The secret state, reported so an agent can tell "working" from "waiting for me to paste Stripe's
+	// secret" without sending a test delivery. secret_supplied marks a secret that came from its caller
+	// (a provider kind's normal state, or a minted kind under the operator's opt-in); secret_set_by
+	// names who last wrote a supplied one. None of these is the secret. Governing: SPEC-0032 REQ-1,
+	// REQ-2, REQ-13.
+	SecretOrigin      string       `json:"secret_origin" jsonschema:"who issues the signing secret: minted, provider, or none"`
+	SecretSet         bool         `json:"secret_set" jsonschema:"false for a provider-origin webhook awaiting its secret: deliveries answer 503 until it is set"`
+	SecretSupplied    bool         `json:"secret_supplied" jsonschema:"true when the stored signing secret was supplied by its caller rather than minted by switchboard (a provider kind's normal state; a minted kind's only under SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET); rotate clears it"`
+	SecretFingerprint string       `json:"secret_fingerprint,omitempty" jsonschema:"first 12 hex of the stored secret's SHA-256"`
+	SecretSetAt       string       `json:"secret_set_at,omitempty" jsonschema:"RFC 3339 time the current secret was written"`
+	SecretSetBy       *secretSetBy `json:"secret_set_by,omitempty" jsonschema:"who wrote the current secret, for a webhook whose secret a caller supplied (SPEC-0032 REQ-13)"`
+}
+
+// secretSetBy is the actor half of an audit row, shaped for a list response: the kind and id of the
+// endpoint or human whose write put the current supplied secret in place.
+type secretSetBy struct {
+	Kind string `json:"kind" jsonschema:"endpoint or human"`
+	ID   string `json:"id" jsonschema:"the endpoint or human id"`
 }
 
 // ceilingOut is the endpoint's vended webhook ceiling plus current usage, so an agent can see how
@@ -214,6 +240,15 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in createWebhookIn) (*sdk.CallToolResult, webhookOut, error) {
 		sourceType := strings.TrimSpace(in.SourceType)
 		targetQueue := strings.TrimSpace(in.TargetQueue)
+		// A debug line for the arguments this call arrived with, run through the field-name redaction so
+		// a signing_secret can never reach a log line however this tool grows. Governing: SPEC-0032
+		// REQ-3 (a secret appears in no log line, trace or span).
+		if h.log.Enabled(ctx, slog.LevelDebug) {
+			h.log.Debug("mcp create_webhook args", "slug", ep.Slug, "tool", "create_webhook",
+				"args", redact.Secrets(map[string]any{
+					"source_type": sourceType, "target_queue": targetQueue, "signing_secret": in.SigningSecret,
+				}))
+		}
 		if sourceType == "" {
 			return nil, webhookOut{}, &toolError{codeInvalidArgument, "source_type is required"}
 		}
@@ -230,11 +265,14 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 		if !hasScope(ep.WebhookSourceTypes, sourceType) {
 			return nil, webhookOut{}, &toolError{codeForbiddenSourceType, "source type " + sourceType + " is not in this endpoint's allowed source types"}
 		}
-		// Trust mode is switchboard's to derive; an allowed-but-unsupported type cannot be verified.
-		trustMode, ok := webhookTrustModes[sourceType]
-		if !ok {
+		// Trust mode and secret origin are switchboard's to derive; an allowed-but-unsupported type
+		// cannot be verified. A declared-but-not-yet-verifiable type (linear, plain) is refused rather
+		// than created, because a webhook that cannot verify a delivery is worse than no webhook.
+		kind, ok := sourcekind.Lookup(sourceType)
+		if !ok || !kind.Selectable {
 			return nil, webhookOut{}, &toolError{codeInvalidArgument, "source type " + sourceType + " is not supported"}
 		}
+		trustMode := kind.TrustMode
 		// Target queue must be within the endpoint's webhook-queue grant.
 		if !hasScope(ep.WebhookQueues, targetQueue) {
 			return nil, webhookOut{}, &toolError{codeForbidden, "target queue " + targetQueue + " is not in this endpoint's allowed webhook queues"}
@@ -253,14 +291,44 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 			}
 		}
 
-		// For a signed-type webhook switchboard mints the HMAC signing secret and HOLDS it server-side
-		// (it recomputes the HMAC over inbound bodies to verify per SPEC-0003) — and reveals it to the
-		// agent exactly once below. A token-type webhook is authenticated by the unguessable ingest URL
-		// and needs no secret. A minted, unique, non-secret token routes deliveries.
-		secret, err := mintSecretFor(trustMode)
-		if err != nil {
-			h.log.Error("mcp create_webhook mint secret", "slug", ep.Slug, "err", err)
-			return nil, webhookOut{}, &toolError{codeInternal, "internal error"}
+		// A secret the caller supplies is accepted only where SPEC-0032 REQ-1 says it may be: always for
+		// a provider-origin source (Stripe and Slack sign with a secret only they issue), never for a
+		// source authenticated by its URL, and for a minted-origin source only if the operator opted in.
+		// Checked before anything is written or minted.
+		var suppliedSecret string
+		if in.SigningSecret != nil {
+			suppliedSecret = strings.TrimSpace(*in.SigningSecret)
+		}
+		if suppliedSecret != "" {
+			switch kind.Origin {
+			case sourcekind.OriginNone:
+				return nil, webhookOut{}, &toolError{codeInvalidArgument,
+					"source type " + sourceType + " is authenticated by its ingest URL and takes no signing_secret"}
+			case sourcekind.OriginMinted:
+				if !h.allowSuppliedSecret.Load() {
+					return nil, webhookOut{}, &toolError{codeInvalidArgument,
+						"signing_secret is not accepted for source type " + sourceType +
+							": switchboard mints its signing secret (an operator can allow supplied secrets with SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET=true)"}
+				}
+			}
+			if err := sourcekind.CheckSecret(sourceType, suppliedSecret); err != nil {
+				return nil, webhookOut{}, &toolError{codeInvalidArgument, err.Error()}
+			}
+		}
+
+		// For a minted-origin signed webhook switchboard mints the HMAC signing secret and HOLDS it
+		// server-side (it recomputes the HMAC over inbound bodies to verify per SPEC-0003) — and reveals
+		// it to the agent exactly once below. A provider-origin webhook is created with NO secret:
+		// minting one there would store a value the provider has never signed with, which looks like a
+		// working webhook and fails every delivery with 401. A token source needs none either. Governing:
+		// SPEC-0032 REQ-1, REQ-2.
+		secret := ""
+		if suppliedSecret == "" && kind.Origin == sourcekind.OriginMinted {
+			var err error
+			if secret, err = mintWebhookSecret(); err != nil {
+				h.log.Error("mcp create_webhook mint secret", "slug", ep.Slug, "err", err)
+				return nil, webhookOut{}, &toolError{codeInternal, "internal error"}
+			}
 		}
 		ingestToken, err := mintIngestToken()
 		if err != nil {
@@ -268,7 +336,14 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 			return nil, webhookOut{}, &toolError{codeInternal, "internal error"}
 		}
 
-		w, err := h.store.CreateWebhookWithTrust(ctx, ep.ID, sourceType, targetQueue, trustMode, ingestToken, secret, ep.WebhookMax, trustRaw)
+		w, err := h.store.CreateWebhookWithOrigin(ctx, store.CreateWebhookInput{
+			EndpointID: ep.ID, SourceType: sourceType, TargetQueue: targetQueue, TrustMode: trustMode,
+			IngestToken: ingestToken, Secret: orSupplied(secret, suppliedSecret), Max: ep.WebhookMax,
+			TrustedActors: trustRaw, SecretSupplied: suppliedSecret != "",
+			// The audit row names the endpoint that wrote the secret and the surface it arrived on
+			// (SPEC-0032 REQ-13). An endpoint's scope is immutable, so its id is the actor's id.
+			Actor: store.SecretActor{Kind: store.SecretActorEndpoint, ID: ep.ID, Path: store.SecretPathMCP},
+		})
 		if err != nil {
 			return nil, webhookOut{}, h.mapWebhookErr(ep, "create_webhook", err)
 		}
@@ -277,6 +352,7 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 			SourceType: w.SourceType, TargetQueue: w.TargetQueue, TrustMode: w.TrustMode,
 			TrustedActors: trustedActorsView(w),
 		}
+		fillSecretState(&out, w)
 		if out.TrustedActors != nil {
 			out.Warning = trustWarning(*out.TrustedActors)
 			// Endpoint scope is immutable (SPEC-0007): an endpoint vended before the trust verbs
@@ -286,12 +362,25 @@ func (h *Handler) createWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[cr
 				out.Warning += ". " + trustNoSetVerbWarning
 			}
 		}
-		// Reveal the secret exactly once (signed only). It is returned solely here; every later read
-		// (list_webhooks) omits it.
-		if w.TrustMode == trustModeSigned {
+		// Reveal the minted secret exactly once. A secret the caller supplied is never echoed back — it
+		// arrived from that caller, and echoing a secret is how one ends up in a transcript — and a
+		// provider-origin webhook simply has none yet. Every later read (list_webhooks) omits it.
+		if suppliedSecret == "" && secret != "" {
 			out.SigningSecret = secret
 		}
 		return nil, out, nil
+	}
+}
+
+// fillSecretState copies the secret state a webhook row reports into a create/rotate result: who issues
+// the secret, whether one is stored, its fingerprint and moment. Never a value. Governing: SPEC-0032
+// REQ-2, REQ-3.
+func fillSecretState(out *webhookOut, w store.Webhook) {
+	out.SecretOrigin = w.SecretOrigin
+	out.SecretSet = w.SecretSet
+	out.SecretFingerprint = w.SecretFingerprint
+	if w.SecretSetAt != nil {
+		out.SecretSetAt = w.SecretSetAt.UTC().Format(time.RFC3339)
 	}
 }
 
@@ -321,6 +410,16 @@ func (h *Handler) listWebhooksTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[lis
 				CreatedAt:     w.CreatedAt.UTC().Format(time.RFC3339),
 				TrustedActors: trustedActorsView(w),
 				Quarantined:   held[w.ID],
+				// The secret state an agent needs to tell a working webhook from one still waiting for
+				// its provider's secret. None of it is the secret. Governing: SPEC-0032 REQ-2, REQ-13.
+				SecretOrigin: w.SecretOrigin, SecretSet: w.SecretSet, SecretSupplied: w.SecretSupplied,
+				SecretFingerprint: w.SecretFingerprint,
+			}
+			if w.SecretSetAt != nil {
+				row.SecretSetAt = w.SecretSetAt.UTC().Format(time.RFC3339)
+			}
+			if w.SecretSetByKind != "" {
+				row.SecretSetBy = &secretSetBy{Kind: w.SecretSetByKind, ID: w.SecretSetByID}
 			}
 			row.AllowAll = row.TrustedActors != nil && row.TrustedActors.AllowAll
 			if w.RotatedAt != nil {
@@ -366,6 +465,13 @@ func (h *Handler) rotateWebhookTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[ro
 			WebhookID: w.ID, IngestURL: h.ingestURL(w.IngestToken),
 			SourceType: w.SourceType, TargetQueue: w.TargetQueue, TrustMode: w.TrustMode,
 		}
+		fillSecretState(&out, w)
+		if w.SecretOrigin == sourcekind.OriginProvider {
+			// Rotation replaced the URL only: the provider-issued secret stays, because minting a fresh
+			// one there would swap a value the provider signs with for one it has never heard of.
+			out.Warning = "provider-issued signing secret unchanged; rotate replaced the ingest URL only"
+			return nil, out, nil
+		}
 		if w.TrustMode == trustModeSigned {
 			out.SigningSecret = secret
 		}
@@ -399,6 +505,14 @@ func (h *Handler) mapWebhookErr(ep store.AuthEndpoint, tool string, err error) e
 		return &toolError{codeNotFound, "webhook not found"}
 	case errors.Is(err, store.ErrReservedQueue):
 		return &toolError{codeInvalidArgument, `the queue name "quarantine" is reserved`}
+	case errors.Is(err, store.ErrEncryptionRequired):
+		return &toolError{codeEncryptionRequired,
+			"a supplied signing_secret needs SWITCHBOARD_SECRET_ENCRYPTION_KEY; nothing was stored"}
+	case errors.Is(err, store.ErrInvalidArgument):
+		// Reached only by a path that skipped the layer's own check; the detail stays in the log, and
+		// the client is told which field failed without the value (a secret quoted in an error has
+		// leaked through the response, the log and the trace at once).
+		return &toolError{codeInvalidArgument, "the signing_secret is not usable for this source type"}
 	default:
 		h.log.Error("mcp webhook store failure", "slug", ep.Slug, "tool", tool,
 			"err", fmt.Errorf("tools/call %s: %w", tool, err))
@@ -432,14 +546,13 @@ func mintWebhookSecret() (string, error) {
 	return "whsec_" + hex.EncodeToString(b), nil
 }
 
-// mintSecretFor mints a signing secret only for a signed-type webhook; a token/open webhook is
-// authenticated by the unguessable ingest URL and needs none, so it returns "" (which the store
-// persists as NULL). Callers reveal the returned secret only when it is non-empty.
-func mintSecretFor(trustMode string) (string, error) {
-	if trustMode != trustModeSigned {
-		return "", nil
+// orSupplied is the secret a row ends up holding: the caller's, when it supplied one, else the minted
+// one (which is "" for a provider-origin webhook, and the store writes NULL for it).
+func orSupplied(minted, supplied string) string {
+	if supplied != "" {
+		return supplied
 	}
-	return mintWebhookSecret()
+	return minted
 }
 
 // nonNil normalizes a nil slice to an empty one so the structured ceiling always serializes allowed
