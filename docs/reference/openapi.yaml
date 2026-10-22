@@ -1241,9 +1241,9 @@ components:
 
     VendWebhookOut:
       type: object
-      required: [trust_mode]
       description: >-
-        The ingestion webhook the vend minted, empty when the vend's ceiling set `webhook_max` to 0.
+        The ingestion webhook the vend minted. Empty when the vend's ceiling set `webhook_max` to 0,
+        which is how an operator vends an MCP-only endpoint.
       properties:
         webhook_id: { type: string }
         ingest_url: { type: string, format: uri }

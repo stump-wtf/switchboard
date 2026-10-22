@@ -162,6 +162,11 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Fixed
 
+- **An inbound delivery no longer takes the process down when no database is wired.** The delivery-path
+  webhook lookup was the one read missing the nil-pool guard every other store read carries, so a request
+  that reached it dereferenced a nil pool and killed the process instead of answering. It now fails closed
+  like the rest: nothing is persisted, and an unknown token stays indistinguishable from a guess. (#584)
+
 - **Idle notification streams stay open behind a proxy.** The MCP standalone GET stream wrote no
   bytes at all while its queues were quiet, and a proxy with an idle timeout reads silence as a dead
   connection (Cloudflare cancels about 125 s after connect). So a connected consumer was dropped on

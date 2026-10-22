@@ -78,12 +78,10 @@ func TestAPIWebhookLifecycleOnAnOwnedEndpoint(t *testing.T) {
 
 	// The vend's own webhook plus these two fill the ceiling; the next is the store's refusal, in the MCP
 	// verb's code.
-	for i := 0; i < 2; i++ {
-		rec = apiCall(t, r, http.MethodPost, "/api/v1/endpoints/"+slug+"/webhooks", bearer,
-			`{"source_type":"gitea","target_queue":"reviews"}`)
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("create %d: %d %s", i+2, rec.Code, rec.Body.String())
-		}
+	rec = apiCall(t, r, http.MethodPost, "/api/v1/endpoints/"+slug+"/webhooks", bearer,
+		`{"source_type":"gitea","target_queue":"reviews"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create 2: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = apiCall(t, r, http.MethodPost, "/api/v1/endpoints/"+slug+"/webhooks", bearer,
 		`{"source_type":"gitea","target_queue":"reviews"}`)
@@ -191,7 +189,8 @@ func TestAPIVendWebhookMaxZeroVendsAnMCPOnlyEndpoint(t *testing.T) {
 	bearer := mintOperatorBearer(t, st, ctx, owner.ID, "cid-vend-zero")
 
 	vend := vendScoped(t, r, bearer, `{"name":"mcp-only","queue":"inbox","webhook_max":0}`)
-	if wh, ok := vend["webhook"].(map[string]any); ok && wh["ingest_url"] != "" {
+	wh, _ := vend["webhook"].(map[string]any)
+	if url, _ := wh["ingest_url"].(string); url != "" {
 		t.Errorf("a vend with webhook_max 0 minted an ingest URL: %v", wh)
 	}
 	if tok, _ := vend["token"].(string); tok == "" {

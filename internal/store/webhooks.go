@@ -343,6 +343,12 @@ func (s *Store) GetWebhookByToken(ctx context.Context, ingestToken string) (Webh
 // token is ErrNotFound. Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and
 // Idempotency" (switchboard holds the secret and verifies), SPEC-0003 (per-provider HMAC).
 func (s *Store) GetWebhookSecretByToken(ctx context.Context, ingestToken string) (Webhook, string, error) {
+	if s == nil || s.pool == nil {
+		// A nil-backed Store (a route-table test, or a process started without a database) resolves
+		// nothing: fail closed like every other nil-guarded read, because a delivery that dereferences
+		// a nil pool takes the whole process down instead of answering 404.
+		return Webhook{}, "", ErrNotFound
+	}
 	var w Webhook
 	var secret *string
 	err := s.pool.QueryRow(ctx, `

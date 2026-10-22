@@ -196,8 +196,10 @@ type vendWebhookOut struct {
 	WebhookID string `json:"webhook_id,omitempty"`
 	IngestURL string `json:"ingest_url,omitempty"`
 	// TrustMode is always "token" for the vended webhook: the unguessable ingest URL is the
-	// credential. Governing: ADR-0003 (per-source trust model).
-	TrustMode string `json:"trust_mode"`
+	// credential. It is empty only on an endpoint vended with webhook_max 0, which gets no webhook at
+	// all, so the stanza stays empty rather than claiming a trust mode nothing uses. Governing: ADR-0003
+	// (per-source trust model).
+	TrustMode string `json:"trust_mode,omitempty"`
 }
 
 type vendEndpointOut struct {
