@@ -1,18 +1,26 @@
 # gitleaks configuration for switchboard.
 #
 # Extends the default gitleaks ruleset (so every real rule still runs) and adds a
-# NARROW allowlist for two synthetic TEST FIXTURES the `generic-api-key` heuristic
-# false-positives on. Neither is a secret:
+# NARROW allowlist for three synthetic TEST FIXTURES the default heuristics
+# false-positive on. None is a secret:
 #
 #   - "gh-delivery-<N>"  — synthetic GitHub `X-GitHub-Delivery` ids used as
 #     idempotency-key fixtures in the web/ingest tests
 #     (e.g. internal/web/live_test.go, internal/web/todos_test.go).
 #   - "RS256-signed"     — plain English inside a doc comment describing the fake
 #     IdP the OIDC test stands up (internal/auth/oidc_test.go:4).
+#   - "sk_test_NotAStripeSigningSecret" — the malformed-stripe-secret fixture as
+#     it was first committed (internal/mcp/webhooks_secret_test.go:146, PR #605).
+#     The scan reads branch history, so rewording the fixture at HEAD cannot
+#     un-flag the commit that introduced it; the historical value is exempted by
+#     exact match instead. HEAD carries the reworded fixture.
 #
 # The allowlist matches on the captured SECRET value only (regexTarget defaults to
-# "secret"), and only these two exact fixture shapes — so a real credential
-# committed anywhere, including a test file, is still caught by the default rules.
+# "secret"), and only these exact fixture shapes — so a real credential committed
+# anywhere, including a test file, is still caught by the default rules.
+#
+# @joestump-agent 10/21/2026 - Added the historical stripe fixture value for the
+# SPEC-0032 PR's gitleaks gate.
 
 title = "switchboard gitleaks config"
 
@@ -24,4 +32,5 @@ description = "Synthetic test fixtures the generic-api-key heuristic false-posit
 regexes = [
     '''gh-delivery-\d+''',
     '''RS256-signed''',
+    '''sk_test_NotAStripeSigningSecret''',
 ]

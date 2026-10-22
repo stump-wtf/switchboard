@@ -162,6 +162,11 @@ type ToolStore interface {
 	// SPEC-0026 REQ-5 trusted actors (trusted_actors.go): create with a trust list, read one of the
 	// endpoint's own webhooks, and replace its list. All three are endpoint-scoped.
 	CreateWebhookWithTrust(ctx context.Context, endpointID, sourceType, targetQueue, trustMode, ingestToken, secret string, max int, trustedActors []byte) (store.Webhook, error)
+	// CreateWebhookWithOrigin is the create path that knows where the signing secret comes from: it
+	// writes secret_origin, and for a caller-supplied secret it requires an at-rest key, records
+	// secret_supplied, and appends the audit row inside the write's own transaction. Governing:
+	// SPEC-0032 REQ-1, REQ-3, REQ-13.
+	CreateWebhookWithOrigin(ctx context.Context, in store.CreateWebhookInput) (store.Webhook, error)
 	WebhookForEndpoint(ctx context.Context, id, endpointID string) (store.Webhook, error)
 	SetWebhookTrustedActors(ctx context.Context, id, endpointID string, trustedActors []byte) (store.Webhook, error)
 	// QuarantineCounts is list_webhooks' per-webhook count of open quarantine items (SPEC-0026 REQ-5).
@@ -238,6 +243,13 @@ type Handler struct {
 	// fail with no summary store the result's compact JSON as the attempt summary (report.go
 	// resultReport). The zero value is off, the spec's default. Governing: SPEC-0034 REQ-5.
 	summaryFromResult atomic.Bool
+	// allowSuppliedSecret is the operator's SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET opt-in: when set,
+	// a minted-origin webhook (github, gitea, cairn) also accepts a signing_secret the caller supplied,
+	// stored and audited like a provider-issued one. The zero value is off, which is the spec's default:
+	// the minted secret is the value a producer like GitHub is meant to paste, and silently taking a
+	// caller's choice would let an endpoint pick a weak or reused secret for its own deliveries.
+	// Governing: SPEC-0032 REQ-1 scenario "Operator allows supplied secrets for forges".
+	allowSuppliedSecret atomic.Bool
 
 	// router evaluates rules for test_webhook_rules — the same out-of-process sandbox the receiver
 	// uses (New installs it; tests swap in routing.InProcess). Governing: ADR-0024, SPEC-0020.
@@ -326,6 +338,12 @@ func (h *Handler) SetA2UIEnabled(enabled bool) { h.a2uiEnabled.Store(&enabled) }
 // on, a complete or fail that sends no summary closes its attempt with the result's compact JSON as
 // the summary. Default off. It applies to every call after it, on live sessions too.
 func (h *Handler) SetAttemptSummaryFromResult(on bool) { h.summaryFromResult.Store(on) }
+
+// SetAllowSuppliedSecret installs the operator's SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET opt-in
+// (SPEC-0032 REQ-1): whether create_webhook accepts a signing_secret for a minted-origin source type.
+// Called at wiring time with cfg.WebhookAllowSuppliedSecret; read atomically, so a running instance
+// never races an operator's change.
+func (h *Handler) SetAllowSuppliedSecret(on bool) { h.allowSuppliedSecret.Store(on) }
 
 // a2uiOn reads the gate; nil reads as off.
 func (h *Handler) a2uiOn() bool {

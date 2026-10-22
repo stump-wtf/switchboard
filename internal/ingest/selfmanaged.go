@@ -50,6 +50,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/sourcekind"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -179,12 +180,26 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	verifyDetail := "self-managed " + wh.TrustMode + " webhook; caller authenticated by unguessable ingest URL; body not verified"
 	if wh.TrustMode == "signed" {
 		if secret == "" {
-			// A signed webhook with no stored secret cannot be verified — refuse rather than fake trust.
-			// Governing: SPEC-0006 REQ "Switchboard Owns Secrets, Verification, and Idempotency".
-			i.log.Error("self-managed signed webhook missing secret", "webhook", wh.ID, "stage", stageVerify, "remote", clientIP(r))
-			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, "webhook not configured")
-			count.verifyFailed(m, reasonNotConfigured)
-			writeErr(w, http.StatusServiceUnavailable, "webhook not configured")
+			// A signed webhook with no stored secret cannot be verified — refuse rather than fake
+			// trust. A provider-origin webhook is in the state SPEC-0032 REQ-2 calls awaiting_secret:
+			// nobody has pasted the secret the producer actually signs with, so the body names that
+			// state and the reason counts awaiting_secret, and the provider retries once its owner sets
+			// it. A minted-origin webhook with no secret is a misconfiguration, and says so. Either way
+			// nothing is persisted. Governing: SPEC-0032 REQ-2, REQ-12; SPEC-0006 REQ "Switchboard Owns
+			// Secrets, Verification, and Idempotency".
+			msg, reason := "webhook awaiting signing secret", reasonAwaitingSecret
+			missing := fmt.Errorf("webhook %s: %w", wh.ID, store.ErrAwaitingSecret)
+			if wh.SecretOrigin != sourcekind.OriginProvider {
+				// Nothing is waiting to be pasted here: switchboard mints this webhook's secret, so an
+				// empty one is a broken row, and the log says so instead of pointing at a provider.
+				msg, reason = "webhook not configured", reasonNotConfigured
+				missing = fmt.Errorf("webhook %s holds no signing secret, and switchboard mints its secret", wh.ID)
+			}
+			i.log.Error("self-managed signed webhook missing secret", "webhook", wh.ID, "stage", stageVerify,
+				"source", wh.SourceType, "remote", clientIP(r), "err", missing)
+			i.observeRejected(wh.SourceType, "webhook", wh.TrustMode, key, msg)
+			count.verifyFailed(m, reason)
+			writeErr(w, http.StatusServiceUnavailable, msg)
 			return
 		}
 		valid, err := i.verifySelfManagedSigned(r, wh.SourceType, secret, body)

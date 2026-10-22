@@ -9,12 +9,15 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/sourcekind"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -33,6 +36,38 @@ func (f *fakeStore) CreateWebhookWithTrust(ctx context.Context, endpointID, sour
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	w.TrustedActors = trustedActors
+	f.webhooks[w.ID] = w
+	return w, nil
+}
+
+// CreateWebhookWithOrigin mirrors the store's origin-aware insert: the minted path is CreateWebhook's
+// behavior, plus the fields a caller reads back — who issues the secret, whether one is set, and
+// whether it was the caller's own value. The at-rest-key rule is the store's own and is tested there.
+func (f *fakeStore) CreateWebhookWithOrigin(ctx context.Context, in store.CreateWebhookInput) (store.Webhook, error) {
+	if in.SecretSupplied {
+		if err := sourcekind.CheckSecret(in.SourceType, in.Secret); err != nil {
+			return store.Webhook{}, fmt.Errorf("%w: %w", store.ErrInvalidArgument, err)
+		}
+	}
+	w, err := f.CreateWebhookWithTrust(ctx, in.EndpointID, in.SourceType, in.TargetQueue, in.TrustMode,
+		in.IngestToken, in.Secret, in.Max, in.TrustedActors)
+	if err != nil {
+		return w, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	w.SecretOrigin = sourcekind.OriginOf(in.SourceType, in.TrustMode)
+	w.SecretSupplied = in.SecretSupplied
+	w.SecretSet = in.Secret != ""
+	if w.SecretSet {
+		now := time.Now()
+		w.SecretSetAt = &now
+		w.SecretFingerprint = store.SecretFingerprint(in.Secret)
+	}
+	if in.SecretSupplied && w.SecretSet {
+		w.SecretSetByKind, w.SecretSetByID = in.Actor.Kind, in.Actor.ID
+	}
+	w.TrustedActors = in.TrustedActors
 	f.webhooks[w.ID] = w
 	return w, nil
 }

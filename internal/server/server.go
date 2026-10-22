@@ -128,6 +128,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	mcph.SetA2UIEnabled(cfg.A2UIEnabled)
 	// SPEC-0034 REQ-5: deriving an attempt summary from result is an operator opt-in, off by default.
 	mcph.SetAttemptSummaryFromResult(cfg.AttemptSummaryFromResult)
+	// SPEC-0032 REQ-1: accepting a caller-supplied secret for a minted-origin webhook is an operator
+	// opt-in too, off by default. Provider-origin types (stripe, slack) take one either way, because
+	// those sign with a secret only the provider knows.
+	mcph.SetAllowSuppliedSecret(cfg.WebhookAllowSuppliedSecret)
 	// Same committed-transition publish source as the web SSE hub, one consumer per surface:
 	// the store's doorbell hook fans verified todo creations out to in-scope MCP sessions as
 	// notifications/claude/channel doorbells. Governing: SPEC-0014 REQ "Channels Push over the
@@ -312,8 +316,11 @@ func newRouter(d routerDeps) chi.Router {
 
 	// Rate limiters (SPEC-0001 inbound webhook; SPEC-0009 persona card). The inbound webhook gets an
 	// IP throttle; the durable queue stays the source of truth, so throttling only bounds abuse, never
-	// drops work. The vended MCP surface carries its own per-endpoint limiter inside internal/mcp.
-	webhookRL := newRateLimiter(10, 20)
+	// drops work — but that last clause only holds for senders that retry a 429, and some (Gitea
+	// deliveries among them) do not, so the rate and burst are operator settings (#586):
+	// SWITCHBOARD_WEBHOOK_RATE_RPS / SWITCHBOARD_WEBHOOK_BURST, defaulting to the old hardcoded
+	// 10/20. The vended MCP surface carries its own per-endpoint limiter inside internal/mcp.
+	webhookRL := newRateLimiter(d.cfg.WebhookLimiterBounds())
 	// Public A2A Agent Card endpoint (SPEC-0009): per-IP throttle to blunt enumeration of persona ids.
 	// RECOMMENDED default is 60 req/min ≈ 1 req/s; burst 30 absorbs legitimate discovery tooling.
 	cardRL := newRateLimiter(1, 30)
