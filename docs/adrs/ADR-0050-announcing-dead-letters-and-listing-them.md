@@ -6,11 +6,12 @@ extends: [ADR-0029]
 related: [ADR-0034, ADR-0039, ADR-0046]
 ---
 
-# ADR-0049: Announce Dead Letters On The Hook, List Them For The Operator — Silence That Costs A Whole Queue
+# ADR-0050: Announce Dead Letters On The Hook, List Them For The Operator — Silence That Costs A Whole Queue
 
-> **Renumbered 2026-10-23.** This record was filed as ADR-0048, a number the per-queue pause record
-> [ADR-0048](ADR-0048-per-queue-pause.md) took on `main` while this PR was open, so it moved to the
-> next free number.
+> **Renumbered 2026-10-23, twice.** This record was filed as ADR-0048, a number the per-queue pause
+> record [ADR-0048](ADR-0048-per-queue-pause.md) took on `main` while this PR was open, so it moved to
+> ADR-0049 — which the scope-widening record [ADR-0049](ADR-0049-add-only-endpoint-scope-widening.md)
+> then also took on `main` before this landed, so it moved to ADR-0050.
 
 **Status note:** this ADR is **proposed**. It ships with an implementation so the choice can be argued
 against working code rather than prose; nothing here is settled until Joe accepts it. The requirement

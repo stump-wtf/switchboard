@@ -72,7 +72,8 @@ Two layers:
 | [ADR-0045](adrs/ADR-0045-queue-stall-nudge.md) | **Queue-stall nudge (proposed)** | A queue whose pending work nobody claims re-fires its notify-hook wake on a widening, progress-reset backoff, so a one-todo-per-invocation consumer drains without a new inbound webhook. |
 | [ADR-0047](adrs/ADR-0047-verb-scoped-endpoint-vend.md) | **Verb-scoped endpoint vend (proposed)** | `endpoint vend` defaults to the verbs a lane actually uses, `--verbs` names verb lists and presets, `--allow-webhook-admin` is the explicit opt-in, and `endpoint list` reveals what each credential holds. |
 | [ADR-0048](adrs/ADR-0048-per-queue-pause.md) | **Per-queue pause (proposed)** | `switchboard queue pause` / `resume`: a paused queue keeps accepting webhooks as pending todos while claims, doorbells and wakes go quiet; resume re-rings the backlog. |
-| [ADR-0049](adrs/ADR-0049-announcing-dead-letters-and-listing-them.md) | **Announce dead letters, list them for the operator (proposed)** | `todo.dead_lettered` rides the SPEC-0024 hooks with identifiers plus the closing attempt, fires only where retrying truly stops, and the Board gains a Dead pill over every endpoint you own. |
+| [ADR-0049](adrs/ADR-0049-add-only-endpoint-scope-widening.md) | **Add-only endpoint scope widening (proposed)** | Adding a lane stops costing a re-vend: a widen route and CLI command that can only union webhook queues, source types and verbs and raise the webhook ceiling — never narrow — with every moved field audited beside the change. |
+| [ADR-0050](adrs/ADR-0050-announcing-dead-letters-and-listing-them.md) | **Announce dead letters, list them for the operator (proposed)** | `todo.dead_lettered` rides the SPEC-0024 hooks with identifiers plus the closing attempt, fires only where retrying truly stops, and the Board gains a Dead pill over every endpoint you own. |
 
 ### Later records
 
