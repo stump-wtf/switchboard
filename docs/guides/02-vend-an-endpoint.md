@@ -155,13 +155,27 @@ endpoint and vend a fresh one
   MCP sessions — the agent immediately loses all access, with no residue. **Revoke = kill the
   endpoint.**
 
-## Scope is immutable — re-vend to change it
+## Scope is immutable to shrink — widen it to grow
 
-An endpoint's scope is **immutable**: a given URL + credential always means one fixed set of powers.
-To change what an agent can do, **vend a new endpoint** with the new scope and revoke the old one,
-rather than editing the live grant. The **rotate** button on an endpoint card starts the wizard
-pre-filled from the old scope. This keeps every capability trivial to audit — there is no "when did
-this scope change, and who changed it?" question.
+An endpoint's scope is **immutable in the direction that removes power**: a given URL + credential always
+means one fixed set of powers, and nothing edits that set downwards. To take something away from an
+agent, **vend a new endpoint** with the new scope and revoke the old one, rather than editing the live
+grant. The **rotate** button on an endpoint card starts the wizard pre-filled from the old scope. This
+keeps every capability trivial to audit — there is no "when did this scope change, and who changed it?"
+question, because a reduction is a new endpoint with its own reveal.
+
+The direction that only **adds** has its own path, because re-vending is a bad trade there: a webhook
+belongs to the endpoint that created it, so a re-vend mints a new ingest URL and signing secret and needs
+an edit in the producer's hook configuration — for a change that breaks no route that works today.
+`switchboard endpoint scope widen SLUG` adds an ingest queue, a source type or a verb, or raises the
+webhook ceiling; `switchboard endpoint scope add-queue SLUG QUEUE` is that command with one flag. It
+shows the old and the new grant and asks before writing anything, and the endpoint's credential is not
+touched, so the lane keeps authenticating with the token it already has. Every field a widen moves is
+recorded beside the change, with the value it replaced. See
+[ADR-0049 — Add-only endpoint scope widening](/decisions/ADR-0049-add-only-endpoint-scope-widening).
+
+The queues an endpoint may **claim** (its `--queue` at vend) are not reachable from there: that decides
+which work the lane can take, so it stays a vend-time choice.
 
 ## Next
 

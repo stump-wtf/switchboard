@@ -405,6 +405,115 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/APIError' }
 
+  /api/v1/endpoints/{ref}/scope/widen:
+    post:
+      tags: [operator-api]
+      operationId: widenEndpointScope
+      summary: Add to an endpoint's scope without re-vending it (additive only)
+      description: |
+        Widens the grant of an active endpoint you own by adding to it: queues its webhooks may route to,
+        ingest source types its agents may create webhooks for, MCP verbs, and a larger ceiling on
+        self-managed webhooks (ADR-0049). It exists because a webhook belongs to the endpoint that created
+        it, so a re-vend to add one route would mint a new ingest URL and signing secret and need an edit
+        in the producer's hook configuration — for a change that cannot break a route that works today.
+
+        The request can only add. Arrays are unioned, so a removal has no spelling here, and any key other
+        than the five below — including a bare `webhook_queues`, which would be a replacement — is refused
+        with 400. `webhook_max` is a ceiling to raise: a value below the endpoint's current one is refused,
+        never clamped, because lowering it strands webhooks that already exist.
+
+        Without `confirm: true` this is a **preview**: the response reports `before`, `after`, the fields
+        that would move and `requires_confirmation: true`, and nothing is written. The endpoint's
+        credential is never read or changed — the token revealed at vend keeps working, which is the point.
+
+        Draws from the per-human write bucket (429 with `Retry-After` when spent). Every field that
+        actually moves is recorded in `endpoint_scope_widenings` in the same transaction as the change.
+      security:
+        - operatorOAuth: []
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          description: The endpoint's slug (as `endpoint list` prints it) or its id.
+          schema: { type: string }
+          example: my-agent-k3x9
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WidenEndpointScopeIn' }
+      responses:
+        '200':
+          description: The before and after scope; `applied` says whether the widen was written.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WidenEndpointScopeOut' }
+        '400':
+          description: '`invalid_argument`: an unknown or removal key, an empty addition, an unknown queue, source type or verb, a `webhook_max` that lowers the ceiling, or a body that does not decode.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`not_found`: no endpoint by that slug or id belongs to the caller (unknown and another human''s are the same answer).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '409':
+          description: '`conflict`: the endpoint is revoked; `state` says so.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '413':
+          description: The body is over 64 KiB.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '429':
+          description: '`rate_limited`: the per-human write bucket is spent.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
+  /api/v1/endpoints/{ref}/scope/widenings:
+    get:
+      tags: [operator-api]
+      operationId: listEndpointScopeWidenings
+      summary: The audit trail of scope widenings for one endpoint
+      description: |
+        Every additive scope change this endpoint has had, newest first: the field, the value it replaced,
+        the value it became, and when. A widen that changed nothing writes no row, so this is a record of
+        changes rather than of calls (ADR-0049). Reaching it needs the same ownership as widening.
+      security:
+        - operatorOAuth: []
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          description: The endpoint's slug (as `endpoint list` prints it) or its id.
+          schema: { type: string }
+          example: my-agent-k3x9
+      responses:
+        '200':
+          description: The widening history, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EndpointScopeWideningsOut' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`not_found`: no endpoint by that slug or id belongs to the caller.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
   /api/v1/endpoints/{ref}/todos:
     post:
       tags: [operator-api]
@@ -1116,6 +1225,101 @@ components:
           maximum: 86400
           description: The new default lease in seconds, or null to use the server default (300).
           example: 3600
+
+    WidenEndpointScopeIn:
+      type: object
+      additionalProperties: false
+      description: >
+        Additions to an endpoint's scope (ADR-0049). At least one is required; an array of only blanks or
+        an empty body is refused. Any other key — a replacement list, a removal — is refused by a decoder
+        that rejects unknown fields, which is what makes this route unable to narrow a grant.
+      properties:
+        add_webhook_queues:
+          type: array
+          items: { type: string }
+          description: Queues its webhooks may newly route to. The routing grant is a union computed on read, so the next delivery on a new queue is honored without a restart.
+          example: [merge]
+        add_webhook_source_types:
+          type: array
+          items: { type: string }
+          description: Ingest source types its agents may newly create webhooks for, validated against the server's set.
+          example: [github]
+        add_scope_verbs:
+          type: array
+          items: { type: string }
+          description: MCP verbs to add, resolved by the same resolver `POST /api/v1/endpoints` uses for `verbs`, so a widen cannot name a verb the vend path would refuse.
+          example: [list_webhooks]
+        webhook_max:
+          type: integer
+          minimum: 0
+          description: A ceiling on self-managed webhooks to RAISE. A value below the endpoint's current ceiling is refused, never clamped.
+          example: 2
+        confirm:
+          type: boolean
+          default: false
+          description: '`false` (absent) previews and writes nothing; `true` applies the change and records it.'
+
+    EndpointScope:
+      type: object
+      description: The part of an endpoint's grant a widen can reach, plus the queues it drains — which a widen never touches.
+      properties:
+        scope_queues:
+          type: array
+          items: { type: string }
+          description: 'The queues the endpoint may claim. Read-only here: what an endpoint may take is not an additive change to a route.'
+        scope_verbs: { type: array, items: { type: string } }
+        webhook_max: { type: integer }
+        webhook_source_types: { type: array, items: { type: string } }
+        webhook_queues: { type: array, items: { type: string } }
+
+    EndpointScopeWidening:
+      type: object
+      properties:
+        field:
+          type: string
+          enum: [webhook_queues, webhook_source_types, webhook_max, scope_verbs]
+        before:
+          description: The value it replaced — an array of names, or the ceiling.
+          oneOf:
+            - type: array
+              items: { type: string }
+            - type: integer
+        after:
+          description: The value it became.
+          oneOf:
+            - type: array
+              items: { type: string }
+            - type: integer
+        created_at: { type: string, format: date-time, description: Absent on a preview, which has written nothing. }
+
+    WidenEndpointScopeOut:
+      type: object
+      required: [endpoint_id, slug, applied, requires_confirmation, changed, before, after, widenings]
+      properties:
+        endpoint_id: { type: string, format: uuid }
+        slug: { type: string }
+        agent_name: { type: string }
+        applied: { type: boolean, description: '`false` on a preview.' }
+        requires_confirmation: { type: boolean, description: '`true` on a preview: pass `confirm: true` to apply.' }
+        changed: { type: boolean, description: '`false` when every named value was already granted — a successful no-op that wrote no history row.' }
+        before: { $ref: '#/components/schemas/EndpointScope' }
+        after: { $ref: '#/components/schemas/EndpointScope' }
+        widenings:
+          type: array
+          items: { $ref: '#/components/schemas/EndpointScopeWidening' }
+          description: The fields this call moved (or would move), and their history already on record.
+
+    EndpointScopeWideningsOut:
+      type: object
+      required: [endpoint_id, slug, widenings]
+      properties:
+        endpoint_id: { type: string, format: uuid }
+        slug: { type: string }
+        agent_name: { type: string }
+        widenings:
+          type: array
+          items: { $ref: '#/components/schemas/EndpointScopeWidening' }
+          description: Newest first.
 
     APIError:
       type: object
