@@ -41,7 +41,8 @@ const ownedByHuman = `
 		JOIN agents    ag ON ag.id = ep.agent_id AND ag.owner_human_id = `
 
 // TodoCounts are the per-state todo counts backing the Todos view filter pills (All / Pending /
-// Claimed / Done / Failed), each rendered live from the database.
+// Claimed / Done / Failed, plus Dead, terminal failures with no scheduled retry, ADR-0050), each
+// rendered live from the database.
 //
 // The four A2A states (canceled/rejected/input-required/auth-required, SPEC-0018) are deliberately
 // NOT broken out here: the filter-pill set is the fixed Board surface defined by SPEC-0013, which
@@ -50,11 +51,12 @@ const ownedByHuman = `
 // A2A-state todo is dropped from the total; it simply has no dedicated pill yet.
 // Governing: SPEC-0018 REQ "Task State Machine Extension" (audit of every state-consuming site).
 type TodoCounts struct {
-	All     int
-	Pending int
-	Claimed int
-	Done    int
-	Failed  int
+	All          int
+	Pending      int
+	Claimed      int
+	Done         int
+	Failed       int
+	DeadLettered int
 }
 
 // TodoCounts returns the filter-pill counts for ONE human's todos in one round trip. The counts
@@ -63,13 +65,14 @@ type TodoCounts struct {
 func (s *Store) TodoCounts(ctx context.Context, ownerHumanID string) (TodoCounts, error) {
 	var c TodoCounts
 	err := s.pool.QueryRow(ctx, `
-		SELECT count(*),
-			count(*) FILTER (WHERE t.state = 'pending'),
-			count(*) FILTER (WHERE t.state = 'claimed'),
-			count(*) FILTER (WHERE t.state = 'done'),
-			count(*) FILTER (WHERE t.state = 'failed')
-		FROM todos t`+ownedByHuman+`$1`, ownerHumanID,
-	).Scan(&c.All, &c.Pending, &c.Claimed, &c.Done, &c.Failed)
+	SELECT count(*),
+		count(*) FILTER (WHERE t.state = 'pending'),
+		count(*) FILTER (WHERE t.state = 'claimed'),
+		count(*) FILTER (WHERE t.state = 'done'),
+		count(*) FILTER (WHERE t.state = 'failed'),
+		count(*) FILTER (WHERE t.state = 'failed' AND t.next_retry_at IS NULL AND t.queue <> 'quarantine')
+	FROM todos t`+ownedByHuman+`$1`, ownerHumanID,
+	).Scan(&c.All, &c.Pending, &c.Claimed, &c.Done, &c.Failed, &c.DeadLettered)
 	if err != nil {
 		return TodoCounts{}, fmt.Errorf("todo counts: %w", err)
 	}
@@ -156,6 +159,37 @@ func (s *Store) ListTodoItems(ctx context.Context, ownerHumanID, filter, query s
 		LIMIT $4`, ownerHumanID, filter, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list todo items: %w", err)
+	}
+	return scanTodoItems(rows)
+}
+
+// ListDeadLetters lists the dead letters across every endpoint one human owns, newest first:
+// failed with no scheduled retry, so work that stopped for want of a person (SPEC-0003 REQ
+// "Bounded Retries", issue #588). It is the operator's single place to look: the MCP list_todos
+// tool is endpoint-scoped by construction (ADR-0022), so an agent credential can only ever see one
+// lane's dead letters, and a todo whose delivery never passed the sender gate is announced to no
+// webhook at all. The search substring works exactly as in ListTodoItems; the limit is clamped.
+//
+// Tenant scoping is the same ownedByHuman predicate every other Board read carries: another
+// operator's dead letters are simply absent, not withheld. Governing: SPEC-0013 REQ "Todos View —
+// Durable Queue"; SPEC-0034 REQ-13 "Operator Surfaces"; ADR-0022.
+func (s *Store) ListDeadLetters(ctx context.Context, ownerHumanID, query string, limit int) ([]TodoItem, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+laneCols+`
+		FROM todos t`+ownedByHuman+`$1
+		LEFT JOIN events e ON e.id = t.event_id
+		WHERE t.state = 'failed' AND t.next_retry_at IS NULL AND t.queue <> 'quarantine'
+			AND ($2 = ''
+				OR t.id ILIKE '%' || $2 || '%'
+				OR COALESCE(t.source, '') ILIKE '%' || $2 || '%'
+				OR COALESCE(t.kind, '') ILIKE '%' || $2 || '%')
+		ORDER BY t.created_at DESC
+		LIMIT $3`, ownerHumanID, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list dead letters: %w", err)
 	}
 	return scanTodoItems(rows)
 }

@@ -37,6 +37,14 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   untouched. Pause state lives in Postgres, survives restarts, and shows up in `list_todos`'s
   `paused_queues`, `GET /api/v1/queues`, `switchboard queue list` and the queue metrics, so a
   quiet queue reads as paused rather than broken. Proposed as ADR-0048. (#581)
+- **Dead letters announce themselves.** A todo that stops being retried — attempts exhausted, a lease
+  that lapsed at the cap, an interrupted wait whose holder died — now fires `todo.dead_lettered` on the
+  same per-endpoint hooks that carry `todo.ready`: same endpoints, queue filter, rate limit, signing and
+  SSRF re-validation, and the same identifiers-only body, with the closed attempt (`seq`, `outcome`,
+  `summary`, `artifact`) attached so the receiver knows why without asking. It fires only where retrying
+  truly stops, never for a below-cap requeue or a revocation cascade, and only for a sender that passed
+  verification. The Board's Todos view gained a sixth pill, **Dead**, listing terminal failures with no
+  scheduled retry across every endpoint you own. Proposed as ADR-0050. (#588)
 
 - **A scripted vend grants the scope the wizard asks for, and a revealed secret can go to a file.**
   `switchboard endpoint vend` takes `--source-types`, `--allowed-queues`, `--webhook-max` and `--ttl`, or

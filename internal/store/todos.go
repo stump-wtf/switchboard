@@ -933,7 +933,8 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 		`+closedSelectFinal, endpointID, id, owner, r.Result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), summary, truncated, artifact, r.TokenHash)
 	var f finalScan
-	t, err := scanTodo(row, f.dest()...)
+	var pushEligible bool
+	t, err := scanTodo(row, append(f.dest(), &pushEligible)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMiss(ctx, endpointID, id)
 	}
@@ -945,7 +946,8 @@ func (s *Store) FailTodoWith(ctx context.Context, endpointID, id, owner string, 
 		// Both outcomes commit as 'failed'; the hook payload's NextRetryAt distinguishes a
 		// scheduled retry (countdown UI) from a dead-letter (retry is manual-only).
 		s.fireTodoHook(t.State, t)
-		s.metricsOrNop().TodoFinished(t.Queue, "fail") // Governing: SPEC-0023 REQ-3, ADR-0028
+		s.fireDeadLettered(t, DeadLetteredExhausted, pushEligible) // issue #588
+		s.metricsOrNop().TodoFinished(t.Queue, "fail")             // Governing: SPEC-0023 REQ-3, ADR-0028
 	}
 	return t, err
 }
@@ -1029,15 +1031,10 @@ func (s *Store) RequeueDueRetries(ctx context.Context) (int64, error) {
 // the existing doorbell hook, plus the requeue paths".
 const movedPushEligible = `EXISTS (SELECT 1 FROM events ev WHERE ev.id = upd.event_id AND (ev.verified OR ev.trust_mode = 'token'))`
 
-// reapedSelect is closedSelectFinal with the SPEC-0024 sender gate (movedPushEligible) as a final
-// select item: the reaper hands the notify-hook ready hook only rows that re-entered pending AND
-// pass the gate, while keeping main's attempt-closing columns for the REQ-15 fields and the
-// attempts-closed counter.
-const reapedSelect = `SELECT ` + todoCols + `, c.todo_id IS NOT NULL,
-			c.fa_disposition IS NOT DISTINCT FROM 'dead_lettered', c.fa_seq, c.fa_outcome,
-			COALESCE(c.fa_outcome IN ('lease_expired', 'reaped'), false), c.fa_summary, c.fa_artifact,
-			upd.attempts_total, ` + movedPushEligible + `
-		FROM upd LEFT JOIN closed c ON c.todo_id = upd.id`
+// reapedSelect is closedSelectFinal as the reaper names it: the same columns, because a reap that
+// hits the cap dead-letters and announces exactly like a fail that hits the cap, and a reap below the
+// cap hands the ready hook only rows that re-entered pending AND pass the gate.
+const reapedSelect = closedSelectFinal
 
 // fireRequeued tells the ready hook about every moved row that landed back in pending and passes
 // the sender gate. A reaped row that dead-lettered (failed) is not ready and fires nothing.
@@ -1406,7 +1403,8 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 		`+closedSelectFinal, id, owner, result,
 		retryBackoffBase.Seconds(), retryBackoffCap.Seconds(), ownerHumanID)
 	var f finalScan
-	t, err := scanTodo(row, f.dest()...)
+	var pushEligible bool
+	t, err := scanTodo(row, append(f.dest(), &pushEligible)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Todo{}, s.classifyMissForHuman(ctx, ownerHumanID, id)
 	}
@@ -1416,7 +1414,8 @@ func (s *Store) FailTodoOperatorOwned(ctx context.Context, ownerHumanID, id, own
 	}
 	if err == nil {
 		s.fireTodoHook(t.State, t)
-		s.metricsOrNop().TodoFinished(t.Queue, "fail") // Governing: SPEC-0023 REQ-3, ADR-0028
+		s.fireDeadLettered(t, DeadLetteredExhausted, pushEligible) // issue #588
+		s.metricsOrNop().TodoFinished(t.Queue, "fail")             // Governing: SPEC-0023 REQ-3, ADR-0028
 	}
 	return t, err
 }
@@ -1492,6 +1491,7 @@ func (s *Store) ReapExpired(ctx context.Context) (int64, error) {
 	// Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028.
 	for i, t := range reaped {
 		s.fireTodoHook(t.State, t)
+		s.fireDeadLettered(t, DeadLetteredLease, eligible[i]) // issue #588: a reap at the cap is a dead letter
 		s.metricsOrNop().LeaseExpired(t.Queue)
 		if closed[i] {
 			s.countAttemptClosed(t.Queue, "reaped")

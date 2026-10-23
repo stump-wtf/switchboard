@@ -327,6 +327,7 @@ func TestCountsFragmentCarriesOOBBundle(t *testing.T) {
 	for _, want := range []string{
 		`id="sb-tiles"`, `id="sb-todo-count"`, `id="sb-live"`, // Board swap targets
 		`id="sb-tc-all"`, `id="sb-tc-pending"`, `id="sb-tc-failed"`, // Todos view pill-count targets
+		`id="sb-tc-dead"`, // the dead-letter chip counts on the same frame (issue #588)
 		// Lane-header counts ride the same frame (SPEC-0015 "lane headers SHALL carry live counts").
 		`id="sb-lane-count-verified" class="sb-lane__n" hx-swap-oob="true">5<`,
 		`id="sb-lane-count-patched" class="sb-lane__n" hx-swap-oob="true">4<`,
@@ -339,9 +340,9 @@ func TestCountsFragmentCarriesOOBBundle(t *testing.T) {
 			t.Errorf("counts: missing %q in %q", want, out)
 		}
 	}
-	// tiles + rail count + LIVE pill + 5 Todos pill counts + 2 lane counts = 10 OOB swaps.
-	if got := strings.Count(out, `hx-swap-oob="true"`); got != 10 {
-		t.Errorf("counts: %d oob swaps, want 10 (tiles + count + pill + 5 filter counts + 2 lane counts):\n%q", got, out)
+	// tiles + rail count + LIVE pill + 6 Todos pill counts + 2 lane counts = 11 OOB swaps.
+	if got := strings.Count(out, `hx-swap-oob="true"`); got != 11 {
+		t.Errorf("counts: %d oob swaps, want 11 (tiles + count + pill + 6 filter counts + 2 lane counts):\n%q", got, out)
 	}
 }
 
