@@ -107,6 +107,10 @@ type listTodosIn struct {
 
 type listTodosOut struct {
 	Todos []todoOut `json:"todos" jsonschema:"todo rows in the endpoint's granted queues, newest first"`
+	// PausedQueues (ADR-0048): the granted queues an operator has paused — rows here are waiting
+	// by decision, not because nobody is coming, and claim will hand out nothing from them until
+	// resume. Additive: a client written before it simply ignores the field.
+	PausedQueues []string `json:"paused_queues,omitempty" jsonschema:"granted queues currently paused (delivery suppressed, intake still accepted); empty or absent when none is paused"`
 }
 
 // The lease-token fence fields (SPEC-0034 REQ-6): claim and claim_next take require_fence and
@@ -274,6 +278,16 @@ func (h *Handler) listTodosTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[listTo
 		out := listTodosOut{Todos: make([]todoOut, 0, len(todos))}
 		for _, t := range todos {
 			out.Todos = append(out.Todos, toRow(t))
+		}
+		// ADR-0048: say why a paused queue's rows are not moving. Optional on the store seam (the
+		// ToolStore contract predates it, and test fakes need not carry it); a failed probe must
+		// not fail the list — the rows are the answer, the pause note is the footnote.
+		if pa, ok := h.store.(interface {
+			PausedQueues(context.Context, []string) ([]string, error)
+		}); ok {
+			if paused, perr := pa.PausedQueues(ctx, queues); perr == nil {
+				out.PausedQueues = paused
+			}
 		}
 		return nil, out, nil
 	}

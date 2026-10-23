@@ -41,7 +41,7 @@ const ownedByHuman = `
 		JOIN agents    ag ON ag.id = ep.agent_id AND ag.owner_human_id = `
 
 // TodoCounts are the per-state todo counts backing the Todos view filter pills (All / Pending /
-// Claimed / Done / Failed, plus Dead, terminal failures with no scheduled retry, ADR-0048), each
+// Claimed / Done / Failed, plus Dead, terminal failures with no scheduled retry, ADR-0049), each
 // rendered live from the database.
 //
 // The four A2A states (canceled/rejected/input-required/auth-required, SPEC-0018) are deliberately

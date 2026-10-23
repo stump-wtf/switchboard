@@ -10,7 +10,7 @@ package store
 // TodoCounts counts, so the pill's number and the rows under it cannot disagree.
 //
 // Governing: SPEC-0007 REQ "Human as Accountable Principal", SPEC-0033 REQ "Owner-Scoped History
-// Reads", SPEC-0013 REQ "Todos View", ADR-0048 (proposed).
+// Reads", SPEC-0013 REQ "Todos View", ADR-0049 (proposed).
 
 import (
 	"context"
