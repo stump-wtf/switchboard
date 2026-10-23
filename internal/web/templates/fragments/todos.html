@@ -20,17 +20,20 @@
     hx-get="/todos" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-trigger="input changed delay:300ms, search" hx-include="[name=filter]" hx-push-url="true">
 </form>{{end}}
 
-{{/* todo_pills — the five filter chips (all/pending/claimed/done/failed) with live counts, flat
+{{/* todo_pills: the six filter chips (all/pending/claimed/done/failed/dead) with live counts, flat
      and square per ADR-0018 (no pill radii on state controls). Each chip carries its canonical
      filter key as data-sb-filter; each count span keeps the sb-tc-<key> id so the counts SSE
      frame refreshes the numbers OOB without disturbing the active-chip state. hx-include pulls
-     the current search text along on a chip click. */}}
+     the current search text along on a chip click. The dead chip is the operator's single place to
+     look when work stopped for want of a person (issue #588): failed with no scheduled retry,
+     across every endpoint they own. */}}
 {{define "todo_pills"}}<div class="sb-fpills" role="tablist" aria-label="Filter todos">
   <a class="sb-fpill{{if eq .Filter "all"}} sb-fpill--active{{end}}" data-sb-filter="all" href="/todos?filter=all" hx-get="/todos?filter=all" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "all"}}true{{else}}false{{end}}">all <span id="sb-tc-all" class="sb-fpill__n" aria-live="polite">{{.Counts.All}}</span></a>
   <a class="sb-fpill{{if eq .Filter "pending"}} sb-fpill--active{{end}}" data-sb-filter="pending" href="/todos?filter=pending" hx-get="/todos?filter=pending" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "pending"}}true{{else}}false{{end}}">pending <span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite">{{.Counts.Pending}}</span></a>
   <a class="sb-fpill{{if eq .Filter "claimed"}} sb-fpill--active{{end}}" data-sb-filter="claimed" href="/todos?filter=claimed" hx-get="/todos?filter=claimed" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "claimed"}}true{{else}}false{{end}}">claimed <span id="sb-tc-claimed" class="sb-fpill__n" aria-live="polite">{{.Counts.Claimed}}</span></a>
   <a class="sb-fpill{{if eq .Filter "done"}} sb-fpill--active{{end}}" data-sb-filter="done" href="/todos?filter=done" hx-get="/todos?filter=done" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "done"}}true{{else}}false{{end}}">done <span id="sb-tc-done" class="sb-fpill__n" aria-live="polite">{{.Counts.Done}}</span></a>
   <a class="sb-fpill{{if eq .Filter "failed"}} sb-fpill--active{{end}}" data-sb-filter="failed" href="/todos?filter=failed" hx-get="/todos?filter=failed" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "failed"}}true{{else}}false{{end}}">failed <span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite">{{.Counts.Failed}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "dead"}} sb-fpill--active{{end}}" data-sb-filter="dead" href="/todos?filter=dead" hx-get="/todos?filter=dead" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "dead"}}true{{else}}false{{end}}">dead <span id="sb-tc-dead" class="sb-fpill__n" aria-live="polite">{{.Counts.DeadLettered}}</span></a>
 </div>{{end}}
 
 {{/* todos_table — the durable-queue table (SPEC-0015 columns: line · provider · trust · state ·

@@ -27,6 +27,11 @@ const (
 	// TypeTodoReady is the only notification type this dispatcher sends; todos.backlog waits on
 	// endpoint presence (SPEC-0024 REQ-9).
 	TypeTodoReady = "todo.ready"
+	// TypeTodoDeadLettered announces a todo that stopped for want of a person: failed at its attempt
+	// cap, or its lease (or interrupt wait) lapsed at the cap. It travels the same hooks, signing and
+	// SSRF guard as todo.ready, and carries identifiers plus a summary the same way, so a receiver
+	// that already handles todo.ready gets dead letters for free (issue #588).
+	TypeTodoDeadLettered = "todo.dead_lettered"
 )
 
 // crockford is the ULID alphabet.
@@ -84,6 +89,21 @@ type notice struct {
 	title      string
 	attempt    int
 	reason     string
+	// eventType is TypeTodoReady or TypeTodoDeadLettered: it chooses the body and the metric label.
+	eventType string
+	// dead carries the closing attempt of a dead letter, nil for every ready notification.
+	dead *deadLetter
+}
+
+// deadLetter is SPEC-0034 REQ-15's dead-letter context, cut to the same body limits as the rest of
+// the notice: the attempt number that closed, how it closed, and what the worker reported about it.
+// Artifact is a handle (a Cairn or permalink), never the thing it points at.
+type deadLetter struct {
+	seq           int
+	outcome       string
+	summary       string
+	artifact      string
+	attemptsTotal int
 }
 
 // newNotice copies the notice out of t. The sender-supplied strings are cloned after truncation so
@@ -91,12 +111,38 @@ type notice struct {
 func newNotice(t store.Todo, reason string) notice {
 	return notice{
 		todoID: t.ID, endpointID: t.EndpointID, queue: t.Queue,
-		kind:    strings.Clone(truncateRunes(t.Kind, maxLabelRunes)),
-		source:  strings.Clone(truncateRunes(t.Source, maxLabelRunes)),
-		title:   strings.Clone(truncateRunes(t.Title, maxSummaryRunes)),
-		attempt: t.Attempt,
-		reason:  reason,
+		kind:      strings.Clone(truncateRunes(t.Kind, maxLabelRunes)),
+		source:    strings.Clone(truncateRunes(t.Source, maxLabelRunes)),
+		title:     strings.Clone(truncateRunes(t.Title, maxSummaryRunes)),
+		attempt:   t.Attempt,
+		reason:    reason,
+		eventType: TypeTodoReady,
 	}
+}
+
+// newDeadLetterNotice is newNotice for a todo that just dead-lettered, with store.Todo.FinalAttempt
+// (SPEC-0034 REQ-15) copied into the notice. A dead letter whose attempt history is empty (a row
+// with no recorded attempt) keeps the identifiers and says nothing more.
+func newDeadLetterNotice(t store.Todo, reason string) notice {
+	n := newNotice(t, reason)
+	n.eventType = TypeTodoDeadLettered
+	if f := t.FinalAttempt; f != nil {
+		n.dead = &deadLetter{
+			seq: f.Seq, outcome: strings.Clone(truncateRunes(f.Outcome, maxLabelRunes)),
+			summary:       strings.Clone(truncateRunes(deref(f.Summary), maxSummaryRunes)),
+			artifact:      strings.Clone(truncateRunes(deref(f.Artifact), maxLabelRunes)),
+			attemptsTotal: f.AttemptsTotal,
+		}
+	}
+	return n
+}
+
+// deref flattens an optional store string to "" for truncation.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // buildReadyBody renders a todo.ready notification. attempt is the todo's attempt count, the number
@@ -114,6 +160,74 @@ func buildReadyBody(n notice, endpointSlug string, now time.Time) ([]byte, error
 	out, err := json.Marshal(b)
 	if err != nil {
 		return nil, fmt.Errorf("notifyhook: marshal body: %w", err)
+	}
+	if len(out) > MaxBodyBytes {
+		return nil, fmt.Errorf("notifyhook: body is %d bytes, over the %d-byte limit", len(out), MaxBodyBytes)
+	}
+	return out, nil
+}
+
+// buildBody renders the notification body for n's event type.
+func buildBody(n notice, endpointSlug string, now time.Time) ([]byte, error) {
+	if n.eventType == TypeTodoDeadLettered {
+		return buildDeadLetteredBody(n, endpointSlug, now)
+	}
+	return buildReadyBody(n, endpointSlug, now)
+}
+
+// deadLetteredBody is the todo.dead_lettered field set: the same identifiers and summary as a ready
+// notification, plus what the last attempt was. No payload, headers, routing trace or work order
+// has a field here either.
+type deadLetteredBody struct {
+	Type          string           `json:"type"`
+	Reason        string           `json:"reason"`
+	TodoID        string           `json:"todo_id"`
+	Queue         string           `json:"queue"`
+	Kind          string           `json:"kind,omitempty"`
+	Source        string           `json:"source,omitempty"`
+	Summary       string           `json:"summary"`
+	Endpoint      string           `json:"endpoint"`
+	Attempt       int              `json:"attempt"`
+	AttemptsTotal int              `json:"attempts_total"`
+	FinalAttempt  *finalAttemptRef `json:"final_attempt,omitempty"`
+	CreatedAt     string           `json:"created_at"`
+}
+
+// finalAttemptRef describes the attempt whose close dead-lettered the todo. Summary is the worker's
+// own report line and Artifact a handle, both truncated and neutralized like the todo's title.
+type finalAttemptRef struct {
+	Seq      int    `json:"seq"`
+	Outcome  string `json:"outcome"`
+	Summary  string `json:"summary,omitempty"`
+	Artifact string `json:"artifact,omitempty"`
+}
+
+// buildDeadLetteredBody renders a todo.dead_lettered notification. reason says which path got there
+// (attempts_exhausted | lease_expired | interrupt_expired); attempts_total is the cap the todo died
+// at, which for a row with no recorded attempt falls back to its claim count.
+func buildDeadLetteredBody(n notice, endpointSlug string, now time.Time) ([]byte, error) {
+	b := deadLetteredBody{
+		Type: TypeTodoDeadLettered, Reason: n.reason, TodoID: n.todoID, Queue: n.queue,
+		Kind: truncateRunes(neutralize(n.kind), maxLabelRunes), Source: truncateRunes(neutralize(n.source), maxLabelRunes),
+		Summary:   truncateRunes(neutralize(n.title), maxSummaryRunes),
+		Endpoint:  endpointSlug,
+		Attempt:   n.attempt,
+		CreatedAt: now.UTC().Format(time.RFC3339),
+	}
+	if n.dead != nil {
+		b.AttemptsTotal = n.dead.attemptsTotal
+		b.FinalAttempt = &finalAttemptRef{
+			Seq: n.dead.seq, Outcome: truncateRunes(neutralize(n.dead.outcome), maxLabelRunes),
+			Summary:  truncateRunes(neutralize(n.dead.summary), maxSummaryRunes),
+			Artifact: truncateRunes(neutralize(n.dead.artifact), maxLabelRunes),
+		}
+	}
+	if b.AttemptsTotal == 0 {
+		b.AttemptsTotal = n.attempt
+	}
+	out, err := json.Marshal(b)
+	if err != nil {
+		return nil, fmt.Errorf("notifyhook: marshal dead letter body: %w", err)
 	}
 	if len(out) > MaxBodyBytes {
 		return nil, fmt.Errorf("notifyhook: body is %d bytes, over the %d-byte limit", len(out), MaxBodyBytes)

@@ -230,15 +230,20 @@ type FinalAttempt struct {
 
 // closedSelectFinal is closedSelect for the statements that can dead-letter: after the closed flag
 // it returns whether the close dead-lettered the todo and that attempt's REQ-15 fields, read from
-// the closing CTE's RETURNING, so the payload costs no second round trip. Scan it with finalScan.
-// At most one attempt is open per todo, so the join yields at most one closed row per upd row.
+// the closing CTE's RETURNING, so the payload costs no second round trip, and finally the SPEC-0024
+// sender gate (movedPushEligible). Every statement that dead-letters also ANNOUNCES the dead letter,
+// and that announcement carries sender-written text, so a row whose delivery never passed per-source
+// verification is announced to nobody, the same rule the reaper's ready path already applies.
+// Scan it with finalScan's destinations plus one bool. At most one attempt is open per todo, so the
+// join yields at most one closed row per upd row.
 const closedSelectFinal = `SELECT ` + todoCols + `, c.todo_id IS NOT NULL,
 			c.fa_disposition IS NOT DISTINCT FROM 'dead_lettered', c.fa_seq, c.fa_outcome,
 			COALESCE(c.fa_outcome IN ('lease_expired', 'reaped'), false), c.fa_summary, c.fa_artifact,
-			upd.attempts_total
+			upd.attempts_total, ` + movedPushEligible + `
 		FROM upd LEFT JOIN closed c ON c.todo_id = upd.id`
 
-// finalScan receives the columns closedSelectFinal returns after todoCols.
+// finalScan receives the columns closedSelectFinal returns after todoCols, up to but excluding the
+// sender-gate bool, which each caller scans separately.
 type finalScan struct {
 	closed, dead, died         bool
 	seq                        *int

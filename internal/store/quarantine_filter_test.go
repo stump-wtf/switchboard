@@ -45,6 +45,7 @@ var quarantineAllowlist = map[string]string{
 	"SetTodoTransitionHook":     "hook registration, no todo access",
 	"SetTodoReadyHook":          "hook registration, no todo access (fireReady refuses quarantine itself)",
 	"SetTodoRequeuedHook":       "hook registration, no todo access",
+	"SetTodoDeadLetteredHook":   "hook registration, no todo access (fireDeadLettered refuses quarantine itself)",
 	"ListLaneItems":             "the owner's Board lanes",
 	"TodoAttemptsOperatorOwned": "the owner's attempt history read",
 }
@@ -110,6 +111,22 @@ func TestQuarantineDefaultFilterCoversEveryTodoMethod(t *testing.T) {
 
 	// Each exercise returns an error when the method saw or changed the held row.
 	exercises := map[string]func(t *testing.T) error{
+		"ListDeadLetters": func(t *testing.T) error {
+			id := f.seedHeld(t, "failed")
+			if _, err := s.pool.Exec(ctx, `UPDATE todos SET next_retry_at = NULL WHERE id = $1`, id); err != nil {
+				return fmt.Errorf("make the held row a dead letter: %v", err)
+			}
+			items, err := s.ListDeadLetters(ctx, f.human, "", 100)
+			if err != nil {
+				return err
+			}
+			for _, it := range items {
+				if it.ID == id {
+					return fmt.Errorf("ListDeadLetters listed the held dead letter")
+				}
+			}
+			return nil
+		},
 		"ClaimTodo": func(t *testing.T) error {
 			id := f.seedHeld(t, "pending")
 			if _, err := s.ClaimTodo(ctx, ep, id, "w", ttl); !errors.Is(err, ErrNotFound) {

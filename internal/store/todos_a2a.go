@@ -264,6 +264,7 @@ func (s *Store) ReapInterrupted(ctx context.Context) (int64, error) {
 	// (ADR-0046). Governing: SPEC-0023 REQ-3 "Lifecycle counters", ADR-0028.
 	for i, t := range reclaimed {
 		s.fireTodoHook(t.State, t)
+		s.fireDeadLettered(t, DeadLetteredInterrupt, eligible[i]) // issue #588
 		s.metricsOrNop().LeaseExpired(t.Queue)
 		s.metricsOrNop().InterruptLeaseReclaimed(t.Queue)
 		if closed[i] {

@@ -183,8 +183,9 @@ type panelView struct {
 	Rows   []todoRow
 }
 
-// todoFilters is the canonical ordered set of filter chips (SPEC-0015: all/pending/claimed/done/failed).
-var todoFilters = []string{"all", "pending", "claimed", "done", "failed"}
+// todoFilters is the canonical ordered set of filter chips (SPEC-0015: all/pending/claimed/done/
+// failed, plus the dead-letter chip issue #588 adds).
+var todoFilters = []string{"all", "pending", "claimed", "done", "failed", "dead"}
 
 // normalizeFilter maps a query-param filter to a canonical pill key, defaulting to "all". The four
 // A2A states (SPEC-0018) are intentionally not filter pills in story #58 — the pill set is SPEC-0015's
@@ -201,14 +202,18 @@ func normalizeFilter(f string) string {
 		return "done"
 	case "failed":
 		return "failed"
+	case "dead", "dead_lettered", "dead-lettered":
+		return "dead"
 	default:
 		return "all"
 	}
 }
 
-// filterState turns a canonical pill key into the store's state filter ("" = all states).
+// filterState turns a canonical pill key into the store's state filter ("" = all states). The dead
+// chip is not a state filter: a dead letter is failed with no scheduled retry, so the handler reads
+// it through store.ListDeadLetters instead (issue #588).
 func filterState(filter string) string {
-	if filter == "all" {
+	if filter == "all" || filter == "dead" {
 		return ""
 	}
 	return filter
@@ -240,7 +245,14 @@ func (h *Handler) Todos(w http.ResponseWriter, r *http.Request) {
 			// Suppressed to a log so the view still renders (degraded pill counts); a reload recovers.
 			h.log.Warn("todos counts", "err", err)
 		}
-		items, err := h.store.ListTodoItems(r.Context(), human.ID, filterState(filter), query, todoListCap)
+		// One read per view: the dead chip has no state filter, so running the state-filtered
+		// listing first would fetch and discard up to a whole page of rows on every Dead view.
+		var items []store.TodoItem
+		if filter == "dead" {
+			items, err = h.store.ListDeadLetters(r.Context(), human.ID, query, todoListCap)
+		} else {
+			items, err = h.store.ListTodoItems(r.Context(), human.ID, filterState(filter), query, todoListCap)
+		}
 		if err != nil {
 			h.log.Warn("todos list", "err", err)
 		}
