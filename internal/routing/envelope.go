@@ -19,8 +19,12 @@ package routing
 //	.headers       sanitized request headers, lower-cased names (secret values are «redacted»)
 //	.payload       the body parsed as JSON, or null when it is not JSON
 //	.artifact      cairn only (null otherwise): {event_id, kind, created_at, id, handle, url, title,
-//	               share_type, channel, model, actor_id, on_behalf_of, expires_at, tags, metadata} —
-//	               handle is mcp://cairn/<id>; tags is cairn's string list (handoff, lane:m, …)
+//	               share_type, channel, model, actor_id, on_behalf_of, expires_at, tags, metadata,
+//	               assignee, assignment} — handle is mcp://cairn/<id>; tags is cairn's string list
+//	               (handoff, lane:m, …); assignee is the assigned user's display handle and
+//	               assignment is {previous}, the prior assignee on an artifact.assigned event
+//	               (null on a first assignment, and the whole object null on a kind that carries no
+//	               assignment)
 //	.issue         a Gitea/GitHub `issues` event only (null otherwise, pull requests included):
 //	               {provider, action, event_type, repo, number, title, url, state, author, sender,
 //	               labels (names), label (GitHub's changed label, else null), body_size, label_event,
@@ -33,6 +37,9 @@ package routing
 //
 //	.release       {by, at} on a delivery released from quarantine (by is "human:<id>" or
 //	               "classifier:<slug>"), null otherwise.
+//
+// @joestump-agent 10/22/2026 - Added .artifact.assignee and .artifact.assignment (cairn SPEC-0025,
+// SPEC-0020 REQ "Routing Envelope" and "Cairn Handoff Fields", stump.wtf/switchboard#558).
 //
 // @joestump-agent 09/25/2026 - Added .actor (ADR-0031, SPEC-0026 REQ-10, #385).
 //
@@ -180,9 +187,11 @@ func normalizeNumbers(v any) any {
 	}
 }
 
-// cairnArtifact projects cairn's artifact.created body onto stable names. tags and metadata are
-// passed through when a cairn build sends them and are null otherwise, so a rule written against
-// them today simply does not match until the producer carries them.
+// cairnArtifact projects cairn's artifact.created and artifact.assigned bodies onto stable names.
+// tags, metadata and assignee are passed through when a cairn build sends them and are null
+// otherwise, so a rule written against them today simply does not match until the producer carries
+// them. assignment is projected only when the body carries an assignment object (artifact.assigned),
+// and then only its previous assignee, so a producer's nesting cannot add envelope paths.
 func cairnArtifact(payload any) map[string]any {
 	root, _ := payload.(map[string]any)
 	data, _ := root["data"].(map[string]any)
@@ -192,8 +201,12 @@ func cairnArtifact(payload any) map[string]any {
 		"created_at": root["created_at"],
 	}
 	for _, k := range []string{"id", "url", "title", "share_type", "channel", "model", "actor_id", "on_behalf_of",
-		"expires_at", "tags", "metadata"} {
+		"expires_at", "tags", "metadata", "assignee"} {
 		out[k] = data[k]
+	}
+	out["assignment"] = nil
+	if a, ok := data["assignment"].(map[string]any); ok {
+		out["assignment"] = map[string]any{"previous": a["previous"]}
 	}
 	out["handle"] = nil
 	if id, ok := data["id"].(string); ok && id != "" {
