@@ -15,6 +15,18 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Add-only endpoint scope widening.** Giving an existing lane one more route no longer costs a re-vend.
+  `switchboard endpoint scope widen SLUG --add-queue merge` (or `--add-source-type`, `--add-verb`,
+  `--webhook-max`) adds to an endpoint's grant instead of replacing it, and
+  `switchboard endpoint scope add-queue SLUG QUEUE` is that command with one flag. It prints the old and
+  the new grant and asks before writing; the endpoint's credential is untouched, so the ingest URL and
+  signing secret the producer already points at keep working — which was the whole problem, since a
+  webhook belongs to the endpoint that created it. The command cannot remove anything: arrays are unioned,
+  a `--webhook-max` below the current ceiling is refused rather than clamped, and any key that would
+  replace a list is rejected before it is read. Every field that moves is recorded with the value it
+  replaced, in the same transaction as the change, and `GET /api/v1/endpoints/{ref}/scope/widenings` reads
+  that trail back. Narrowing a grant is still a revoke and a re-vend. Proposed as ADR-0049. (#590)
+
 - **A queue can now be paused without stopping its intake.** An operator draining a downstream
   consumer had no lever short of disabling the endpoint (which drops or fails inbound webhooks) or
   killing the consumer (which still left doorbells and wake hooks starting runs).
@@ -38,7 +50,7 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   same ceiling, trust and ownership checks as the MCP verbs, so managing your own webhooks no longer needs
   the endpoint's MCP credential. And `--secret-file` / `--env-file` on those commands and on `vend` write
   the revealed credential to a file created 0600 and print the path: no secret on stdout, including in the
-  `.mcp.json` stanza and the `--json` body, which are scrubbed of it. (#584, ADR-0049 proposed)
+  `.mcp.json` stanza and the `--json` body, which are scrubbed of it. (#584, ADR-0051 proposed)
 
 - **The inbound webhook throttle is an operator setting.** The per-client-IP bucket on the ingest surface
   was hardcoded to 10 requests/second with a burst of 20, and the "throttling never drops work" promise

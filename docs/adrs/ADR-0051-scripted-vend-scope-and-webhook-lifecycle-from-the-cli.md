@@ -6,7 +6,7 @@ extends: [ADR-0023, ADR-0047]
 related: [ADR-0003, ADR-0012, ADR-0022, ADR-0032, ADR-0043, ADR-0048]
 ---
 
-# ADR-0049: Scripted Vend Scope and Webhook Lifecycle From the CLI — One Rule Set, One Place for a Secret
+# ADR-0051: Scripted Vend Scope and Webhook Lifecycle From the CLI — One Rule Set, One Place for a Secret
 
 **Status note:** this ADR is **proposed**. It ships with an implementation so the choice can be argued
 against working code rather than prose; nothing here is settled until Joe accepts it. The requirement

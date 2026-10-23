@@ -19,6 +19,16 @@ import (
 	"testing"
 )
 
+// containsString is the fake's set test for the widen route's union.
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
 type fakeDeployment struct {
 	t   *testing.T
 	srv *httptest.Server
@@ -42,6 +52,10 @@ type fakeDeployment struct {
 	pushExists   bool              // the push answers created:false, as a matched key does
 	revokes      []string          // endpoint refs seen on POST /api/v1/endpoints/{ref}/revoke
 	revokeStatus int               // when non-zero, the status the revoke route answers with
+	widens       []map[string]any  // POST /api/v1/endpoints/{ref}/scope/widen bodies seen, "ref" added
+	widenStatus  int               // when non-zero, the status the widen route answers with
+	widenQueues  []string          // the webhook queues the fake endpoint currently grants
+	widenHistory []map[string]any  // the audit trail the widenings route answers with
 	endpointRows []map[string]any  // GET /api/v1/endpoints answer
 	agentRows    []map[string]any  // GET /api/v1/agents answer
 	webhookRows  []map[string]any  // GET /api/v1/webhooks answer
@@ -285,6 +299,68 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 					writeJSONResponse(w, 201, map[string]any{
 						"id": "td_1", "endpoint_id": "ep-1", "slug": ref, "queue": queue,
 						"state": "pending", "created": !f.pushExists, "event_id": 7})
+					return
+				}
+			}
+			// POST /api/v1/endpoints/{ref}/scope/widen and GET …/scope/widenings
+			if rest, ok := strings.CutPrefix(r.URL.Path, "/api/v1/endpoints/"); ok && r.Method == http.MethodPost {
+				if ref, ok := strings.CutSuffix(rest, "/scope/widen"); ok && ref != "" {
+					var in map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+						http.Error(w, "invalid JSON body", 400)
+						return
+					}
+					in["ref"] = ref
+					f.widens = append(f.widens, in)
+					if f.widenStatus != 0 {
+						writeJSONResponse(w, f.widenStatus,
+							map[string]any{"error": "webhook_max is a widening only", "code": "invalid_argument"})
+						return
+					}
+					before := append([]string{}, f.widenQueues...)
+					after := append([]string{}, before...)
+					if added, ok := in["add_webhook_queues"].([]any); ok {
+						for _, q := range added {
+							if s, _ := q.(string); s != "" && !containsString(after, s) {
+								after = append(after, s)
+							}
+						}
+					}
+					changed := len(after) != len(before)
+					confirm, _ := in["confirm"].(bool)
+					if confirm && changed {
+						f.widenQueues = after
+						f.widenHistory = append(f.widenHistory, map[string]any{
+							"field": "webhook_queues", "before": before, "after": after,
+							"created_at": "2026-10-21T12:00:00Z"})
+					}
+					widenings := []map[string]any{}
+					if changed {
+						entry := map[string]any{"field": "webhook_queues", "before": before, "after": after}
+						if confirm {
+							entry["created_at"] = "2026-10-21T12:00:00Z"
+						}
+						widenings = append(widenings, entry)
+					}
+					writeJSONResponse(w, 200, map[string]any{
+						"endpoint_id": "ep-1", "slug": ref, "agent_name": "some-agent",
+						"applied": confirm && changed, "requires_confirmation": !confirm, "changed": changed,
+						"before": map[string]any{"scope_queues": []string{"lane-a"}, "scope_verbs": []string{"claim"},
+							"webhook_max": 1, "webhook_source_types": []string{"generic"}, "webhook_queues": before},
+						"after": map[string]any{"scope_queues": []string{"lane-a"}, "scope_verbs": []string{"claim"},
+							"webhook_max": 1, "webhook_source_types": []string{"generic"}, "webhook_queues": after},
+						"widenings": widenings})
+					return
+				}
+			}
+			if rest, ok := strings.CutPrefix(r.URL.Path, "/api/v1/endpoints/"); ok && r.Method == http.MethodGet {
+				if ref, ok := strings.CutSuffix(rest, "/scope/widenings"); ok && ref != "" {
+					history := f.widenHistory
+					if history == nil {
+						history = []map[string]any{}
+					}
+					writeJSONResponse(w, 200, map[string]any{
+						"endpoint_id": "ep-1", "slug": ref, "agent_name": "some-agent", "widenings": history})
 					return
 				}
 			}

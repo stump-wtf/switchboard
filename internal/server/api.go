@@ -142,6 +142,7 @@ func (a *apiHandler) Routes() chi.Router {
 		r.Post("/endpoints", a.VendEndpoint)
 		r.Get("/endpoints", a.ListEndpoints)
 		r.Post("/endpoints/{ref}/revoke", a.RevokeEndpoint)
+		r.Get("/endpoints/{ref}/scope/widenings", a.ListEndpointScopeWidenings)
 		r.Post("/endpoints/{ref}/todos", a.PushTodo)
 		r.Get("/agents", a.ListAgents)
 		r.Get("/queues", a.ListQueues) // ADR-0048
@@ -151,6 +152,9 @@ func (a *apiHandler) Routes() chi.Router {
 	r.Group(func(r chi.Router) {
 		r.Use(maxBytes(64<<10), a.perHuman(a.writeRL))
 		r.Patch("/endpoints/{ref}", a.EditEndpoint)
+		// A widen changes an endpoint's grant, so it shares the edit route's write bucket.
+		// Governing: ADR-0049 (proposed).
+		r.Post("/endpoints/{ref}/scope/widen", a.WidenEndpointScope)
 		// Pausing a queue is an operator write (ADR-0048): same bucket as the others.
 		r.Post("/queues/{queue}/pause", a.PauseQueue)
 		r.Post("/queues/{queue}/resume", a.ResumeQueue)
