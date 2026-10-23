@@ -176,6 +176,11 @@ const (
 	ReadyCreated  = "created"
 	ReadyRequeued = "requeued"
 	ReadyStalled  = "stalled"
+	// ReadyResumed is not a transition either: the resume half of ADR-0048. A resumed queue's
+	// backlog was already pending the whole pause; the resume fires this for the oldest pending row
+	// so hook-driven consumers learn the queue is open again. A consumer that does not know the
+	// value treats it as an ordinary wake, exactly as with ReadyStalled.
+	ReadyResumed = "resumed"
 )
 
 // TodoReadyHook observes a push-eligible todo entering `pending` after its statement committed:
@@ -206,9 +211,17 @@ func (s *Store) fireReady(t Todo, reason string) {
 	if t.Queue == QueueQuarantine {
 		return
 	}
-	if fn := s.readyHook.Load(); fn != nil {
-		(*fn)(t, reason)
+	fn := s.readyHook.Load()
+	if fn == nil {
+		return
 	}
+	// A paused queue stays quiet (ADR-0048): intake persists, but no wake reaches a consumer the
+	// operator has quiesced. The stall sweep's backlog wake passes through this same gate, so a
+	// pause silences the queue end to end, and the resume re-rings once the pause row is gone.
+	if s.queuePausedQuiet(t.Queue) {
+		return
+	}
+	(*fn)(t, reason)
 }
 
 // fireDoorbell invokes the registered doorbell hook, if any. Callers fire it only after a durable
@@ -219,9 +232,16 @@ func (s *Store) fireDoorbell(t Todo) {
 	if t.Queue == QueueQuarantine {
 		return
 	}
-	if fn := s.doorbellHook.Load(); fn != nil {
-		(*fn)(t)
+	fn := s.doorbellHook.Load()
+	if fn == nil {
+		return
 	}
+	// A paused queue's creations persist without ringing (ADR-0048): the intake story continues,
+	// the delivery story waits for resume. Same never-block contract and fail-open read as fireReady.
+	if s.queuePausedQuiet(t.Queue) {
+		return
+	}
+	(*fn)(t)
 }
 
 // Human is an authenticated principal (provider subject: Pocket ID OIDC today,

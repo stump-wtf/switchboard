@@ -172,7 +172,7 @@ webhook ceiling; `switchboard endpoint scope add-queue SLUG QUEUE` is that comma
 shows the old and the new grant and asks before writing anything, and the endpoint's credential is not
 touched, so the lane keeps authenticating with the token it already has. Every field a widen moves is
 recorded beside the change, with the value it replaced. See
-[ADR-0048 — Add-only endpoint scope widening](/decisions/ADR-0048-add-only-endpoint-scope-widening).
+[ADR-0049 — Add-only endpoint scope widening](/decisions/ADR-0049-add-only-endpoint-scope-widening).
 
 The queues an endpoint may **claim** (its `--queue` at vend) are not reachable from there: that decides
 which work the lane can take, so it stays a vend-time choice.

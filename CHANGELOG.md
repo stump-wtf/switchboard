@@ -25,7 +25,18 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   a `--webhook-max` below the current ceiling is refused rather than clamped, and any key that would
   replace a list is rejected before it is read. Every field that moves is recorded with the value it
   replaced, in the same transaction as the change, and `GET /api/v1/endpoints/{ref}/scope/widenings` reads
-  that trail back. Narrowing a grant is still a revoke and a re-vend. Proposed as ADR-0048. (#590)
+  that trail back. Narrowing a grant is still a revoke and a re-vend. Proposed as ADR-0049. (#590)
+
+- **A queue can now be paused without stopping its intake.** An operator draining a downstream
+  consumer had no lever short of disabling the endpoint (which drops or fails inbound webhooks) or
+  killing the consumer (which still left doorbells and wake hooks starting runs).
+  `switchboard queue pause <queue> --reason "..."` now keeps webhooks landing as pending todos —
+  nothing lost, no attempts spent — while claims, the channel doorbell, the ready-hook wakes and
+  the stall nudge all treat the queue as empty. `switchboard queue resume <queue>` lifts it and
+  re-rings the backlog once through the ordinary wake chain; claims already in flight finish
+  untouched. Pause state lives in Postgres, survives restarts, and shows up in `list_todos`'s
+  `paused_queues`, `GET /api/v1/queues`, `switchboard queue list` and the queue metrics, so a
+  quiet queue reads as paused rather than broken. Proposed as ADR-0048. (#581)
 
 - **The inbound webhook throttle is an operator setting.** The per-client-IP bucket on the ingest surface
   was hardcoded to 10 requests/second with a burst of 20, and the "throttling never drops work" promise

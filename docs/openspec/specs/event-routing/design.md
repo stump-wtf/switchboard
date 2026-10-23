@@ -99,7 +99,7 @@ Evaluation bounds: 50 ms per rule and 250 ms per event. Limits: 32 rules, 4096-b
 
 `routing.Envelope` builds it for both the receiver and the dry-run.
 
-**Rationale.** A producer cannot forge the top-level fields. Using the persisted, sanitized headers means a dry-run against a stored event reproduces what the live delivery saw. For cairn, `.kind` comes from the signed body rather than the unsigned header. `.artifact` passes cairn's `tags` list through (null until cairn emits it), so handoff rules match the day the cairn tags contract ships. It also passes `on_behalf_of` through as display text only: cairn fills it from the MCP client's self-reported clientInfo.
+**Rationale.** A producer cannot forge the top-level fields. Using the persisted, sanitized headers means a dry-run against a stored event reproduces what the live delivery saw. For cairn, `.kind` comes from the signed body rather than the unsigned header. `.artifact` passes cairn's `tags` list through (null until cairn emits it), so handoff rules match the day the cairn tags contract ships. It also passes `on_behalf_of` through as display text only: cairn fills it from the MCP client's self-reported clientInfo. `assignee` is passed through the same way (null until cairn's assignee contract ships, cairn SPEC-0025), and from an `assignment` object only `previous` is projected rather than the object itself, so a producer adding a key cannot widen the envelope on its own. Assignee is the one cairn field a rule can re-route on after the artifact exists: tags are fixed at share time, an assignee is reassignable, so re-routing needs no re-share and keeps the artifact's comment thread.
 
 ### Out-of-process evaluation
 

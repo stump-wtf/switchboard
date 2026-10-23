@@ -138,6 +138,7 @@ func (a *apiHandler) Routes() chi.Router {
 		r.Get("/endpoints/{ref}/scope/widenings", a.ListEndpointScopeWidenings)
 		r.Post("/endpoints/{ref}/todos", a.PushTodo)
 		r.Get("/agents", a.ListAgents)
+		r.Get("/queues", a.ListQueues) // ADR-0048
 	})
 	// Editing an endpoint's settings draws from the per-human write bucket, like the other SPEC-0035
 	// writes. Governing: ADR-0043, SPEC-0035 "Rate Limiting".
@@ -145,8 +146,11 @@ func (a *apiHandler) Routes() chi.Router {
 		r.Use(maxBytes(64<<10), a.perHuman(a.writeRL))
 		r.Patch("/endpoints/{ref}", a.EditEndpoint)
 		// A widen changes an endpoint's grant, so it shares the edit route's write bucket.
-		// Governing: ADR-0048 (proposed).
+		// Governing: ADR-0049 (proposed).
 		r.Post("/endpoints/{ref}/scope/widen", a.WidenEndpointScope)
+		// Pausing a queue is an operator write (ADR-0048): same bucket as the others.
+		r.Post("/queues/{queue}/pause", a.PauseQueue)
+		r.Post("/queues/{queue}/resume", a.ResumeQueue)
 	})
 	a.webhookRoutes(r)
 	return r

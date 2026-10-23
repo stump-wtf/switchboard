@@ -1,7 +1,7 @@
 // The widen surface on the human API: what a preview says, what confirm applies, what the trail keeps,
 // and the refusals that keep a widen additive. Issue #590.
 //
-// Skipped without SWITCHBOARD_TEST_DATABASE_URL. Governing: ADR-0048 (proposed), ADR-0008,
+// Skipped without SWITCHBOARD_TEST_DATABASE_URL. Governing: ADR-0049 (proposed), ADR-0008,
 // SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling", SPEC-0035 REQ "Reach on Every Route".
 //
 // @joestump-agent 10/21/2026 - Added for stump.wtf/switchboard#590.

@@ -413,7 +413,7 @@ paths:
       description: |
         Widens the grant of an active endpoint you own by adding to it: queues its webhooks may route to,
         ingest source types its agents may create webhooks for, MCP verbs, and a larger ceiling on
-        self-managed webhooks (ADR-0048). It exists because a webhook belongs to the endpoint that created
+        self-managed webhooks (ADR-0049). It exists because a webhook belongs to the endpoint that created
         it, so a re-vend to add one route would mint a new ingest URL and signing secret and need an edit
         in the producer's hook configuration — for a change that cannot break a route that works today.
 
@@ -487,7 +487,7 @@ paths:
       description: |
         Every additive scope change this endpoint has had, newest first: the field, the value it replaced,
         the value it became, and when. A widen that changed nothing writes no row, so this is a record of
-        changes rather than of calls (ADR-0048). Reaching it needs the same ownership as widening.
+        changes rather than of calls (ADR-0049). Reaching it needs the same ownership as widening.
       security:
         - operatorOAuth: []
       parameters:
@@ -1230,7 +1230,7 @@ components:
       type: object
       additionalProperties: false
       description: >
-        Additions to an endpoint's scope (ADR-0048). At least one is required; an array of only blanks or
+        Additions to an endpoint's scope (ADR-0049). At least one is required; an array of only blanks or
         an empty body is refused. Any other key — a replacement list, a removal — is refused by a decoder
         that rejects unknown fields, which is what makes this route unable to narrow a grant.
       properties:

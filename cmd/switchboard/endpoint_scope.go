@@ -1,6 +1,6 @@
 package main
 
-// CLI: widen an endpoint's scope without re-vending it (issue #590, ADR-0048 proposed).
+// CLI: widen an endpoint's scope without re-vending it (issue #590, ADR-0049 proposed).
 //
 // `endpoint scope widen` is the operator's front door for the one scope change that cannot break a
 // working route: adding an allowed webhook queue, an ingest source type, a verb, or raising the webhook
@@ -12,7 +12,7 @@ package main
 // `endpoint scope add-queue SLUG QUEUE` is the same call with one flag pre-filled, because "one more
 // lane needs a route here" is the request operators actually make.
 //
-// Governing: ADR-0048 (proposed), ADR-0008, SPEC-0006 REQ "Webhook Self-Management Within a Vended
+// Governing: ADR-0049 (proposed), ADR-0008, SPEC-0006 REQ "Webhook Self-Management Within a Vended
 // Ceiling", SPEC-0035 REQ "CLI Parity".
 //
 // @joestump-agent 10/21/2026 - Added for stump.wtf/switchboard#590.

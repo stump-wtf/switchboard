@@ -4,7 +4,7 @@ package main
 // confirmation is a second call rather than a guess, --yes skips the prompt without skipping the
 // preview, and a widen the operator declines sends no write at all. Issue #590.
 //
-// Governing: ADR-0048 (proposed), SPEC-0035 REQ "CLI Parity".
+// Governing: ADR-0049 (proposed), SPEC-0035 REQ "CLI Parity".
 //
 // @joestump-agent 10/21/2026 - Added for stump.wtf/switchboard#590.
 

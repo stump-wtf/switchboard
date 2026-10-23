@@ -17,13 +17,13 @@ package server
 // Confirmation parity with vending: a widen is an explicit act by the operator who already controls the
 // endpoint, so the call that does not say confirm shows the whole change — the scope as it is and as it
 // would be — and applies nothing. Sending confirm applies exactly what the preview showed and writes
-// the audit trail; every field that moved is recorded with its old and new value (ADR-0048).
+// the audit trail; every field that moved is recorded with its old and new value (ADR-0049).
 //
 // The route follows SPEC-0035: {ref} is a slug or id among the caller's own endpoints, another human's
 // endpoint is the same 404 as one that does not exist, a write to a revoked endpoint is 409 with the
 // state, and errors use {"error", "code"}.
 //
-// Governing: ADR-0048 (proposed), ADR-0008 (scope is fixed at vend), ADR-0012 (the webhook ceiling),
+// Governing: ADR-0049 (proposed), ADR-0008 (scope is fixed at vend), ADR-0012 (the webhook ceiling),
 // SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling", SPEC-0035 REQ "Reach on Every
 // Route", ADR-0022 (tenant isolation).
 //

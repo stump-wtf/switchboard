@@ -172,13 +172,18 @@ and `.headers`.
 | `.size` | payload size in bytes |
 | `.headers` | sanitized request headers, **lower-cased** names (secrets read `«redacted»`) |
 | `.payload` | the body parsed as JSON, or `null` when it is not JSON |
-| `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id` (authenticated), `on_behalf_of` (client-reported `name/version`), `expires_at`, `tags` (cairn's string list), `metadata` (`null`: cairn sends none) |
+| `.artifact` | cairn only (`null` otherwise): `event_id`, `kind`, `created_at`, `id`, `handle` (`mcp://cairn/<id>`), `url`, `title`, `share_type`, `channel`, `model`, `actor_id` (authenticated), `on_behalf_of` (client-reported `name/version`), `expires_at`, `tags` (cairn's string list), `metadata` (`null`: cairn sends none), `assignee` (assigned user's display handle, `null` until cairn sends it), `assignment` (`{previous}` on an `artifact.assigned` event, `null` otherwise) |
 | `.issue` | Gitea/GitHub `issues` events only (`null` otherwise, pull requests included): `provider`, `action`, `event_type`, `repo`, `number`, `title`, `url`, `state`, `author`, `sender`, `labels` (names), `label` (GitHub's changed label), `body_size`, `label_event`, `key` |
 | `.actor` | `{sender, author, sender_trusted, author_trusted, trusted}`: who acted, parsed from the verified body, and the trust gate's verdict. Names are `null` when the body has none (a push has no author). Every flag is `null` on sources with no trust gate (`generic`, `stripe`, `slack`), and the two per-actor flags are `null` under `allow_all`. A payload's own `actor` key stays under `.payload` and cannot reach `.actor`. |
 | `.release` | `{by, at}` on a delivery released from quarantine (`by` is `human:<id>` or `classifier:<slug>`), `null` otherwise. Rules can treat a classifier's release more cautiously than a human's. |
 
 `.issue` reads the same on both forges: Gitea's label change (`issue_label`, action `label_updated`)
 and GitHub's (`labeled`) both set `.issue.label_event`, with the current labels in `.issue.labels`.
+
+`.artifact.assignee` is the one cairn field a rule can re-route on after the fact: tags are fixed
+when the artifact is shared, an assignee is not. On `artifact.assigned` the prior assignee is
+`.artifact.assignment.previous` (`null` on a first assignment). Both are display handles and grant no
+trust; while cairn sends neither field they are `null`, so an assignee rule simply does not match.
 
 A rule never sees an untrusted delivery (the gate holds it first), so `.actor.trusted` is `true`
 whenever a rule runs on a gated source. The per-actor flags are what rules use:

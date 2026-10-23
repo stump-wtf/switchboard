@@ -155,7 +155,7 @@ no `lease_ttl_seconds` get it; leases already granted keep their expiry. Names b
 
 ### `switchboard endpoint scope widen SLUG|ID`
 
-Add to an endpoint's scope without re-vending it (ADR-0048). Use it when a lane that already works needs
+Add to an endpoint's scope without re-vending it (ADR-0049). Use it when a lane that already works needs
 one more ingest queue, one more source type, one more verb, or room for more webhooks: re-vending would
 mint a new endpoint with a new ingest URL and signing secret, and the producer's hook configuration would
 have to be edited to match, for a change that breaks nothing.

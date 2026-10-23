@@ -1,12 +1,12 @@
 // Add-only endpoint scope widening: the mechanism, its audit trail, and the failure that motivated it
-// (issue #590, ADR-0048 proposed).
+// (issue #590, ADR-0049 proposed).
 //
 // The report is concrete: a rule save was refused with "queue merge is not in the webhook owner's
 // allowed webhook queues", and the only way past it was to re-vend — a new endpoint, a new webhook, a
 // new ingest URL and signing secret — just to let one more lane receive events. These tests hold the two
 // halves of the fix: the grant the router consults really does move, and it moves only outward.
 //
-// Skipped without SWITCHBOARD_TEST_DATABASE_URL. Governing: ADR-0048 (proposed), ADR-0012,
+// Skipped without SWITCHBOARD_TEST_DATABASE_URL. Governing: ADR-0049 (proposed), ADR-0012,
 // SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling", ADR-0022 (tenant isolation).
 //
 // @joestump-agent 10/21/2026 - Added for stump.wtf/switchboard#590.

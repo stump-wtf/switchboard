@@ -1,4 +1,4 @@
--- 0032_endpoint_scope_widenings — the audit trail of an endpoint's additive scope changes.
+-- 0034_endpoint_scope_widenings — the audit trail of an endpoint's additive scope changes.
 --
 -- An endpoint's scope is fixed when it is vended (ADR-0008), and it stays fixed for everything that
 -- could shrink it: narrowing a grant or replacing a verb list can break a route that works today, so
@@ -8,7 +8,7 @@
 -- URL and signing secret, and an edit in the source system's hook configuration — because nothing else
 -- can say "this endpoint may also deliver to Q".
 --
--- ADR-0048 (proposed) lets the operator who already controls the endpoint widen it additively. A widen
+-- ADR-0049 (proposed) lets the operator who already controls the endpoint widen it additively. A widen
 -- changes no credential: the secret shown once at vend stays valid. It is also the first change to an
 -- endpoint's grant that happens after the vend, so it needs a record of its own: which field moved,
 -- what it held before, what it holds now, who did it and when. The endpoint row shows the current
@@ -25,7 +25,7 @@
 -- Purely additive: no backfill, nothing existing reads it. Cascade on delete matches DeleteEndpoint,
 -- which already drops the endpoint row: an operator who needs the trail keeps the endpoint.
 --
--- Governing: ADR-0048 (proposed), ADR-0008 (scope is fixed at vend), ADR-0012 (the webhook ceiling),
+-- Governing: ADR-0049 (proposed), ADR-0008 (scope is fixed at vend), ADR-0012 (the webhook ceiling),
 -- SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling".
 --
 -- @joestump-agent 10/21/2026 - Added for stump.wtf/switchboard#590.

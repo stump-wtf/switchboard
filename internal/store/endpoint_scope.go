@@ -1,6 +1,6 @@
 package store
 
-// Add-only endpoint scope widening (issue #590, ADR-0048 proposed).
+// Add-only endpoint scope widening (issue #590, ADR-0049 proposed).
 //
 // An endpoint's scope is fixed at vend (ADR-0008), and it stays fixed for anything that could SHRINK
 // it: narrowing a grant or replacing a verb list can break a route that works today, so that remains a
@@ -22,7 +22,7 @@ package store
 // widen touches no credential: the secret shown once at vend stays valid, and nothing here reads or
 // rewrites it.
 //
-// Governing: ADR-0048 (proposed), ADR-0008, ADR-0012, ADR-0022 (tenant isolation),
+// Governing: ADR-0049 (proposed), ADR-0008, ADR-0012, ADR-0022 (tenant isolation),
 // SPEC-0006 REQ "Webhook Self-Management Within a Vended Ceiling".
 //
 // @joestump-agent 10/21/2026 - Added for stump.wtf/switchboard#590.

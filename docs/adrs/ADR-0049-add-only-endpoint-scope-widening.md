@@ -6,7 +6,7 @@ extends: [ADR-0008, ADR-0012]
 related: [ADR-0022, ADR-0023, ADR-0042, ADR-0043, ADR-0047]
 ---
 
-# ADR-0048: Add-Only Endpoint Scope Widening — One More Lane Should Not Cost a Re-Vend
+# ADR-0049: Add-Only Endpoint Scope Widening — One More Lane Should Not Cost a Re-Vend
 
 **Status note:** this ADR is **proposed**. It ships with an implementation so the choice can be argued
 against working code rather than prose; nothing here is settled until Joe accepts it. The requirement
@@ -84,7 +84,7 @@ Chosen: **(C)**, add-only widen.
 
 ## Mechanics
 
-* `internal/db/migrations/0032_endpoint_scope_widenings.sql` adds `endpoint_scope_widenings(endpoint_id,
+* `internal/db/migrations/0034_endpoint_scope_widenings.sql` adds `endpoint_scope_widenings(endpoint_id,
   actor_human_id, field, before, after, created_at)`, with `field` constrained to the four widen-able
   fields and `endpoint_id` cascading on delete. There was no table to put it in: a revoke's audit trail
   *is* the terminal endpoint row, and `events` is ingest data, so an authorization delta needed its own.
