@@ -89,6 +89,9 @@ type Ingest struct {
 	router routing.Router
 	// metricsSink receives the SPEC-0023 REQ-4 ingest and routing counters (metrics.go). Nil = no-op.
 	metricsSink atomic.Pointer[Metrics]
+	// tokenIndex attributes a throttled (429) delivery to the webhook its URL names
+	// (rejects.go). Bounded in memory; never read from the database.
+	tokenIndex *tokenIndex
 }
 
 // Config carries the ingestion settings that are not per-tenant. Nothing else is configured here:
@@ -110,7 +113,8 @@ func New(st *store.Store, hub *Hub, log *slog.Logger, cfg Config) *Ingest {
 	ing := &Ingest{
 		store: st, hub: hub, log: log,
 		tolerance: defaultReplayTolerance, now: time.Now,
-		devLogin: cfg.DevLogin,
+		devLogin:   cfg.DevLogin,
+		tokenIndex: newTokenIndex(defaultTokenIndexCap),
 	}
 	if sb, err := routing.NewSandbox(""); err == nil {
 		ing.router = sb
@@ -180,9 +184,11 @@ const (
 	labelUnknown = "unknown"
 )
 
-// deliveryCount is one delivery's verdict, recorded once when the receiver returns.
+// deliveryCount is one delivery's verdict, recorded once when the receiver returns. webhookID is ""
+// until the receiver resolves the path token, so a refusal before that (an unknown token, a body
+// that cannot be read) is counted as a reject with no webhook to blame.
 type deliveryCount struct {
-	provider, trustMode, verdict string
+	webhookID, provider, trustMode, verdict string
 }
 
 // newDeliveryCount opens a delivery's count: rejected, from an unknown webhook, until the receiver
@@ -193,7 +199,7 @@ func newDeliveryCount() *deliveryCount {
 
 // resolved attributes the delivery to the webhook its token named.
 func (d *deliveryCount) resolved(wh store.Webhook) {
-	d.provider, d.trustMode = wh.SourceType, wh.TrustMode
+	d.webhookID, d.provider, d.trustMode = wh.ID, wh.SourceType, wh.TrustMode
 }
 
 // record counts the delivery. Deferred by the receiver, so it runs exactly once.
@@ -202,9 +208,12 @@ func (d *deliveryCount) record(m Metrics) {
 }
 
 // verifyFailed counts one refusal the delivery's own inputs caused, under its bounded reason, against
-// whichever provider the count has resolved so far.
+// whichever provider and webhook the count has resolved so far. Nothing is persisted on this path, so
+// the refusal is also a pre-intake reject: it is counted on the ledger the endpoint card reads, which
+// is the only place a delivery that never became a todo can be seen (ADR-0051).
 func (d *deliveryCount) verifyFailed(m Metrics, reason string) {
 	m.WebhookVerifyFailure(d.provider, reason)
+	m.WebhookPreIntakeReject(d.webhookID, reason)
 }
 
 // DevCreateTodo creates a todo directly, for exercising the vend → agent drain loop (list_todos /

@@ -46,6 +46,8 @@ type recordedFailure struct{ provider, reason string }
 
 type recordedDecision struct{ webhookID, ruleID, action string }
 
+type recordedReject struct{ webhookID, reason string }
+
 // recordingMetrics is an ingest.Metrics that keeps every call, in order, for assertion.
 type recordingMetrics struct {
 	mu         sync.Mutex
@@ -53,12 +55,21 @@ type recordingMetrics struct {
 	failures   []recordedFailure
 	decisions  []recordedDecision
 	faults     []string
+	// preIntake keeps every pre-intake reject call (webhook id, bounded reason) so a test can prove
+	// a refusal is attributed to the webhook it was addressed to (ADR-0051).
+	preIntake []recordedReject
 }
 
 func (r *recordingMetrics) RoutingFault(cause string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.faults = append(r.faults, cause)
+}
+
+func (r *recordingMetrics) WebhookPreIntakeReject(webhookID, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.preIntake = append(r.preIntake, recordedReject{webhookID, reason})
 }
 
 // takeFaults copies the fault causes recorded so far and clears them.
@@ -504,6 +515,12 @@ func TestSelfManagedMetricsExposition(t *testing.T) {
 		`switchboard_webhook_verify_failures_total{provider="github",reason="bad_signature"}`:              1,
 		`switchboard_webhook_verify_failures_total{provider="github",reason="malformed_signature"}`:        1,
 		`switchboard_webhook_verify_failures_total{provider="unknown",reason="unknown_webhook"}`:           1,
+		// Every verify failure is also a pre-intake reject (ADR-0051): the signed webhook folds to
+		// __other__ under this test's cap of 1, and so does the unknown token, so all three land on
+		// the overflow bucket rather than a webhook id of their own.
+		`switchboard_webhook_preintake_rejects_total{reason="bad_signature",webhook="__other__"}`:          1,
+		`switchboard_webhook_preintake_rejects_total{reason="malformed_signature",webhook="__other__"}`:    1,
+		`switchboard_webhook_preintake_rejects_total{reason="unknown_webhook",webhook="__other__"}`:        1,
 		`switchboard_routing_decisions_total{action="queue",rule_id="default",webhook="` + first.ID + `"}`: 1,
 		`switchboard_routing_decisions_total{action="queue",rule_id="default",webhook="__other__"}`:        1,
 	}

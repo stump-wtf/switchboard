@@ -187,6 +187,13 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	st.SetMetrics(mtr)
 	ing.SetMetrics(mtr)
 	mtr.RegisterQueueStats(st) // REQ-2 queue-liveness gauges, computed at scrape time
+	// The endpoint card reads its "rejected before intake" count from the same ledger /metrics
+	// exposes, so the card and a scrape can never disagree (ADR-0051, issue #612). A webhook folded
+	// into the cardinality overflow bucket reports nothing rather than another webhook's number.
+	webh.SetPreIntakeRejectReader(func(webhookID string) (int, int, bool) {
+		totals := mtr.PreIntakeRejects(webhookID)
+		return int(totals.Total), int(totals.ByReason[metrics.RejectReasonRateLimited]), totals.Tracked
+	})
 
 	// The delivery dispatcher subscribes to the store's ready hook: sender-gated creations and
 	// requeues, fired once per transition on the instance that performed it. It is deliberately NOT
@@ -321,6 +328,12 @@ func newRouter(d routerDeps) chi.Router {
 	// SWITCHBOARD_WEBHOOK_RATE_RPS / SWITCHBOARD_WEBHOOK_BURST, defaulting to the old hardcoded
 	// 10/20. The vended MCP surface carries its own per-endpoint limiter inside internal/mcp.
 	webhookRL := newRateLimiter(d.cfg.WebhookLimiterBounds())
+	// A throttled delivery never reaches a receiver, so the limiter is the only place it can be
+	// counted: the hook attributes the 429 to the webhook the URL names, from the pairing the
+	// receiver recorded when it last resolved that token (ingest rejects.go, ADR-0051).
+	if d.ing != nil {
+		webhookRL.onReject = d.ing.ObserveThrottled
+	}
 	// Public A2A Agent Card endpoint (SPEC-0009): per-IP throttle to blunt enumeration of persona ids.
 	// RECOMMENDED default is 60 req/min ≈ 1 req/s; burst 30 absorbs legitimate discovery tooling.
 	cardRL := newRateLimiter(1, 30)

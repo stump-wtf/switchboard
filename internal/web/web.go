@@ -47,10 +47,14 @@ type Handler struct {
 	store *store.Store
 	// hookDisabled counts an operator disable of a notify hook (SetNotifyHookDisabledCounter).
 	hookDisabled func()
-	cfg          config.Config
-	log          *slog.Logger
-	pages        map[string]*template.Template
-	frags        *template.Template // per-view live fragments (templates/fragments/*.html), standalone-renderable
+	// preIntakeRejects reads one webhook's "refused before intake" counts for the endpoint card
+	// (SetPreIntakeRejectReader). Nil leaves the chip off the card: a delivery lost to a throttle or
+	// a failed signature is otherwise invisible in the UI, since nothing is persisted for it.
+	preIntakeRejects func(webhookID string) (total, rateLimited int, tracked bool)
+	cfg              config.Config
+	log              *slog.Logger
+	pages            map[string]*template.Template
+	frags            *template.Template // per-view live fragments (templates/fragments/*.html), standalone-renderable
 
 	// personasEnabled gates the Personas view AND the persona chip on endpoint cards + the persona
 	// select on the vend wizard's persona step. The server sets it by feature detection (personas

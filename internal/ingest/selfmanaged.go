@@ -145,6 +145,10 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	count.resolved(wh)
+	// Teach the throttle-attribution index this token→webhook pairing (rejects.go): a later 429 on
+	// this URL is then counted against this webhook instead of the overflow bucket. No extra read —
+	// the pairing is whatever this request just resolved.
+	i.noteIngestToken(token, wh.ID)
 
 	// Idempotency key scoped to this webhook so a redelivery to the SAME webhook dedups but identical
 	// payloads to different self-managed webhooks (which share a source namespace like "github") never

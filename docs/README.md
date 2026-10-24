@@ -74,6 +74,7 @@ Two layers:
 | [ADR-0048](adrs/ADR-0048-per-queue-pause.md) | **Per-queue pause (proposed)** | `switchboard queue pause` / `resume`: a paused queue keeps accepting webhooks as pending todos while claims, doorbells and wakes go quiet; resume re-rings the backlog. |
 | [ADR-0049](adrs/ADR-0049-add-only-endpoint-scope-widening.md) | **Add-only endpoint scope widening (proposed)** | Adding a lane stops costing a re-vend: a widen route and CLI command that can only union webhook queues, source types and verbs and raise the webhook ceiling — never narrow — with every moved field audited beside the change. |
 | [ADR-0050](adrs/ADR-0050-announcing-dead-letters-and-listing-them.md) | **Announce dead letters, list them for the operator (proposed)** | `todo.dead_lettered` rides the SPEC-0024 hooks with identifiers plus the closing attempt, fires only where retrying truly stops, and the Board gains a Dead pill over every endpoint you own. |
+| [ADR-0051](adrs/ADR-0051-per-source-pre-intake-reject-counts.md) | **Count deliveries refused before intake, per source (proposed)** | A `429` or a failed signature that never became a todo is now counted per webhook in one in-process ledger read by both `/metrics` and the endpoint card — no persistence, no provider read, no new trust path. |
 
 ### Later records
 
