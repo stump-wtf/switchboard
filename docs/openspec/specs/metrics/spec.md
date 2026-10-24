@@ -110,7 +110,22 @@ switchboard_webhook_deliveries_total{provider,trust_mode,verdict} counter
 switchboard_routing_decisions_total{webhook,rule_id,action}       counter
    # action: queue|drop
 switchboard_webhook_verify_failures_total{provider,reason}        counter
+switchboard_webhook_preintake_rejects_total{webhook,reason}       counter
+   # reason includes rate_limited (a 429 from the ingest throttle)
 ```
+
+`switchboard_webhook_preintake_rejects_total` MUST count every delivery refused
+before intake — one per refused delivery, whether the refusal came from the
+throttle (`rate_limited`), the body limit, or verification. It exists because a
+delivery that never reached intake leaves no row anywhere else, and the senders
+that lose work this way do not retry, so the source leaking them is otherwise
+invisible. The count is process-lifetime, never persisted: a refused payload has
+no row to attach it to, and a write on the reject path would put a database
+query on the surface that exists to shed load. The endpoint card states that it
+counts from process start. Attribution follows the same `webhook` cap as
+`switchboard_routing_decisions_total`; a refusal that identified no webhook, and
+a webhook folded into `__other__`, MUST NOT be quoted on one webhook's card
+(ADR-0051).
 
 `switchboard_routing_decisions_total` MUST count **drops** as well as routes. A
 jq rule that matches nothing installs green and behaves identically to a rule

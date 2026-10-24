@@ -66,12 +66,15 @@
 
 {{/* endpoint_webhooks — the webhook rows on an endpoint card: each webhook's source and target
      queue, its open quarantine count (linking to the Quarantine view), its faults over the last 24
-     hours, and a warning when it trusts every verified sender. Data: []web.webhookSignalView.
-     Governing: SPEC-0026 REQ-9 (counts), REQ-1 (fault warning), REQ-5 (allow_all warning). */}}
+     hours, the deliveries it refused before intake since this process started, and a warning when
+     it trusts every verified sender. Data: []web.webhookSignalView.
+     Governing: SPEC-0026 REQ-9 (counts), REQ-1 (fault warning), REQ-5 (allow_all warning);
+     ADR-0051 (pre-intake rejects, in-process counts stated as such). */}}
 {{define "endpoint_webhooks"}}{{if .}}<div class="sb-epcard__row"><dt class="sb-microlabel">Webhooks</dt><dd><ul class="sb-quar-webhooks">
   {{range .}}<li data-sb-webhook="{{.ID}}"><code class="sb-code">{{.ShortID}}</code> {{.Source}} → <span class="sb-chip sb-chip--queue">{{.TargetQueue}}</span>
     {{if gt .Quarantined 0}}<a class="sb-chip sb-chip--mono" href="/quarantine" data-sb-webhook-quarantined="{{.Quarantined}}">{{.Quarantined}} held</a>{{else}}<span class="sb-muted" data-sb-webhook-quarantined="0">0 held</span>{{end}}
     {{if gt .Faults24h 0}}<span class="sb-chip sb-chip--mono sb-quar-fault" data-sb-webhook-faults="{{.Faults24h}}" title="deliveries whose rules faulted in the last 24 hours; they are held in quarantine">⚠ {{.Faults24h}} faulted · 24h</span>{{else}}<span class="sb-muted" data-sb-webhook-faults="0">0 faults · 24h</span>{{end}}
+    {{if .RejectedKnown}}{{if gt .Rejected 0}}<span class="sb-chip sb-chip--mono sb-quar-fault" data-sb-webhook-rejected="{{.Rejected}}" data-sb-webhook-rejected-rate-limited="{{.RejectedRateLimited}}" title="deliveries refused before intake since this process started: {{.RejectedRateLimited}} rate-limited (429), the rest refused verification. Nothing was persisted for them, so the producer's item is stuck where no worker will see it; the count restarts when switchboard does.">⚠ {{.Rejected}} rejected ({{.RejectedRateLimited}} rate-limited)</span>{{else}}<span class="sb-muted" data-sb-webhook-rejected="0">0 rejected</span>{{end}}{{end}}
     {{if .AllowAll}}<span class="sb-chip sb-chip--mono sb-quar-fault" data-sb-webhook-allow-all title="allow_all trusts every verified sender: anyone who can make the producer send reaches your rules">⚠ trusts every sender</span>{{end}}
   </li>{{end}}
 </ul></dd></div>{{end}}{{end}}

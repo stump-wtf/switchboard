@@ -160,6 +160,15 @@ type webhookSignalView struct {
 	AllowAll    bool
 	Quarantined int
 	Faults24h   int
+	// Rejected counts deliveries refused before intake since this process started — the ones that
+	// leave no row anywhere (a 429 the producer did not retry, a signature that failed).
+	// RejectedKnown is false when no number can be quoted for this webhook: no reader wired, or the
+	// webhook folded into the metrics cardinality overflow bucket. RejectedRateLimited is how much
+	// of Rejected is throttling, the count the upstream report asked for by name.
+	// Governing: ADR-0051; issue #612.
+	Rejected            int
+	RejectedRateLimited int
+	RejectedKnown       bool
 }
 
 // cardInitials derives the endpoint card's two-letter avatar tile from the agent name: the first
@@ -301,10 +310,14 @@ func (h *Handler) endpointCards(r *http.Request, human *store.Human) []endpointC
 			h.log.Warn("endpoints webhook signals", "err", err)
 		}
 		for _, sg := range sigs {
-			byEndpoint[sg.EndpointID] = append(byEndpoint[sg.EndpointID], webhookSignalView{
+			row := webhookSignalView{
 				ID: sg.WebhookID, ShortID: shortID(sg.WebhookID), Source: sg.SourceType, TargetQueue: sg.TargetQueue,
 				AllowAll: sg.AllowAll, Quarantined: sg.Quarantined, Faults24h: sg.Faults24h,
-			})
+			}
+			if h.preIntakeRejects != nil {
+				row.Rejected, row.RejectedRateLimited, row.RejectedKnown = h.preIntakeRejects(sg.WebhookID)
+			}
+			byEndpoint[sg.EndpointID] = append(byEndpoint[sg.EndpointID], row)
 		}
 	}
 	cards := make([]endpointCard, 0, len(eps))
@@ -320,6 +333,13 @@ func (h *Handler) endpointCards(r *http.Request, human *store.Human) []endpointC
 // SetNotifyHookDisabledCounter installs the counter an operator disable increments
 // (switchboard_notify_hooks_disabled_total{reason="operator"}, SPEC-0024 REQ-11). Optional.
 func (h *Handler) SetNotifyHookDisabledCounter(fn func()) { h.hookDisabled = fn }
+
+// SetPreIntakeRejectReader installs the reader an endpoint card consults once per webhook row for
+// its pre-intake reject counts (ADR-0051). Optional: with no reader the card renders without the
+// chip, exactly as it does for a webhook whose counts folded into the overflow bucket.
+func (h *Handler) SetPreIntakeRejectReader(fn func(webhookID string) (total, rateLimited int, tracked bool)) {
+	h.preIntakeRejects = fn
+}
 
 // DisableNotifyHook, EnableNotifyHook and DeleteNotifyHook are the endpoint card's hook controls:
 // POSTs carrying the CSRF token (the route group's RequireCSRF), scoped in the store to a hook on

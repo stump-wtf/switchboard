@@ -15,6 +15,16 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Per-source visibility for deliveries refused before intake.** A `429` from the ingest throttle or a
+  failed signature check used to vanish: nothing was persisted for a refused delivery, and producers
+  that do not retry a `429` (Gitea deliveries among them) lose the event outright, so the tracker item
+  stayed in a state no worker would ever see. Each webhook row on the endpoint card now carries the
+  refusals attributed to that webhook and how many were throttling, and
+  `switchboard_webhook_preintake_rejects_total{webhook,reason}` graphs the same counter. The counts are
+  in-process, so they start at zero when Switchboard restarts — the card says so — and no refused
+  payload, and no new credential, is stored anywhere. See
+  [ADR-0051](docs/adrs/ADR-0051-per-source-pre-intake-reject-counts.md). Closes #612.
+
 - **Add-only endpoint scope widening.** Giving an existing lane one more route no longer costs a re-vend.
   `switchboard endpoint scope widen SLUG --add-queue merge` (or `--add-source-type`, `--add-verb`,
   `--webhook-max`) adds to an endpoint's grant instead of replacing it, and

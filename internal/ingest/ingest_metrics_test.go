@@ -46,6 +46,8 @@ type recordedFailure struct{ provider, reason string }
 
 type recordedDecision struct{ webhookID, ruleID, action string }
 
+type recordedReject struct{ webhookID, reason string }
+
 // recordingMetrics is an ingest.Metrics that keeps every call, in order, for assertion.
 type recordingMetrics struct {
 	mu         sync.Mutex
@@ -53,12 +55,21 @@ type recordingMetrics struct {
 	failures   []recordedFailure
 	decisions  []recordedDecision
 	faults     []string
+	// preIntake keeps every pre-intake reject call (webhook id, bounded reason) so a test can prove
+	// a refusal is attributed to the webhook it was addressed to (ADR-0051).
+	preIntake []recordedReject
 }
 
 func (r *recordingMetrics) RoutingFault(cause string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.faults = append(r.faults, cause)
+}
+
+func (r *recordingMetrics) WebhookPreIntakeReject(webhookID, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.preIntake = append(r.preIntake, recordedReject{webhookID, reason})
 }
 
 // takeFaults copies the fault causes recorded so far and clears them.
