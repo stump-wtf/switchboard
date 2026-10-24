@@ -515,6 +515,12 @@ func TestSelfManagedMetricsExposition(t *testing.T) {
 		`switchboard_webhook_verify_failures_total{provider="github",reason="bad_signature"}`:              1,
 		`switchboard_webhook_verify_failures_total{provider="github",reason="malformed_signature"}`:        1,
 		`switchboard_webhook_verify_failures_total{provider="unknown",reason="unknown_webhook"}`:           1,
+		// Every verify failure is also a pre-intake reject (ADR-0051): the signed webhook folds to
+		// __other__ under this test's cap of 1, and so does the unknown token, so all three land on
+		// the overflow bucket rather than a webhook id of their own.
+		`switchboard_webhook_preintake_rejects_total{reason="bad_signature",webhook="__other__"}`:          1,
+		`switchboard_webhook_preintake_rejects_total{reason="malformed_signature",webhook="__other__"}`:    1,
+		`switchboard_webhook_preintake_rejects_total{reason="unknown_webhook",webhook="__other__"}`:        1,
 		`switchboard_routing_decisions_total{action="queue",rule_id="default",webhook="` + first.ID + `"}`: 1,
 		`switchboard_routing_decisions_total{action="queue",rule_id="default",webhook="__other__"}`:        1,
 	}
