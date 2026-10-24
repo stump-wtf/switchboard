@@ -83,7 +83,9 @@ with more than the label cap of webhooks gets metrics overflow and no card numbe
 Attribution is best-effort by construction: it is a visibility aid, not an audit trail, and it must not
 be cited as proof that a specific delivery was lost.
 
-**Implied requirement changes (not applied until this ADR is accepted).** SPEC-0026 REQ-9 gains a third
-count per webhook row — pre-intake rejects since process start, withheld when the webhook folded into
-the cardinality overflow bucket — and SPEC-0023 REQ-4 gains the family above. Neither changes what is
-persisted, and neither grants any source new access.
+**Implied requirement changes.** SPEC-0023 REQ-4 gains the family above, and this PR applies that
+wording in `docs/openspec/specs/metrics/spec.md`: the family is exactly what the implementation
+counts, so its requirement ships with the code rather than after it. SPEC-0026 REQ-9's third count
+per webhook row — pre-intake rejects since process start, withheld when the webhook folded into the
+cardinality overflow bucket — remains listed here, not applied, until this ADR is accepted. Neither
+changes what is persisted, and neither grants any source new access.
