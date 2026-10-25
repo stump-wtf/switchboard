@@ -15,6 +15,18 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Per-webhook provider connection config, for the reconcile pass to read from.** A webhook can now carry
+  where its provider lives (`provider_base_url` plus `provider_repo`) and a sealed read-only token, written
+  only by a human through `PUT /api/v1/webhooks/{webhook_id}/provider-connection` or
+  `switchboard webhook connection set WEBHOOK_ID --base-url … --repo … --read-token-from -`; agents see the
+  connection on `list_webhooks` and cannot change it, because whoever supplies the token chooses where it is
+  sent. The token is encrypted at rest like a signing secret, is never returned by any read, and is refused
+  unless `SWITCHBOARD_SECRET_ENCRYPTION_KEY` is set; `SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS` pins which
+  provider origins are acceptable (exact origin, never a prefix). `webhook list` and the endpoint listing now
+  show whether a webhook could be reconciled at all (`unset`, `awaiting_credential`, `ready`). Nothing dials
+  out yet — the reconcile pass is #616 and provisioning the tokens is #615. See
+  [ADR-0052](docs/adrs/ADR-0052-per-webhook-provider-read-config.md). Closes #614.
+
 - **Per-source visibility for deliveries refused before intake.** A `429` from the ingest throttle or a
   failed signature check used to vanish: nothing was persisted for a refused delivery, and producers
   that do not retry a `429` (Gitea deliveries among them) lose the event outright, so the tracker item

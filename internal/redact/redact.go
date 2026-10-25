@@ -24,8 +24,9 @@ const Placeholder = "«redacted»"
 
 // FieldNames are the argument and body field names whose VALUES must never be printed. A field is
 // listed here once, and every surface that dumps tool arguments or request bodies then gets it for
-// free.
-var FieldNames = []string{"signing_secret"}
+// free. `provider_read_token` is the per-webhook provider read credential (#614): same rule as a
+// signing secret, because it is the same kind of thing — a live token a caller pasted in.
+var FieldNames = []string{"signing_secret", "provider_read_token"}
 
 // Secrets returns a copy of args with every value under a sensitive field name replaced by
 // Placeholder, at any depth. The input is never modified: callers hand it the map they were about to

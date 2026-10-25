@@ -156,6 +156,9 @@ func commands() []command {
 				{name: "add", args: "WEBHOOK_ID ENDPOINT", summary: "also deliver a webhook to an endpoint (slug or id)", run: cmdWebhookRouteAdd},
 				{name: "remove", args: "WEBHOOK_ID ENDPOINT", summary: "stop delivering a webhook to an endpoint (slug or id)", run: cmdWebhookRouteRemove},
 			}},
+			{name: "connection", args: "<verb>", summary: "set where a webhook's provider lives for a reconcile read", subs: []command{
+				{name: "set", args: "WEBHOOK_ID", summary: "point a webhook at a provider repository, and store or clear its read-only token", run: cmdWebhookConnectionSet},
+			}},
 		}},
 		{name: "queue", args: "<verb>", summary: "pause and resume delivery on a queue without stopping intake", subs: []command{
 			{name: "list", summary: "list every known queue with its counts and whether it is paused", run: cmdQueueLs},
