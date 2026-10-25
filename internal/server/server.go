@@ -431,6 +431,11 @@ func newRouter(d routerDeps) chi.Router {
 	api := newAPIHandler(d.st, d.cfg.BaseURL, d.log, apiRevokeHook(d))
 	api.rules.Router = apiRulesRouter(d)
 	api.endpointLeaseChanged = apiLeaseHook(d)
+	api.providerReadOrigins = d.cfg.ProviderReadOrigins()
+	if len(api.providerReadOrigins) > 0 {
+		d.log.Warn("provider read origin allowlist is set", "origins", d.cfg.ProviderReadAllowedOrigins,
+			"note", "a webhook's provider base url outside these origins is refused")
+	}
 	if d.writeRL != nil {
 		api.writeRL = d.writeRL
 	}

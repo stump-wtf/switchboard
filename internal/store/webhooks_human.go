@@ -46,6 +46,18 @@ type HumanWebhook struct {
 	HasParams  bool
 	CreatedAt  time.Time
 	RotatedAt  *time.Time
+	// ProviderBaseURL, ProviderRepo and ProviderReadTokenSet describe the reconcile-read configuration
+	// (#614) so a human can see which of their webhooks are ready, which await the credential #615
+	// provisions, and which are not meant to be reconciled at all. The credential itself is never read.
+	ProviderBaseURL      string
+	ProviderRepo         string
+	ProviderReadTokenSet bool
+}
+
+// ProviderConnectionState is Webhook.ProviderConnectionState for this view: unset, awaiting_credential,
+// or ready.
+func (w HumanWebhook) ProviderConnectionState() string {
+	return providerConnectionState(w.ProviderBaseURL, w.ProviderRepo, w.ProviderReadTokenSet)
 }
 
 // ListWebhooksForHuman returns every webhook whose owning endpoint belongs to ownerHumanID (through
@@ -60,7 +72,9 @@ func (s *Store) ListWebhooksForHuman(ctx context.Context, ownerHumanID string) (
 		       w.source_type, w.target_queue, w.trust_mode,
 		       jsonb_array_length(w.routing_rules), w.default_action IS NOT NULL,
 		       w.routing_params IS NOT NULL AND w.routing_params <> 'null'::jsonb,
-		       w.created_at, w.rotated_at
+		       w.created_at, w.rotated_at,
+		       COALESCE(w.provider_base_url, ''), COALESCE(w.provider_repo, ''),
+		       w.provider_read_token IS NOT NULL
 		FROM endpoint_webhooks w
 		JOIN endpoints e ON e.id = w.endpoint_id
 		JOIN agents a ON a.id = e.agent_id
@@ -75,7 +89,8 @@ func (s *Store) ListWebhooksForHuman(ctx context.Context, ownerHumanID string) (
 		var w HumanWebhook
 		if err := rows.Scan(&w.ID, &w.EndpointID, &w.EndpointSlug, &w.EndpointState, &w.AgentName,
 			&w.SourceType, &w.TargetQueue, &w.TrustMode, &w.RuleCount, &w.HasDefault, &w.HasParams,
-			&w.CreatedAt, &w.RotatedAt); err != nil {
+			&w.CreatedAt, &w.RotatedAt,
+			&w.ProviderBaseURL, &w.ProviderRepo, &w.ProviderReadTokenSet); err != nil {
 			return nil, fmt.Errorf("store: list webhooks for human scan: %w", err)
 		}
 		out = append(out, w)
