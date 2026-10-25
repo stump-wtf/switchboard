@@ -3,10 +3,10 @@ status: proposed
 date: 2026-10-25
 decision-makers: Proposed by joestump-agent, pending Joe
 extends: [ADR-0022]
-related: [ADR-0014, ADR-0020, ADR-0051]
+related: [ADR-0014, ADR-0020, ADR-0051, ADR-0052]
 ---
 
-# ADR-0052: Provider Read Clients Behind One Interface — The Read Half of the Reconcile Pass
+# ADR-0053: Provider Read Clients Behind One Interface — The Read Half of the Reconcile Pass
 
 **Status note:** this ADR is **proposed**. It records code that already shipped in PR #619 (part B
 of the epic #587 split, issue #613) so the design can be argued against working code rather than
@@ -55,9 +55,10 @@ it.**
   skipped, so each pull request is yielded exactly once, from the pull stream.
 - **No credentials live in the package.** A caller that authenticates does so with an `http.Client`
   whose transport injects its own token (`WithHTTPClient`); the package never reads, stores, or
-  logs it. The base URL is a constructor argument — `NewGitHub` defaults to
-  `https://api.github.com` (a GitHub Enterprise Server caller passes its own root), Gitea has no
-  default because it is self-hosted — and no test dials a default: every test runs against an
+  logs it. The base URL is always an explicit constructor argument: `newHTTPBase` accepts only an
+  absolute `http`/`https` URL with a host and no credentials, query, or fragment, so neither
+  `NewGitHub` nor `NewGitea` fills in a default (a GitHub Enterprise Server caller passes its own
+  root, and a Gitea caller always names its own host), and no test dials anything beyond an
   `httptest` server.
 - **Adding a provider** means one implementation of the single-method `Reader` over the package's
   shared `httpBase` (validated base URL, the two options, page size clamped to [1, 100] with a
@@ -90,8 +91,10 @@ foreign cursor is refused locally instead of becoming a request to a third-party
 quirks (Gitea's split streams, GitHub's PR-in-issue-list) are implementation detail behind one
 cursor, and a new provider is one file plus tests with no live access needed.
 
-**Costs and limits.** The package is unwired by design: nothing imports it and it imports nothing
-switchboard-specific, so it ships with zero runtime effect until the reconcile pass lands. The
+**Costs and limits.** The read clients are unwired by design: nothing in the tree calls
+`ListRecentlyUpdated`, so they ship with zero runtime effect until the reconcile pass lands (the
+package itself is imported by `internal/config` and `internal/store` since #620 landed its
+connection-config helpers there, but no delivery path reaches the read path). The
 walk's `since` bound is only as good as the provider's update ordering; a `state=all` listing
 covers open and closed alike, and a closed-and-reopened item is only "recently updated" by what
 the provider reports. No item the client returns is trusted: whether a delivery synthesized from
