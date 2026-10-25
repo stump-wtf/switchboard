@@ -600,6 +600,71 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/APIError' }
 
+  /api/v1/webhooks/{webhook_id}/provider-connection:
+    parameters:
+      - name: webhook_id
+        in: path
+        required: true
+        description: A webhook in the caller's reach (see listWebhooks).
+        schema: { type: string, format: uuid }
+    put:
+      tags: [operator-api]
+      operationId: putWebhookProviderConnection
+      summary: Say where this webhook's provider lives, and store its read-only token
+      description: |
+        Where a reconcile read would dial for this webhook, and the read-only credential that
+        authenticates it (ADR-0052, #614). `provider_base_url` and `provider_repo` are a pair replaced
+        whole on every write; `provider_base_url: ""` clears both, and naming one without the other is
+        `invalid_argument`. The base URL must be `https` (loopback `http` excepted) and, when
+        `SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS` is set, exactly one of the listed origins — a prefix
+        never matches. `provider_read_token` is three-state: the key omitted keeps the stored token, `""`
+        clears it, a value replaces it. A non-empty token requires `SWITCHBOARD_SECRET_ENCRYPTION_KEY`, is
+        encrypted at rest like a signing secret, and is never returned by any response. Agents read these
+        fields on `list_webhooks` and have no verb that writes them: whoever supplies the token decides
+        where it is sent. Nothing dials out yet — the reconcile pass is #616.
+      security:
+        - operatorOAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider_base_url: { type: string, example: https://gitea.stump.rocks/api/v1 }
+                provider_repo: { type: string, example: stump.wtf/switchboard }
+                provider_read_token:
+                  type: string
+                  description: Omit the key to keep the stored token, `""` to clear it, a value to replace it.
+      responses:
+        '200':
+          description: Saved; what a reconcile read would use, with the token itself withheld.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderConnectionOut' }
+        '400':
+          description: The base URL is malformed, or the address names only one half of the pair.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '401':
+          description: Missing, expired, revoked, or non-operator bearer.
+        '403':
+          description: The base URL's origin is outside SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '404':
+          description: No such webhook in the caller's reach.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '503':
+          description: A token was supplied but SWITCHBOARD_SECRET_ENCRYPTION_KEY is not configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
   /api/v1/webhooks/{webhook_id}/rules:
     parameters:
       - name: webhook_id
@@ -1347,6 +1412,22 @@ components:
         has_params: { type: boolean }
         created_at: { type: string, format: date-time }
         rotated_at: { type: string, format: date-time }
+        provider_base_url: { type: string, description: Where a reconcile read would dial (ADR-0052). Absent when unset. }
+        provider_repo: { type: string, example: stump.wtf/switchboard }
+        provider_read_token_set: { type: boolean, description: A sealed read token is stored. The token itself is never returned. }
+        provider_connection_state: { type: string, enum: [unset, awaiting_credential, ready] }
+
+    ProviderConnectionOut:
+      type: object
+      description: What a reconcile read would use for this webhook. The token itself is never present.
+      required: [webhook_id, provider_read_token_set, provider_connection_state]
+      properties:
+        webhook_id: { type: string, format: uuid }
+        provider_base_url: { type: string, example: https://gitea.stump.rocks/api/v1 }
+        provider_repo: { type: string, example: stump.wtf/switchboard }
+        provider_read_token_set: { type: boolean }
+        provider_connection_state: { type: string, enum: [unset, awaiting_credential, ready] }
+        provider_connection_set_at: { type: string, format: date-time }
 
     RuleAction:
       type: object

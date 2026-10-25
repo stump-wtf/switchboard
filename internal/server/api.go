@@ -73,6 +73,11 @@ type apiHandler struct {
 	// Nil is tolerated, like endpointRevoked: the lease verbs read the live default regardless.
 	// Governing: ADR-0043.
 	endpointLeaseChanged func(endpointID string, defaultLease *int)
+	// providerReadOrigins is the operator's origin allowlist confining a webhook's provider read address
+	// (SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS), resolved once from config at startup
+	// (config.Config.ProviderReadOrigins). Empty — the default, and what a test-built handler
+	// has — admits any valid https address. Governing: stump.wtf/switchboard#614.
+	providerReadOrigins []string
 }
 
 func newAPIHandler(st *store.Store, baseURL string, log *slog.Logger, onEndpointRevoked func(string)) *apiHandler {

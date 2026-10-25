@@ -46,6 +46,7 @@ import (
 
 	"github.com/stump-wtf/switchboard/internal/manage"
 	"github.com/stump-wtf/switchboard/internal/routing"
+	"github.com/stump-wtf/switchboard/internal/store"
 )
 
 // rulesBodyLimit is the body cap for the rule write and dry-run routes: 32 rules of 4 KiB each plus
@@ -73,6 +74,10 @@ func (a *apiHandler) webhookRoutes(r chi.Router) {
 		r.Put("/webhooks/{webhook_id}/routes/{endpoint_id}", a.AddWebhookRoute)
 		r.Post("/webhooks/{webhook_id}/routes", a.AddWebhookRoute)
 		r.Delete("/webhooks/{webhook_id}/routes/{endpoint_id}", a.RemoveWebhookRoute)
+		// The provider connection a reconcile read needs (#614). A human-only write: the address names
+		// where this server will send a read token, so the party that supplies the credential is the
+		// party that chooses the address (ADR-0052).
+		r.Put("/webhooks/{webhook_id}/provider-connection", a.SetWebhookProviderConnection)
 	})
 }
 
@@ -92,6 +97,12 @@ type webhookListOut struct {
 	HasParams        bool   `json:"has_params"`
 	CreatedAt        string `json:"created_at"`
 	RotatedAt        string `json:"rotated_at,omitempty"`
+	// The reconcile-read connection (#614): where a provider read would go, and whether the read
+	// credential is in place. The credential itself is never listed.
+	ProviderBaseURL      string `json:"provider_base_url,omitempty"`
+	ProviderRepo         string `json:"provider_repo,omitempty"`
+	ProviderReadTokenSet bool   `json:"provider_read_token_set"`
+	ProviderState        string `json:"provider_connection_state"`
 }
 
 // ListWebhooks is GET /api/v1/webhooks: every webhook whose owning endpoint belongs to the caller,
@@ -111,7 +122,10 @@ func (a *apiHandler) ListWebhooks(w http.ResponseWriter, r *http.Request) {
 			EndpointState: wh.EndpointState, AgentName: wh.AgentName, SourceType: wh.SourceType,
 			TargetQueue: wh.TargetQueue, TrustMode: wh.TrustMode, RuleCount: wh.RuleCount,
 			HasDefaultAction: wh.HasDefault, HasParams: wh.HasParams,
-			CreatedAt: wh.CreatedAt.UTC().Format(time.RFC3339),
+			CreatedAt:       wh.CreatedAt.UTC().Format(time.RFC3339),
+			ProviderBaseURL: wh.ProviderBaseURL, ProviderRepo: wh.ProviderRepo,
+			ProviderReadTokenSet: wh.ProviderReadTokenSet,
+			ProviderState:        wh.ProviderConnectionState(),
 		}
 		if wh.RotatedAt != nil {
 			row.RotatedAt = wh.RotatedAt.UTC().Format(time.RFC3339)
@@ -263,6 +277,100 @@ func (a *apiHandler) RemoveWebhookRoute(w http.ResponseWriter, r *http.Request) 
 	a.log.Info("api webhook route removed", "human", human.ID, "webhook", out.WebhookID,
 		"target_endpoint", out.TargetEndpointID, "surface", "api")
 	writeJSON(w, http.StatusOK, out)
+}
+
+// providerConnectionIn is PUT /api/v1/webhooks/{webhook_id}/provider-connection's body. The address
+// pair (base url + repo) is replaced whole on every write, and "" for the base url clears both.
+// provider_read_token is three-state: the key omitted leaves the stored credential untouched, ""
+// clears it, and a value replaces it — so fixing a typo in an address never forces a human to re-paste
+// a token. The value is redacted from any body dump by name (internal/redact).
+type providerConnectionIn struct {
+	ProviderBaseURL   string  `json:"provider_base_url"`
+	ProviderRepo      string  `json:"provider_repo"`
+	ProviderReadToken *string `json:"provider_read_token"`
+}
+
+// providerConnectionOut is the response of that route and part of a listing: what a reconcile read
+// would dial, and whether it can. The credential itself is never in a response.
+type providerConnectionOut struct {
+	WebhookID       string `json:"webhook_id"`
+	ProviderBaseURL string `json:"provider_base_url,omitempty"`
+	ProviderRepo    string `json:"provider_repo,omitempty"`
+	// ReadTokenSet is the credential's presence, never its value; state is "unset",
+	// "awaiting_credential" (addressed, waiting on #615) or "ready".
+	ReadTokenSet bool   `json:"provider_read_token_set"`
+	State        string `json:"provider_connection_state"`
+	SetAt        string `json:"provider_connection_set_at,omitempty"`
+}
+
+func providerConnectionView(w store.Webhook) providerConnectionOut {
+	out := providerConnectionOut{
+		WebhookID: w.ID, ProviderBaseURL: w.ProviderBaseURL, ProviderRepo: w.ProviderRepo,
+		ReadTokenSet: w.ProviderReadTokenSet, State: w.ProviderConnectionState(),
+	}
+	if w.ProviderConnectionSetAt != nil {
+		out.SetAt = w.ProviderConnectionSetAt.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+// SetWebhookProviderConnection is PUT /api/v1/webhooks/{webhook_id}/provider-connection: where this
+// webhook's provider lives for a reconcile read (#614), and the read-only credential that authenticates
+// it. It is a human-only write on purpose. The address decides where a read token is sent and what the
+// holder of that token can enumerate, and the party that pastes the credential is the webhook's human,
+// so the same party must choose the address; an agent that could point a webhook at an installation of
+// its own would be choosing where its owner's token goes (ADR-0052 proposes that rule; #614 implements
+// only the storage and this surface). Reach is the store's: an unknown, malformed, or another human's
+// webhook is one 404.
+//
+// Governing: stump.wtf/switchboard#614; SPEC-0035 REQ "Reach on Every Route", REQ "Error Handling
+// Standards"; ADR-0002 (the trust boundary), ADR-0037 (the envelope).
+func (a *apiHandler) SetWebhookProviderConnection(w http.ResponseWriter, r *http.Request) {
+	human, _ := operatorFromContext(r.Context())
+	id := chi.URLParam(r, "webhook_id")
+	var in providerConnectionIn
+	if !decodeAPIBody(w, r, &in) {
+		return
+	}
+	updated, err := a.st.SetWebhookProviderConnectionForHuman(r.Context(), id, human.ID, store.ProviderConnectionEdit{
+		BaseURL:        in.ProviderBaseURL,
+		Repo:           in.ProviderRepo,
+		Token:          in.ProviderReadToken,
+		AllowedOrigins: a.providerReadOrigins,
+	})
+	if err != nil {
+		a.connectionErr(w, r, id, err)
+		return
+	}
+	// Nothing secret goes in the line: the address and the repository are configuration, and the
+	// credential is reported only as having been set.
+	a.log.Info("api webhook provider connection set", "human", human.ID, "webhook", updated.ID,
+		"base_url", updated.ProviderBaseURL, "repo", updated.ProviderRepo,
+		"read_token_set", updated.ProviderReadTokenSet, "surface", "api")
+	writeJSON(w, http.StatusOK, providerConnectionView(updated))
+}
+
+// connectionErr maps a provider-connection failure onto SPEC-0035's status table, using the same codes
+// the MCP verbs answer with.
+func (a *apiHandler) connectionErr(w http.ResponseWriter, r *http.Request, webhookID string, err error) {
+	human, _ := operatorFromContext(r.Context())
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeAPIError(w, http.StatusNotFound, "not_found", "no such webhook", nil)
+	case errors.Is(err, store.ErrInvalidArgument):
+		writeAPIError(w, http.StatusBadRequest, string(manage.ErrInvalidArgument), err.Error(), nil)
+	case errors.Is(err, store.ErrProviderOriginRefused):
+		a.log.Warn("api webhook provider connection refused", "human", human.ID, "webhook", webhookID, "err", err)
+		writeAPIError(w, http.StatusForbidden, "forbidden",
+			"the provider base url is outside this instance's allowed origins", nil)
+	case errors.Is(err, store.ErrProviderTokenEncryptionRequired):
+		a.log.Warn("api webhook provider connection unavailable", "human", human.ID, "webhook", webhookID, "err", err)
+		writeAPIError(w, http.StatusServiceUnavailable, string(manage.ErrUnavailable),
+			"a provider read token requires SWITCHBOARD_SECRET_ENCRYPTION_KEY", nil)
+	default:
+		a.log.Error("api webhook provider connection", "human", human.ID, "webhook", webhookID, "err", err)
+		writeAPIError(w, http.StatusInternalServerError, "internal", "internal error", nil)
+	}
 }
 
 // decodeAPIBody decodes a JSON body, answering 413 past the route's cap and 400 for anything that

@@ -92,6 +92,8 @@ func cmdWebhookList(c *cli, args []string) int {
 			RuleCount     int    `json:"rule_count"`
 			HasDefault    bool   `json:"has_default_action"`
 			HasParams     bool   `json:"has_params"`
+			ProviderRepo  string `json:"provider_repo"`
+			ProviderState string `json:"provider_connection_state"`
 		} `json:"webhooks"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
@@ -102,7 +104,7 @@ func cmdWebhookList(c *cli, args []string) int {
 		return exitOK
 	}
 	tw := tabwriter.NewWriter(c.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "WEBHOOK\tENDPOINT\tSTATE\tSOURCE\tQUEUE\tRULES")
+	fmt.Fprintln(tw, "WEBHOOK\tENDPOINT\tSTATE\tSOURCE\tQUEUE\tRULES\tRECONCILE READ")
 	for _, w := range doc.Webhooks {
 		rules := strconv.Itoa(w.RuleCount)
 		var extra []string
@@ -115,9 +117,87 @@ func cmdWebhookList(c *cli, args []string) int {
 		if len(extra) > 0 {
 			rules += " (+" + strings.Join(extra, ", ") + ")"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", w.WebhookID, w.EndpointSlug, w.EndpointState, w.SourceType, w.TargetQueue, rules)
+		// The reconcile-read column answers "would a provider read of this webhook work?" — "-" means
+		// nothing is configured, which is the normal state, and awaiting_credential means the address is
+		// set but its owner has not provisioned the read token yet (#614, #615).
+		read := "-"
+		if w.ProviderState != "" && w.ProviderState != "unset" {
+			read = w.ProviderState + " " + w.ProviderRepo
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", w.WebhookID, w.EndpointSlug, w.EndpointState,
+			w.SourceType, w.TargetQueue, rules, read)
 	}
 	_ = tw.Flush()
+	return exitOK
+}
+
+// --- webhook connection set ---
+
+func connectionURL(id string) string {
+	return "/api/v1/webhooks/" + url.PathEscape(id) + "/provider-connection"
+}
+
+func cmdWebhookConnectionSet(c *cli, args []string) int {
+	fs := c.flagSet("webhook connection set", "WEBHOOK_ID", "Say where this webhook's provider lives for a reconcile read, and store the\n"+
+		"read-only token that authenticates it. Only a human sets this: the address decides where\n"+
+		"that token is sent, so the party that supplies the token chooses it (ADR-0052).\n"+
+		"--base-url and --repo are replaced whole every time; --base-url \"\" clears both. The token is\n"+
+		"three-state: with neither --read-token-from nor --clear-token, the stored one is left alone.\n"+
+		"Nothing reads the provider back yet, so this changes no behavior on its own.")
+	base := fs.String("base-url", "", "provider API root, https://host[:port][/path] — a Gitea install's root includes /api/v1")
+	repo := fs.String("repo", "", "the repository on that provider, owner/name")
+	tokenFrom := fs.String("read-token-from", "", "the read-only provider token: a path, @path, or - for stdin")
+	clearToken := fs.Bool("clear-token", false, "remove the stored read token")
+	asJSON := fs.Bool("json", false, "print the raw API response")
+	id, exit, ok := c.webhookArg(fs, args)
+	if !ok {
+		return exit
+	}
+	if *tokenFrom != "" && *clearToken {
+		return c.usageError(fs, "--read-token-from and --clear-token are alternatives")
+	}
+	body := map[string]any{"provider_base_url": *base, "provider_repo": *repo}
+	switch {
+	case *clearToken:
+		body["provider_read_token"] = ""
+	case *tokenFrom != "":
+		token, err := c.readTextInput("--read-token-from", *tokenFrom)
+		if err != nil {
+			return c.usageError(fs, err.Error())
+		}
+		if token == "" {
+			return c.usageError(fs, "--read-token-from read an empty value; that clears the stored token, so use --clear-token")
+		}
+		body["provider_read_token"] = token
+	}
+	api, err := c.apiClient(context.Background())
+	if err != nil {
+		return c.fail(err)
+	}
+	out, err := api.put(connectionURL(id), body)
+	if err != nil {
+		return c.fail(err)
+	}
+	if *asJSON {
+		return c.printJSON(out)
+	}
+	var doc struct {
+		ProviderBaseURL string `json:"provider_base_url"`
+		ProviderRepo    string `json:"provider_repo"`
+		ReadTokenSet    bool   `json:"provider_read_token_set"`
+		State           string `json:"provider_connection_state"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return c.fail(fmt.Errorf("webhook connection set: malformed response: %w", err))
+	}
+	if doc.ProviderBaseURL == "" {
+		fmt.Fprintln(c.stdout, "Cleared: this webhook has no provider read configured.")
+		return exitOK
+	}
+	fmt.Fprintf(c.stdout, "%s → %s (%s)\n", doc.ProviderBaseURL, doc.ProviderRepo, doc.State)
+	if !doc.ReadTokenSet {
+		fmt.Fprintln(c.stdout, "No read token is stored, so a reconcile read would still be refused: pass --read-token-from when the credential exists.")
+	}
 	return exitOK
 }
 
@@ -292,6 +372,30 @@ func (c *cli) webhookArg(fs *flag.FlagSet, args []string) (string, int, bool) {
 		return "", c.usageError(fs, fmt.Sprintf("unexpected argument %q", pos[1])), false
 	}
 	return strings.TrimSpace(pos[0]), exitOK, true
+}
+
+// readTextInput reads a single-line value (a token) from a path, @path, or - (stdin), trimming the
+// newline a file or an echo almost always carries. It stays in the caller's memory: the CLI never puts
+// a credential in an argument list another process can read.
+func (c *cli) readTextInput(flagName, arg string) (string, error) {
+	var b []byte
+	var err error
+	if arg == "-" {
+		if c.stdin == nil {
+			return "", fmt.Errorf("%s -: no stdin", flagName)
+		}
+		b, err = io.ReadAll(c.stdin)
+	} else {
+		read := c.readFile
+		if read == nil {
+			read = os.ReadFile
+		}
+		b, err = read(strings.TrimPrefix(arg, "@"))
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", flagName, err)
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 // readJSONInput reads a JSON document from a path, @path, or - (stdin), and checks it is JSON.

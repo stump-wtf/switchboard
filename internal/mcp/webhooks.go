@@ -161,6 +161,22 @@ type webhookMetaOut struct {
 	SecretFingerprint string       `json:"secret_fingerprint,omitempty" jsonschema:"first 12 hex of the stored secret's SHA-256"`
 	SecretSetAt       string       `json:"secret_set_at,omitempty" jsonschema:"RFC 3339 time the current secret was written"`
 	SecretSetBy       *secretSetBy `json:"secret_set_by,omitempty" jsonschema:"who wrote the current secret, for a webhook whose secret a caller supplied (SPEC-0032 REQ-13)"`
+	// The reconcile-read connection (#614): where this webhook's provider lives, and whether its
+	// read-only credential is in place. Reported so an agent can tell a webhook that will never be
+	// reconciled from one waiting for its owner to provision a credential (#615). The credential itself
+	// is never included, and no agent surface writes any of it (ADR-0052).
+	ProviderConnection *providerConnectionOut `json:"provider_connection,omitempty" jsonschema:"provider read configuration for this webhook, without its credential"`
+}
+
+// providerConnectionOut is the read-only view of a webhook's provider connection config
+// (stump.wtf/switchboard#614). state is "unset" (no address configured), "awaiting_credential" (an
+// address whose read credential has not been provisioned yet), or "ready".
+type providerConnectionOut struct {
+	BaseURL      string `json:"base_url,omitempty" jsonschema:"provider API root a reconcile read would call"`
+	Repo         string `json:"repo,omitempty" jsonschema:"owner/name a reconcile read would list"`
+	ReadTokenSet bool   `json:"read_token_set" jsonschema:"true when a read-only provider credential is stored; the credential itself is never returned"`
+	State        string `json:"state" jsonschema:"unset, awaiting_credential, or ready"`
+	SetAt        string `json:"set_at,omitempty" jsonschema:"RFC 3339 time the address or credential was last written"`
 }
 
 // secretSetBy is the actor half of an audit row, shaped for a list response: the kind and id of the
@@ -424,6 +440,15 @@ func (h *Handler) listWebhooksTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[lis
 			row.AllowAll = row.TrustedActors != nil && row.TrustedActors.AllowAll
 			if w.RotatedAt != nil {
 				row.RotatedAt = w.RotatedAt.UTC().Format(time.RFC3339)
+			}
+			row.ProviderConnection = &providerConnectionOut{
+				BaseURL:      w.ProviderBaseURL,
+				Repo:         w.ProviderRepo,
+				ReadTokenSet: w.ProviderReadTokenSet,
+				State:        w.ProviderConnectionState(),
+			}
+			if w.ProviderConnectionSetAt != nil {
+				row.ProviderConnection.SetAt = w.ProviderConnectionSetAt.UTC().Format(time.RFC3339)
 			}
 			out.Webhooks = append(out.Webhooks, row)
 		}
