@@ -75,6 +75,7 @@ Two layers:
 | [ADR-0049](adrs/ADR-0049-add-only-endpoint-scope-widening.md) | **Add-only endpoint scope widening (proposed)** | Adding a lane stops costing a re-vend: a widen route and CLI command that can only union webhook queues, source types and verbs and raise the webhook ceiling — never narrow — with every moved field audited beside the change. |
 | [ADR-0050](adrs/ADR-0050-announcing-dead-letters-and-listing-them.md) | **Announce dead letters, list them for the operator (proposed)** | `todo.dead_lettered` rides the SPEC-0024 hooks with identifiers plus the closing attempt, fires only where retrying truly stops, and the Board gains a Dead pill over every endpoint you own. |
 | [ADR-0051](adrs/ADR-0051-per-source-pre-intake-reject-counts.md) | **Count deliveries refused before intake, per source (proposed)** | A `429` or a failed signature that never became a todo is now counted per webhook in one in-process ledger read by both `/metrics` and the endpoint card — no persistence, no provider read, no new trust path. |
+| [ADR-0052](adrs/ADR-0052-per-webhook-provider-read-config.md) | **Per-webhook provider read connection, and what a read may re-drive (proposed)** | Where a reconcile read dials and which sealed token it carries becomes per-webhook config a human writes and an agent only reads; a read's synthesis must pass the same trust gate as the delivery it replaces. |
 
 ### Later records
 
