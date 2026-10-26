@@ -123,6 +123,11 @@ func Apply(raw []byte, fields []string) (any, bool, string) {
 }
 
 // ApplyValue projects an already-decoded JSON value. Same contract as Apply.
+//
+// The value is not copied: overlapping selectors ("a", "a.x") fold into the maps along their
+// shared prefix, which are v's own objects, so those maps are written during the call. Pass a
+// value the caller does not read concurrently; Apply decodes its own copy and is the safe entry
+// point for a raw document.
 func ApplyValue(v any, fields []string) (any, bool, string) {
 	if len(fields) == 0 {
 		return nil, false, ""
