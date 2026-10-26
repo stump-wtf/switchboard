@@ -84,8 +84,10 @@ and a maintainer's label promotes their report into a lane.
 The last three combine, and are only valid with `queue`. They are what handoff lanes use — see
 [guide 08](08-handoff-lanes.md).
 
-`payload_fields` is a selector list, not jq: dot-separated keys with `[]` to walk an array
-(`commits[].id`), at most 24 paths. It is validated when you save the rule, and applied where the
+`payload_fields` is a selector list, not jq: dot-separated keys with `[]` to walk a field's array
+(`commits[].id`), at most 24 paths. A `[]` always follows a field name (`commits[][]` is refused),
+and a selector does not descend into an element that is itself an array — nested arrays are outside
+its reach. It is validated when you save the rule, and applied where the
 todo is minted. If it matches nothing, resolves to something that isn't an object, or would grow the
 payload past 256 KiB, the todo is stored **whole** and the trace carries `projection_cause` — a
 mistyped path costs a worker context, never data. The same argument is accepted by `claim`,

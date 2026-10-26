@@ -52,6 +52,11 @@ issue.labels[].name
 repository.full_name
 ```
 
+Two edges of that grammar, so a rule author meets them in the guide rather than on live traffic: a
+`[]` always follows a field name (`a[][].b` is refused at parse), and a selector does not descend
+into an element that is itself an array — `a[].b` over `[[{"b": 1}]]` matches nothing rather than
+reaching inside it.
+
 It appears in exactly three positions, with the same meaning in each:
 
 * a routing rule's `action.payload_fields` — what intake **stores** on the todo;
