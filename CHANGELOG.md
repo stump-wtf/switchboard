@@ -258,8 +258,6 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   accepts only rooted same-origin paths, so it can never become an open redirect.
   (#199)
 
-### Fixed
-
 - **The Board's Release and Fail reach a lease the human's agent holds.** Every Board action
   matched only a lease the human had taken from the Board, so a todo an agent claimed answered
   Release, Fail, Complete and Extend with a conflict, and a stuck attempt — including a fenced
