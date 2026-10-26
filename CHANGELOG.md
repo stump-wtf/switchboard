@@ -15,6 +15,19 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Payload projection: take the fields you need, leave the rest.** A routing rule's action can now
+  carry `payload_fields` — a bounded selector list like
+  `["issue.number", "repository.full_name", "commits[].id"]` — and the todo is stored with just those
+  fields instead of the whole delivery body, which for a Gitea `push` or a GitHub `pull_request` is
+  tens of kilobytes of repository metadata a worker never reads. The same `payload_fields` argument
+  works on `claim`, `claim_next`, `get_todo` and `list_todos` to project on the way out, and
+  `switchboard todo claim|next|get|list --fields a.b,c[]` passes it through. A selector that matches
+  nothing, resolves outside an object, or would grow past 256 KiB is reported on the trace as
+  `projection_cause` and the body is stored whole, so a bad projection costs context, never data — and
+  omitting the argument is the escape hatch. The event keeps the full body either way: projection
+  shrinks what a worker is handed, not what the operator can audit. See
+  [ADR-0054](docs/adrs/ADR-0054-payload-projection-is-a-field-selector.md). Closes #585.
+
 - **Per-webhook provider connection config, for the reconcile pass to read from.** A webhook can now carry
   where its provider lives (`provider_base_url` plus `provider_repo`) and a sealed read-only token, written
   only by a human through `PUT /api/v1/webhooks/{webhook_id}/provider-connection` or

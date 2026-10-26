@@ -49,6 +49,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stump-wtf/switchboard/internal/projection"
 	"github.com/stump-wtf/switchboard/internal/routing"
 	"github.com/stump-wtf/switchboard/internal/sourcekind"
 	"github.com/stump-wtf/switchboard/internal/store"
@@ -333,12 +334,6 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	trace, err := json.Marshal(decision.Trace)
-	if err != nil {
-		i.log.Error("self-managed webhook routing trace", "webhook", wh.ID, "err", err)
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
 	targetsFor, reason := decision.Endpoints, decision.QuarantineReason()
 	var detail []byte
 	if reason != "" {
@@ -348,6 +343,35 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+	}
+	// Payload projection (ADR-0054): a rule action may declare the fields its consumers read, and then
+	// the todo it mints stores only those. The event record keeps the body whole, so replay, the
+	// Board and debugging are untouched — only what a claim returns gets leaner. A projection that
+	// yields nothing usable stores the body as it always was and records why: bytes are never worth
+	// losing the delivery over. A quarantined todo is held for a human to read whole, so it is never
+	// projected.
+	todoBody := body
+	if fields := decision.Trace.Action.PayloadFields; len(fields) > 0 && reason == "" && !decision.Drop {
+		projected, ok, why := projection.Apply(body, fields)
+		if ok {
+			if raw, merr := json.Marshal(projected); merr == nil {
+				todoBody = raw
+				decision.Trace.PayloadFields = fields
+			} else {
+				why = projection.CauseNotApplied + ": the projection does not encode"
+			}
+		}
+		if why != "" {
+			decision.Trace.ProjectionCause = why
+			i.log.Warn("payload projection not applied; storing the body whole",
+				"webhook", wh.ID, "rule", decision.Trace.RuleID, "cause", why)
+		}
+	}
+	trace, err := json.Marshal(decision.Trace)
+	if err != nil {
+		i.log.Error("self-managed webhook routing trace", "webhook", wh.ID, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 
 	// Governing: SPEC-0002/0004 REQ atomic ingestion, generalized to N targets (ADR-0022) — the
@@ -370,7 +394,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		store.CreateTodoParams{
 			Queue: decision.Queue, Source: wh.SourceType, Kind: "webhook",
 			Title:   summarizeSelfManagedTitle(wh.SourceType, selfManagedEvent(r), body),
-			Payload: body, IdempotencyKey: key, RoutingTrace: trace,
+			Payload: todoBody, IdempotencyKey: key, RoutingTrace: trace,
 			OnceKey: onceKey, WorkOrder: workOrder,
 			QuarantineReason: reason, QuarantineDetail: detail,
 		})

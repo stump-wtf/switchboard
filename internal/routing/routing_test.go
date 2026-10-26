@@ -371,6 +371,8 @@ func TestValidate(t *testing.T) {
 		{"queue and drop", Config{Rules: []Rule{rule("both", `true`, Action{Queue: "forge", Drop: true})}}, CodeInvalidRule, 0},
 		{"neither", Config{Rules: []Rule{rule("none", `true`, Action{})}}, CodeInvalidRule, 0},
 		{"endpoints on drop", Config{Rules: []Rule{rule("ed", `true`, Action{Drop: true, Endpoints: []string{owner}})}}, CodeInvalidRule, 0},
+		{"projection on drop", Config{Rules: []Rule{rule("pj", `true`, Action{Drop: true, PayloadFields: []string{"issue.number"}})}}, CodeInvalidRule, 0},
+		{"projection path unusable", Config{Rules: []Rule{rule("pj", `true`, Action{Queue: "forge", PayloadFields: []string{"issue..number"}})}}, CodeInvalidRule, 0},
 		{"queue not granted", Config{Rules: []Rule{rule("q", `true`, Action{Queue: "someone-elses"})}}, CodeNotGranted, 0},
 		{"endpoint not a target", Config{Rules: []Rule{rule("e", `true`, Action{Queue: "forge", Endpoints: []string{"44444444-4444-4444-4444-444444444444"}})}}, CodeNotGranted, 0},
 		{"dup endpoint", Config{Rules: []Rule{rule("d", `true`, Action{Queue: "forge", Endpoints: []string{epB, epB}})}}, CodeInvalidRule, 0},
@@ -402,6 +404,16 @@ func TestValidate(t *testing.T) {
 	}
 	if err := Validate(Config{Rules: []Rule{good, rule("pick", `true`, Action{Queue: "handoff", Endpoints: []string{epC}})}, Default: &Action{Drop: true}}, grant()); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+	// A queue action carrying a projection is an ordinary save; the paths are the same ones claim
+	// accepts (ADR-0054).
+	if err := Validate(Config{Rules: []Rule{rule("pj", `true`, Action{
+		Queue: "forge", PayloadFields: []string{"action", "issue.number", "issue.labels[].name", "repository.full_name"},
+	})}}, grant()); err != nil {
+		t.Fatalf("projection action rejected: %v", err)
+	}
+	if err := Validate(Config{Default: &Action{Queue: "forge", PayloadFields: []string{"a[b"}}}, grant()); err == nil {
+		t.Fatal("default action accepted an unusable path")
 	}
 }
 

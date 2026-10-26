@@ -260,6 +260,7 @@ func cmdTodoList(c *cli, args []string) int {
 	queue := fs.String("queue", "", "restrict to one granted queue")
 	state := fs.String("state", "", "filter by state: pending, claimed, done, or failed")
 	limit := fs.Int("limit", 0, "maximum rows (default 50, cap 200)")
+	fields := fs.String("fields", "", "project each row's payload server-side to these comma-separated paths (issue.number,repository.full_name); a listing never carries whole payloads")
 	pos, exit, ok := c.parseArgs(fs, args)
 	if !ok {
 		return exit
@@ -283,6 +284,9 @@ func cmdTodoList(c *cli, args []string) int {
 	}
 	if *limit > 0 {
 		in["limit"] = *limit
+	}
+	if f := splitFields(*fields); len(f) > 0 {
+		in["payload_fields"] = f
 	}
 	out, err := conn.call(context.Background(), c, "list_todos", in)
 	if err != nil {
@@ -321,6 +325,7 @@ type claimArgs struct {
 	fence    *bool
 	claimant *string
 	payload  *bool
+	fields   *string
 	asJSON   *bool
 	queue    *string
 }
@@ -332,6 +337,7 @@ func claimFlagSet(c *cli, name, args, summary string) (*flag.FlagSet, *workerFla
 		fence:    fs.Bool("fence", false, "require_fence: the response carries a lease_token this attempt must present to heartbeat/complete/fail/release"),
 		claimant: fs.String("claimant", "", "label for who is making this attempt, shown to later claimers"),
 		payload:  fs.Bool("payload", false, "include the todo's full payload in the output"),
+		fields:   fs.String("fields", "", "project the payload server-side to these comma-separated paths (issue.number,issue.labels[].name): fewer bytes on the wire and in context"),
 		asJSON:   fs.Bool("json", false, "print the tool's structured JSON verbatim (the claim's full response)"),
 	}
 	return fs, wf, ca
@@ -348,7 +354,23 @@ func (ca *claimArgs) in() map[string]any {
 	if *ca.claimant != "" {
 		in["claimant"] = *ca.claimant
 	}
+	if f := splitFields(*ca.fields); len(f) > 0 {
+		in["payload_fields"] = f
+	}
 	return in
+}
+
+// splitFields turns --fields a,b[].c into the verb's list, dropping blanks; an empty result means the
+// argument is left off the call entirely.
+func splitFields(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func cmdTodoNext(c *cli, args []string) int {
@@ -426,11 +448,13 @@ func cmdTodoClaim(c *cli, args []string) int {
 	return printClaim(c, out, ca)
 }
 
-// printClaim renders a claim/next response: the todo, payload-stripped unless --payload, or the
-// whole structured response with --json.
+// printClaim renders a claim/next response: the todo, payload-stripped unless --payload or --fields
+// asked for it, or the whole structured response with --json.
 func printClaim(c *cli, raw json.RawMessage, ca *claimArgs) int {
+	// --fields already asked the server for the only bytes worth printing, so its answer is shown.
+	show := *ca.payload || len(splitFields(*ca.fields)) > 0
 	if *ca.asJSON {
-		return c.printJSON(stripPayloads(raw, *ca.payload))
+		return c.printJSON(stripPayloads(raw, show))
 	}
 	var td struct {
 		ID          string `json:"id"`
@@ -457,14 +481,14 @@ func printClaim(c *cli, raw json.RawMessage, ca *claimArgs) int {
 	}
 	// A claim always answers a todo; if the shape moved, showing the raw JSON beats showing nothing.
 	if err := json.Unmarshal(body, &td); err != nil {
-		return c.printJSON(stripPayloads(raw, *ca.payload))
+		return c.printJSON(stripPayloads(raw, show))
 	}
 	fmt.Fprintf(c.stdout, "claimed %s queue=%s state=%s attempt=%d payload=%dB\n%s\n",
 		td.ID, td.Queue, td.State, td.AttemptSeq, td.PayloadSize, td.Title)
 	if td.LeaseToken != "" {
 		fmt.Fprintf(c.stdout, "lease_token=%s — pass it as --lease-token to heartbeat/complete/fail/release\n", td.LeaseToken)
 	}
-	if !*ca.payload && td.PayloadSize > 0 {
+	if !show && td.PayloadSize > 0 {
 		fmt.Fprintf(c.stdout, "payload omitted (%d bytes): rerun with --payload or read it with `switchboard todo get %s --payload`\n",
 			td.PayloadSize, td.ID)
 	}
@@ -475,6 +499,7 @@ func cmdTodoGet(c *cli, args []string) int {
 	fs, wf := workerFlagSet(c, "todo get", "ID", "Read one todo without claiming it: its row, result, retry state and attempts,\n"+
 		"newest first. The payload stays out of context unless --payload is passed.")
 	payload := fs.Bool("payload", false, "include the todo's full payload in the output")
+	fields := fs.String("fields", "", "project the payload server-side to these comma-separated paths (issue.number,issue.labels[].name): fewer bytes on the wire and in context")
 	asJSON := fs.Bool("json", false, "print the tool's structured JSON verbatim")
 	pos, exit, ok := c.parseArgs(fs, args)
 	if !ok {
@@ -493,12 +518,16 @@ func cmdTodoGet(c *cli, args []string) int {
 		}
 		return c.fail(err)
 	}
-	out, err := conn.call(context.Background(), c, "get_todo", map[string]any{"id": strings.TrimSpace(pos[0])})
+	in := map[string]any{"id": strings.TrimSpace(pos[0])}
+	if f := splitFields(*fields); len(f) > 0 {
+		in["payload_fields"] = f
+	}
+	out, err := conn.call(context.Background(), c, "get_todo", in)
 	if err != nil {
 		return c.fail(err)
 	}
 	if *asJSON {
-		return c.printJSON(stripPayloads(out, *payload))
+		return c.printJSON(stripPayloads(out, *payload || len(splitFields(*fields)) > 0))
 	}
 	var row struct {
 		ID          string `json:"id"`
@@ -510,7 +539,7 @@ func cmdTodoGet(c *cli, args []string) int {
 		PayloadSize int    `json:"payload_size"`
 	}
 	if err := json.Unmarshal(out, &row); err != nil {
-		return c.printJSON(stripPayloads(out, *payload))
+		return c.printJSON(stripPayloads(out, *payload || len(splitFields(*fields)) > 0))
 	}
 	fmt.Fprintf(c.stdout, "%s  %s  queue=%s attempt=%d payload=%dB  %s\n",
 		row.ID, row.State, row.Queue, row.Attempt, row.PayloadSize, row.Title)

@@ -35,8 +35,9 @@ const (
 )
 
 type getTodoIn struct {
-	ID            string `json:"id" jsonschema:"the todo id to read"`
-	AttemptsLimit int    `json:"attempts_limit,omitempty" jsonschema:"most recent attempts to return (default 20, maximum 50)"`
+	ID            string   `json:"id" jsonschema:"the todo id to read"`
+	AttemptsLimit int      `json:"attempts_limit,omitempty" jsonschema:"most recent attempts to return (default 20, maximum 50)"`
+	PayloadFields []string `json:"payload_fields,omitempty" jsonschema:"optional projection of the payload this response returns: paths to keep, dot-separated, [] walking an array (issue.number, issue.labels[].name, repository.full_name). It changes only this response, never the stored payload. Omit it for the whole payload (ADR-0054)"`
 }
 
 // getTodoOut is the todo row with every todoOut field at the top level, plus what only this verb
@@ -58,6 +59,9 @@ func getTodoGranted(verbs []string) bool {
 
 func (h *Handler) getTodoTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[getTodoIn, getTodoOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in getTodoIn) (*sdk.CallToolResult, getTodoOut, error) {
+		if err := projectionArg(in.PayloadFields); err != nil {
+			return nil, getTodoOut{}, err
+		}
 		t, err := h.store.GetTodo(ctx, ep.ID, in.ID)
 		if err != nil {
 			return nil, getTodoOut{}, h.mapStoreErr(ep, "get_todo", err)
@@ -79,9 +83,11 @@ func (h *Handler) getTodoTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[getTodoI
 		if err != nil {
 			return nil, getTodoOut{}, h.mapStoreErr(ep, "get_todo", err)
 		}
-		return nil, getTodoOut{
+		out := getTodoOut{
 			todoOut: toOut(t), Result: decodeTrace(t.Result),
 			Attempts: toAttemptsOut(atts), AttemptsTotal: total, AttemptsPruned: pruned,
-		}, nil
+		}
+		projectReturned(&out.todoOut, t.Payload, in.PayloadFields)
+		return nil, out, nil
 	}
 }

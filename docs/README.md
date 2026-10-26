@@ -77,6 +77,7 @@ Two layers:
 | [ADR-0051](adrs/ADR-0051-per-source-pre-intake-reject-counts.md) | **Count deliveries refused before intake, per source (proposed)** | A `429` or a failed signature that never became a todo is now counted per webhook in one in-process ledger read by both `/metrics` and the endpoint card — no persistence, no provider read, no new trust path. |
 | [ADR-0052](adrs/ADR-0052-per-webhook-provider-read-config.md) | **Per-webhook provider read connection, and what a read may re-drive (proposed)** | Where a reconcile read dials and which sealed token it carries becomes per-webhook config a human writes and an agent only reads; a read's synthesis must pass the same trust gate as the delivery it replaces. |
 | [ADR-0053](adrs/ADR-0053-provider-read-clients-for-reconcile.md) | **Provider read clients behind one interface (proposed)** | GitHub and Gitea read clients list recently-updated issues and pulls through one `Reader` method with opaque cursors and explicit 403/404/429 errors — httptest-tested, unwired, credential-free, the read half of the endpoint-scoped reconcile pass. |
+| [ADR-0054](adrs/ADR-0054-payload-projection-is-a-field-selector.md) | **Payload projection is a field selector, not jq (proposed)** | `payload_fields` is a bounded dot-and-`[]` selector list, one syntax shared by the rule action, the claim and read verbs and the CLI, applied in-process at intake and on the way out — never a jq expression, which would reopen the memory and round-trip costs the rule sandbox exists to avoid. |
 
 ### Later records
 

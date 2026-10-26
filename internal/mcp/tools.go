@@ -22,6 +22,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stump-wtf/switchboard/internal/lease"
+	"github.com/stump-wtf/switchboard/internal/projection"
 	"github.com/stump-wtf/switchboard/internal/store"
 )
 
@@ -103,6 +104,9 @@ type listTodosIn struct {
 	Queue string `json:"queue,omitempty" jsonschema:"restrict to one granted queue (default: all granted queues)"`
 	State string `json:"state,omitempty" jsonschema:"filter by state: pending, claimed, done, or failed"`
 	Limit int    `json:"limit,omitempty" jsonschema:"maximum rows to return (default 50, cap 200)"`
+	// PayloadFields is the list's only way to carry body bytes: rows never ship a whole payload, so
+	// a triage that needs a few fields asks for them by path. Governing: ADR-0054.
+	PayloadFields []string `json:"payload_fields,omitempty" jsonschema:"optional projection: paths to keep from each row's payload, dot-separated, [] walking an array (issue.number, repository.full_name). A listing never returns whole payloads — this is how a row carries body bytes; claim a todo for all of them (ADR-0054)"`
 }
 
 type listTodosOut struct {
@@ -121,10 +125,11 @@ type listTodosOut struct {
 // claim_next take a claimant label and answer with attempt_seq, attempts_total and prior_attempts;
 // complete and fail take the summary and artifact their attempt closes with.
 type claimIn struct {
-	ID              string `json:"id" jsonschema:"the todo id to claim"`
-	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default: this endpoint's default lease, which this tool's description states; max 86400); size it to the work, and heartbeat before it runs out"`
-	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete, fail and release on this attempt must then present it"`
-	Claimant        string `json:"claimant,omitempty" jsonschema:"optional label for who is making this attempt (for example harness/box/fixer/run-7), shown to later claimers; cut to 128 bytes with control characters removed"`
+	ID              string   `json:"id" jsonschema:"the todo id to claim"`
+	LeaseTTLSeconds int      `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default: this endpoint's default lease, which this tool's description states; max 86400); size it to the work, and heartbeat before it runs out"`
+	RequireFence    bool     `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete, fail and release on this attempt must then present it"`
+	Claimant        string   `json:"claimant,omitempty" jsonschema:"optional label for who is making this attempt (for example harness/box/fixer/run-7), shown to later claimers; cut to 128 bytes with control characters removed"`
+	PayloadFields   []string `json:"payload_fields,omitempty" jsonschema:"optional projection of the payload this response returns: paths to keep, dot-separated, [] walking an array (issue.number, issue.labels[].name, repository.full_name). It changes only this response, never the stored payload; a path the payload lacks is left out, and a list matching nothing returns the payload whole. Omit it for the whole payload (ADR-0054)"`
 }
 
 // claimOut is claim's response: the todo row with every todoOut field at the top level, plus the
@@ -162,10 +167,11 @@ type releaseIn struct {
 }
 
 type claimNextIn struct {
-	Queue           string `json:"queue,omitempty" jsonschema:"restrict the scan to one granted queue (default: all granted queues)"`
-	LeaseTTLSeconds int    `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default: this endpoint's default lease, which this tool's description states; max 86400); size it to the work, and heartbeat before it runs out"`
-	RequireFence    bool   `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete, fail and release on this attempt must then present it"`
-	Claimant        string `json:"claimant,omitempty" jsonschema:"optional label for who is making this attempt (for example harness/box/fixer/run-7), shown to later claimers; cut to 128 bytes with control characters removed"`
+	Queue           string   `json:"queue,omitempty" jsonschema:"restrict the scan to one granted queue (default: all granted queues)"`
+	LeaseTTLSeconds int      `json:"lease_ttl_seconds,omitempty" jsonschema:"lease TTL in seconds (default: this endpoint's default lease, which this tool's description states; max 86400); size it to the work, and heartbeat before it runs out"`
+	RequireFence    bool     `json:"require_fence,omitempty" jsonschema:"when true, the response carries a lease_token, returned only this once; heartbeat, complete, fail and release on this attempt must then present it"`
+	Claimant        string   `json:"claimant,omitempty" jsonschema:"optional label for who is making this attempt (for example harness/box/fixer/run-7), shown to later claimers; cut to 128 bytes with control characters removed"`
+	PayloadFields   []string `json:"payload_fields,omitempty" jsonschema:"optional projection of the payload this response returns: paths to keep, dot-separated, [] walking an array (issue.number, issue.labels[].name, repository.full_name). It changes only this response, never the stored payload; a path the payload lacks is left out, and a list matching nothing returns the payload whole. Omit it for the whole payload (ADR-0054)"`
 }
 
 // claimNextOut carries the claimed todo, or Empty when the queues held no available work. Both
@@ -263,6 +269,9 @@ func (h *Handler) scopeGuard(ep store.AuthEndpoint) sdk.Middleware {
 
 func (h *Handler) listTodosTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[listTodosIn, listTodosOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in listTodosIn) (*sdk.CallToolResult, listTodosOut, error) {
+		if err := projectionArg(in.PayloadFields); err != nil {
+			return nil, listTodosOut{}, err
+		}
 		queues := ep.ScopeQueues
 		if in.Queue != "" {
 			// Queue scope enforced at the boundary, before the store sees the call.
@@ -277,7 +286,9 @@ func (h *Handler) listTodosTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[listTo
 		}
 		out := listTodosOut{Todos: make([]todoOut, 0, len(todos))}
 		for _, t := range todos {
-			out.Todos = append(out.Todos, toRow(t))
+			row := toRow(t)
+			projectReturned(&row, t.Payload, in.PayloadFields)
+			out.Todos = append(out.Todos, row)
 		}
 		// ADR-0048: say why a paused queue's rows are not moving. Optional on the store seam (the
 		// ToolStore contract predates it, and test fakes need not carry it); a failed probe must
@@ -298,6 +309,11 @@ func (h *Handler) claimTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimIn, c
 		if err := h.guardQueue(ctx, ep, "claim", in.ID); err != nil {
 			return nil, claimOut{}, err
 		}
+		// Refused before the claim is taken: a lease handed out on an argument that cannot be
+		// honoured is a claim the caller did not ask for.
+		if err := projectionArg(in.PayloadFields); err != nil {
+			return nil, claimOut{}, err
+		}
 		ttl, err := h.leaseFor(ctx, ep, "claim", in.LeaseTTLSeconds)
 		if err != nil {
 			return nil, claimOut{}, err
@@ -310,8 +326,10 @@ func (h *Handler) claimTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimIn, c
 		if err != nil {
 			return nil, claimOut{}, h.mapStoreErr(ep, "claim", err)
 		}
-		return nil, claimOut{todoOut: toOut(t), LeaseToken: token, AttemptSeq: ca.Seq,
-			AttemptsTotal: ca.AttemptsTotal, PriorAttempts: toAttemptsOut(ca.Prior)}, nil
+		out := claimOut{todoOut: toOut(t), LeaseToken: token, AttemptSeq: ca.Seq,
+			AttemptsTotal: ca.AttemptsTotal, PriorAttempts: toAttemptsOut(ca.Prior)}
+		projectReturned(&out.todoOut, t.Payload, in.PayloadFields)
+		return nil, out, nil
 	}
 }
 
@@ -332,6 +350,9 @@ func (h *Handler) claimNextTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimN
 			}
 			queues = []string{in.Queue}
 		}
+		if err := projectionArg(in.PayloadFields); err != nil {
+			return nil, claimNextOut{}, err
+		}
 		ttl, err := h.leaseFor(ctx, ep, "claim_next", in.LeaseTTLSeconds)
 		if err != nil {
 			return nil, claimNextOut{}, err
@@ -348,6 +369,7 @@ func (h *Handler) claimNextTool(ep store.AuthEndpoint) sdk.ToolHandlerFor[claimN
 			return nil, claimNextOut{}, h.mapStoreErr(ep, "claim_next", err)
 		}
 		out, prior := toOut(t), toAttemptsOut(ca.Prior)
+		projectReturned(&out, t.Payload, in.PayloadFields)
 		return nil, claimNextOut{Todo: &out, LeaseToken: token, AttemptSeq: ca.Seq,
 			AttemptsTotal: ca.AttemptsTotal, PriorAttempts: &prior}, nil
 	}
@@ -494,8 +516,8 @@ func toRow(t store.Todo) todoOut {
 	return out
 }
 
-// toOut is the full todo that claim and claim_next return: the compact row plus the payload and
-// routing trace.
+// toOut is the full todo that claim, claim_next and get_todo return: the compact row plus the
+// payload and routing trace.
 func toOut(t store.Todo) todoOut {
 	out := toRow(t)
 	if len(t.Payload) > 0 {
@@ -508,6 +530,28 @@ func toOut(t store.Todo) todoOut {
 	}
 	out.Routing = decodeTrace(t.RoutingTrace)
 	return out
+}
+
+// projectionArg refuses an unusable selector list at the boundary, before the verb has any side
+// effect. Governing: ADR-0054.
+func projectionArg(fields []string) error {
+	if err := projection.Validate(fields); err != nil {
+		return &toolError{codeInvalidArgument, err.Error()}
+	}
+	return nil
+}
+
+// projectReturned narrows the payload of a full row to the paths the caller declared. The stored
+// payload is untouched — this is a view taken on the way out, and the row's payload_size still
+// reports what an unprojected claim returns. A list that matches nothing leaves the payload whole:
+// an empty object in the response would read as an empty todo. Governing: ADR-0054.
+func projectReturned(out *todoOut, raw []byte, fields []string) {
+	if len(fields) == 0 {
+		return
+	}
+	if v, ok, _ := projection.Apply(raw, fields); ok {
+		out.Payload = v
+	}
 }
 
 // decodeTrace renders a stored routing trace as structured JSON, or nil when there is none (or it

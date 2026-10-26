@@ -46,6 +46,8 @@ import (
 	"time"
 
 	"github.com/itchyny/gojq"
+
+	"github.com/stump-wtf/switchboard/internal/projection"
 )
 
 // Limits. They bound what one webhook's configuration can cost per delivery: at most MaxRules
@@ -123,6 +125,12 @@ type Action struct {
 	Exclusive  bool     `json:"exclusive,omitempty"`
 	Once       bool     `json:"once,omitempty"`
 	WorkOrder  bool     `json:"work_order,omitempty"`
+	// PayloadFields projects the todo this action mints: a selector list (internal/projection) that
+	// keeps only the declared paths of the delivery body. The full body still lands on the event
+	// record, so replay and debugging lose nothing; only the todo a consumer claims gets leaner. An
+	// action that declares none stores the body exactly as it always did.
+	// Governing: ADR-0054.
+	PayloadFields []string `json:"payload_fields,omitempty"`
 }
 
 // Rule is one ordered routing rule. Expr is a jq filter whose FIRST output decides the match with
@@ -423,6 +431,11 @@ func checkAction(a Action, g Grant) (string, string) {
 		return CodeInvalidRule, "exclusive, once and work_order are only valid with a queue action"
 	case len(a.Endpoints) > MaxActionEndpoint:
 		return CodeInvalidRule, fmt.Sprintf("at most %d endpoints per action", MaxActionEndpoint)
+	case len(a.PayloadFields) > 0 && nonQueue:
+		return CodeInvalidRule, "payload_fields is only valid with a queue action: a dropped delivery mints no todo, and a quarantined one is held for a human to read whole"
+	}
+	if err := projection.Validate(a.PayloadFields); err != nil {
+		return CodeInvalidRule, err.Error()
 	}
 	if nonQueue {
 		return "", ""
@@ -576,6 +589,14 @@ type Trace struct {
 	// Actor is the trust gate's verdict, recorded when the gate held the delivery (stage
 	// trust_gate). Governing: SPEC-0026 REQ-5.
 	Actor *ActorTrust `json:"actor,omitempty"`
+	// PayloadFields is the selector list the receiver actually applied to the stored todo payload,
+	// set by intake (like OnceKey). Absent means the todo stores the delivery body whole, which is
+	// also what happens when the action declares no projection. Governing: ADR-0054.
+	PayloadFields []string `json:"payload_fields,omitempty"`
+	// ProjectionCause says why a declared projection did NOT reach the stored payload (nothing
+	// matched, the body is not an object, the result is over the cap). The body is stored whole
+	// either way, so this explains bytes and never a lost delivery.
+	ProjectionCause string `json:"projection_cause,omitempty"`
 }
 
 // RuleFault records a rule that could not be evaluated. Evaluation stops at the first one, so a

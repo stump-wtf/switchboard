@@ -79,9 +79,19 @@ and a maintainer's label promotes their report into a lane.
 | `{"queue": "lane-s", "exclusive": true}` | Create it on exactly **one** target: the first (owner first, then routes by grant time) whose endpoint scope includes the queue. |
 | `{"queue": "lane-s", "once": true}` | At most once per subject (issue or cairn artifact) per queue: later deliveries about it are recorded with `"once": "repeat"` and answer `{"repeat": true}`. |
 | `{"queue": "lane-s", "work_order": true}` | Attach a switchboard-authored, semi-trusted `work_order` (lane, verified provenance, authorizing rule, subject, authority) to each todo. |
+| `{"queue": "lane-x", "payload_fields": ["issue.number", "repository.full_name"]}` | Create the todo as usual, but store only the named paths of the delivery body, so a 40 KB `push` or `pull_request` body costs the worker what it actually reads. Needs `queue`; the event keeps the full body. |
 
 The last three combine, and are only valid with `queue`. They are what handoff lanes use — see
 [guide 08](08-handoff-lanes.md).
+
+`payload_fields` is a selector list, not jq: dot-separated keys with `[]` to walk an array
+(`commits[].id`), at most 24 paths. It is validated when you save the rule, and applied where the
+todo is minted. If it matches nothing, resolves to something that isn't an object, or would grow the
+payload past 256 KiB, the todo is stored **whole** and the trace carries `projection_cause` — a
+mistyped path costs a worker context, never data. The same argument is accepted by `claim`,
+`claim_next`, `get_todo` and `list_todos` (and `switchboard todo … --fields`) to project one response
+without touching what is stored; omitting it everywhere is the escape hatch
+([ADR-0054](/adrs/ADR-0054-payload-projection-is-a-field-selector.md)).
 
 A rule can only **narrow** where a delivery lands, never widen it. The queue must be the webhook's
 target queue or one of its owner's allowed webhook queues; every `endpoints` entry must already be a
