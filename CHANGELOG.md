@@ -258,6 +258,16 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   accepts only rooted same-origin paths, so it can never become an open redirect.
   (#199)
 
+- **The Board's Release and Fail reach a lease the human's agent holds.** Every Board action
+  matched only a lease the human had taken from the Board, so a todo an agent claimed answered
+  Release, Fail, Complete and Extend with a conflict, and a stuck attempt — including a fenced
+  one whose supervisor died holding the token — waited out its lease for the reaper. Release and
+  Fail now act on the todo's current lease, so the owning human recovers a stuck attempt without
+  waiting: Release returns it to the queue, Fail re-queues it with backoff (or dead-letters it,
+  on its last attempt), and each closes the attempt with the action's outcome, as SPEC-0034
+  REQ-6 promises. Complete and Extend stay on operator-taken leases per proposed ADR-0054.
+  (#513)
+
 ## [0.5.0] - 2026-09-28
 
 Friend-vended endpoints stop acting with the approver's authority, and a worker can end

@@ -322,11 +322,30 @@ func (h *Handler) CompleteTodo(w http.ResponseWriter, r *http.Request) {
 	h.respondTodoAction(w, r, "CompleteTodo", t, err)
 }
 
+// leaseOwnerForAction reads the todo the human owns and returns the owner of its live lease. The
+// Board's Release and Fail must reach a lease the human's agent holds, not only a lease the human
+// took from the Board, so the owning human can always recover a stuck attempt (SPEC-0034 REQ-6).
+// The store's owner check stays a compare-and-set against a concurrent takeover: a takeover
+// between the read and the transition makes the update miss and answer a conflict.
+func (h *Handler) leaseOwnerForAction(ctx context.Context, humanID, id string) (string, error) {
+	t, err := h.store.GetTodoOperatorOwned(ctx, humanID, id)
+	if err != nil {
+		return "", err
+	}
+	return t.Owner, nil
+}
+
 // FailTodo marks a claimed todo failed (SPEC-0003 retries until attempts exhausted, then dead-letters).
-// POST /todos/{id}/fail.
+// The lease may be the human's own or one their agent holds (SPEC-0034 REQ-6). POST /todos/{id}/fail.
 func (h *Handler) FailTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.FailTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
+	id := chi.URLParam(r, "id")
+	owner, err := h.leaseOwnerForAction(r.Context(), human.ID, id)
+	if err != nil {
+		h.respondTodoAction(w, r, "FailTodo", store.Todo{}, err)
+		return
+	}
+	t, err := h.store.FailTodoOperatorOwned(r.Context(), human.ID, id, owner, []byte(`{}`))
 	h.respondTodoAction(w, r, "FailTodo", t, err)
 }
 
@@ -347,11 +366,19 @@ func (h *Handler) ExtendTodo(w http.ResponseWriter, r *http.Request) {
 	h.respondTodoAction(w, r, "ExtendTodo", t, err)
 }
 
-// ReleaseTodo hands a claimed todo the operator owns back to the queue immediately (→ pending).
-// POST /todos/{id}/release. Governing: SPEC-0015 REQ "Todos View And Drawer" (Release).
+// ReleaseTodo hands a claimed todo back to the queue immediately (→ pending). The lease may be the
+// human's own or one their agent holds, so a fenced attempt the agent can't close comes back to the
+// queue instead of waiting out its lease (SPEC-0034 REQ-6). POST /todos/{id}/release. Governing:
+// SPEC-0015 REQ "Todos View And Drawer" (Release).
 func (h *Handler) ReleaseTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.ReleaseTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"), "op:"+human.ID)
+	id := chi.URLParam(r, "id")
+	owner, err := h.leaseOwnerForAction(r.Context(), human.ID, id)
+	if err != nil {
+		h.respondTodoAction(w, r, "ReleaseTodo", store.Todo{}, err)
+		return
+	}
+	t, err := h.store.ReleaseTodoOperatorOwned(r.Context(), human.ID, id, owner)
 	h.respondTodoAction(w, r, "ReleaseTodo", t, err)
 }
 

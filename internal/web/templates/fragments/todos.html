@@ -114,7 +114,7 @@
       <span class="sb-lease__count" data-sb-countdown data-sb-deadline="{{.Row.LeaseDeadlineMS}}" data-sb-suffix=" left" role="timer" aria-live="off">{{.Row.LeaseSecs}}s left</span>
     </div>
     <div class="sb-lease__track" aria-hidden="true"><div class="sb-lease__bar" data-sb-leasebar data-sb-deadline="{{.Row.LeaseDeadlineMS}}" style="width:100%"></div></div>
-    <p class="sb-lease__hint">if the lease expires, the reaper re-surfaces this todo to the queue</p>
+    <p class="sb-lease__hint">Release or Fail it any time — even a lease your agent holds — or let the lease expire: the reaper re-surfaces this todo to the queue</p>
     <div class="sb-drawer__acts">
       <button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.Row.ID}}/extend" hx-target="#sb-overlay" hx-swap="innerHTML">Extend lease</button>
       <button type="button" class="sb-btn sb-btn--mono sb-btn--secondary" hx-post="/todos/{{.Row.ID}}/release" hx-target="#sb-overlay" hx-swap="innerHTML">Release</button>
