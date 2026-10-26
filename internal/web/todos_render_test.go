@@ -222,10 +222,10 @@ func TestDrawerIdentityBlock(t *testing.T) {
 }
 
 // TestDrawerVisibilityLeaseCopy pins the charm-web copy on the claimed drawer's lease card: the
-// lowercase "visibility lease · {agent}" microlabel, the reaper hint line, and the "Ns left"
-// countdown seed (data-sb-suffix so sb-live.js keeps the phrasing on every tick). Governing:
-// SPEC-0015 REQ "Todos View And Drawer" (lease, claimed-by), SPEC-0003 REQ "Visibility Window,
-// Lease, Heartbeat".
+// lowercase "visibility lease · {agent}" microlabel, the recovery hint line (Release/Fail work on
+// an agent-held lease, issue #513), and the "Ns left" countdown seed (data-sb-suffix so sb-live.js
+// keeps the phrasing on every tick). Governing: SPEC-0015 REQ "Todos View And Drawer" (lease,
+// claimed-by), SPEC-0003 REQ "Visibility Window, Lease, Heartbeat".
 func TestDrawerVisibilityLeaseCopy(t *testing.T) {
 	h := newTestHandler(t)
 	out, err := h.renderFragment("drawer", drawerView{Row: rowFixture("claimed"), IdempotencyKey: "k"})
@@ -233,10 +233,10 @@ func TestDrawerVisibilityLeaseCopy(t *testing.T) {
 		t.Fatalf("render drawer: %v", err)
 	}
 	for _, want := range []string{
-		"visibility lease · agent · reviewer-bot",                             // label carries the leasing agent
-		"if the lease expires, the reaper re-surfaces this todo to the queue", // reaper hint
-		`data-sb-suffix=" left"`,                                              // sb-live.js renders "<secs>s left" from this suffix
-		">240s left</span>",                                                   // server-rendered seed before the first JS tick
+		"visibility lease · agent · reviewer-bot", // label carries the leasing agent
+		"Release or Fail it any time — even a lease your agent holds — or let the lease expire: the reaper re-surfaces this todo to the queue", // recovery + reaper hint
+		`data-sb-suffix=" left"`, // sb-live.js renders "<secs>s left" from this suffix
+		">240s left</span>",      // server-rendered seed before the first JS tick
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("drawer lease card copy: missing %q", want)

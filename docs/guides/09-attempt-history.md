@@ -156,9 +156,11 @@ report. Its lease lapses, the reaper re-queues the todo (or dead-letters it, on 
 and the attempt is recorded as died. So keep a fenced lease no longer than the work needs, and
 extend it with `heartbeat`.
 
-The Board's actions never check the fence. Today, though, the Board's **Release**, **Extend**,
-**Complete** and **Fail** act only on a lease the human took from the Board. A todo an agent holds,
-fenced or not, answers them with a conflict and comes back when its lease lapses.
+The Board's actions never check the fence. **Release** and **Fail** work on a lease the human's
+agent holds as well as one the human took from the Board, so the owning human can always recover a
+stuck attempt: **Release** returns the todo to the queue, **Fail** re-queues it with backoff (or
+dead-letters it, on its last attempt). Both close the attempt with the action's outcome.
+**Complete** and **Extend** act only on a lease the human took from the Board.
 
 ## For operators
 
