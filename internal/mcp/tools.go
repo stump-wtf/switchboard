@@ -253,6 +253,10 @@ func (h *Handler) registerTools(srv *sdk.Server, ep store.AuthEndpoint) {
 		}, h.releaseTool(ep))
 	}
 	h.registerLeaseVerbs(srv, ep)
+	// The operator supervision family is registered from the same grant the same way, so a consumer
+	// endpoint's tools/list cannot carry it: it reaches this loop only when a vend named the verb or
+	// its preset (queue_operator.go, ADR-0056).
+	h.registerQueueOperatorTools(srv, ep)
 }
 
 // scopeGuard intercepts tools/call before dispatch: a known verb (SPEC-0006 agent verb or
@@ -264,7 +268,7 @@ func (h *Handler) scopeGuard(ep store.AuthEndpoint) sdk.Middleware {
 		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
 			if method == "tools/call" {
 				if p, ok := req.GetParams().(*sdk.CallToolParamsRaw); ok &&
-					(agentVerbs[p.Name] || eventVerbs[p.Name] || webhookVerbs[p.Name] || notifyHookVerbs[p.Name] || leaseVerbs[p.Name]) && !verbAllowed(ep.ScopeVerbs, p.Name) {
+					(agentVerbs[p.Name] || eventVerbs[p.Name] || webhookVerbs[p.Name] || notifyHookVerbs[p.Name] || leaseVerbs[p.Name] || queueOperatorVerbs[p.Name]) && !verbAllowed(ep.ScopeVerbs, p.Name) {
 					h.log.Warn("mcp verb out of scope", "slug", ep.Slug, "tool", p.Name,
 						"err", fmt.Errorf("tools/call %s: %w", p.Name, errForbidden))
 					res := &sdk.CallToolResult{}

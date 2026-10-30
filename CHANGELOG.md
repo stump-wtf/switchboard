@@ -15,6 +15,21 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **An operator can supervise a queue from an MCP session.** Six verbs join the per-endpoint verb grant as a
+  family no consumer grant implies: `queue_stats` answers depth by state, the age of the oldest pending row,
+  whether the queue is paused and — in one word — whether it is stalled or merely quiet, with the leases
+  outstanding on it and when each expires; `pause_queue`, `resume_queue` and `drain_queue` drive the
+  ADR-0048 switch (a drain pauses first, then waits for the last lease to land and reports what is still
+  held); `requeue_todo` moves a failed or dead-lettered row back to pending with a fresh attempt budget,
+  because a dead letter whose budget is spent cannot be claimed again; and `release_lease` hands a row back
+  from under the lease its holder holds, for a run that was killed. None of them appears on a consumer
+  credential: they are in no default grant, implied by no other verb, and reachable only when a vend names
+  the verb or the new `queue-operator` preset — and calling one without the grant is a clean `forbidden`
+  with nothing touched. Reads are tenant-scoped by the endpoint's own human and narrowed by its queue
+  grant, a row belonging to another tenant is `not_found` rather than `forbidden`, and every state-changing
+  call writes one audit line naming who acted and why. See
+  [ADR-0056](docs/adrs/ADR-0056-operator-queue-supervision-over-mcp.md). Closes #582.
+
 - **A todo whose tracker issue is blocked is held, not handed out.** When an event mints a todo for a Gitea
   issue that declares open blockers, the todo is created in the new `blocked` state: it is stored, counted
   and listed like any other todo, but no claim path can return it and no doorbell announces it. It reaches
