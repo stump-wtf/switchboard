@@ -252,16 +252,46 @@ func TestParseRepoSpecNeedsBothHalves(t *testing.T) {
 func TestRememberEvictsOldestBeyondTheCap(t *testing.T) {
 	c := New(&store.Store{}, discardLog(), Config{CacheTTL: time.Hour}, nil)
 	for i := 0; i < cacheCap+10; i++ {
-		c.remember(store.IssueRefOf("a", "b", i), []store.BlockerRef{{Owner: "a", Repo: "b", Number: 1}}, nil)
+		c.remember(cacheKey("wh-1", store.IssueRefOf("a", "b", i)), []store.BlockerRef{{Owner: "a", Repo: "b", Number: 1}}, nil)
 	}
 	if len(c.cache) > cacheCap {
 		t.Errorf("cache holds %d entries, cap is %d", len(c.cache), cacheCap)
 	}
-	if _, fresh := c.cached(store.IssueRefOf("a", "b", cacheCap+9)); !fresh {
+	if _, fresh := c.cached(cacheKey("wh-1", store.IssueRefOf("a", "b", cacheCap+9))); !fresh {
 		t.Error("the freshest entry must survive eviction")
 	}
-	c.forget(store.IssueRefOf("a", "b", cacheCap+9))
-	if _, fresh := c.cached(store.IssueRefOf("a", "b", cacheCap+9)); fresh {
+	c.forgetRef(store.IssueRefOf("a", "b", cacheCap+9))
+	if _, fresh := c.cached(cacheKey("wh-1", store.IssueRefOf("a", "b", cacheCap+9))); fresh {
 		t.Error("forget left the entry cached")
+	}
+}
+
+// Two webhooks can point at different trackers that name their repositories the same way, so one
+// connection's cached answer for owner/repo#N must never stand in for another's.
+func TestBlockersForCacheIsPerConnection(t *testing.T) {
+	here := &fakeProvider{deps: []provider.Dependency{deps("here", "repo", 7, "open")}}
+	there := &fakeProvider{}
+	c := New(&store.Store{}, discardLog(), Config{CacheTTL: time.Hour}, func(_ context.Context, webhookID string) (*Client, error) {
+		if webhookID == "wh-here" {
+			return &Client{Reader: here}, nil
+		}
+		return &Client{Reader: there}, nil
+	})
+	ref := IssueRef{Owner: "acme", Repo: "repo", Number: 12}
+	open, ok := c.BlockersFor(context.Background(), "wh-here", ref)
+	if !ok || len(open) != 1 {
+		t.Fatalf("first connection = (%v, %v), want its own blocker", open, ok)
+	}
+	open, ok = c.BlockersFor(context.Background(), "wh-there", ref)
+	if !ok || len(open) != 0 {
+		t.Fatalf("second connection answered (%v, %v); the first connection's cache leaked into it", open, ok)
+	}
+	if here.asked != 1 || there.asked != 1 {
+		t.Errorf("reads: here=%d there=%d, want one each", here.asked, there.asked)
+	}
+	// A close invalidates the ref across every connection, never leaves one stale answer behind.
+	c.forgetRef(ref.RefString())
+	if _, fresh := c.cached(cacheKey("wh-here", ref.RefString())); fresh {
+		t.Error("forgetRef left the first connection's answer cached")
 	}
 }

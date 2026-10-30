@@ -167,7 +167,7 @@ func (c *Checker) BlockersFor(ctx context.Context, webhookID string, ref IssueRe
 	if !c.Enabled() {
 		return nil, false
 	}
-	key := ref.RefString()
+	key := cacheKey(webhookID, ref.RefString())
 	if entry, fresh := c.cached(key); fresh {
 		return entry.open, true
 	}
@@ -212,7 +212,7 @@ func (c *Checker) ReleaseBlocker(ctx context.Context, ref IssueRef) ([]store.Tod
 	if len(released) > 0 {
 		c.log.Info("released dependents of a closed issue", "issue", ref.RefString(), "todos", len(released))
 	}
-	c.forget(ref.RefString())
+	c.forgetRef(ref.RefString())
 	return released, nil
 }
 
@@ -220,7 +220,7 @@ func (c *Checker) ReleaseBlocker(ctx context.Context, ref IssueRef) ([]store.Tod
 // claimable. Nothing releases from here: only a close does.
 func (c *Checker) MarkBlockerOpen(ctx context.Context, ref IssueRef) error {
 	_, err := c.store.MarkBlockerState(ctx, ref.Owner, ref.Repo, ref.Number, "open")
-	c.forget(ref.RefString())
+	c.forgetRef(ref.RefString())
 	return err
 }
 
@@ -435,11 +435,24 @@ func (c *Checker) remember(key string, open, all []store.BlockerRef) {
 	c.cache[key] = cacheEntry{open: open, all: all, expiry: c.now().Add(c.cfg.CacheTTL)}
 }
 
-func (c *Checker) forget(key string) {
+// forgetRef drops every cached answer for one issue ref, across connections: a close (or a reopen)
+// invalidates what any webhook's tracker last said about it. Over-deleting costs a re-read, never a
+// wrong answer.
+func (c *Checker) forgetRef(ref string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.cache, key)
+	for k := range c.cache {
+		if strings.HasSuffix(k, "\x00"+ref) {
+			delete(c.cache, k)
+		}
+	}
 }
+
+// cacheKey names one cached answer: the connection that was asked (the webhook whose stored provider
+// connection resolved the read) plus the issue it was asked about. Owner/repo#number alone is not a
+// global identity — two webhooks can point at different trackers with identically named repositories,
+// and their answers must never mix.
+func cacheKey(webhookID, ref string) string { return webhookID + "\x00" + ref }
 
 // timeout is the per-client override over the configured read timeout.
 func (cl *Client) timeout(def time.Duration) time.Duration {
