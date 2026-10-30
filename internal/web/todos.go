@@ -39,7 +39,8 @@ type todoRow struct {
 	TrustMode       string
 	State           string
 	OwnerLabel      string
-	Held            bool // on the quarantine queue: no lifecycle controls (SPEC-0026 REQ-6, released or discarded in the Quarantine view)
+	Held            bool   // on the quarantine queue: no lifecycle controls (SPEC-0026 REQ-6, released or discarded in the Quarantine view)
+	WaitingOn       string // blocked todo: the open blocker issues it is waiting on, rendered as a row sub-line (ADR-0055)
 	HasLease        bool
 	LeaseSecs       int   // remaining lease seconds at render time (claimed)
 	LeaseDeadlineMS int64 // unix-ms lease deadline for the sb.js countdown
@@ -184,8 +185,8 @@ type panelView struct {
 }
 
 // todoFilters is the canonical ordered set of filter chips (SPEC-0015: all/pending/claimed/done/
-// failed, plus the dead-letter chip issue #588 adds).
-var todoFilters = []string{"all", "pending", "claimed", "done", "failed", "dead"}
+// failed, plus the dead-letter chip issue #588 adds and the blocked chip ADR-0055 adds).
+var todoFilters = []string{"all", "pending", "claimed", "done", "failed", "dead", "blocked"}
 
 // normalizeFilter maps a query-param filter to a canonical pill key, defaulting to "all". The four
 // A2A states (SPEC-0018) are intentionally not filter pills in story #58 — the pill set is SPEC-0015's
@@ -204,6 +205,8 @@ func normalizeFilter(f string) string {
 		return "failed"
 	case "dead", "dead_lettered", "dead-lettered":
 		return "dead"
+	case "blocked":
+		return "blocked"
 	default:
 		return "all"
 	}
@@ -498,7 +501,29 @@ func (h *Handler) todoRowFromItem(ctx context.Context, it store.TodoItem, oob, f
 		row.RetrySecs = secs
 		row.RetryDeadlineMS = it.NextRetryAt.UnixMilli()
 	}
+	// A blocked todo names what it waits on (ADR-0055): the refs recorded at hold time, so the
+	// operator sees "blocked · waiting on owner/repo#12" instead of a row that looks stuck. The read
+	// is best-effort — a failed blocker lookup leaves the sub-line empty rather than the row missing.
+	if it.State == store.StateBlocked && h.store != nil {
+		if refs, err := h.store.BlockersFor(ctx, it.ID); err == nil {
+			row.WaitingOn = waitingOn(refs)
+		}
+	}
 	return row
+}
+
+// waitingOn renders recorded blocker refs as the row sub-line text ("waiting on a/b#1, c/d#2"), or
+// the reason a hold has no refs to name — a hold always records at least one open blocker, so an
+// empty set means the refs were recorded before this table existed.
+func waitingOn(refs []store.BlockerRef) string {
+	if len(refs) == 0 {
+		return "waiting on blockers"
+	}
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, r.RefString())
+	}
+	return "waiting on " + strings.Join(out, ", ")
 }
 
 // buildDrawer assembles the detail-drawer render model: the header row, pretty-printed (and inert)

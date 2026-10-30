@@ -51,8 +51,10 @@ const DefaultQueueStatsTimeout = 5 * time.Second
 const queueCollectorName = "queue"
 
 // queueStates is the state label domain REQ-2 enumerates, in exposition order. The A2A states the
-// todos table also admits are deliberately absent.
-var queueStates = [...]string{"pending", "claimed", "done", "failed"}
+// todos table also admits are deliberately absent. `blocked` joins them (issue #583): a held todo is
+// neither pending work nor failed work, and collapsing it into either is the confusion the hold exists
+// to end.
+var queueStates = [...]string{"pending", "claimed", "done", "failed", "blocked"}
 
 // QueueStatsSource is the one read the collector needs. *store.Store satisfies it; tests fake it.
 type QueueStatsSource interface {
@@ -176,7 +178,7 @@ func (c *queueCollector) build(stats []store.QueueStat) ([]prometheus.Metric, er
 			byLabel[label] = a
 			order = append(order, label)
 		}
-		for i, n := range [len(queueStates)]int64{s.Pending, s.Claimed, s.Done, s.Failed} { // queueStates order
+		for i, n := range [len(queueStates)]int64{s.Pending, s.Claimed, s.Done, s.Failed, s.Blocked} { // queueStates order
 			a.counts[i] += n
 		}
 		a.oldest = max(a.oldest, s.OldestPendingSeconds)

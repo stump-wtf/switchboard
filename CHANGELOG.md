@@ -15,6 +15,20 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **A todo whose tracker issue is blocked is held, not handed out.** When an event mints a todo for a Gitea
+  issue that declares open blockers, the todo is created in the new `blocked` state: it is stored, counted
+  and listed like any other todo, but no claim path can return it and no doorbell announces it. It reaches
+  the queue by itself when the last blocker closes — from the blocker's own close event, and from a sweep
+  every five minutes that also catches an edited dependency link (Gitea fires no webhook for those) and
+  releases holds whose recorded blockers have all gone. `list_todos` gains `issue_ref` and `blockers` and
+  accepts `state: "blocked"`; the Todos view gains a **blocked** pill and names what each held row waits
+  on; `queue_stats` and `switchboard_queue_todos` count the population. Events for an already-held issue
+  fold into the one held todo instead of minting a duplicate that would all release at once. Everything
+  fails open: no read-only connection configured, GitHub (which has no dependency API), a timeout or a
+  malformed answer all mean an ordinary `pending` todo, because a tracker that cannot be asked must not
+  freeze the queue. Nothing dials inside the claim transaction. See
+  [ADR-0055](docs/adrs/ADR-0055-issue-dependency-holds.md). Closes #583.
+
 - **Per-webhook provider connection config, for the reconcile pass to read from.** A webhook can now carry
   where its provider lives (`provider_base_url` plus `provider_repo`) and a sealed read-only token, written
   only by a human through `PUT /api/v1/webhooks/{webhook_id}/provider-connection` or

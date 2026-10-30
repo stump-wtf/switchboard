@@ -691,6 +691,12 @@ a:hover {
 .sb-status--failed .sb-status__dot {
   background: var(--sb-trust-open-dot);
 }
+/* A blocked todo (ADR-0053 issue-dependency hold) keeps the neutral pair but wears a hollow dot:
+   it is neither failing nor waiting on a person, it is waiting on another issue. */
+.sb-status--blocked .sb-status__dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--sb-status-neutral);
+}
 
 .sb-pill {
   display: inline-flex;

@@ -20,13 +20,14 @@
     hx-get="/todos" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-trigger="input changed delay:300ms, search" hx-include="[name=filter]" hx-push-url="true">
 </form>{{end}}
 
-{{/* todo_pills: the six filter chips (all/pending/claimed/done/failed/dead) with live counts, flat
-     and square per ADR-0018 (no pill radii on state controls). Each chip carries its canonical
-     filter key as data-sb-filter; each count span keeps the sb-tc-<key> id so the counts SSE
-     frame refreshes the numbers OOB without disturbing the active-chip state. hx-include pulls
+{{/* todo_pills: the seven filter chips (all/pending/claimed/done/failed/dead/blocked) with live
+     counts, flat and square per ADR-0018 (no pill radii on state controls). Each chip carries its
+     canonical filter key as data-sb-filter; each count span keeps the sb-tc-<key> id so the counts
+     SSE frame refreshes the numbers OOB without disturbing the active-chip state. hx-include pulls
      the current search text along on a chip click. The dead chip is the operator's single place to
      look when work stopped for want of a person (issue #588): failed with no scheduled retry,
-     across every endpoint they own. */}}
+     across every endpoint they own. The blocked chip is work that exists but must not be claimed
+     yet — its tracker issue has open blockers (ADR-0055). */}}
 {{define "todo_pills"}}<div class="sb-fpills" role="tablist" aria-label="Filter todos">
   <a class="sb-fpill{{if eq .Filter "all"}} sb-fpill--active{{end}}" data-sb-filter="all" href="/todos?filter=all" hx-get="/todos?filter=all" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "all"}}true{{else}}false{{end}}">all <span id="sb-tc-all" class="sb-fpill__n" aria-live="polite">{{.Counts.All}}</span></a>
   <a class="sb-fpill{{if eq .Filter "pending"}} sb-fpill--active{{end}}" data-sb-filter="pending" href="/todos?filter=pending" hx-get="/todos?filter=pending" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "pending"}}true{{else}}false{{end}}">pending <span id="sb-tc-pending" class="sb-fpill__n" aria-live="polite">{{.Counts.Pending}}</span></a>
@@ -34,6 +35,7 @@
   <a class="sb-fpill{{if eq .Filter "done"}} sb-fpill--active{{end}}" data-sb-filter="done" href="/todos?filter=done" hx-get="/todos?filter=done" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "done"}}true{{else}}false{{end}}">done <span id="sb-tc-done" class="sb-fpill__n" aria-live="polite">{{.Counts.Done}}</span></a>
   <a class="sb-fpill{{if eq .Filter "failed"}} sb-fpill--active{{end}}" data-sb-filter="failed" href="/todos?filter=failed" hx-get="/todos?filter=failed" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "failed"}}true{{else}}false{{end}}">failed <span id="sb-tc-failed" class="sb-fpill__n" aria-live="polite">{{.Counts.Failed}}</span></a>
   <a class="sb-fpill{{if eq .Filter "dead"}} sb-fpill--active{{end}}" data-sb-filter="dead" href="/todos?filter=dead" hx-get="/todos?filter=dead" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "dead"}}true{{else}}false{{end}}">dead <span id="sb-tc-dead" class="sb-fpill__n" aria-live="polite">{{.Counts.DeadLettered}}</span></a>
+  <a class="sb-fpill{{if eq .Filter "blocked"}} sb-fpill--active{{end}}" data-sb-filter="blocked" href="/todos?filter=blocked" hx-get="/todos?filter=blocked" hx-target="#sb-todos-panel" hx-swap="innerHTML" hx-include="#sb-todos-search" hx-push-url="true" role="tab" aria-selected="{{if eq .Filter "blocked"}}true{{else}}false{{end}}">blocked <span id="sb-tc-blocked" class="sb-fpill__n" aria-live="polite">{{.Counts.Blocked}}</span></a>
 </div>{{end}}
 
 {{/* todos_table — the durable-queue table (SPEC-0015 columns: line · provider · trust · state ·
@@ -77,7 +79,7 @@
   <td><button type="button" class="sb-linklike sb-mono" data-sb-row-trigger hx-get="/todos/{{.ID}}" hx-target="#sb-overlay" hx-swap="innerHTML" aria-haspopup="dialog">{{.ShortID}}</button></td>
   <td>{{if .Source}}{{with iconpath .Source}}<span class="sb-icon-wrap" data-sb-tag aria-hidden="true"><img src="{{.}}" alt="" width="16" height="16"></span>{{else}}<span class="sb-tag" data-sb-tag aria-hidden="true">{{tag .Source}}</span>{{end}} {{end}}<span class="sb-trow__source" data-sb-source>{{if .Source}}{{.Source}}{{else}}—{{end}}</span> {{with eventiconpath .Kind}}<span class="sb-icon-wrap sb-icon-wrap--event" aria-hidden="true"><img src="{{.}}" alt="" width="14" height="14"></span>{{end}}<span class="sb-trow__kind" data-sb-kind>{{.Kind}}</span>{{if gt .DedupCount 1}} <span class="sb-dedup" data-sb-dedup title="{{.DedupCount}} deliveries collapsed onto this key">dedup ×{{.DedupCount}}</span>{{end}}</td>
   <td><span class="sb-badge sb-badge--{{.TrustMode}}" data-sb-trust="{{.TrustMode}}" title="{{trustdef .TrustMode}}">{{.TrustMode}}</span></td>
-  <td><span class="sb-status sb-status--{{.State}}" data-sb-state="{{.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.State}}</span>{{if and (eq .State "claimed") .HasLease}}<span class="sb-trow__sub" data-sb-countdown data-sb-deadline="{{.LeaseDeadlineMS}}" data-sb-suffix=" left">lease {{.LeaseSecs}}s left</span>{{else if and (eq .State "failed") .RetryScheduled}}<span class="sb-trow__sub sb-trow__sub--retry" data-sb-countdown data-sb-deadline="{{.RetryDeadlineMS}}" data-sb-prefix="↻ retry " data-sb-expired="↻ re-queuing…">↻ retry {{.RetrySecs}}s</span>{{else if eq .State "failed"}}<span class="sb-trow__sub">{{.Attempt}}/{{.MaxAttempts}} attempts</span>{{end}}</td>
+  <td><span class="sb-status sb-status--{{.State}}" data-sb-state="{{.State}}"><span class="sb-status__dot" aria-hidden="true"></span>{{.State}}</span>{{if and (eq .State "claimed") .HasLease}}<span class="sb-trow__sub" data-sb-countdown data-sb-deadline="{{.LeaseDeadlineMS}}" data-sb-suffix=" left">lease {{.LeaseSecs}}s left</span>{{else if and (eq .State "failed") .RetryScheduled}}<span class="sb-trow__sub sb-trow__sub--retry" data-sb-countdown data-sb-deadline="{{.RetryDeadlineMS}}" data-sb-prefix="↻ retry " data-sb-expired="↻ re-queuing…">↻ retry {{.RetrySecs}}s</span>{{else if eq .State "failed"}}<span class="sb-trow__sub">{{.Attempt}}/{{.MaxAttempts}} attempts</span>{{else if and (eq .State "blocked") .WaitingOn}}<span class="sb-trow__sub" data-sb-blockers>{{.WaitingOn}}</span>{{end}}</td>
   <td class="sb-mono">{{if .OwnerLabel}}{{.OwnerLabel}}{{else}}—{{end}}</td>
   <td class="sb-trow__age">{{reltime .CreatedAt}}</td>
   <td class="sb-trow__act">{{if .Held}}<span class="sb-muted" data-sb-held>held</span>{{else if eq .State "pending"}}<button type="button" class="sb-btn sb-btn--mono sb-btn--claim" hx-post="/todos/{{.ID}}/claim" hx-target="closest tr" hx-swap="outerHTML">Claim</button>{{else if eq .State "claimed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/complete" hx-target="closest tr" hx-swap="outerHTML">Complete</button>{{else if eq .State "failed"}}<button type="button" class="sb-btn sb-btn--mono" hx-post="/todos/{{.ID}}/retry" hx-target="closest tr" hx-swap="outerHTML">Retry</button>{{else}}<span class="sb-muted">—</span>{{end}}</td>
@@ -131,6 +133,12 @@
   </div>
   {{else if eq .Row.State "failed"}}
   <div class="sb-callout sb-callout--danger">Dead-lettered after {{.Row.Attempt}}/{{.Row.MaxAttempts}} attempts. Retry re-queues it with a fresh attempt budget.</div>
+  {{end}}
+  {{if eq .Row.State "blocked"}}
+  {{/* Issue-dependency hold (ADR-0055): the todo exists and is visible but is deliberately
+       unclaimable while its tracker issue has open blockers. No Claim button, no doorbell — it
+       reaches the queue on its own when the last blocker closes. */}}
+  <div class="sb-callout" data-sb-blockers>{{if .Row.WaitingOn}}{{.Row.WaitingOn}}{{else}}waiting on blockers{{end}} · it enters the queue by itself when every blocker closes</div>
   {{end}}
   <dl class="sb-meta">
     <div class="sb-meta__cell"><dt>trust</dt><dd><span class="sb-badge sb-badge--{{.Row.TrustMode}}" data-sb-trust="{{.Row.TrustMode}}" title="{{trustdef .Row.TrustMode}}">{{.Row.TrustMode}}</span></dd></div>

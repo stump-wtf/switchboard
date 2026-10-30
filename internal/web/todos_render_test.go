@@ -444,7 +444,7 @@ func TestTodoRowCarriesSourceTag(t *testing.T) {
 // Token System" (trust/state as first-class vocabulary).
 func TestTodoRowStampsTrustAndState(t *testing.T) {
 	h := newTestHandler(t)
-	for _, state := range []string{"pending", "claimed", "done", "failed"} {
+	for _, state := range []string{"pending", "claimed", "done", "failed", "blocked"} {
 		out, err := h.renderFragment("todo_row", rowFixture(state))
 		if err != nil {
 			t.Fatalf("render todo_row(%s): %v", state, err)
@@ -463,12 +463,12 @@ func TestTodoRowStampsTrustAndState(t *testing.T) {
 }
 
 // TestTodoPillsActiveStateAcrossFilters rounds out the filter-chip coverage: every one of the
-// five chips (all/pending/claimed/done/failed) becomes the single active chip for its filter,
-// with aria-selected="true" and its canonical data-sb-filter stamp. todos_test.go covers
+// seven chips (all/pending/claimed/done/failed/dead/blocked) becomes the single active chip for its
+// filter, with aria-selected="true" and its canonical data-sb-filter stamp. todos_test.go covers
 // all/failed; this covers the rest, including done which no other test exercises.
 func TestTodoPillsActiveStateAcrossFilters(t *testing.T) {
 	h := newTestHandler(t)
-	for _, filter := range []string{"all", "pending", "claimed", "done", "failed"} {
+	for _, filter := range []string{"all", "pending", "claimed", "done", "failed", "dead", "blocked"} {
 		out, err := h.renderFragment("todo_pills", panelView{Filter: filter, Counts: store.TodoCounts{}})
 		if err != nil {
 			t.Fatalf("render todo_pills(%s): %v", filter, err)
