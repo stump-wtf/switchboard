@@ -125,8 +125,8 @@ stalled-or-quiet verdict per queue, plus the leases outstanding on it), `pause_q
 grant and no consumer verb implies it, so a worker credential cannot reach any of it; name the verbs
 individually if the supervisor should read without being able to change anything (`--verbs
 queue_stats`). Pause, drain and resume are the same per-queue pause the Board sets
-([ADR-0048](/adrs/ADR-0048-per-queue-pause)), and every state-changing call writes an audit line
-naming who acted and why. See [ADR-0056](/adrs/ADR-0056-operator-queue-supervision-over-mcp).
+([ADR-0048](/decisions/ADR-0048-per-queue-pause)), and every state-changing call writes an audit line
+naming who acted and why. See [ADR-0056](/decisions/ADR-0056-operator-queue-supervision-over-mcp).
 
 ## Changing an endpoint's default lease
 
