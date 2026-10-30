@@ -109,6 +109,25 @@ whole seconds, from 60 to 86400; without it the server default (300 seconds) app
 switchboard endpoint vend pr-reviewer --queue reviews --lease-ttl 1h
 ```
 
+## Vending a queue supervisor
+
+A worker endpoint carries the drain verbs. An endpoint that is meant to *watch* a queue — the one a
+pipeline owner points at a dashboard, or that an upgrade run uses to quiesce a lane — needs the
+operator family named out loud, because nothing grants it by default:
+
+```
+switchboard endpoint vend queue-watcher --queue inbox --verbs queue-operator
+```
+
+That is `queue_stats` (depth by state, the age of the oldest pending row, the pause state and a
+stalled-or-quiet verdict per queue, plus the leases outstanding on it), `pause_queue`,
+`resume_queue`, `drain_queue`, `requeue_todo` and `release_lease`. The family is never in the default
+grant and no consumer verb implies it, so a worker credential cannot reach any of it; name the verbs
+individually if the supervisor should read without being able to change anything (`--verbs
+queue_stats`). Pause, drain and resume are the same per-queue pause the Board sets
+([ADR-0048](/adrs/ADR-0048-per-queue-pause)), and every state-changing call writes an audit line
+naming who acted and why. See [ADR-0056](/adrs/ADR-0056-operator-queue-supervision-over-mcp).
+
 ## Changing an endpoint's default lease
 
 ```

@@ -84,6 +84,53 @@ func NotifyHookVerbs() []string {
 	return []string{"create_notify_hook", "list_notify_hooks", "rotate_notify_hook", "delete_notify_hook"}
 }
 
+// QueueReadVerbs returns the read half of the operator queue-supervision surface in display order:
+// the one call that answers "is this queue stalled or just quiet", with the leases outstanding on
+// it. It is NOT part of AllVerbs and no consumer verb implies it: an endpoint holds it only when a
+// vend names it or its preset, which is what keeps a worker credential from reading the whole
+// lane's health while it cannot touch its state. Governing: ADR-0056.
+func QueueReadVerbs() []string { return []string{"queue_stats"} }
+
+// QueueControlVerbs returns the state-changing half of the same surface in display order: quiesce a
+// queue, wake its backlog, quiesce and wait for the leases to land, retry a dead letter, and take
+// over a lease whose holder is gone. It is NOT part of AllVerbs, no default grant, and nothing
+// implies it, because every verb in it changes state another endpoint's worker is relying on.
+// A pause, a resume and a drain are the same ADR-0048 switch, three verbs deep; a requeue is the
+// Board's "Retry now"; a lease release is the Board's "Release". Governing: ADR-0056, ADR-0048.
+func QueueControlVerbs() []string {
+	return []string{"pause_queue", "resume_queue", "drain_queue", "requeue_todo", "release_lease"}
+}
+
+// QueueOperatorVerbs returns the whole operator supervision surface, read verbs first, in display
+// order. It is a contiguous slice of VerbOrder so the vend CLI and the audit view can name the
+// family without carrying a copy of the verb list. Governing: ADR-0056, ADR-0047.
+func QueueOperatorVerbs() []string {
+	return append(append([]string{}, QueueReadVerbs()...), QueueControlVerbs()...)
+}
+
+// QueueOperatorVerbsIn returns the verbs of a grant that belong to the operator supervision family,
+// in canonical order: what an audit view lists when it flags an endpoint that can supervise a queue
+// it does not consume. Governing: ADR-0056.
+func QueueOperatorVerbsIn(grant []string) []string {
+	family := QueueOperatorVerbs()
+	held := make([]string, 0, len(family))
+	for _, v := range VerbOrder() {
+		if slices.Contains(family, v) && slices.ContainsFunc(grant, func(g string) bool {
+			return strings.EqualFold(g, v)
+		}) {
+			held = append(held, v)
+		}
+	}
+	return held
+}
+
+// GrantHasQueueOperator reports whether a grant holds any verb from the operator supervision family,
+// so the vend reveal can warn that this endpoint supervises queues rather than only working them.
+// Governing: ADR-0056.
+func GrantHasQueueOperator(grant []string) bool {
+	return len(QueueOperatorVerbsIn(grant)) > 0
+}
+
 // AllVerbs returns the default-grantable verb set: every drain, webhook, event and lease verb
 // concatenated in display order. The notify-hook verbs are grantable too but never by default, so
 // they are listed separately (NotifyHookVerbs) and never folded in here. Call sites that need the composed grant (the vend wizard's
@@ -103,6 +150,7 @@ var VendPresets = []struct {
 }{
 	{"todo", DrainVerbs()},
 	{"webhook-admin", WebhookAdminVerbs()},
+	{"queue-operator", QueueOperatorVerbs()},
 	{"all", AllVerbs()},
 }
 
@@ -118,10 +166,12 @@ func DefaultVendVerbs() []string {
 	return append(append([]string{}, DrainVerbs()...), LeaseVerbs()...)
 }
 
-// VerbOrder returns every grantable verb in canonical display order, notify-hook verbs last: the
-// order a resolved grant is stored and printed in, whatever order the operator typed them in.
+// VerbOrder returns every grantable verb in canonical display order, operator supervision verbs
+// before the notify-hook verbs last: the order a resolved grant is stored and printed in, whatever
+// order the operator typed them in.
 func VerbOrder() []string {
-	return append(append([]string{}, AllVerbs()...), NotifyHookVerbs()...)
+	out := append(append([]string{}, AllVerbs()...), QueueOperatorVerbs()...)
+	return append(out, NotifyHookVerbs()...)
 }
 
 // VendVerbGrant resolves a vend verb spec into the grant to store. A spec that names nothing — absent,
