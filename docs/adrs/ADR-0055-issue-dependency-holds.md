@@ -8,8 +8,9 @@ related: [ADR-0012, ADR-0022, ADR-0037, ADR-0048, ADR-0050, ADR-0052, ADR-0053]
 
 # ADR-0055: Issue-Dependency Holds — A Todo Whose Issue Is Blocked Is Visible But Unclaimable
 
-**Status note:** this ADR is **proposed**. Decisions 1-4 and 6-7 ship with working code in the same pull
-request (stump.wtf/switchboard#583) so the choices can be argued against an implementation; Decision 5
+**Status note:** this ADR is **proposed**. Decisions 1-4 and 6-7 ship with working code in this pull
+request (#624, closing stump.wtf/switchboard#583) so the choices can be argued against an
+implementation; Decision 5
 deliberately deviates from what the originating report asked for, and that deviation is stated in the open
 below rather than buried in a call site. Nothing here is settled until Joe accepts it, and the requirement
 text it implies is listed under Consequences rather than applied to SPEC-0003 or SPEC-0013.
