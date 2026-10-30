@@ -350,6 +350,16 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Issue dependencies: a delivery whose issue names open blockers mints a hold instead of work, and
+	// a delivery that closes an issue releases whatever was waiting behind it (dependencies.go). A
+	// delivery that mints nothing — quarantined, dropped, or refused for a routing fault — asks nothing:
+	// there is no todo to hold, and the close release is deliberately still done for a closed issue
+	// because the dependents waiting on it are a separate row each.
+	var depHold hold
+	if reason == "" && !decision.Drop && !decision.Faulted && !decision.Unavailable {
+		depHold = i.dependencyVerdict(r.Context(), wh.ID, body)
+	}
+
 	// Governing: SPEC-0002/0004 REQ atomic ingestion, generalized to N targets (ADR-0022) — the
 	// event and ALL of its per-target todos commit in one transaction, so a fan-out is never
 	// partial. Every target's todo carries the SAME idempotency key this receiver computed,
@@ -373,6 +383,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			Payload: body, IdempotencyKey: key, RoutingTrace: trace,
 			OnceKey: onceKey, WorkOrder: workOrder,
 			QuarantineReason: reason, QuarantineDetail: detail,
+			IssueRef: depHold.issueRef, Blockers: depHold.blockers,
 		})
 	if err != nil {
 		stage := stageRoute
@@ -477,7 +488,7 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 
 	// Response body (SPEC-0001): a delivery now yields N todos, so the payload reports the set.
 	//
-	//	{"todos": [{"id":…, "endpoint_id":…, "queue":…, "created": true|false}, …],
+	//	{"todos": [{"id":…, "endpoint_id":…, "queue":…, "created": true|false, "state": "pending"|"blocked"}, …],
 	//	 "created": <count of newly-minted todos>,
 	//	 "id": …, "queue": …,            // the first target's todo — retained for compatibility
 	//	 "verified": …, "trust_mode": …}
@@ -496,12 +507,16 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 			newTodos++
 			// Hub fan-out is endpoint-scoped (ADR-0022); publishing per-todo hands each target's
 			// subscribers only their own row. Redeliveries are skipped: an already-live todo is not
-			// news, and ringing again would double-count on the board.
-			i.hub.Publish(ct.Todo)
+			// news, and ringing again would double-count on the board. A held todo is skipped too:
+			// this hub is the agent-facing doorbell, and work nobody may start yet rings nothing
+			// (ADR-0055, the same rule store.fireDoorbell enforces on the other wake path).
+			if ct.Todo.State != store.StateBlocked {
+				i.hub.Publish(ct.Todo)
+			}
 		}
 		items = append(items, map[string]any{
 			"id": ct.Todo.ID, "endpoint_id": ct.Todo.EndpointID,
-			"queue": ct.Todo.Queue, "created": ct.New,
+			"queue": ct.Todo.Queue, "created": ct.New, "state": ct.Todo.State,
 		})
 	}
 	if newTodos == 0 {

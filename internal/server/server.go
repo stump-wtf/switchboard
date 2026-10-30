@@ -22,6 +22,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/config"
 	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/db"
+	"github.com/stump-wtf/switchboard/internal/deps"
 	"github.com/stump-wtf/switchboard/internal/ingest"
 	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
 	"github.com/stump-wtf/switchboard/internal/metrics"
@@ -177,6 +178,17 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// received lane renders the moment of verification live. SSE-only; nothing new is persisted,
 	// and the SPEC-0001 rejection doctrine is unchanged.
 	ing.SetInstrument(webh)
+
+	// Issue-dependency holds (issue #583): intake asks the tracker whether the issue a delivery is
+	// about waits on any open issue, and a delivery that closes an issue releases whatever was waiting
+	// behind it. The read goes through each webhook's own stored connection (an address and a
+	// read-only credential its owner configured, never anything the payload names), and every unknown
+	// answer fails open: an instance with no connection wired holds nothing and behaves as it did
+	// before. The sweep below is the safety net for what no webhook announces — a dependency link
+	// added or removed, or a blocker reopened after its dependent was released.
+	depChecker := deps.New(st, log, deps.Config{}, deps.NewResolver(st))
+	ing.SetDependencyGate(depChecker)
+	go recheckDependents(ctx, depChecker, depChecker.RecheckInterval(), log)
 
 	// Prometheus metrics (SPEC-0023, ADR-0028): one dedicated registry for the process. The store
 	// and the ingest receivers increment their lifecycle and routing counters inline, after commit,

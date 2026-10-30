@@ -92,6 +92,9 @@ type Ingest struct {
 	// tokenIndex attributes a throttled (429) delivery to the webhook its URL names
 	// (rejects.go). Bounded in memory; never read from the database.
 	tokenIndex *tokenIndex
+	// deps answers what a delivery's issue is waiting on, and releases what its close unblocks
+	// (dependencies.go). Nil on an instance with no provider connection wired: nothing is ever held.
+	deps DependencyGate
 }
 
 // Config carries the ingestion settings that are not per-tenant. Nothing else is configured here:
