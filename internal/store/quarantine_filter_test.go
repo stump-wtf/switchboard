@@ -80,6 +80,22 @@ func (f heldFixture) seedHeld(t *testing.T, state string) string {
 	return id
 }
 
+// seedBlockedHold forces a quarantine row into the shape the dependency-hold verbs see — state
+// blocked, issue_ref set, one open blocker whose last check is an hour old (stale, so sweep
+// candidates include it) — which intake can never write: a quarantined delivery is refused before
+// the hold gate runs. The exercises below use it to force the dependency queries to do their own
+// excluding rather than trusting the shape to be unreachable. Governing: ADR-0055, SPEC-0026.
+func (f heldFixture) seedBlockedHold(t *testing.T, todoID, ref, owner, repo string, number int) {
+	t.Helper()
+	if _, err := f.s.pool.Exec(f.ctx, `UPDATE todos SET state = 'blocked', issue_ref = $2 WHERE id = $1`, todoID, ref); err != nil {
+		t.Fatalf("force blocked: %v", err)
+	}
+	if _, err := f.s.pool.Exec(f.ctx, `INSERT INTO todo_blockers (todo_id, owner, repo, number, state, checked_at)
+		VALUES ($1, $2, $3, $4, 'open', now() - interval '1 hour')`, todoID, owner, repo, number); err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+}
+
 func (f heldFixture) rowState(t *testing.T, id string) string {
 	t.Helper()
 	var queue, state, owner string
@@ -370,6 +386,79 @@ func TestQuarantineDefaultFilterCoversEveryTodoMethod(t *testing.T) {
 				return fmt.Errorf("ResumeTodo resumed the held todo")
 			}
 			return unchanged(t, f, id, "quarantine/input-required/w")
+		},
+		"HoldTodo": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			if _, err := s.HoldTodo(ctx, id, "octo/repo#1", []BlockerRef{{Owner: "octo", Repo: "repo", Number: 7, State: "open"}}); err == nil {
+				return fmt.Errorf("HoldTodo held a quarantine row")
+			}
+			return unchanged(t, f, id, "quarantine/pending/")
+		},
+		"ReleaseHeldTodo": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			f.seedBlockedHold(t, id, "octo/repo#2", "octo", "repo", 7)
+			if _, err := s.ReleaseHeldTodo(ctx, id); !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("ReleaseHeldTodo = %v, want not found", err)
+			}
+			return unchanged(t, f, id, "quarantine/blocked/")
+		},
+		"HeldTodoForIssue": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			f.seedBlockedHold(t, id, "octo/repo#3", "octo", "repo", 7)
+			if _, found, err := s.HeldTodoForIssue(ctx, ep, QueueQuarantine, "octo/repo#3"); err != nil || found {
+				return fmt.Errorf("HeldTodoForIssue found the held quarantine row (%v)", err)
+			}
+			return nil
+		},
+		"BlockersForTodos": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			f.seedBlockedHold(t, id, "octo/repo#4", "octo", "repo", 7)
+			byID, err := s.BlockersForTodos(ctx, []string{id})
+			if err != nil {
+				return err
+			}
+			if len(byID[id]) != 0 {
+				return fmt.Errorf("BlockersForTodos reported refs for a quarantine row: %+v", byID[id])
+			}
+			return nil
+		},
+		"MarkBlockerState": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			f.seedBlockedHold(t, id, "octo/repo#5", "octo", "mark", 9)
+			released, err := s.MarkBlockerState(ctx, "octo", "mark", 9, "closed")
+			if err != nil {
+				return err
+			}
+			if containsTodo(released, id) {
+				return fmt.Errorf("MarkBlockerState released a quarantine row")
+			}
+			return unchanged(t, f, id, "quarantine/blocked/")
+		},
+		"HeldTodosDependingOn": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			f.seedBlockedHold(t, id, "octo/repo#6", "octo", "dep", 4)
+			got, err := s.HeldTodosDependingOn(ctx, "octo", "dep", 4)
+			if err != nil {
+				return err
+			}
+			if containsTodo(got, id) {
+				return fmt.Errorf("HeldTodosDependingOn named a quarantine row")
+			}
+			return nil
+		},
+		"TodosWithHolds": func(t *testing.T) error {
+			id := f.seedHeld(t, "pending")
+			f.seedBlockedHold(t, id, "octo/repo#7", "octo", "sweep", 5)
+			got, err := s.TodosWithHolds(ctx, time.Minute, 50)
+			if err != nil {
+				return err
+			}
+			for _, tw := range got {
+				if tw.Todo.ID == id {
+					return fmt.Errorf("TodosWithHolds offered a quarantine row to the re-check sweep")
+				}
+			}
+			return nil
 		},
 	}
 
