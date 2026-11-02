@@ -5,7 +5,8 @@ package routing
 // to the same org events, so without it every PR review request reaches both — and on 2026-09-11 a
 // joestump pool worker reviewed and merged joestump's own PRs that way. The pack delivers a review
 // request only to the pool of the identity actually requested, never lets a pool review its own
-// identity's PR, and leaves everything else (comments, issues) routing to the pool's target queue.
+// identity's PR, drops the delivery of the identity's own comment or review coming back to it, drops
+// assignment changes entirely, and leaves everything else routing to the pool's target queue.
 //
 // Governing: ADR-0025 (single executor, cross-identity review), ADR-0024.
 
@@ -80,7 +81,7 @@ func TestPoolReviewPack(t *testing.T) {
 		{"another identity's PR opened still reaches the pool", "joestump-agent", "gitea-pull-request-review-requested",
 			map[string]any{"action": "opened", "requested_reviewer": nil}, ""},
 		{"review feedback on your own PR still reaches you", "joestump", "gitea-pull-request-comment", nil, ""},
-		{"and reaches the reviewer's pool too", "joestump-agent", "gitea-pull-request-comment", nil, ""},
+		{"but the reviewer's own comment is not dispatched to its own pool", "joestump-agent", "gitea-pull-request-comment", nil, "own-echo"},
 		{"an issue event is untouched", "joestump", "gitea-issue-opened", nil, ""},
 		{"with no identity set, every review request fails closed", "", "gitea-pull-request-review-requested", forJoe, "review-request-not-for-me"},
 		{"with no identity set, a team request (no requested_reviewer) fails closed too", "", "gitea-pull-request-review-requested",
@@ -112,11 +113,37 @@ func TestPoolReviewPack(t *testing.T) {
 				"sender": map[string]any{"login": "joestump-agent"}}, ""},
 		{"with no identity set, review outcomes fail closed", "", "gitea-pull-request-approved", agentApproval, "review-outcome-not-my-pr"},
 
-		// Human and sibling-agent signal is never noise.
-		{"a human's PR comment always reaches the pool", "joestump", "gitea-pull-request-comment",
+		// Human and sibling-agent signal is never noise. A comment an identity posted itself is its own
+		// echo and is dropped by rule 6, so each of these is written from the other pool's side.
+		{"a human's PR comment always reaches the sibling's pool", "joestump-agent", "gitea-pull-request-comment",
 			map[string]any{"sender": map[string]any{"login": "joestump"}}, ""},
 		{"the sibling agent's PR comment always reaches the pool", "joestump", "gitea-pull-request-comment",
 			map[string]any{"sender": map[string]any{"login": "joestump-agent"}}, ""},
+
+		// Own echo. Both identities subscribe their pools to the same org events, so a comment or a
+		// review the identity posted arrives back on its own pool too: 92 of the 184 comment todos on
+		// the pools between 09-20 and 09-22 were exactly that (issue #439). The sibling still gets it.
+		{"an issue comment this identity posted is dropped on its own pool", "joestump", "gitea-issue-comment-created", nil, "own-echo"},
+		{"the same comment still reaches the sibling's pool", "joestump-agent", "gitea-issue-comment-created", nil, ""},
+		{"a PR comment this identity posted is dropped on its own pool", "joestump-agent", "gitea-pull-request-comment", nil, "own-echo"},
+		{"an approval this identity issued on its own PR is its own echo", "joestump", "gitea-pull-request-approved",
+			map[string]any{"sender": map[string]any{"login": "joestump"}}, "own-echo"},
+		// Nothing is "own" without an identity, so the rule drops nothing rather than everything.
+		{"with no identity set, a comment is nobody's echo and still routes", "", "gitea-issue-comment-created", nil, ""},
+
+		// An assignment is a claim, not a dispatch (stumpcloud/stumpcloud#466 decision D2). An
+		// interactive session claims an issue by assigning it, that delivery reached the assigned
+		// identity's pool, and a worker built the issue a second time while the session held it
+		// (harness#383/#384, switchboard#273). It drops on both pools, with or without an identity.
+		{"an issue assigned to this identity is not dispatch", "joestump", "gitea-issue-assigned", nil, "assignment-is-not-dispatch"},
+		{"the same assignment is dropped on the other pool too", "joestump-agent", "gitea-issue-assigned", nil, "assignment-is-not-dispatch"},
+		{"an unassignment is dropped too", "joestump", "gitea-issue-assigned", map[string]any{"action": "unassigned"}, "assignment-is-not-dispatch"},
+		{"a PR assignment is dropped on this pool", "joestump", "gitea-pull-request-assigned", nil, "assignment-is-not-dispatch"},
+		{"a PR unassignment is dropped on the other pool too", "joestump-agent", "gitea-pull-request-assigned",
+			map[string]any{"action": "unassigned"}, "assignment-is-not-dispatch"},
+		{"a GitHub assignment is dropped as well", "joestump", "github-issues-opened", map[string]any{"action": "assigned"}, "assignment-is-not-dispatch"},
+		{"with no identity set, an assignment still drops", "", "gitea-issue-assigned", nil, "assignment-is-not-dispatch"},
+		{"and an issue opened is still dispatched", "joestump", "gitea-issue-opened", nil, ""},
 	}
 	sb := testSandbox(t)
 	for _, c := range cases {

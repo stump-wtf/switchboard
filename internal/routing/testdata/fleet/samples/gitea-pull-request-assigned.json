@@ -1,0 +1,39 @@
+{
+  "source": "generic",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Gitea-Delivery": "1b8e3f47-5a29-4c60-b4d8-0e7f2a9c5d13",
+    "X-Gitea-Event": "pull_request",
+    "X-Gitea-Event-Type": "pull_request_assignee",
+    "X-Github-Delivery": "1b8e3f47-5a29-4c60-b4d8-0e7f2a9c5d13",
+    "X-Github-Event": "pull_request",
+    "X-Github-Event-Type": "pull_request_assignee"
+  },
+  "body": {
+    "action": "assigned",
+    "number": 306,
+    "pull_request": {
+      "id": 5120,
+      "url": "https://gitea.stump.rocks/stump.wtf/harness/pulls/306",
+      "number": 306,
+      "user": {"id": 2, "login": "joestump-agent", "username": "joestump-agent"},
+      "title": "fix(routing): stop the assignment echo on both pools",
+      "body": "Adds the assignment-is-not-dispatch rule to the pool pack.",
+      "labels": [],
+      "state": "open",
+      "draft": false,
+      "html_url": "https://gitea.stump.rocks/stump.wtf/harness/pulls/306",
+      "mergeable": true,
+      "merged": false,
+      "assignee": {"id": 1, "login": "joestump", "username": "joestump"},
+      "assignees": [{"id": 1, "login": "joestump", "username": "joestump"}],
+      "base": {"label": "main", "ref": "main"},
+      "head": {"label": "bug/assignment-echo", "ref": "bug/assignment-echo"}
+    },
+    "assignee": {"id": 1, "login": "joestump", "username": "joestump"},
+    "repository": {"id": 91, "name": "harness", "full_name": "stump.wtf/harness", "private": true},
+    "sender": {"id": 1, "login": "joestump", "username": "joestump"},
+    "commit_id": "",
+    "review": null
+  }
+}
