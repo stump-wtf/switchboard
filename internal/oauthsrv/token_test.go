@@ -103,6 +103,10 @@ func (f *fakeTokenStore) RotateOAuthToken(_ context.Context, refreshHash, client
 // unusedClientStore panics on any use: token-endpoint tests must never reach registration.
 type unusedClientStore struct{}
 
+func (unusedClientStore) OAuthClientByClientID(context.Context, string) (store.OAuthClient, error) {
+	panic("client lookup used in a token test")
+}
+
 func (unusedClientStore) CreateOAuthClient(context.Context, string, string, []string) (store.OAuthClient, error) {
 	panic("client store used in a token test")
 }

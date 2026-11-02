@@ -122,9 +122,11 @@ func (h *Handler) Token(w http.ResponseWriter, r *http.Request) {
 		h.exchangeCode(w, r)
 	case "refresh_token":
 		h.refreshGrant(w, r)
+	case DeviceGrantType:
+		h.deviceGrant(w, r)
 	default:
 		writeTokenError(w, http.StatusBadRequest, "unsupported_grant_type",
-			"grant_type must be authorization_code or refresh_token")
+			"grant_type must be authorization_code, refresh_token, or the device-code grant")
 	}
 }
 

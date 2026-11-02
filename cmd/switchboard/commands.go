@@ -33,6 +33,7 @@ func cmdLogin(c *cli, args []string) int {
 	fs := c.flagSet("login", "[URL]", "Sign in to a switchboard deployment over OAuth (opens your browser).\n"+
 		"The URL may also come from $SWITCHBOARD_URL, or from the saved credentials when logging in again.")
 	noBrowser := fs.Bool("no-browser", false, "print the login URL instead of opening a browser")
+	device := fs.Bool("device", false, "sign in from a headless machine: show a code, approve it on any other device (RFC 8628)")
 	pos, exit, ok := c.parseArgs(fs, args)
 	if !ok {
 		return exit
@@ -60,11 +61,16 @@ func cmdLogin(c *cli, args []string) int {
 		return c.usageError(fs, err.Error())
 	}
 
-	opener := c.openBrowser
-	if *noBrowser {
-		opener = nil
+	var creds *credentials
+	if *device {
+		creds, err = c.loginDevice(context.Background(), base)
+	} else {
+		opener := c.openBrowser
+		if *noBrowser {
+			opener = nil
+		}
+		creds, err = c.login(context.Background(), base, opener)
 	}
-	creds, err := c.login(context.Background(), base, opener)
 	if err != nil {
 		return c.fail(err)
 	}

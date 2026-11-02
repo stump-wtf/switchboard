@@ -131,6 +131,12 @@ var sessionRoutes = map[string]bool{
 	// anonymous authorize request must land on /login (scenario "Human absent").
 	"GET /oauth/authorize":        true,
 	"POST /oauth/authorize":       true,
+	// Device-flow consent (RFC 8628, issue #308): the same shape as the authorize screen — the page
+	// and the decision POST are the flow's human gate, so both are session-gated, and an anonymous
+	// hit lands on /login (the scenario "Human absent" again). Nothing about the flow can hand a
+	// URL to the device, which is why it polls the token endpoint instead.
+	"GET /oauth/device":  true,
+	"POST /oauth/device": true,
 	"GET /endpoints/{id}/revoke":  true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
 	"POST /endpoints/{id}/revoke": true,
 	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)
@@ -206,6 +212,12 @@ var publicRoutes = map[string]bool{
 	// secret), so the proof is PKCE possession on the code grant and the rotating refresh token on
 	// the refresh grant (SPEC-0016 REQ "Token Issuance And Refresh") — never a session.
 	"POST /oauth/token": true,
+	// The device-authorization endpoint (RFC 8628, issue #308) is public like the rest of the AS
+	// surface: it mints only a PENDING request bound to a registered client — no principal, no
+	// grant — and the human gate is the session-guarded consent screen above, never here. Unknown
+	// clients and off-target resource indicators are refused, and the body is bounded like a token
+	// request.
+	"POST /oauth/device_authorization": true,
 	// A2A friend-request intake authenticates by the requesting human's OIDC-signed provenance
 	// carried IN-BAND (ADR-0010/0011; SPEC-0010), not via a session cookie or bearer header —
 	// missing/invalid provenance → 401 with no pending edge. Not "ungoverned public": it is

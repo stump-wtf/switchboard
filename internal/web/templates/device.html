@@ -1,0 +1,82 @@
+{{define "content"}}
+{{/* The device-authorization consent page (RFC 8628, issue #308): a signed-in human either types
+     the short code a headless CLI printed, decides on a request that code names, or reads the
+     finished state. Same SPEC-0015 wizard pattern as the authorize screen — plain method=post
+     forms, no JS required — and the same html/template escaping boundary: the client name is
+     registered (attacker-supplied) data. Nothing here redirects to the client; the device flow's
+     client cannot receive a callback, so it learns the outcome by polling the token endpoint.
+     Governing: ADR-0019, ADR-0023. */}}
+{{$d := .Device}}
+<div class="sb-page-head">
+  <div>
+    <h1 class="sb-page-title">mcp · oauth</h1>
+    <p class="sb-tagline">the device login the headless machine cannot finish alone</p>
+  </div>
+</div>
+
+{{if $d.Done}}
+<section class="sb-wiz sb-oauth" data-sb-device-done aria-label="Device request decided">
+  <p class="sb-callout">{{$d.Done}}</p>
+  {{if $d.Code}}<p class="sb-help sb-muted">code <code class="sb-code">{{$d.Code}}</code></p>{{end}}
+  <div class="sb-vend__foot">
+    <a class="sb-btn sb-btn--secondary" href="/endpoints">Back to endpoints</a>
+  </div>
+</section>
+{{else if and $d.Consent .Authorize}}
+{{$a := .Authorize}}
+<section class="sb-wiz sb-oauth" data-sb-device-consent aria-label="Authorize device">
+  <div class="sb-oauth__bars" aria-hidden="true"><span></span><span></span><span></span></div>
+  <h2 class="sb-oauth__title">authorize device</h2>
+  <p class="sb-oauth__ask"><strong data-sb-oauth-client>{{$a.ClientName}}</strong> wants to act as you on
+    your switchboard workspace</p>
+  <p class="sb-oauth__principal" data-sb-oauth-principal>
+    <span class="sb-avatar sb-oauth__avatar" aria-hidden="true">{{$a.Initials}}</span>
+    <span>{{$a.Principal}}</span>
+  </p>
+
+  <dl class="sb-wiz__summary sb-oauth__binding">
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Workspace</dt><dd data-sb-oauth-workspace>{{$a.Workspace}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Grant</dt><dd data-sb-oauth-endpoint>operator · {{$a.Principal}}</dd></div>
+    <div class="sb-epcard__row"><dt class="sb-microlabel">Code</dt><dd><code class="sb-code" data-sb-device-code>{{$d.Code}}</code></dd></div>
+  </dl>
+
+  <div class="sb-oauth__scope" data-sb-oauth-scope>
+    <p class="sb-microlabel">this will allow the client to</p>
+    <ul class="sb-oauth__bullets">
+      {{range $a.Bullets}}<li class="sb-oauth__bullet" data-sb-oauth-bullet><span class="sb-oauth__check" aria-hidden="true">✓</span> {{.}}</li>{{end}}
+    </ul>
+  </div>
+
+  {{/* The POST re-resolves the code against the store before recording anything, so this hidden
+     value is convenience, never trust — and the lookup runs the entry rate limiter again. */}}
+  <form method="post" action="/oauth/device" class="sb-oauth__form" data-sb-device-form>
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <input type="hidden" name="user_code" value="{{$d.Code}}">
+    <div class="sb-vend__foot">
+      <button type="submit" name="decision" value="deny" class="sb-btn sb-btn--secondary" data-sb-device-deny>Deny</button>
+      <button type="submit" name="decision" value="approve" class="sb-btn sb-btn--mono" data-sb-device-approve>Authorize device →</button>
+    </div>
+  </form>
+
+  <p class="sb-oauth__foot sb-muted">this grants the operator API only · revoke anytime in <a href="/endpoints">endpoints</a></p>
+</section>
+{{else}}
+<section class="sb-wiz sb-oauth" data-sb-device-entry aria-label="Enter device code">
+  <div class="sb-oauth__bars" aria-hidden="true"><span></span><span></span><span></span></div>
+  <h2 class="sb-oauth__title">enter your code</h2>
+  <p class="sb-oauth__ask">type the code your device is showing to sign that device in as you.</p>
+  {{if $d.Error}}<p class="sb-callout sb-callout--danger" role="alert">{{$d.Error}}</p>{{end}}
+  <form method="get" action="/oauth/device" class="sb-oauth__form" data-sb-device-entry-form>
+    <label class="sb-label" for="device-user-code">Device code</label>
+    <input class="sb-input" id="device-user-code" name="user_code" value="{{$d.Code}}"
+           autocomplete="off" autocapitalize="characters" spellcheck="false"
+           pattern="[A-Za-z0-9 \-]{4,12}" maxlength="12" data-sb-device-input required>
+    <p class="sb-help sb-muted">eight characters, dashes optional</p>
+    <div class="sb-vend__foot">
+      <button type="submit" class="sb-btn sb-btn--mono" data-sb-device-continue>Continue →</button>
+    </div>
+  </form>
+  <p class="sb-oauth__foot sb-muted">nothing is granted until you approve on the next screen</p>
+</section>
+{{end}}
+{{end}}

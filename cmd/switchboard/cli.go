@@ -70,6 +70,9 @@ type cli struct {
 	now            func() time.Time
 	// loginTimeout bounds the wait for the browser to come back with the authorization code.
 	loginTimeout time.Duration
+	// sleep waits between device-flow polls; the edge tests replace it so the poll loop runs at
+	// test speed against the same state machine.
+	sleep func(ctx context.Context, d time.Duration) error
 	// readFile resolves a --payload @file argument; an injected edge like the rest, so tests
 	// exercise the verb without touching the real filesystem.
 	readFile func(name string) ([]byte, error)
@@ -91,6 +94,7 @@ func newCLI() *cli {
 		serve:        runServe,
 		now:          time.Now,
 		loginTimeout: 5 * time.Minute,
+		sleep:        sleepCtx,
 		readFile:     os.ReadFile,
 
 		verbUsage: map[*flag.FlagSet]verbUsage{},

@@ -358,8 +358,9 @@ func principalLabel(human *store.Human) string {
 // OperatorResourcePath is the path suffix of the RFC 8707 resource indicator that requests an
 // OPERATOR grant: an OAuth token that acts AS the signed-in human (register agents, vend
 // endpoints) rather than a credential onto one vended endpoint. The CLI and the /api/v1 surface
-// are its only consumers (ADR-0023).
-const OperatorResourcePath = "/api"
+// are its only consumers (ADR-0023). It lives in internal/oauthsrv so the AS surface and the
+// consent screen can never drift apart on what "the operator resource" is.
+const OperatorResourcePath = oauthsrv.OperatorResourcePath
 
 // authorizeScopeBullets derives the consent screen's capability bullets: the operator scope for an
 // operator grant, the bound endpoint's stored scope otherwise (via scopeBullets).

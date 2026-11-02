@@ -42,6 +42,15 @@ func (f *fakeClientStore) CreateOAuthClient(_ context.Context, clientID, name st
 	return c, nil
 }
 
+func (f *fakeClientStore) OAuthClientByClientID(_ context.Context, clientID string) (store.OAuthClient, error) {
+	for _, c := range f.clients {
+		if c.ClientID == clientID {
+			return c, nil
+		}
+	}
+	return store.OAuthClient{}, store.ErrNotFound
+}
+
 // unusedTokenStore panics on any use: registration/metadata tests must never reach token storage.
 type unusedTokenStore struct{}
 
@@ -103,6 +112,8 @@ func TestASMetadata(t *testing.T) {
 		"authorization_endpoint": testBase + "/oauth/authorize",
 		"token_endpoint":         testBase + "/oauth/token",
 		"registration_endpoint":  testBase + "/oauth/register",
+
+		"device_authorization_endpoint": testBase + DeviceAuthorizationPath,
 	}
 	for k, want := range wantStrings {
 		if got, _ := doc[k].(string); got != want {
@@ -111,7 +122,7 @@ func TestASMetadata(t *testing.T) {
 	}
 	wantLists := map[string][]string{
 		"response_types_supported":              {"code"},
-		"grant_types_supported":                 {"authorization_code", "refresh_token"},
+		"grant_types_supported":                 {"authorization_code", "refresh_token", DeviceGrantType},
 		"code_challenge_methods_supported":      {"S256"},
 		"token_endpoint_auth_methods_supported": {"none"},
 	}

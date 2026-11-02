@@ -36,7 +36,7 @@ var tmplFS embed.FS
 // Startup parses every one of them.
 // Governing: SPEC-0012 REQ "Server-Rendered Pages from Embedded Templates", SPEC-0015 REQ
 // "Application Shell And Navigation" (providers joins the IA).
-var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "quickvend", "revoke", "hook_delete", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "authorize", "quarantine"}
+var pageNames = []string{"home", "login", "board", "todos", "todo", "endpoints", "vend", "quickvend", "revoke", "hook_delete", "personas", "personawiz", "friends", "friend_approve", "friend_revoke", "authorize", "device", "quarantine"}
 
 // operatorLeaseTTL is the visibility lease granted when the operator claims from the Board —
 // the same default agents get (internal/mcp defaultLeaseTTL). Governing: SPEC-0003 lease.
@@ -227,6 +227,10 @@ type view struct {
 	// OAuth consent screen (SPEC-0016 REQ "Authorization Code Flow With Consent"): the
 	// "authorize access" surface (templates/authorize.html) or its dead-end error state.
 	Authorize *authorizeView
+
+	// Device-authorization consent (RFC 8628, issue #308): the user-code entry / consent /
+	// finished page (templates/device.html).
+	Device *deviceEntryView
 
 	// Friends view + approval flow (SPEC-0015 REQ "Friends View And Approval Flow").
 	FriendGroups []friendGroup // ordered sections: pending-in-your-queue / awaiting-them / established / blocked

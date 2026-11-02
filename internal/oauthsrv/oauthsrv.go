@@ -47,6 +47,12 @@ const (
 	// TokenPath is served by Handler.Token (token.go). Both are advertised in the AS metadata.
 	AuthorizePath = "/oauth/authorize"
 	TokenPath     = "/oauth/token"
+	// OperatorResourcePath is the path suffix of the RFC 8707 resource indicator that requests an
+	// OPERATOR grant: an OAuth token that acts AS the signed-in human (register agents, vend
+	// endpoints) rather than a credential onto one vended endpoint. The CLI and the /api/v1 surface
+	// are its only consumers (ADR-0023); the device flow (issue #308) is bound to it and cannot
+	// name any other resource.
+	OperatorResourcePath = "/api"
 )
 
 // Registration input bounds (SPEC-0016 "Security Requirements → Input Validation"): an MCP client
@@ -62,6 +68,7 @@ const (
 // tests substitute a fake.
 type ClientStore interface {
 	CreateOAuthClient(ctx context.Context, clientID, name string, redirectURIs []string) (store.OAuthClient, error)
+	OAuthClientByClientID(ctx context.Context, clientID string) (store.OAuthClient, error)
 }
 
 // Store is everything the AS surface needs from the store: client registration (this file) plus
@@ -123,7 +130,8 @@ func (h *Handler) ASMetadata(w http.ResponseWriter, r *http.Request) {
 		"registration_endpoint":                 h.base + RegisterPath,
 		"response_types_supported":              []string{"code"},
 		"response_modes_supported":              []string{"query"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token", DeviceGrantType},
+		"device_authorization_endpoint":         h.base + DeviceAuthorizationPath,
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
 	})
@@ -191,7 +199,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, g := range req.GrantTypes {
-		if g != "authorization_code" && g != "refresh_token" {
+		if g != "authorization_code" && g != "refresh_token" && g != DeviceGrantType {
 			writeRegisterError(w, "invalid_client_metadata", "unsupported grant_type "+quote(g))
 			return
 		}

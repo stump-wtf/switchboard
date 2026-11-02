@@ -107,7 +107,8 @@ func newDBRouterFullDeps(t *testing.T, mutate func(*routerDeps)) (chi.Router, *s
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		`TRUNCATE humans, agents, endpoints, todos, events, sessions, oauth_clients RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE humans, agents, endpoints, todos, events, sessions, oauth_clients,
+		        oauth_device_codes, oauth_device_entry_attempts RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	// A fixed test key, so store paths that refuse to hold a secret in plaintext (notify hooks,

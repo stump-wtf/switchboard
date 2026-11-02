@@ -32,10 +32,11 @@ import (
 
 // asMetadata is the RFC 8414 subset the CLI needs.
 type asMetadata struct {
-	Issuer                string `json:"issuer"`
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
-	RegistrationEndpoint  string `json:"registration_endpoint"`
+	Issuer                      string `json:"issuer"`
+	AuthorizationEndpoint       string `json:"authorization_endpoint"`
+	TokenEndpoint               string `json:"token_endpoint"`
+	RegistrationEndpoint        string `json:"registration_endpoint"`
+	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
 }
 
 type tokenResponse struct {
@@ -238,39 +239,75 @@ func (c *cli) registerClient(ctx context.Context, registrationEndpoint, redirect
 	return out.ClientID, nil
 }
 
+// oauthError is the RFC 6749 §5.2 error document of a rejected token request. The device poll
+// loop reads the error code out of it (authorization_pending, slow_down, ...); every other caller
+// turns it into an error.
+type oauthError struct {
+	Code        string
+	Description string
+}
+
+func (e *oauthError) Error() string {
+	if e.Description != "" {
+		return fmt.Sprintf("token endpoint: %s (%s)", e.Code, e.Description)
+	}
+	return "token endpoint: " + e.Code
+}
+
 // postToken calls the token endpoint. A rejected request surfaces the server's RFC 6749 error
-// document (error + error_description) rather than a bare status.
-func (c *cli) postToken(ctx context.Context, endpoint string, form url.Values) (*tokenResponse, error) {
+// document as an *oauthError rather than a bare status, so callers that must branch on the error
+// code can, and everyone else gets a readable message.
+func (c *cli) postTokenRaw(ctx context.Context, endpoint string, form url.Values) (*tokenResponse, *oauthError, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("token endpoint: %w", err)
+		return nil, nil, fmt.Errorf("token endpoint: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode != http.StatusOK {
-		var e struct {
+		var doc struct {
 			Error       string `json:"error"`
 			Description string `json:"error_description"`
 		}
-		if json.Unmarshal(b, &e) == nil && e.Error != "" {
-			if e.Description != "" {
-				return nil, fmt.Errorf("token endpoint: %s (%s)", e.Error, e.Description)
-			}
-			return nil, fmt.Errorf("token endpoint: %s", e.Error)
+		if json.Unmarshal(b, &doc) == nil && doc.Error != "" {
+			return nil, &oauthError{Code: doc.Error, Description: doc.Description}, nil
 		}
-		return nil, fmt.Errorf("token endpoint: %s: %s", statusText(resp.StatusCode), strings.TrimSpace(string(b)))
+		return nil, nil, fmt.Errorf("token endpoint: %s: %s", statusText(resp.StatusCode), strings.TrimSpace(string(b)))
 	}
 	var out tokenResponse
 	if err := json.Unmarshal(b, &out); err != nil || out.AccessToken == "" {
-		return nil, errors.New("token endpoint: malformed response (no access_token)")
+		return nil, nil, errors.New("token endpoint: malformed response (no access_token)")
 	}
-	return &out, nil
+	return &out, nil, nil
+}
+
+func (c *cli) postToken(ctx context.Context, endpoint string, form url.Values) (*tokenResponse, error) {
+	tok, oerr, err := c.postTokenRaw(ctx, endpoint, form)
+	if err != nil {
+		return nil, err
+	}
+	if oerr != nil {
+		return nil, oerr
+	}
+	return tok, nil
+}
+
+// sleepCtx waits d unless ctx ends first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *cli) getJSON(ctx context.Context, rawurl string, out any) error {
@@ -305,4 +342,132 @@ func pkceVerifier() (string, error) { return randomString(96) }
 func pkceChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// loginDevice runs the RFC 8628 device flow: discover, register (the redirect URI stays part of
+// the registration even though the device flow never uses it — DCR requires one, and the same
+// client may later do a loopback login), start the request, print what a human needs on any other
+// device, and poll the token endpoint until the decision lands. The poll interval is the server's
+// (interval), and slow_down grows it by a second per hit, exactly as the RFC directs. The token
+// pair this returns is identical in kind to the loopback flow's — the same operator-bound grant
+// (ADR-0023), because the consent happens to the same human on the same consent screen.
+func (c *cli) loginDevice(ctx context.Context, base string) (*credentials, error) {
+	as, err := c.discover(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	deviceEndpoint := as.DeviceAuthorizationEndpoint
+	if deviceEndpoint == "" {
+		return nil, errors.New("login --device: the authorization server advertises no device_authorization_endpoint")
+	}
+	redirectURI, err := loopbackRedirectURI()
+	if err != nil {
+		return nil, fmt.Errorf("login --device: %w", err)
+	}
+	clientID, err := c.registerClient(ctx, as.RegistrationEndpoint, redirectURI)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, deviceEndpoint,
+		strings.NewReader(url.Values{"client_id": {clientID}, "resource": {base + "/api"}}.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("device authorization: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	var dev struct {
+		DeviceCode              string `json:"device_code"`
+		UserCode                string `json:"user_code"`
+		VerificationURI         string `json:"verification_uri"`
+		VerificationURIComplete string `json:"verification_uri_complete"`
+		ExpiresIn               int64  `json:"expires_in"`
+		Interval                int64  `json:"interval"`
+		Error                   string `json:"error"`
+		Description             string `json:"error_description"`
+	}
+	if err := json.Unmarshal(b, &dev); err != nil || dev.DeviceCode == "" {
+		if dev.Error != "" {
+			return nil, fmt.Errorf("device authorization: %s (%s)", dev.Error, dev.Description)
+		}
+		return nil, fmt.Errorf("device authorization: %s: %s", statusText(resp.StatusCode), strings.TrimSpace(string(b)))
+	}
+	interval := time.Duration(dev.Interval) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	expiry := time.Now().Add(time.Duration(dev.ExpiresIn) * time.Second)
+	if dev.ExpiresIn <= 0 {
+		expiry = time.Now().Add(10 * time.Minute)
+	}
+
+	fmt.Fprintln(c.stdout, "Sign in from any device:")
+	fmt.Fprintf(c.stdout, "\n  %s\n\n  code: %s\n\n", dev.VerificationURI, displayUserCode(dev.UserCode))
+	if dev.VerificationURIComplete != "" {
+		fmt.Fprintf(c.stdout, "(or open %s and approve)\n\n", dev.VerificationURIComplete)
+	}
+
+	poll := url.Values{
+		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+		"device_code": {dev.DeviceCode},
+		"client_id":   {clientID},
+	}
+	for {
+		if time.Now().After(expiry) {
+			return nil, errors.New("login --device: the code expired before anyone approved it")
+		}
+		if err := c.sleep(ctx, interval); err != nil {
+			return nil, fmt.Errorf("login --device: %w", err)
+		}
+		tok, oerr, err := c.postTokenRaw(ctx, as.TokenEndpoint, poll)
+		if err != nil {
+			return nil, err
+		}
+		if oerr == nil {
+			creds := &credentials{BaseURL: base, ClientID: clientID}
+			creds.apply(tok, c.now())
+			return creds, nil
+		}
+		switch oerr.Code {
+		case "authorization_pending":
+			// The human has not decided yet; keep polling at the advertised interval.
+		case "slow_down":
+			interval += time.Second
+		case "access_denied":
+			return nil, errors.New("login denied: the operator denied the request")
+		case "expired_token":
+			return nil, errors.New("login --device: the code expired before anyone approved it")
+		default:
+			return nil, oerr
+		}
+	}
+}
+
+// loopbackRedirectURI mints an ephemeral loopback redirect URI for registration without keeping a
+// listener open — the device flow never receives a callback, but DCR requires a registered URI and
+// the same client may later do a loopback login.
+func loopbackRedirectURI() (string, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d/callback", port), nil
+}
+
+// displayUserCode renders the user code the way the consent screen shows it: XXXX-XXXX.
+func displayUserCode(code string) string {
+	if len(code) <= 4 {
+		return code
+	}
+	return code[:4] + "-" + code[4:]
 }

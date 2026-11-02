@@ -429,6 +429,11 @@ func newRouter(d routerDeps) chi.Router {
 		// the code grant and the rotating refresh token on the refresh grant — never a session. Same
 		// per-IP throttle, same 64 KiB bound (a token request is a handful of short form fields).
 		or.With(maxBytes(64<<10)).Post(oauthsrv.TokenPath, d.oauth.Token)
+		// The device-authorization endpoint (RFC 8628, issue #308) is public like the rest of the
+		// AS surface: it only mints a PENDING request bound to a registered client — no principal,
+		// no grant — and the human gate is the consent screen behind the session, never here. Same
+		// per-IP throttle, same 64 KiB bound.
+		or.With(maxBytes(64<<10)).Post(oauthsrv.DeviceAuthorizationPath, d.oauth.DeviceAuthorization)
 	})
 
 	// Vended MCP endpoints over Streamable HTTP (ADR-0017; SPEC-0014). Bearer auth, per-endpoint
@@ -567,6 +572,13 @@ func newRouter(d routerDeps) chi.Router {
 		// shared human-surface limiter, like every other session mutation. Governing: ADR-0019.
 		pr.Get(oauthsrv.AuthorizePath, d.webh.OAuthAuthorize)
 		pr.Post(oauthsrv.AuthorizePath, d.webh.OAuthDecision)
+		// Device-authorization consent (RFC 8628, issue #308): GET shows the user-code entry (or
+		// the consent step for a code already named), POST records the decision. DELIBERATELY
+		// inside RequireHuman like its code-flow sibling — the approving human IS the grant's
+		// principal — with CSRF on the decision POST. Every code lookup runs the store's entry
+		// rate limiter; the shared human-surface limiter covers this route too.
+		pr.Get(oauthsrv.DeviceConsentPath, d.webh.OAuthDeviceEntry)
+		pr.Post(oauthsrv.DeviceConsentPath, d.webh.OAuthDeviceDecision)
 		// Revocation is irreversible, so it confirms on a full page first (SPEC-0015 REQ "Wizard
 		// Interaction Pattern"): GET renders the confirm, the POST from that page executes the kill.
 		pr.Get("/endpoints/{id}/revoke", d.webh.RevokeConfirm)

@@ -33,45 +33,53 @@ type fakeDeployment struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	mu           sync.Mutex
-	deny         bool              // authorize answers access_denied
-	registered   []map[string]any  // registration bodies seen
-	authorizes   []url.Values      // authorize queries seen
-	codes        map[string]string // code → PKCE challenge
-	tokenCalls   []url.Values      // token-endpoint forms seen
-	access       string            // the currently valid access token
-	refresh      string            // the currently valid refresh token
-	expiresIn    int64             // expires_in advertised on issuance
-	generation   int               // bumps on every issuance
-	revoked      map[string]bool   // access tokens the API rejects with 401
-	apiCalls     []string          // "METHOD path" for every /api/v1 request seen
-	vends        []map[string]any  // POST /api/v1/endpoints bodies seen
-	edits        []map[string]any  // PATCH /api/v1/endpoints/{ref} bodies seen, "ref" added
-	editStatus   int               // when non-zero, the status (and APIError body) the edit route answers with
-	pushes       []map[string]any  // POST /api/v1/endpoints/{ref}/todos bodies seen, "ref" added
-	pushExists   bool              // the push answers created:false, as a matched key does
-	revokes      []string          // endpoint refs seen on POST /api/v1/endpoints/{ref}/revoke
-	revokeStatus int               // when non-zero, the status the revoke route answers with
-	widens       []map[string]any  // POST /api/v1/endpoints/{ref}/scope/widen bodies seen, "ref" added
-	widenStatus  int               // when non-zero, the status the widen route answers with
-	widenQueues  []string          // the webhook queues the fake endpoint currently grants
-	widenHistory []map[string]any  // the audit trail the widenings route answers with
-	endpointRows []map[string]any  // GET /api/v1/endpoints answer
-	agentRows    []map[string]any  // GET /api/v1/agents answer
-	webhookRows  []map[string]any  // GET /api/v1/webhooks answer
-	rulesDocs    map[string]any    // GET /api/v1/webhooks/{id}/rules answers, by webhook id
-	ruleSets     []map[string]any  // PUT /api/v1/webhooks/{id}/rules bodies seen, "webhook" added
-	ruleTests    []map[string]any  // POST /api/v1/webhooks/{id}/rules/test bodies seen, "webhook" added
-	testAnswer   map[string]any    // the rules/test answer
-	routeOwners  map[string]string // webhook id → owner endpoint id; a webhook absent here is not_found
-	routeRows    map[string][]map[string]any
-	routeCalls   []string        // "PUT|DELETE webhook target" for every route write seen
-	unroutable   map[string]bool // targets the route add answers 403 forbidden for
+	mu               sync.Mutex
+	deny             bool              // authorize answers access_denied
+	registered       []map[string]any  // registration bodies seen
+	authorizes       []url.Values      // authorize queries seen
+	codes            map[string]string // code → PKCE challenge
+	tokenCalls       []url.Values      // token-endpoint forms seen
+	deviceForms      []url.Values      // POST /oauth/device_authorization forms seen
+	deviceCodes      map[string]string // device_code → state (pending/approved/denied/expired)
+	devicePolls      map[string]int    // polls seen per device_code
+	devicePending    int               // polls answered authorization_pending before the request is approved
+	deviceSlowDown   int               // leading polls answered slow_down before the normal script
+	deviceDeny       bool              // the device request is answered access_denied
+	noDeviceEndpoint bool              // the AS metadata advertises no device_authorization_endpoint
+	access           string            // the currently valid access token
+	refresh          string            // the currently valid refresh token
+	expiresIn        int64             // expires_in advertised on issuance
+	generation       int               // bumps on every issuance
+	revoked          map[string]bool   // access tokens the API rejects with 401
+	apiCalls         []string          // "METHOD path" for every /api/v1 request seen
+	vends            []map[string]any  // POST /api/v1/endpoints bodies seen
+	edits            []map[string]any  // PATCH /api/v1/endpoints/{ref} bodies seen, "ref" added
+	editStatus       int               // when non-zero, the status (and APIError body) the edit route answers with
+	pushes           []map[string]any  // POST /api/v1/endpoints/{ref}/todos bodies seen, "ref" added
+	pushExists       bool              // the push answers created:false, as a matched key does
+	revokes          []string          // endpoint refs seen on POST /api/v1/endpoints/{ref}/revoke
+	revokeStatus     int               // when non-zero, the status the revoke route answers with
+	widens           []map[string]any  // POST /api/v1/endpoints/{ref}/scope/widen bodies seen, "ref" added
+	widenStatus      int               // when non-zero, the status the widen route answers with
+	widenQueues      []string          // the webhook queues the fake endpoint currently grants
+	widenHistory     []map[string]any  // the audit trail the widenings route answers with
+	endpointRows     []map[string]any  // GET /api/v1/endpoints answer
+	agentRows        []map[string]any  // GET /api/v1/agents answer
+	webhookRows      []map[string]any  // GET /api/v1/webhooks answer
+	rulesDocs        map[string]any    // GET /api/v1/webhooks/{id}/rules answers, by webhook id
+	ruleSets         []map[string]any  // PUT /api/v1/webhooks/{id}/rules bodies seen, "webhook" added
+	ruleTests        []map[string]any  // POST /api/v1/webhooks/{id}/rules/test bodies seen, "webhook" added
+	testAnswer       map[string]any    // the rules/test answer
+	routeOwners      map[string]string // webhook id → owner endpoint id; a webhook absent here is not_found
+	routeRows        map[string][]map[string]any
+	routeCalls       []string        // "PUT|DELETE webhook target" for every route write seen
+	unroutable       map[string]bool // targets the route add answers 403 forbidden for
 }
 
 func newFakeDeployment(t *testing.T) *fakeDeployment {
 	t.Helper()
-	f := &fakeDeployment{t: t, codes: map[string]string{}, revoked: map[string]bool{}, expiresIn: 3600}
+	f := &fakeDeployment{t: t, codes: map[string]string{}, revoked: map[string]bool{}, expiresIn: 3600,
+		deviceCodes: map[string]string{}, devicePolls: map[string]int{}, devicePending: 1}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -98,11 +106,35 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/.well-known/oauth-protected-resource/api":
 		writeJSONResponse(w, 200, map[string]any{"resource": base + "/api", "authorization_servers": []string{base}})
 	case r.URL.Path == "/.well-known/oauth-authorization-server":
-		writeJSONResponse(w, 200, map[string]any{
+		doc := map[string]any{
 			"issuer":                 base,
 			"authorization_endpoint": base + "/oauth/authorize",
 			"token_endpoint":         base + "/oauth/token",
 			"registration_endpoint":  base + "/oauth/register",
+		}
+		if !f.noDeviceEndpoint {
+			doc["device_authorization_endpoint"] = base + "/oauth/device_authorization"
+		}
+		writeJSONResponse(w, 200, doc)
+	case r.URL.Path == "/oauth/device_authorization" && r.Method == http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			writeJSONResponse(w, 400, map[string]any{"error": "invalid_request"})
+			return
+		}
+		f.deviceForms = append(f.deviceForms, r.PostForm)
+		if r.PostForm.Get("client_id") != "cid-test" || r.PostForm.Get("resource") != base+"/api" {
+			writeJSONResponse(w, 400, map[string]any{"error": "invalid_target"})
+			return
+		}
+		code := fmt.Sprintf("dev-%d", len(f.deviceCodes)+1)
+		f.deviceCodes[code] = "pending"
+		writeJSONResponse(w, 200, map[string]any{
+			"device_code":               code,
+			"user_code":                 "VKTR-JWPF",
+			"verification_uri":          base + "/oauth/device",
+			"verification_uri_complete": base + "/oauth/device?user_code=VKTR-JWPF",
+			"expires_in":                600,
+			"interval":                  1,
 		})
 	case r.URL.Path == "/oauth/register" && r.Method == http.MethodPost:
 		var body map[string]any
@@ -154,6 +186,38 @@ func (f *fakeDeployment) serve(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSONResponse(w, 200, f.issue())
+		case "urn:ietf:params:oauth:grant-type:device_code":
+			dc := r.PostForm.Get("device_code")
+			state, ok := f.deviceCodes[dc]
+			if !ok || r.PostForm.Get("client_id") != "cid-test" {
+				writeJSONResponse(w, 400, map[string]any{"error": "expired_token"})
+				return
+			}
+			f.devicePolls[dc]++
+			if f.deviceSlowDown > 0 && state == "pending" {
+				f.deviceSlowDown--
+				writeJSONResponse(w, 400, map[string]any{"error": "slow_down"})
+				return
+			}
+			switch {
+			case f.deviceDeny:
+				writeJSONResponse(w, 400, map[string]any{"error": "access_denied"})
+				return
+			case state == "pending" && f.devicePolls[dc] > f.devicePending:
+				state = "approved"
+				f.deviceCodes[dc] = state
+			}
+			switch state {
+			case "pending":
+				writeJSONResponse(w, 400, map[string]any{"error": "authorization_pending"})
+			case "expired":
+				writeJSONResponse(w, 400, map[string]any{"error": "expired_token"})
+			case "spent":
+				writeJSONResponse(w, 400, map[string]any{"error": "invalid_grant"})
+			default:
+				f.deviceCodes[dc] = "spent"
+				writeJSONResponse(w, 200, f.issue())
+			}
 		default:
 			writeJSONResponse(w, 400, map[string]any{"error": "unsupported_grant_type"})
 		}
