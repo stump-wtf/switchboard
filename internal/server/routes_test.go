@@ -129,14 +129,14 @@ var sessionRoutes = map[string]bool{
 	// OAuth consent (SPEC-0016 "Authorization Code Flow With Consent"): the authorize endpoint IS
 	// the flow's human gate, so both the screen and the decision POST are session-gated — an
 	// anonymous authorize request must land on /login (scenario "Human absent").
-	"GET /oauth/authorize":        true,
-	"POST /oauth/authorize":       true,
+	"GET /oauth/authorize":  true,
+	"POST /oauth/authorize": true,
 	// Device-flow consent (RFC 8628, issue #308): the same shape as the authorize screen — the page
 	// and the decision POST are the flow's human gate, so both are session-gated, and an anonymous
 	// hit lands on /login (the scenario "Human absent" again). Nothing about the flow can hand a
 	// URL to the device, which is why it polls the token endpoint instead.
-	"GET /oauth/device":  true,
-	"POST /oauth/device": true,
+	"GET /oauth/device":           true,
+	"POST /oauth/device":          true,
 	"GET /endpoints/{id}/revoke":  true, // revoke confirm page (irreversible steps confirm, SPEC-0015)
 	"POST /endpoints/{id}/revoke": true,
 	"POST /endpoints/{id}/delete": true, // permanently delete a revoked endpoint (SPEC-0007)

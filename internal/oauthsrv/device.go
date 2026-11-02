@@ -164,9 +164,12 @@ func (h *Handler) DeviceAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A hash collision on either unique index is re-minted, never adopted: one attempt of retry
-	// is plenty at this entropy, and a second collision is a broken database.
-	if err := devStore.CreateOAuthDeviceCode(r.Context(), deviceHash, userHash, client.ClientID,
-		time.Now().Add(DeviceCodeTTL), int(DevicePollInterval.Seconds())); errors.Is(err, store.ErrConflict) {
+	// is plenty at this entropy, and a second collision is a broken database. Both attempts write
+	// to the same err, because a request that never landed must never answer 200 — codes nobody
+	// can redeem are worse than an error.
+	err = devStore.CreateOAuthDeviceCode(r.Context(), deviceHash, userHash, client.ClientID,
+		time.Now().Add(DeviceCodeTTL), int(DevicePollInterval.Seconds()))
+	if errors.Is(err, store.ErrConflict) {
 		deviceCode, userCode, deviceHash, userHash, err = DeviceCodes()
 		if err != nil {
 			h.log.Error("oauth device_authorization: remint codes", "err", err)

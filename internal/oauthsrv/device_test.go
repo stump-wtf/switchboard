@@ -10,6 +10,7 @@ package oauthsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -41,9 +42,22 @@ type fakeDeviceStore struct {
 	byUser   map[string]string      // user hash → device hash
 	issued   []store.OAuthToken
 	issueErr error
+	// collideFirst answers the FIRST CreateOAuthDeviceCode with ErrConflict, as a hash collision
+	// on a unique index does, so the re-mint path is exercised; createErr then replaces every later
+	// attempt, which is how a broken database looks.
+	collideFirst bool
+	createErr    error
+	createCalls  int
 }
 
 func (f *fakeDeviceStore) CreateOAuthDeviceCode(_ context.Context, deviceHash, userHash, clientID string, expiresAt time.Time, intervalSeconds int) error {
+	f.createCalls++
+	if f.createCalls == 1 && f.collideFirst {
+		return store.ErrConflict
+	}
+	if f.createErr != nil {
+		return f.createErr
+	}
 	if _, dup := f.devices[deviceHash]; dup {
 		return store.ErrConflict
 	}
@@ -170,6 +184,50 @@ func TestDeviceAuthorizationDocument(t *testing.T) {
 	if time.Until(d.expiresAt) <= 0 || time.Until(d.expiresAt) > DeviceCodeTTL+time.Minute {
 		t.Fatalf("expiry %v off the advertised TTL", d.expiresAt)
 	}
+}
+
+func TestDeviceAuthorizationCollision(t *testing.T) {
+	// build returns a store whose first insert collides, plus the handler to aim at it.
+	build := func(after error) (*Handler, *fakeDeviceStore) {
+		fs := &fakeDeviceStore{
+			fakeClientStore: fakeClientStore{clients: []store.OAuthClient{{
+				ID: "c1", ClientID: "cid-dev", Name: "switchboard CLI",
+				RedirectURIs: []string{"http://127.0.0.1:9/callback"},
+			}}},
+			devices: map[string]*fakeDevice{}, byUser: map[string]string{},
+			collideFirst: true, createErr: after,
+		}
+		return New(fs, testBase, slog.New(slog.NewTextHandler(io.Discard, nil))), fs
+	}
+	form := url.Values{"client_id": {"cid-dev"}, "resource": {testBase + OperatorResourcePath}}
+
+	t.Run("a collision is re-minted, never adopted", func(t *testing.T) {
+		h, fs := build(nil)
+		rec := postForm(t, h, DeviceAuthorizationPath, form)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("collision response: %d %s", rec.Code, rec.Body.String())
+		}
+		if fs.createCalls != 2 || len(fs.devices) != 1 {
+			t.Fatalf("collideFirst: %d create calls, %d rows; want one re-mint that lands once", fs.createCalls, len(fs.devices))
+		}
+	})
+
+	// The re-mint's error must reach the response: handing a client codes that were never stored
+	// is worse than an error, because its polling would then be waiting on nothing.
+	t.Run("a request that never landed never answers 200", func(t *testing.T) {
+		h, fs := build(errors.New("insert failed"))
+		rec := postForm(t, h, DeviceAuthorizationPath, form)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("second insert failure: %d %s, want 500", rec.Code, rec.Body.String())
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatalf("error document: %v", err)
+		}
+		if doc["error"] != "server_error" || len(fs.devices) != 0 {
+			t.Fatalf("error %v with %d rows stored", doc["error"], len(fs.devices))
+		}
+	})
 }
 
 func TestDeviceAuthorizationGates(t *testing.T) {

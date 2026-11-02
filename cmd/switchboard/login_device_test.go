@@ -16,7 +16,7 @@ import (
 func TestLoginDeviceApprovesAndSavesCredentials(t *testing.T) {
 	f := newFakeDeployment(t)
 	tc := newTestCLI(t)
-	tc.cli.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	tc.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 	if code := tc.run(t, "login", "--device", f.base()); code != exitOK {
 		t.Fatalf("login --device exit=%d stderr=%s stdout=%s", code, tc.stderr, tc.stdout)
@@ -53,7 +53,7 @@ func TestLoginDeviceDenied(t *testing.T) {
 	f.deviceDeny = true
 	f.mu.Unlock()
 	tc := newTestCLI(t)
-	tc.cli.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	tc.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 	if code := tc.run(t, "login", "--device", f.base()); code == exitOK {
 		t.Fatalf("denied device login must fail, stdout=%s", tc.stdout)
@@ -72,7 +72,7 @@ func TestLoginDeviceServerWithoutDeviceEndpoint(t *testing.T) {
 	f.noDeviceEndpoint = true
 	f.mu.Unlock()
 	tc := newTestCLI(t)
-	tc.cli.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	tc.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 	if code := tc.run(t, "login", "--device", f.base()); code == exitOK {
 		t.Fatal("a deployment with no device_authorization_endpoint must fail the login")
@@ -91,7 +91,7 @@ func TestLoginDeviceSlowDownWidensInterval(t *testing.T) {
 	f.devicePending = 2
 	f.mu.Unlock()
 	tc := newTestCLI(t)
-	tc.cli.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	tc.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 	if code := tc.run(t, "login", "--device", f.base()); code != exitOK {
 		t.Fatalf("login --device exit=%d stderr=%s", code, tc.stderr)
