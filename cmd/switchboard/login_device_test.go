@@ -112,7 +112,7 @@ func TestDiscoveryWithoutDeviceEndpointIsFine(t *testing.T) {
 	f.mu.Unlock()
 	tc := newTestCLI(t)
 
-	as, err := tc.cli.discover(context.Background(), f.base())
+	as, err := tc.discover(context.Background(), f.base())
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
