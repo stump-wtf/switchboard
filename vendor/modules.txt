@@ -26,10 +26,10 @@ github.com/google/jsonschema-go/jsonschema
 # github.com/google/uuid v1.6.0
 ## explicit
 github.com/google/uuid
-# github.com/itchyny/gojq v0.12.19
+# github.com/itchyny/gojq v0.12.20
 ## explicit; go 1.24.0
 github.com/itchyny/gojq
-# github.com/itchyny/timefmt-go v0.1.8
+# github.com/itchyny/timefmt-go v0.1.9
 ## explicit; go 1.24
 github.com/itchyny/timefmt-go
 # github.com/jackc/pgpassfile v1.0.0
