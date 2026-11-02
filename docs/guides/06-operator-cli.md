@@ -60,6 +60,46 @@ Access tokens are short-lived; the CLI rotates the pair transparently, before ex
 first 401. A refresh the server refuses (revoked grant, changed principal) simply means: log in
 again. `switchboard status` shows where you are logged in and when the access token expires.
 
+### Logging in from a headless host (`--device`)
+
+```
+switchboard login --device https://switchboard.example.com
+```
+
+On a host no browser can reach, `--no-browser` still leaves you needing an SSH port forward: the
+redirect targets *that* host's loopback. `--device` uses the OAuth device authorization grant
+(RFC 8628) instead, so nothing has to reach the CLI at all:
+
+```
+Sign in from any device:
+
+  https://switchboard.example.com/oauth/device
+
+  code: VKTR-JWPF
+
+(or open https://switchboard.example.com/oauth/device?user_code=VKTR-JWPF and approve)
+
+Logged in to https://switchboard.example.com
+Credentials saved to ~/.config/switchboard/credentials
+```
+
+You sign in and approve on whatever is handy — a phone, a laptop — and the command picks the grant
+up on its next poll. What it saves is the same **operator grant** the loopback flow mints: it acts as
+you, for `<base>/api`, bound to the human who approved it. A device flow cannot produce an endpoint
+credential.
+
+* The code is good for ten minutes and the command polls every five seconds, backing off when the
+  server says `slow_down`. Walk away and come back; if it expires, run the command again.
+* Approving on the web page never redirects anywhere — the outcome travels back to the command, not
+  to a browser. Denying it tells the command `access_denied` immediately.
+* The command still registers itself (RFC 7591), with a throwaway loopback redirect it never listens
+  on; the device grant is what replaces the callback.
+* If the server advertises no `device_authorization_endpoint`, the command says so rather than
+  falling back silently — upgrade switchboard, or log in the ordinary way.
+
+See [ADR-0057](/decisions/ADR-0057-device-authorization-grant-for-the-operator-api) for what this
+flow is allowed to mint, and why user-code entry is rate-limited.
+
 ## Vending the happy path
 
 ```

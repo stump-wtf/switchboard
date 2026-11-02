@@ -15,6 +15,24 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **`switchboard login --device` signs in on a headless host, with no port forward.** The operator
+  login has needed a browser that can reach the CLI's own loopback, so on a server you open an SSH
+  tunnel before the callback can land; `--no-browser` prints the URL but cannot move the redirect.
+  The authorization server now also speaks the OAuth device authorization grant (RFC 8628): the
+  command prints a short code, you sign in and approve it from any device you happen to be holding,
+  and the command picks the grant up on its next poll. What it saves is the same operator grant the
+  loopback flow mints — it acts as you, for the operator API, bound to the human who approved it —
+  and a device request carries no endpoint column at all, so this path cannot produce an agent
+  credential even by accident. The ten-minute request polls five seconds apart, answers
+  `authorization_pending`, `slow_down`, `expired_token` and `access_denied` as the RFC describes, and
+  is spent exactly once, at the moment the tokens are minted. User codes are eight unambiguous
+  characters, stored hashed like every other credential here, and entry is rate-limited against the
+  signed-in principal rather than the request: a wrong code matches no row, so counting guesses per
+  request would never see the guesses worth stopping. Closes issue #308, requested by harness#423;
+  the choices are ADR-0057.
+
+### Added
+
 - **An operator can supervise a queue from an MCP session.** Six verbs join the per-endpoint verb grant as a
   family no consumer grant implies: `queue_stats` answers depth by state, the age of the oldest pending row,
   whether the queue is paused and — in one word — whether it is stalled or merely quiet, with the leases
