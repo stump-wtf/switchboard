@@ -92,8 +92,10 @@ Install `pool-review.json` on **each** identity's forge pool webhooks, with `par
 | 3 | `bot-comment-noise` | drop `issue_comment` and `pull_request_comment` events whose `sender.login` is in `$params.bot_actors` |
 | 4 | `bot-review-outcome` | drop `pull_request_approved` / `pull_request_rejected` events whose `sender.login` is in `$params.bot_actors` |
 | 5 | `review-outcome-not-my-pr` | drop `pull_request_approved` / `pull_request_rejected` events whose `pull_request.user.login` is **not** `$params.identity` |
+| 6 | `own-echo` | drop `issue_comment`, `pull_request_comment`, `pull_request_approved` and `pull_request_rejected` events whose `sender.login` **is** `$params.identity` |
+| 7 | `assignment-is-not-dispatch` | drop `issues` and `pull_request` events whose `action` is `assigned` or `unassigned`, on every pool |
 
-Human and sibling-agent comments, review requests addressed to the identity, and issue events still reach the pool. With no `identity` param, review requests and review outcomes both fail closed (rules 1 and 5).
+Human and sibling-agent comments, review requests addressed to the identity, and issue events still reach the pool. With no `identity` param, review requests and review outcomes both fail closed (rules 1 and 5); rules 6 and 7 need no params to work, and rule 6 drops nothing without an identity rather than dropping everything.
 
 **Rules 3 to 5 exist because queue latency is release latency.** Branch protection makes the sibling identity's approval the merge gate, so a real review request sitting behind machine chatter delays every release. Measured over 12.4h of real traffic on both pools (240 deliveries, 222 todos, ~430 todos/day), these three rules remove ~180 todos/day (42%) and leave every human signal intact.
 
@@ -101,16 +103,23 @@ Three things about them that look wrong until you know why:
 
 - **They key on `sender.login`, never `comment.user.login`.** `pull_request_comment`, `pull_request_approved` and `pull_request_rejected` carry **no** `comment` object at all — the text lives in `review.content`. Across every delivery these webhooks have ever received, `sender.login` and `comment.user.login` never disagree. Do not "fix" these rules to read the comment author.
 - **The sender is bound with `as $s` before `any()`.** Inside `any(gen; cond)` the `.` is the generator's element, so the obvious `any($params.bot_actors[]; . == (.payload.sender.login // ""))` indexes a *string* and faults, and a faulted rule stops evaluation, so every delivery is held in quarantine as `rule_fault`, human review requests included. `pool_review_pack_test.go` fails if anyone rewrites them that way.
-- **Rule 5 keeps outcomes on the identity's own PRs.** That is the author's "your PR is approved and can merge" signal. Dropping every outcome instead removes ~41 more todos/day and costs exactly the signal branch protection depends on; it was considered and rejected. Keep the asymmetry.
+- **Rule 5 keeps outcomes on the identity's own PRs.** That is the author's "your PR is approved and can merge" signal. Dropping every outcome instead removes ~41 more todos/day and costs exactly the signal branch protection depends on; it was considered and rejected. Keep the asymmetry. Rule 6 does not undo it: it removes the identity's *own* verdict on its own PR, which is a delivery telling the pool what that pool just did. The sibling's verdict — the one branch protection waits for — still arrives.
 
 `bot_actors` is an exact-match list of logins. Only `gitea-actions` appears in real traffic today — aibot posts as `gitea-actions`, and Renovate has never posted to these webhooks — but `aibot`, `renovate-bot` and `renovate` are listed so they are covered if they ever do. Like every allowlist here it is `| arrays` / `| strings` guarded, so a mistyped param drops nothing rather than faulting every delivery.
 
 Why it exists: both identities' org webhooks deliver every pull request event to both identities' pools. On 2026-09-11 a `joestump` pool worker received review requests meant for `joestump-agent` and reviewed and merged `joestump`'s own pull requests (harness#307, dotfiles#242).
+
+**Rules 6 and 7 close the two classes of phantom todo** measured over the 09-20 → 09-22 window (stump.wtf/switchboard#439, Phase 0 of stumpcloud/stumpcloud#466):
+
+- **Rule 6, own echo.** 354 of 354 deliveries in that window reached both pools, and 92 of the 184 comment todos were the receiving identity's own comment arriving back on its own pool. A pool waking on a comment its own identity just posted has nothing to learn, and on a review event it is worse than noise: a self-approval looks like the merge-gate signal. Only the pool whose identity posted stops waking: comments still arrive on the sibling's pool, while a self-approval or self-rejection arrives on neither — the sibling's rule 5 already drops review outcomes on someone else's PR.
+- **Rule 7, assignment.** An interactive session claims an issue the documented way — assign it, add `in-progress`. That `issues` delivery with action `assigned` used to become a build todo, and a worker built the issue a second time while the session still held it (harness#383 and #384, switchboard#273). Decision D2: **an assignment is a claim, not a dispatch**, so pools stop picking up assigned issues entirely until the Phase 3 dispatcher exists; work is dispatched by a lane handoff, `/sdd:work`, or Joe. It matches `issues` and `pull_request` — the `X-GitHub-Event` / `X-Gitea-Event` value, never the `issue_assignee` sub-type — and both spellings of the action, so un-assigning cannot re-dispatch it.
+
+What is **not** in the pack, because it is not a rule-pack change: the same window showed 24 of 59 Cairn handoffs worked in full by both pools, because the Cairn webhook routes to the router *and* both pool endpoints. Removing those two routes is an operator change on the Switchboard side (`remove_webhook_route`), not a pack edit, and per ADR-0036 the pack file is only ever the source of what an operator installs.
 
 ## Testing
 
 - **Live:** `test_webhook_rules` with a sample `payload` and `headers`, or a stored `event_id` of the webhook. The result shows the `decision`, the exclusive target endpoint, the `once_key`, the `work_order`, and the envelope. Candidate `params` can be tried without saving.
 - **In the repo:**
   - `internal/routing/fleet_pack_test.go` validates `fleet.json` against a lanes grant and routes every case in `internal/routing/testdata/fleet/cases.json` (real-shape Gitea, GitHub, and cairn samples), in-process and again through the sandbox child.
-  - `internal/routing/pool_review_pack_test.go` routes review requests, own-PR triggers, comments, and issue events for both identities through `pool-review.json`, in-process and through the sandbox child.
+  - `internal/routing/pool_review_pack_test.go` routes review requests, own-PR triggers, comments, issue events, a pool's own comment and review echo, and issue/PR assignments for both identities through `pool-review.json`, in-process and through the sandbox child.
   - Add a case whenever you change a rule.

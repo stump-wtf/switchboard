@@ -227,6 +227,18 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   what that lane needs. The ingestion webhook the command mints is unchanged, so a narrowed lane still
   receives deliveries and its queue still drains. The web wizard and quick vend are unchanged: a human
   ticking verbs there has already made the choice. Proposed as ADR-0047. (#589)
+- **The `pool-review` pack stops two classes of phantom todo.** Both identities subscribe their pools to the
+  same org events, so over the 09-20 → 09-22 window every delivery reached both pools and two kinds became
+  todos that should never have existed: 92 of 184 comment todos were the receiving identity's own comment
+  arriving back on its own pool, and an `issues` delivery with action `assigned` — the documented way an
+  interactive session claims work — minted a build todo, so a worker built an issue a second time while a
+  session still held it. Two rules join the pack: `own-echo` drops comment and review deliveries whose
+  `sender.login` is the pool's own identity, and `assignment-is-not-dispatch` drops `assigned` and
+  `unassigned` on `issues` and `pull_request` for every pool. A pool no longer receives work for what its own
+  identity just posted, and a claim is no longer a dispatch; the sibling's signal, review requests addressed to
+  the identity, and every other issue and PR event route exactly as before. Pools stop picking up an issue by
+  assignment alone: work is dispatched by a lane handoff, `/sdd:work`, or Joe, per decision D2 of the
+  one-owner epic. (#439)
 
 ### Fixed
 

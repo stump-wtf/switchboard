@@ -1,0 +1,43 @@
+{
+  "source": "generic",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Gitea-Delivery": "7c2a5e90-1d64-4b38-9f27-6a05c3e8b112",
+    "X-Gitea-Event": "issues",
+    "X-Gitea-Event-Type": "issue_assignee",
+    "X-Github-Delivery": "7c2a5e90-1d64-4b38-9f27-6a05c3e8b112",
+    "X-Github-Event": "issues",
+    "X-Github-Event-Type": "issue_assignee"
+  },
+  "body": {
+    "action": "assigned",
+    "number": 439,
+    "issue": {
+      "id": 9971,
+      "url": "https://gitea.stump.rocks/stump.wtf/switchboard/issues/439",
+      "html_url": "https://gitea.stump.rocks/stump.wtf/switchboard/issues/439",
+      "number": 439,
+      "user": {"id": 1, "login": "joestump", "username": "joestump"},
+      "title": "routing delivers every Gitea delivery to both identity pools",
+      "body": "Both identity pools receive every org delivery, and two classes become phantom todos.",
+      "labels": [{"id": 568, "name": "size/M", "color": "bf8700"}],
+      "assignee": {"id": 1, "login": "joestump", "username": "joestump"},
+      "assignees": [{"id": 1, "login": "joestump", "username": "joestump"}],
+      "state": "open",
+      "comments": 3,
+      "created_at": "2026-09-20T17:05:44Z",
+      "updated_at": "2026-09-21T19:41:02Z",
+      "repository": {"id": 88, "name": "switchboard", "owner": "stump.wtf", "full_name": "stump.wtf/switchboard"}
+    },
+    "assignee": {"id": 1, "login": "joestump", "username": "joestump"},
+    "repository": {
+      "id": 88,
+      "owner": {"id": 7, "login": "stump.wtf", "username": "stump.wtf"},
+      "name": "switchboard",
+      "full_name": "stump.wtf/switchboard",
+      "private": true,
+      "html_url": "https://gitea.stump.rocks/stump.wtf/switchboard"
+    },
+    "sender": {"id": 2, "login": "joestump-agent", "username": "joestump-agent"}
+  }
+}
