@@ -286,10 +286,26 @@ func verifyGitHub(secret string, body []byte, sig string) bool {
 	return hmac.Equal([]byte(expected), []byte(sig))
 }
 
+// reviewEventVerdict names what a review delivery did, for the title. The key is the event header
+// Gitea sends verbatim (the routing envelope's .kind), which is the review's own verdict — the
+// body's `action` is just "reviewed", so it cannot say whether changes were requested or approved.
+var reviewEventVerdict = map[string]string{
+	"pull_request_approved":       "approved",
+	"pull_request_rejected":       "changes requested",
+	"pull_request_comment":        "comment",
+	"pull_request_review_request": "review requested",
+}
+
 // summarizeForge builds a one-line, legible todo title from a GitHub-style forge payload. GitHub
 // and Gitea share this shape for the common events (pull_request, issues, push, ...), so both
 // receivers feed it their provider label, which only prefixes the fallback title for events the
 // switch doesn't know.
+//
+// The review events are titling here rather than through the fallback because they were the ones
+// that read worst: eleven todos covering six pull requests all said "gitea pull_request_comment in
+// abrahms/forge" — no number, no verdict — so nothing but claiming them could tell them apart. A
+// review payload carries the pull request it is about, and for a comment it arrives in the issue
+// shape (issue_comment with is_pull), so the number and title are read from either.
 func summarizeForge(provider, event string, body []byte) string {
 	var p struct {
 		Action     string `json:"action"`
@@ -307,22 +323,47 @@ func summarizeForge(provider, event string, body []byte) string {
 	}
 	_ = json.Unmarshal(body, &p)
 	repo := p.Repository.FullName
+	// A pull-request review names its subject in pull_request; a review *comment* arrives in the
+	// issue shape, where the same number and title sit under issue. Reading either keeps one
+	// summarizer for both without pretending the two shapes are identical.
+	number, subject := p.PullRequest.Number, p.PullRequest.Title
+	if number == 0 {
+		number, subject = p.Issue.Number, p.Issue.Title
+	}
 	switch event {
 	case "pull_request":
 		return strings.TrimSpace("PR #" + itoa(p.PullRequest.Number) + " " + p.Action + " in " + repo + " — " + p.PullRequest.Title)
 	case "issues":
 		return strings.TrimSpace("Issue #" + itoa(p.Issue.Number) + " " + p.Action + " in " + repo + " — " + p.Issue.Title)
-	default:
-		if repo != "" {
-			return provider + " " + event + " in " + repo
-		}
-		return provider + " " + event
 	}
+	// A review delivery with no pull request in it identifies nothing: fall through to the event-only
+	// title rather than emit "PR #0 approved".
+	if verdict, ok := reviewEventVerdict[event]; ok && number != 0 {
+		return strings.TrimSpace("PR #" + itoa(number) + " " + verdict + " in " + repo + " — " + subject)
+	}
+	if repo != "" {
+		return provider + " " + event + " in " + repo
+	}
+	return provider + " " + event
 }
 
 // summarizeGitHub builds a one-line, legible todo title from a GitHub payload.
 func summarizeGitHub(event string, body []byte) string {
 	return summarizeForge("github", event, body)
+}
+
+// forgeEventTitled reports whether summarizeForge can name this event from its payload, rather than
+// falling back to "<provider> <event> in <repo>". It mirrors summarizeForge's switch on purpose: a
+// caller that has a better name than the fallback needs to know when the fallback is what it got.
+func forgeEventTitled(event string) bool {
+	if _, ok := reviewEventVerdict[event]; ok {
+		return true
+	}
+	switch event {
+	case "pull_request", "issues":
+		return true
+	}
+	return false
 }
 
 // urlSecretParam matches a secret carried in a URL query string (e.g. a `?token=…` webhook URL that
