@@ -593,6 +593,31 @@ func TestSummarizeSelfManagedTitleFallbacks(t *testing.T) {
 	}
 }
 
+// An event header that names something summarizeForge cannot read must not throw away the name the
+// sender gave its own delivery: "self-managed generic delivery deployment_status in o/r" says less
+// than the title the sender already put in the body. A body that names nothing is unchanged.
+func TestSummarizeSelfManagedTitleReadableEventPrefersTheSendersName(t *testing.T) {
+	senderTitle := `{"title":"Deploy finished: wortling 1.4.2","state":"success"}`
+	for _, tc := range []struct{ name, event, body, want string }{
+		{"unreadable event, sender named it", "deployment_status", senderTitle,
+			"Deploy finished: wortling 1.4.2"},
+		{"unreadable event, sender named nothing",
+			"deployment_status", `{"state":"success","repository":{"full_name":"o/r"}}`,
+			"self-managed generic delivery deployment_status in o/r"},
+		// A readable forge event is more specific than any body title, and keeps winning.
+		{"forge event wins over a body title", "pull_request",
+			`{"title":"ignore me","action":"opened","repository":{"full_name":"o/r"},` +
+				`"pull_request":{"number":7,"title":"Real title"}}`,
+			"PR #7 opened in o/r — Real title"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summarizeSelfManagedTitle("generic", tc.event, []byte(tc.body)); got != tc.want {
+				t.Errorf("summarizeSelfManagedTitle(generic, %q, …)\n got %q\nwant %q", tc.event, got, tc.want)
+			}
+		})
+	}
+}
+
 // An unlabelled generic delivery is titled from its own body when the body plainly names itself, and
 // falls back to the literal when it does not. The two shapes are the ones the station sends: sbpush
 // and the scheduled sweeps carry a title; the Telegram bridge carries a sender and the text. A key

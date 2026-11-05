@@ -48,6 +48,46 @@ func TestSummarizeGitHub(t *testing.T) {
 	}
 }
 
+// A review delivery must title the pull request it is about, not just name its own event. The event
+// Gitea sends is the verdict (its body action is always "reviewed"), and a review comment arrives in
+// the issue shape rather than the pull-request one, so both shapes are exercised here. Eleven todos
+// covering six pull requests all read "gitea pull_request_comment in abrahms/forge" before this:
+// a review queue nobody could read without claiming every row.
+func TestSummarizeForgeReviewEvents(t *testing.T) {
+	reviewed := `"action":"reviewed","repository":{"full_name":"abrahms/forge"},` +
+		`"pull_request":{"number":211,"title":"Name the fix instead of counting lines"}`
+	commented := `"action":"created","is_pull":true,"repository":{"full_name":"stump.wtf/harness"},` +
+		`"issue":{"number":306,"title":"feat(scheduler): suspend-safe wall-clock tick",` +
+		`"pull_request":{"merged":false}}`
+	requested := `"action":"review_requested","repository":{"full_name":"abrahms/ops"},` +
+		`"pull_request":{"number":31,"title":"Read a number only when the whole argument is one"}`
+
+	for _, tc := range []struct {
+		name, provider, event, body, want string
+	}{
+		{"approved", "gitea", "pull_request_approved", "{" + reviewed + "}",
+			"PR #211 approved in abrahms/forge — Name the fix instead of counting lines"},
+		{"rejected", "gitea", "pull_request_rejected", "{" + reviewed + "}",
+			"PR #211 changes requested in abrahms/forge — Name the fix instead of counting lines"},
+		{"comment, issue-shaped payload", "gitea", "pull_request_comment", "{" + commented + "}",
+			"PR #306 comment in stump.wtf/harness — feat(scheduler): suspend-safe wall-clock tick"},
+		{"review requested", "gitea", "pull_request_review_request", "{" + requested + "}",
+			"PR #31 review requested in abrahms/ops — Read a number only when the whole argument is one"},
+		// A review delivery with no pull request in it names nothing, so it keeps the event-only title
+		// rather than inventing "PR #0 approved".
+		{"no pull request in the payload", "github", "pull_request_approved", `{"action":"reviewed"}`,
+			"github pull_request_approved"},
+		{"no pull request, with a repo", "gitea", "pull_request_rejected",
+			`{"repository":{"full_name":"o/r"}}`, "gitea pull_request_rejected in o/r"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summarizeForge(tc.provider, tc.event, []byte(tc.body)); got != tc.want {
+				t.Errorf("summarizeForge(%q, %q, …)\n got %q\nwant %q", tc.provider, tc.event, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSanitizeHeadersRedacts(t *testing.T) {
 	h := map[string][]string{
 		"X-Hub-Signature-256": {"sha256=secret"},
