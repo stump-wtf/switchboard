@@ -242,6 +242,15 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Fixed
 
+- **A Cairn handoff is no longer pool work.** The pool rule pack gains `cairn-is-not-pool-work`, which
+  drops every delivery a pool webhook receives from a cairn webhook: a handoff is dispatched to the one
+  lane its tags name, and an identity pool is not a lane. Between 09-13 and 09-19, 24 of 59 handoffs were
+  worked in full by both pools, which meant one artifact, two workers, two pull requests. The rule keys
+  on the source Switchboard derived, never on anything the body says about itself, and it needs no params,
+  so it holds on both pools and with no identity set. Removing the pool endpoints' routes from the Cairn
+  webhook remains an operator step, because that path is routed by the Cairn webhook's own rules, where a
+  pool's pack is never consulted.
+
 - **Idle notification streams stay open behind a proxy.** The MCP standalone GET stream wrote no
   bytes at all while its queues were quiet, and a proxy with an idle timeout reads silence as a dead
   connection (Cloudflare cancels about 125 s after connect). So a connected consumer was dropped on
