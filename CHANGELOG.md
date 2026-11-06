@@ -15,6 +15,20 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Todo lineage has a schema to write into.** SPEC-0037's design landed without its tables, so nothing
+  downstream of it had anywhere to record a thread, a link or a tag. Migration 0037 adds them: a nullable
+  `subject_key` on `todos` (capped at 256 bytes, with the partial index that serves the thread scan),
+  `todo_links`, and `todo_tags`. A link states that a todo, optionally one attempt of it, either produced a
+  thread key or spawned another todo, and which of those it is cannot be left ambiguous: the target column is
+  fixed by the kind, so a row carrying both targets or neither is refused rather than guessed at later, and
+  an unknown provenance is refused the same way. A repeated statement from the same todo is idempotent
+  instead of drawing the edge twice, so an agent that retries a call does not redraw its own lineage. Tags
+  are limited to one grammar (`[a-z0-9._:/#-]`, at most 64 bytes) so a tag typed on the web is the same tag a
+  routing rule or a producer writes, and both tables cascade with their todo, so a pruned todo leaves no
+  dangling edge or label behind. Nothing is backfilled at migrate time: history is filled on demand.
+  A migration test proves each constraint rejects the malformed row it exists for, and that migrating twice
+  is a no-op. See [ADR-0044](docs/adrs/ADR-0044-todo-lineage-subject-threads-and-tags.md). Closes #534.
+
 - **An operator can supervise a queue from an MCP session.** Six verbs join the per-endpoint verb grant as a
   family no consumer grant implies: `queue_stats` answers depth by state, the age of the oldest pending row,
   whether the queue is paused and — in one word — whether it is stalled or merely quiet, with the leases
