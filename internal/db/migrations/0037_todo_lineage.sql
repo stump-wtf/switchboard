@@ -9,8 +9,16 @@
 -- subject_key is the normalized key of the thread a todo belongs to. It is nullable because
 -- nothing written before this migration has one, and the index is partial for the same reason:
 -- it serves the thread scan (key first, then age, which is how a thread is listed oldest
--- first) without indexing the large NULL half of the table.
-ALTER TABLE todos ADD COLUMN subject_key text CHECK (octet_length(subject_key) <= 256);
+-- first) without indexing the large NULL half of the table. The key-length CHECK is added
+-- NOT VALID and validated in a second pass, so the scan runs under a weaker lock than an
+-- inline CHECK would hold for its whole table scan.
+--
+-- @joestump-agent 11/06/2026 - Named the kind/target CHECKs, split the subject_key CHECK into a
+--   two-step validated constraint, and documented the tag cap and the unconstrained
+--   from_attempt_seq (PR #633 review).
+ALTER TABLE todos ADD COLUMN subject_key text;
+ALTER TABLE todos ADD CONSTRAINT todos_subject_key_check CHECK (octet_length(subject_key) <= 256) NOT VALID;
+ALTER TABLE todos VALIDATE CONSTRAINT todos_subject_key_check;
 CREATE INDEX idx_todos_subject_key ON todos (subject_key, created_at) WHERE subject_key IS NOT NULL;
 
 -- todo_links holds one statement that someone made: this todo (and optionally this attempt of
@@ -23,6 +31,9 @@ CREATE INDEX idx_todos_subject_key ON todos (subject_key, created_at) WHERE subj
 CREATE TABLE todo_links (
     id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     from_todo_id      text        NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+    -- Deliberately unconstrained: todo_attempts rows are pruned by the per-todo cap (REQ-11),
+    -- and an FK here would either cascade the lineage statement away with a pruned attempt or
+    -- block the prune. The sequence numbers provenance; it is not a live reference.
     from_attempt_seq  int,
     kind              text        NOT NULL CHECK (kind IN ('produced','spawned')),
     to_subject_key    text        CHECK (octet_length(to_subject_key) <= 256),
@@ -30,8 +41,8 @@ CREATE TABLE todo_links (
     provenance        text        NOT NULL CHECK (provenance IN ('declared','api','tagged','trace')),
     actor_ref         text        NOT NULL CHECK (octet_length(actor_ref) <= 128),
     created_at        timestamptz NOT NULL DEFAULT now(),
-    CHECK ((kind = 'produced') = (to_subject_key IS NOT NULL)),
-    CHECK ((kind = 'spawned')  = (to_todo_id IS NOT NULL))
+    CONSTRAINT todo_links_produced_target_check CHECK ((kind = 'produced') = (to_subject_key IS NOT NULL)),
+    CONSTRAINT todo_links_spawned_target_check CHECK ((kind = 'spawned') = (to_todo_id IS NOT NULL))
 );
 
 -- Duplicate statements are idempotent (an agent that retries a heartbeat must not draw the same
@@ -45,7 +56,11 @@ CREATE INDEX idx_todo_links_to_todo ON todo_links (to_todo_id)     WHERE to_todo
 
 -- Tags are the hand-written labels a todo carries alongside its routing queue. The grammar CHECK
 -- is what keeps a tag shareable across surfaces — the same characters an OpenSpec or Cairn tag
--- accepts — so a tag typed on the web is the same tag a rule or a producer writes.
+-- accepts — so a tag typed on the web is the same tag a rule or a producer writes. The cap of
+-- at most 32 tags per todo (SPEC-0037 REQ-11) is a count over the todo, not a per-row
+-- property, so no constraint enforces it here; the store inserts a tag only while the todo
+-- holds fewer than 32 (docs/openspec/specs/todo-lineage/design.md), landing with the store
+-- story that writes tags.
 CREATE TABLE todo_tags (
     todo_id   text        NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
     tag       text        NOT NULL CHECK (tag ~ '^[a-z0-9._:/#-]{1,64}$'),
