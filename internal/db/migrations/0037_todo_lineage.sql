@@ -9,13 +9,15 @@
 -- subject_key is the normalized key of the thread a todo belongs to. It is nullable because
 -- nothing written before this migration has one, and the index is partial for the same reason:
 -- it serves the thread scan (key first, then age, which is how a thread is listed oldest
--- first) without indexing the large NULL half of the table. The key-length CHECK is added
+-- first) without indexing the large NULL half of the table. It carries no grammar CHECK,
+-- unlike tags, on purpose: ref-bearing keys (`provider:owner/repo@ref`) need `@`, which the
+-- tag grammar forbids, so the two are never to be harmonized. The key-length CHECK is added
 -- NOT VALID and validated in a second pass, so the scan runs under a weaker lock than an
 -- inline CHECK would hold for its whole table scan.
 --
 -- @joestump-agent 11/06/2026 - Named the kind/target CHECKs, split the subject_key CHECK into a
---   two-step validated constraint, and documented the tag cap and the unconstrained
---   from_attempt_seq (PR #633 review).
+--   two-step validated constraint, and documented the tag cap, the unconstrained
+--   from_attempt_seq, and why subject_key carries no grammar CHECK (PR #633 review).
 ALTER TABLE todos ADD COLUMN subject_key text;
 ALTER TABLE todos ADD CONSTRAINT todos_subject_key_check CHECK (octet_length(subject_key) <= 256) NOT VALID;
 ALTER TABLE todos VALIDATE CONSTRAINT todos_subject_key_check;
