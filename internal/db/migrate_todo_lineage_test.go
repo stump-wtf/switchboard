@@ -12,9 +12,10 @@ import (
 
 // TestTodoLineageMigration runs 0037_todo_lineage against a database that already holds a todo
 // predating lineage, and proves the constraints actually bite: a link whose target does not match
-// its kind is refused, so is an unknown provenance, a repeated statement, and a tag the grammar
-// does not allow; deleting a todo takes its tags and both directions of its links with it.
-// Applying the chain a second time must change nothing.
+// its kind is refused by its named CHECK, so is an unknown provenance, a repeated statement, and
+// a tag the grammar does not allow; a spawned link aimed at a todo that does not exist is
+// refused by the foreign key; deleting a todo takes its tags and both directions of its links
+// with it. Applying the chain a second time must change nothing.
 //
 // Governing: SPEC-0037 REQ-4/REQ-18, ADR-0044
 
@@ -43,8 +44,7 @@ func seedLineageTodo(t *testing.T, pool *pgxpool.Pool, ctx context.Context, id, 
 }
 
 // expectRejected fails when the statement was accepted at all, or was refused by anything other
-// than a check constraint (23514). want is the constraint name to expect, or "" when the
-// constraint is one Postgres auto-numbers (a second table-level CHECK on the same table).
+// than a check constraint (23514) under the constraint named want.
 func expectRejected(t *testing.T, label string, err error, want string) {
 	t.Helper()
 	if err == nil {
@@ -62,6 +62,23 @@ func expectRejected(t *testing.T, label string, err error, want string) {
 // execErr keeps only the error from a pgx Exec, so a statement expected to fail can be handed
 // straight to expectRejected.
 func execErr(_ pgconn.CommandTag, err error) error { return err }
+
+// expectForeignRejected fails when the statement was accepted at all, or was refused by anything
+// other than the foreign key on a spawned link's target todo (23503,
+// todo_links_to_todo_id_fkey).
+func expectForeignRejected(t *testing.T, label string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: the row was accepted, want it rejected", label)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		t.Fatalf("%s: want foreign key violation 23503, got %v", label, err)
+	}
+	if !strings.Contains(pgErr.ConstraintName, "todo_links_to_todo_id_fkey") {
+		t.Fatalf("%s: want constraint todo_links_to_todo_id_fkey, got %q (%v)", label, pgErr.ConstraintName, err)
+	}
+}
 
 func count(t *testing.T, pool *pgxpool.Pool, ctx context.Context, query string, args ...any) int {
 	t.Helper()
@@ -106,15 +123,23 @@ func TestTodoLineageMigration(t *testing.T) {
 	}
 
 	// A produced link points at a thread key, never a todo, and vice versa: each CHECK is a
-	// biconditional, so the wrong target for the kind is refused whichever way it is wrong.
+	// named biconditional. The produced CHECK is defined first, so Postgres names it for every
+	// mix-up that puts a key under the wrong kind; the one case that leaves it satisfied — a
+	// produced row carrying a todo id — is caught by the spawned CHECK instead.
 	expectRejected(t, "produced without a subject key",
-		link("kind, to_todo_id, provenance, actor_ref", "('tl-old', 'produced', 'tl-child', 'declared', 'endpoint:tl')"), "")
+		link("kind, to_todo_id, provenance, actor_ref", "('tl-old', 'produced', 'tl-child', 'declared', 'endpoint:tl')"), "todo_links_produced_target_check")
 	expectRejected(t, "produced with no target at all",
-		link("kind, provenance, actor_ref", "('tl-old', 'produced', 'declared', 'endpoint:tl')"), "")
+		link("kind, provenance, actor_ref", "('tl-old', 'produced', 'declared', 'endpoint:tl')"), "todo_links_produced_target_check")
 	expectRejected(t, "spawned with both targets",
-		link("kind, to_subject_key, to_todo_id, provenance, actor_ref", "('tl-old', 'spawned', 'thread:dup', 'tl-child', 'declared', 'endpoint:tl')"), "")
+		link("kind, to_subject_key, to_todo_id, provenance, actor_ref", "('tl-old', 'spawned', 'thread:dup', 'tl-child', 'declared', 'endpoint:tl')"), "todo_links_produced_target_check")
 	expectRejected(t, "spawned with only a subject key",
-		link("kind, to_subject_key, provenance, actor_ref", "('tl-old', 'spawned', 'thread:dup', 'declared', 'endpoint:tl')"), "")
+		link("kind, to_subject_key, provenance, actor_ref", "('tl-old', 'spawned', 'thread:dup', 'declared', 'endpoint:tl')"), "todo_links_produced_target_check")
+	expectRejected(t, "produced with both targets",
+		link("kind, to_subject_key, to_todo_id, provenance, actor_ref", "('tl-old', 'produced', 'thread:dup', 'tl-child', 'declared', 'endpoint:tl')"), "todo_links_spawned_target_check")
+	// A spawned edge names a real todo, so a link aimed at a todo that was never created is
+	// refused by the foreign key rather than left dangling in the graph.
+	expectForeignRejected(t, "spawned at a todo that does not exist",
+		link("kind, to_todo_id, provenance, actor_ref", "('tl-old', 'spawned', 'tl-ghost', 'declared', 'endpoint:tl')"))
 	expectRejected(t, "unknown provenance",
 		link("kind, to_subject_key, provenance, actor_ref", "('tl-old', 'produced', 'thread:dup', 'inferred', 'endpoint:tl')"), "todo_links_provenance_check")
 
