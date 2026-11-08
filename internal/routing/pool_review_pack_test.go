@@ -6,9 +6,11 @@ package routing
 // joestump pool worker reviewed and merged joestump's own PRs that way. The pack delivers a review
 // request only to the pool of the identity actually requested, never lets a pool review its own
 // identity's PR, drops the delivery of the identity's own comment or review coming back to it, drops
-// assignment changes entirely, and leaves everything else routing to the pool's target queue.
+// assignment changes entirely, drops any cairn delivery — a handoff is dispatched to a lane, never
+// worked by a pool — and leaves everything else routing to the pool's target queue.
 //
-// Governing: ADR-0025 (single executor, cross-identity review), ADR-0024.
+// Governing: ADR-0025 (single executor, cross-identity review), ADR-0024, ADR-0058 (a cairn delivery
+// is lane work, not pool work).
 
 import (
 	"context"
@@ -173,3 +175,67 @@ func TestPoolReviewPack(t *testing.T) {
 }
 
 func ptrBool(b bool) *bool { return &b }
+
+// TestPoolReviewPackDropsCairnDeliveries holds rule 8, the half of stump.wtf/switchboard#439 the first
+// pass left undone (P0.3). A cairn handoff is work the router dispatches to the one lane queue its
+// `lane:` / `size:` tags name; an identity pool is not a lane. Between 09-13 and 09-19, 24 of 59
+// handoffs were worked in full by both pools (issue #439), and with the lanes on their way out the epic's
+// decision D5 says a pool must not act on one. Rule 8 needs no params, so it holds
+// on both pools and with no identity set at all.
+//
+// The rule keys on the switchboard-derived .source, which a producer cannot write: pool webhooks are
+// token-trust generic hooks, so anyone who can post to one can put "source": "cairn" in a body. The
+// last two cases fail if anyone rewrites the rule as `.payload.source == "cairn"` or as a check on
+// the cairn body shape instead of the envelope's origin.
+func TestPoolReviewPackDropsCairnDeliveries(t *testing.T) {
+	pool := "00000000-0000-0000-0000-0000000000f0"
+	g := Grant{TargetQueue: "forge", Queues: []string{"forge"}, Endpoints: []string{pool}}
+	cases := []struct {
+		name     string
+		identity string
+		sample   string
+		patch    map[string]any
+		source   string // the webhook's source type, never a body key
+		dropRule string // "" means it reaches the pool's target queue
+	}{
+		{"a cairn handoff is dropped on joestump's pool", "joestump", "cairn-artifact-created", nil, SourceCairn, "cairn-is-not-pool-work"},
+		{"the same handoff is dropped on the agent's pool", "joestump-agent", "cairn-artifact-created", nil, SourceCairn, "cairn-is-not-pool-work"},
+		{"with no identity set, a cairn handoff is still dropped", "", "cairn-artifact-created", nil, SourceCairn, "cairn-is-not-pool-work"},
+		{"a handoff pinned to another lane is dropped here too", "joestump", "cairn-artifact-created",
+			map[string]any{"data": map[string]any{"tags": []any{"handoff", "lane:l", "size:l"}}}, SourceCairn, "cairn-is-not-pool-work"},
+		// A cairn artifact that is not a handoff is no review signal either: the router drops it, and a
+		// pool is not the place where it becomes work.
+		{"a cairn artifact without the handoff tag is dropped too", "joestump", "cairn-artifact-created",
+			map[string]any{"data": map[string]any{"tags": []any{"note"}}}, SourceCairn, "cairn-is-not-pool-work"},
+		// Producer-written cairn shape on the pool's own generic hook routes, because the envelope's cairn
+		// fields come from the webhook's source type and a body cannot reach them.
+		{"a body claiming a cairn origin is not a cairn delivery", "joestump", "gitea-issue-opened",
+			map[string]any{"source": SourceCairn}, "generic", ""},
+		{"and a cairn-shaped body on a generic hook still routes", "joestump-agent", "cairn-artifact-created", nil, "generic", ""},
+	}
+	sb := testSandbox(t)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := loadPoolPack(t, c.identity)
+			if err := Validate(cfg, g); err != nil {
+				t.Fatalf("pack does not validate: %v", err)
+			}
+			in := caseInput(t, packCase{Sample: c.sample, Patch: c.patch, TrustMode: "token", Verified: ptrBool(false)})
+			in.Source = c.source
+			d := InProcess{}.Route(context.Background(), cfg, g, in)
+			if len(d.Trace.Faults) > 0 {
+				t.Fatalf("faults: %+v", d.Trace.Faults)
+			}
+			if c.dropRule != "" {
+				if !d.Drop || d.Trace.RuleID != c.dropRule {
+					t.Fatalf("decision = %+v, want drop by %s", d, c.dropRule)
+				}
+			} else if d.Drop || d.Queue != "forge" || d.Trace.Cause != CauseNoMatch {
+				t.Fatalf("decision = %+v, want the pool's forge queue", d)
+			}
+			if got := sb.Route(context.Background(), cfg, g, in); !reflect.DeepEqual(got, d) {
+				t.Fatalf("sandbox %+v differs from in-process %+v", got, d)
+			}
+		})
+	}
+}
