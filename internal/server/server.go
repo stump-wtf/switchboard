@@ -22,6 +22,7 @@ import (
 	"github.com/stump-wtf/switchboard/internal/config"
 	"github.com/stump-wtf/switchboard/internal/cred"
 	"github.com/stump-wtf/switchboard/internal/db"
+	"github.com/stump-wtf/switchboard/internal/deps"
 	"github.com/stump-wtf/switchboard/internal/ingest"
 	mcpsrv "github.com/stump-wtf/switchboard/internal/mcp"
 	"github.com/stump-wtf/switchboard/internal/metrics"
@@ -178,6 +179,17 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// and the SPEC-0001 rejection doctrine is unchanged.
 	ing.SetInstrument(webh)
 
+	// Issue-dependency holds (issue #583): intake asks the tracker whether the issue a delivery is
+	// about waits on any open issue, and a delivery that closes an issue releases whatever was waiting
+	// behind it. The read goes through each webhook's own stored connection (an address and a
+	// read-only credential its owner configured, never anything the payload names), and every unknown
+	// answer fails open: an instance with no connection wired holds nothing and behaves as it did
+	// before. The sweep below is the safety net for what no webhook announces — a dependency link
+	// added or removed, or a blocker reopened after its dependent was released.
+	depChecker := deps.New(st, log, deps.Config{}, deps.NewResolver(st))
+	ing.SetDependencyGate(depChecker)
+	go recheckDependents(ctx, depChecker, depChecker.RecheckInterval(), log)
+
 	// Prometheus metrics (SPEC-0023, ADR-0028): one dedicated registry for the process. The store
 	// and the ingest receivers increment their lifecycle and routing counters inline, after commit,
 	// through the narrow seams they declare (store.Metrics, ingest.Metrics); scrape-time collectors
@@ -187,6 +199,13 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	st.SetMetrics(mtr)
 	ing.SetMetrics(mtr)
 	mtr.RegisterQueueStats(st) // REQ-2 queue-liveness gauges, computed at scrape time
+	// The endpoint card reads its "rejected before intake" count from the same ledger /metrics
+	// exposes, so the card and a scrape can never disagree (ADR-0051, issue #612). A webhook folded
+	// into the cardinality overflow bucket reports nothing rather than another webhook's number.
+	webh.SetPreIntakeRejectReader(func(webhookID string) (int, int, bool) {
+		totals := mtr.PreIntakeRejects(webhookID)
+		return int(totals.Total), int(totals.ByReason[metrics.RejectReasonRateLimited]), totals.Tracked
+	})
 
 	// The delivery dispatcher subscribes to the store's ready hook: sender-gated creations and
 	// requeues, fired once per transition on the instance that performed it. It is deliberately NOT
@@ -321,6 +340,12 @@ func newRouter(d routerDeps) chi.Router {
 	// SWITCHBOARD_WEBHOOK_RATE_RPS / SWITCHBOARD_WEBHOOK_BURST, defaulting to the old hardcoded
 	// 10/20. The vended MCP surface carries its own per-endpoint limiter inside internal/mcp.
 	webhookRL := newRateLimiter(d.cfg.WebhookLimiterBounds())
+	// A throttled delivery never reaches a receiver, so the limiter is the only place it can be
+	// counted: the hook attributes the 429 to the webhook the URL names, from the pairing the
+	// receiver recorded when it last resolved that token (ingest rejects.go, ADR-0051).
+	if d.ing != nil {
+		webhookRL.onReject = d.ing.ObserveThrottled
+	}
 	// Public A2A Agent Card endpoint (SPEC-0009): per-IP throttle to blunt enumeration of persona ids.
 	// RECOMMENDED default is 60 req/min ≈ 1 req/s; burst 30 absorbs legitimate discovery tooling.
 	cardRL := newRateLimiter(1, 30)
@@ -419,6 +444,11 @@ func newRouter(d routerDeps) chi.Router {
 	api.rules.Router = apiRulesRouter(d)
 	api.webhooks.AllowSuppliedSecret = func() bool { return d.cfg.WebhookAllowSuppliedSecret }
 	api.endpointLeaseChanged = apiLeaseHook(d)
+	api.providerReadOrigins = d.cfg.ProviderReadOrigins()
+	if len(api.providerReadOrigins) > 0 {
+		d.log.Warn("provider read origin allowlist is set", "origins", d.cfg.ProviderReadAllowedOrigins,
+			"note", "a webhook's provider base url outside these origins is refused")
+	}
 	if d.writeRL != nil {
 		api.writeRL = d.writeRL
 	}

@@ -22,6 +22,10 @@ type rateLimiter struct {
 	// now is the limiter's clock, default time.Now. A test swaps it for a frozen or stepped
 	// function so bucket refill no longer races runner speed.
 	now func() time.Time
+	// onReject, when set, is told about a request the bucket refused, before the 429 is written.
+	// Only the inbound webhook limiter wires it: a throttle is the one refusal no receiver ever
+	// sees, so without this hook a lost delivery would count nowhere (issue #612, ADR-0051).
+	onReject func(*http.Request)
 }
 
 type bucket struct {
@@ -97,6 +101,9 @@ func (rl *rateLimiter) prune(now time.Time) {
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !rl.allow(rateKey(r)) {
+			if rl.onReject != nil {
+				rl.onReject(r)
+			}
 			rl.reject(w)
 			return
 		}

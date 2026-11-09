@@ -33,6 +33,24 @@
       "name": "review outcomes on PRs this identity did not author; keeps its own (see the pack README)",
       "expr": "(.kind | IN(\"pull_request_approved\", \"pull_request_rejected\")) and ((($params.identity // \"\") == \"\") or ((.payload.pull_request.user.login // \"\") != $params.identity))",
       "action": {"drop": true}
+    },
+    {
+      "id": "own-echo",
+      "name": "comments and review events this identity authored, coming back to its own pool (sender.login; see the pack README)",
+      "expr": "(.payload.sender.login // \"\") as $s | (.kind | IN(\"issue_comment\", \"pull_request_comment\", \"pull_request_approved\", \"pull_request_rejected\")) and ($params.identity // \"\") != \"\" and ($s == $params.identity)",
+      "action": {"drop": true}
+    },
+    {
+      "id": "assignment-is-not-dispatch",
+      "name": "an assignment is a claim, not a work order; dropped on every pool (epic decision D2)",
+      "expr": "(.kind | IN(\"issues\", \"pull_request\")) and ((.payload.action // \"\") | IN(\"assigned\", \"unassigned\"))",
+      "action": {"drop": true}
+    },
+    {
+      "id": "cairn-is-not-pool-work",
+      "name": "a cairn delivery is a lane's work, never a pool's; dropped on every pool (epic decision D5)",
+      "expr": ".source == \"cairn\"",
+      "action": {"drop": true}
     }
   ]
 }

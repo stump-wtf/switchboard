@@ -130,6 +130,9 @@ type Metrics struct {
 	// SPEC-0026 REQ-11: deliveries held in quarantine, and how held deliveries left it.
 	quarantineItems    *prometheus.CounterVec
 	quarantineResolved *prometheus.CounterVec
+	// preIntakeRejects is the ledger behind switchboard_webhook_preintake_rejects_total, and the
+	// source the endpoint card reads a webhook's reject counts from (ADR-0051, issue #612).
+	preIntakeRejects *rejectLedger
 
 	// SPEC-0024 REQ-11 notify-hook counters. No hook, endpoint, URL or host label, ever.
 	notifyNotifications *prometheus.CounterVec
@@ -153,6 +156,9 @@ func New(opts Options) *Metrics {
 		// name (SPEC-0026 REQ-11).
 		queues:   newLabelLimiter(opts.QueueCap, store.QueueQuarantine),
 		webhooks: newLabelLimiter(opts.WebhookCap),
+		// The reject ledger has no Prometheus vector of its own: the family is collected from the
+		// ledger at scrape time, so the card and /metrics read one counter, not two that can drift.
+		preIntakeRejects: newRejectLedger(),
 
 		todosCreated: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "switchboard_todos_created_total",
@@ -234,6 +240,7 @@ func New(opts Options) *Metrics {
 		m.quarantineItems, m.quarantineResolved,
 		m.collectionErrors,
 		m.notifyNotifications, m.notifyAttempts, m.notifyDisabled,
+		newRejectCollector(m.preIntakeRejects),
 	)
 	// Every bounded fault cause starts at zero, so the documented increase() alert has a baseline
 	// and the first fault after a restart fires it; a series born at 1 has no increase. Other is

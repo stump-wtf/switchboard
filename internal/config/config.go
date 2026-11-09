@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/stump-wtf/switchboard/internal/provider"
 	"github.com/stump-wtf/switchboard/internal/push"
 )
 
@@ -162,6 +163,19 @@ type Config struct {
 	// instead of silently applying the default to a typo.
 	webhookRateRaw  string
 	webhookBurstRaw string
+
+	// ProviderReadAllowedOrigins is the operator's comma-separated origin allowlist confining which
+	// provider API address a webhook's reconcile read may be pointed at
+	// (endpoint_webhooks.provider_base_url). Empty — the default — admits any https origin, so a stored
+	// connection changes nothing about behavior on its own. Once set it binds every tenant's webhooks
+	// alike: an address outside it is refused where it is written, and switchboard never dials an
+	// address it did not vet. Entries are origins (https://host or https://host:port), never URLs with
+	// a path; a malformed entry fails startup rather than admitting the origin it failed to describe.
+	// (SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS)
+	// Governing: stump.wtf/switchboard#614; ADR-0052 (proposed).
+	ProviderReadAllowedOrigins string
+	// providerReadOriginsRaw keeps the env value so Validate can name it when it rejects the list.
+	providerReadOriginsRaw string
 }
 
 // DefaultNotifyHookMax is the per-endpoint notify-hook ceiling when SWITCHBOARD_NOTIFY_HOOK_MAX is
@@ -226,6 +240,8 @@ func FromEnv() Config {
 		WebhookBurst:               parsePositiveInt(webhookBurstRaw, DefaultWebhookBurst),
 		webhookRateRaw:             webhookRateRaw,
 		webhookBurstRaw:            webhookBurstRaw,
+		ProviderReadAllowedOrigins: strings.TrimSpace(os.Getenv("SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS")),
+		providerReadOriginsRaw:     strings.TrimSpace(os.Getenv("SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS")),
 		AttemptSummaryFromResult:   envBool("SWITCHBOARD_ATTEMPT_SUMMARY_FROM_RESULT"),
 		WebhookAllowSuppliedSecret: envBool("SWITCHBOARD_WEBHOOK_ALLOW_SUPPLIED_SECRET"),
 	}
@@ -293,7 +309,22 @@ func (c Config) Validate() error {
 	if c.WebhookBurst < 1 && c.webhookBurstRaw != "" {
 		return fmt.Errorf("config: SWITCHBOARD_WEBHOOK_BURST=%q must be a positive integer (deliveries per client IP before throttling; the default is %d)", c.webhookBurstRaw, DefaultWebhookBurst)
 	}
+	if _, err := provider.ParseAllowedOrigins(c.ProviderReadAllowedOrigins); err != nil {
+		return fmt.Errorf("config: SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS=%q: %w", c.ProviderReadAllowedOrigins, err)
+	}
 	return nil
+}
+
+// ProviderReadOrigins resolves the provider-read origin allowlist. A production Config comes from
+// FromEnv, where Validate has already rejected a malformed list; a Config built as a literal whose
+// list does not parse resolves to no restriction rather than a panic, because the value is only ever
+// consulted to vet an address a caller is trying to store, and refusing to start is Validate's job.
+func (c Config) ProviderReadOrigins() []string {
+	origins, err := provider.ParseAllowedOrigins(c.ProviderReadAllowedOrigins)
+	if err != nil {
+		return nil
+	}
+	return origins
 }
 
 // WebhookLimiterBounds resolves the inbound webhook limiter's (rps, burst). A production Config

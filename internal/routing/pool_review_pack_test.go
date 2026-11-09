@@ -5,9 +5,12 @@ package routing
 // to the same org events, so without it every PR review request reaches both — and on 2026-09-11 a
 // joestump pool worker reviewed and merged joestump's own PRs that way. The pack delivers a review
 // request only to the pool of the identity actually requested, never lets a pool review its own
-// identity's PR, and leaves everything else (comments, issues) routing to the pool's target queue.
+// identity's PR, drops the delivery of the identity's own comment or review coming back to it, drops
+// assignment changes entirely, drops any cairn delivery — a handoff is dispatched to a lane, never
+// worked by a pool — and leaves everything else routing to the pool's target queue.
 //
-// Governing: ADR-0025 (single executor, cross-identity review), ADR-0024.
+// Governing: ADR-0025 (single executor, cross-identity review), ADR-0024, ADR-0058 (a cairn delivery
+// is lane work, not pool work).
 
 import (
 	"context"
@@ -80,7 +83,7 @@ func TestPoolReviewPack(t *testing.T) {
 		{"another identity's PR opened still reaches the pool", "joestump-agent", "gitea-pull-request-review-requested",
 			map[string]any{"action": "opened", "requested_reviewer": nil}, ""},
 		{"review feedback on your own PR still reaches you", "joestump", "gitea-pull-request-comment", nil, ""},
-		{"and reaches the reviewer's pool too", "joestump-agent", "gitea-pull-request-comment", nil, ""},
+		{"but the reviewer's own comment is not dispatched to its own pool", "joestump-agent", "gitea-pull-request-comment", nil, "own-echo"},
 		{"an issue event is untouched", "joestump", "gitea-issue-opened", nil, ""},
 		{"with no identity set, every review request fails closed", "", "gitea-pull-request-review-requested", forJoe, "review-request-not-for-me"},
 		{"with no identity set, a team request (no requested_reviewer) fails closed too", "", "gitea-pull-request-review-requested",
@@ -112,11 +115,37 @@ func TestPoolReviewPack(t *testing.T) {
 				"sender": map[string]any{"login": "joestump-agent"}}, ""},
 		{"with no identity set, review outcomes fail closed", "", "gitea-pull-request-approved", agentApproval, "review-outcome-not-my-pr"},
 
-		// Human and sibling-agent signal is never noise.
-		{"a human's PR comment always reaches the pool", "joestump", "gitea-pull-request-comment",
+		// Human and sibling-agent signal is never noise. A comment an identity posted itself is its own
+		// echo and is dropped by rule 6, so each of these is written from the other pool's side.
+		{"a human's PR comment always reaches the sibling's pool", "joestump-agent", "gitea-pull-request-comment",
 			map[string]any{"sender": map[string]any{"login": "joestump"}}, ""},
 		{"the sibling agent's PR comment always reaches the pool", "joestump", "gitea-pull-request-comment",
 			map[string]any{"sender": map[string]any{"login": "joestump-agent"}}, ""},
+
+		// Own echo. Both identities subscribe their pools to the same org events, so a comment or a
+		// review the identity posted arrives back on its own pool too: 92 of the 184 comment todos on
+		// the pools between 09-20 and 09-22 were exactly that (issue #439). The sibling still gets it.
+		{"an issue comment this identity posted is dropped on its own pool", "joestump", "gitea-issue-comment-created", nil, "own-echo"},
+		{"the same comment still reaches the sibling's pool", "joestump-agent", "gitea-issue-comment-created", nil, ""},
+		{"a PR comment this identity posted is dropped on its own pool", "joestump-agent", "gitea-pull-request-comment", nil, "own-echo"},
+		{"an approval this identity issued on its own PR is its own echo", "joestump", "gitea-pull-request-approved",
+			map[string]any{"sender": map[string]any{"login": "joestump"}}, "own-echo"},
+		// Nothing is "own" without an identity, so the rule drops nothing rather than everything.
+		{"with no identity set, a comment is nobody's echo and still routes", "", "gitea-issue-comment-created", nil, ""},
+
+		// An assignment is a claim, not a dispatch (stumpcloud/stumpcloud#466 decision D2). An
+		// interactive session claims an issue by assigning it, that delivery reached the assigned
+		// identity's pool, and a worker built the issue a second time while the session held it
+		// (harness#383/#384, switchboard#273). It drops on both pools, with or without an identity.
+		{"an issue assigned to this identity is not dispatch", "joestump", "gitea-issue-assigned", nil, "assignment-is-not-dispatch"},
+		{"the same assignment is dropped on the other pool too", "joestump-agent", "gitea-issue-assigned", nil, "assignment-is-not-dispatch"},
+		{"an unassignment is dropped too", "joestump", "gitea-issue-assigned", map[string]any{"action": "unassigned"}, "assignment-is-not-dispatch"},
+		{"a PR assignment is dropped on this pool", "joestump", "gitea-pull-request-assigned", nil, "assignment-is-not-dispatch"},
+		{"a PR unassignment is dropped on the other pool too", "joestump-agent", "gitea-pull-request-assigned",
+			map[string]any{"action": "unassigned"}, "assignment-is-not-dispatch"},
+		{"a GitHub assignment is dropped as well", "joestump", "github-issues-opened", map[string]any{"action": "assigned"}, "assignment-is-not-dispatch"},
+		{"with no identity set, an assignment still drops", "", "gitea-issue-assigned", nil, "assignment-is-not-dispatch"},
+		{"and an issue opened is still dispatched", "joestump", "gitea-issue-opened", nil, ""},
 	}
 	sb := testSandbox(t)
 	for _, c := range cases {
@@ -146,3 +175,67 @@ func TestPoolReviewPack(t *testing.T) {
 }
 
 func ptrBool(b bool) *bool { return &b }
+
+// TestPoolReviewPackDropsCairnDeliveries holds rule 8, the half of stump.wtf/switchboard#439 the first
+// pass left undone (P0.3). A cairn handoff is work the router dispatches to the one lane queue its
+// `lane:` / `size:` tags name; an identity pool is not a lane. Between 09-13 and 09-19, 24 of 59
+// handoffs were worked in full by both pools (issue #439), and with the lanes on their way out the epic's
+// decision D5 says a pool must not act on one. Rule 8 needs no params, so it holds
+// on both pools and with no identity set at all.
+//
+// The rule keys on the switchboard-derived .source, which a producer cannot write: pool webhooks are
+// token-trust generic hooks, so anyone who can post to one can put "source": "cairn" in a body. The
+// last two cases fail if anyone rewrites the rule as `.payload.source == "cairn"` or as a check on
+// the cairn body shape instead of the envelope's origin.
+func TestPoolReviewPackDropsCairnDeliveries(t *testing.T) {
+	pool := "00000000-0000-0000-0000-0000000000f0"
+	g := Grant{TargetQueue: "forge", Queues: []string{"forge"}, Endpoints: []string{pool}}
+	cases := []struct {
+		name     string
+		identity string
+		sample   string
+		patch    map[string]any
+		source   string // the webhook's source type, never a body key
+		dropRule string // "" means it reaches the pool's target queue
+	}{
+		{"a cairn handoff is dropped on joestump's pool", "joestump", "cairn-artifact-created", nil, SourceCairn, "cairn-is-not-pool-work"},
+		{"the same handoff is dropped on the agent's pool", "joestump-agent", "cairn-artifact-created", nil, SourceCairn, "cairn-is-not-pool-work"},
+		{"with no identity set, a cairn handoff is still dropped", "", "cairn-artifact-created", nil, SourceCairn, "cairn-is-not-pool-work"},
+		{"a handoff pinned to another lane is dropped here too", "joestump", "cairn-artifact-created",
+			map[string]any{"data": map[string]any{"tags": []any{"handoff", "lane:l", "size:l"}}}, SourceCairn, "cairn-is-not-pool-work"},
+		// A cairn artifact that is not a handoff is no review signal either: the router drops it, and a
+		// pool is not the place where it becomes work.
+		{"a cairn artifact without the handoff tag is dropped too", "joestump", "cairn-artifact-created",
+			map[string]any{"data": map[string]any{"tags": []any{"note"}}}, SourceCairn, "cairn-is-not-pool-work"},
+		// Producer-written cairn shape on the pool's own generic hook routes, because the envelope's cairn
+		// fields come from the webhook's source type and a body cannot reach them.
+		{"a body claiming a cairn origin is not a cairn delivery", "joestump", "gitea-issue-opened",
+			map[string]any{"source": SourceCairn}, "generic", ""},
+		{"and a cairn-shaped body on a generic hook still routes", "joestump-agent", "cairn-artifact-created", nil, "generic", ""},
+	}
+	sb := testSandbox(t)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := loadPoolPack(t, c.identity)
+			if err := Validate(cfg, g); err != nil {
+				t.Fatalf("pack does not validate: %v", err)
+			}
+			in := caseInput(t, packCase{Sample: c.sample, Patch: c.patch, TrustMode: "token", Verified: ptrBool(false)})
+			in.Source = c.source
+			d := InProcess{}.Route(context.Background(), cfg, g, in)
+			if len(d.Trace.Faults) > 0 {
+				t.Fatalf("faults: %+v", d.Trace.Faults)
+			}
+			if c.dropRule != "" {
+				if !d.Drop || d.Trace.RuleID != c.dropRule {
+					t.Fatalf("decision = %+v, want drop by %s", d, c.dropRule)
+				}
+			} else if d.Drop || d.Queue != "forge" || d.Trace.Cause != CauseNoMatch {
+				t.Fatalf("decision = %+v, want the pool's forge queue", d)
+			}
+			if got := sb.Route(context.Background(), cfg, g, in); !reflect.DeepEqual(got, d) {
+				t.Fatalf("sandbox %+v differs from in-process %+v", got, d)
+			}
+		})
+	}
+}

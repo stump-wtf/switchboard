@@ -33,6 +33,10 @@ type QueueStat struct {
 	Claimed int64
 	Done    int64
 	Failed  int64
+	// Blocked counts the todos waiting on another issue (issue #583). It is separate from Pending on
+	// purpose: pending work means "nobody has come yet", held work means "it cannot start", and
+	// reading one as the other is exactly the confusion that made people reuse labels as holds.
+	Blocked int64
 	// OldestPendingSeconds is the age of the oldest pending todo, or 0 when none is pending.
 	OldestPendingSeconds float64
 	// Paused says delivery is quiesced on this queue (ADR-0048): pending work is waiting by
@@ -56,6 +60,7 @@ func (s *Store) QueueStats(ctx context.Context) ([]QueueStat, error) {
 			       count(*) FILTER (WHERE state = 'claimed') AS claimed,
 			       count(*) FILTER (WHERE state = 'done')    AS done,
 			       count(*) FILTER (WHERE state = 'failed')  AS failed,
+			       count(*) FILTER (WHERE state = 'blocked') AS blocked,
 			       min(created_at) FILTER (WHERE state = 'pending') AS oldest_pending
 			FROM todos
 			GROUP BY queue
@@ -69,6 +74,7 @@ func (s *Store) QueueStats(ctx context.Context) ([]QueueStat, error) {
 		SELECT k.queue,
 		       COALESCE(c.pending, 0), COALESCE(c.claimed, 0),
 		       COALESCE(c.done, 0),    COALESCE(c.failed, 0),
+		       COALESCE(c.blocked, 0),
 		       COALESCE(GREATEST(EXTRACT(EPOCH FROM now() - c.oldest_pending), 0), 0)::float8,
 		       (qp.queue IS NOT NULL)
 		FROM known k
@@ -83,7 +89,7 @@ func (s *Store) QueueStats(ctx context.Context) ([]QueueStat, error) {
 	var out []QueueStat
 	for rows.Next() {
 		var q QueueStat
-		if err := rows.Scan(&q.Queue, &q.Pending, &q.Claimed, &q.Done, &q.Failed, &q.OldestPendingSeconds, &q.Paused); err != nil {
+		if err := rows.Scan(&q.Queue, &q.Pending, &q.Claimed, &q.Done, &q.Failed, &q.Blocked, &q.OldestPendingSeconds, &q.Paused); err != nil {
 			return nil, fmt.Errorf("store: scan queue stats: %w", err)
 		}
 		out = append(out, q)

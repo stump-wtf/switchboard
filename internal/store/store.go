@@ -211,7 +211,10 @@ func (s *Store) fireReady(t Todo, reason string) {
 	// A quarantined todo never signals readiness, whatever path reaches here: the SPEC-0011 sender
 	// gate is amended by SPEC-0026 REQ-6, and a held intake fires no ready hook. A release fires it
 	// once the row has left the quarantine queue (ApplyQuarantineRelease).
-	if t.Queue == QueueQuarantine {
+	//
+	// A `blocked` todo never signals either, for the same reason (issue #583): it is not claimable, so
+	// a wake would send a worker to find nothing. ReleaseHeldTodo signals it once its blockers close.
+	if t.Queue == QueueQuarantine || t.State == StateBlocked {
 		return
 	}
 	fn := s.readyHook.Load()
@@ -281,7 +284,10 @@ func (s *Store) fireDeadLettered(t Todo, reason string, pushEligible bool) {
 func (s *Store) fireDoorbell(t Todo) {
 	// A quarantined todo never rings an ordinary doorbell, whatever path reaches here: the
 	// SPEC-0011 sender gate is amended by SPEC-0026 REQ-6. Classifier doorbells (REQ-8) carry no todo.
-	if t.Queue == QueueQuarantine {
+	//
+	// Nor does a `blocked` one (issue #583): the work cannot start, so a ring would only burn a run on
+	// an issue whose blocker has not merged. ReleaseHeldTodo rings it when the hold ends.
+	if t.Queue == QueueQuarantine || t.State == StateBlocked {
 		return
 	}
 	fn := s.doorbellHook.Load()

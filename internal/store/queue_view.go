@@ -57,6 +57,9 @@ type TodoCounts struct {
 	Done         int
 	Failed       int
 	DeadLettered int
+	// Blocked counts todos held by ADR-0055 issue-dependency holds: minted but deliberately
+	// unclaimable until every recorded blocker issue closes.
+	Blocked int
 }
 
 // TodoCounts returns the filter-pill counts for ONE human's todos in one round trip. The counts
@@ -70,9 +73,10 @@ func (s *Store) TodoCounts(ctx context.Context, ownerHumanID string) (TodoCounts
 		count(*) FILTER (WHERE t.state = 'claimed'),
 		count(*) FILTER (WHERE t.state = 'done'),
 		count(*) FILTER (WHERE t.state = 'failed'),
-		count(*) FILTER (WHERE t.state = 'failed' AND t.next_retry_at IS NULL AND t.queue <> 'quarantine')
+		count(*) FILTER (WHERE t.state = 'failed' AND t.next_retry_at IS NULL AND t.queue <> 'quarantine'),
+		count(*) FILTER (WHERE t.state = 'blocked')
 	FROM todos t`+ownedByHuman+`$1`, ownerHumanID,
-	).Scan(&c.All, &c.Pending, &c.Claimed, &c.Done, &c.Failed, &c.DeadLettered)
+	).Scan(&c.All, &c.Pending, &c.Claimed, &c.Done, &c.Failed, &c.DeadLettered, &c.Blocked)
 	if err != nil {
 		return TodoCounts{}, fmt.Errorf("todo counts: %w", err)
 	}

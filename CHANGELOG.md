@@ -15,6 +15,71 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 
 ### Added
 
+- **Todo lineage has a schema to write into.** SPEC-0037's design landed without its tables, so nothing
+  downstream of it had anywhere to record a thread, a link or a tag. Migration 0037 adds them: a nullable
+  `subject_key` on `todos` (capped at 256 bytes, with the partial index that serves the thread scan),
+  `todo_links`, and `todo_tags`. A link states that a todo, optionally one attempt of it, either produced a
+  thread key or spawned another todo, and which of those it is cannot be left ambiguous: the target column is
+  fixed by the kind, so a row carrying both targets or neither is refused rather than guessed at later, and
+  an unknown provenance is refused the same way. A repeated statement from the same todo is idempotent
+  instead of drawing the edge twice, so an agent that retries a call does not redraw its own lineage. Tags
+  are limited to one grammar (`[a-z0-9._:/#-]`, at most 64 bytes) so a tag typed on the web is the same tag a
+  routing rule or a producer writes, and both tables cascade with their todo, so a pruned todo leaves no
+  dangling edge or label behind. Nothing is backfilled at migrate time: history is filled on demand.
+  A migration test proves each constraint rejects the malformed row it exists for, and that migrating twice
+  is a no-op. See [ADR-0044](docs/adrs/ADR-0044-todo-lineage-subject-threads-and-tags.md). Closes #534.
+
+- **An operator can supervise a queue from an MCP session.** Six verbs join the per-endpoint verb grant as a
+  family no consumer grant implies: `queue_stats` answers depth by state, the age of the oldest pending row,
+  whether the queue is paused and — in one word — whether it is stalled or merely quiet, with the leases
+  outstanding on it and when each expires; `pause_queue`, `resume_queue` and `drain_queue` drive the
+  ADR-0048 switch (a drain pauses first, then waits for the last lease to land and reports what is still
+  held); `requeue_todo` moves a failed or dead-lettered row back to pending with a fresh attempt budget,
+  because a dead letter whose budget is spent cannot be claimed again; and `release_lease` hands a row back
+  from under the lease its holder holds, for a run that was killed. None of them appears on a consumer
+  credential: they are in no default grant, implied by no other verb, and reachable only when a vend names
+  the verb or the new `queue-operator` preset — and calling one without the grant is a clean `forbidden`
+  with nothing touched. Reads are tenant-scoped by the endpoint's own human and narrowed by its queue
+  grant, a row belonging to another tenant is `not_found` rather than `forbidden`, and every state-changing
+  call writes one audit line naming who acted and why. See
+  [ADR-0056](docs/adrs/ADR-0056-operator-queue-supervision-over-mcp.md). Closes #582.
+
+- **A todo whose tracker issue is blocked is held, not handed out.** When an event mints a todo for a Gitea
+  issue that declares open blockers, the todo is created in the new `blocked` state: it is stored, counted
+  and listed like any other todo, but no claim path can return it and no doorbell announces it. It reaches
+  the queue by itself when the last blocker closes — from the blocker's own close event, and from a sweep
+  every five minutes that also catches an edited dependency link (Gitea fires no webhook for those) and
+  releases holds whose recorded blockers have all gone. `list_todos` gains `issue_ref` and `blockers` and
+  accepts `state: "blocked"`; the Todos view gains a **blocked** pill and names what each held row waits
+  on; `queue_stats` and `switchboard_queue_todos` count the population. Events for an already-held issue
+  fold into the one held todo instead of minting a duplicate that would all release at once. Everything
+  fails open: no read-only connection configured, GitHub (which has no dependency API), a timeout or a
+  malformed answer all mean an ordinary `pending` todo, because a tracker that cannot be asked must not
+  freeze the queue. Nothing dials inside the claim transaction. See
+  [ADR-0055](docs/adrs/ADR-0055-issue-dependency-holds.md). Closes #583.
+
+- **Per-webhook provider connection config, for the reconcile pass to read from.** A webhook can now carry
+  where its provider lives (`provider_base_url` plus `provider_repo`) and a sealed read-only token, written
+  only by a human through `PUT /api/v1/webhooks/{webhook_id}/provider-connection` or
+  `switchboard webhook connection set WEBHOOK_ID --base-url … --repo … --read-token-from -`; agents see the
+  connection on `list_webhooks` and cannot change it, because whoever supplies the token chooses where it is
+  sent. The token is encrypted at rest like a signing secret, is never returned by any read, and is refused
+  unless `SWITCHBOARD_SECRET_ENCRYPTION_KEY` is set; `SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS` pins which
+  provider origins are acceptable (exact origin, never a prefix). `webhook list` and the endpoint listing now
+  show whether a webhook could be reconciled at all (`unset`, `awaiting_credential`, `ready`). Nothing dials
+  out yet — the reconcile pass is #616 and provisioning the tokens is #615. See
+  [ADR-0052](docs/adrs/ADR-0052-per-webhook-provider-read-config.md). Closes #614.
+
+- **Per-source visibility for deliveries refused before intake.** A `429` from the ingest throttle or a
+  failed signature check used to vanish: nothing was persisted for a refused delivery, and producers
+  that do not retry a `429` (Gitea deliveries among them) lose the event outright, so the tracker item
+  stayed in a state no worker would ever see. Each webhook row on the endpoint card now carries the
+  refusals attributed to that webhook and how many were throttling, and
+  `switchboard_webhook_preintake_rejects_total{webhook,reason}` graphs the same counter. The counts are
+  in-process, so they start at zero when Switchboard restarts — the card says so — and no refused
+  payload, and no new credential, is stored anywhere. See
+  [ADR-0051](docs/adrs/ADR-0051-per-source-pre-intake-reject-counts.md). Closes #612.
+
 - **Add-only endpoint scope widening.** Giving an existing lane one more route no longer costs a re-vend.
   `switchboard endpoint scope widen SLUG --add-queue merge` (or `--add-source-type`, `--add-verb`,
   `--webhook-max`) adds to an endpoint's grant instead of replacing it, and
@@ -58,7 +123,7 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   same ceiling, trust and ownership checks as the MCP verbs, so managing your own webhooks no longer needs
   the endpoint's MCP credential. And `--secret-file` / `--env-file` on those commands and on `vend` write
   the revealed credential to a file created 0600 and print the path: no secret on stdout, including in the
-  `.mcp.json` stanza and the `--json` body, which are scrubbed of it. (#584, ADR-0051 proposed)
+  `.mcp.json` stanza and the `--json` body, which are scrubbed of it. (#584, ADR-0059 proposed)
 
 - **The inbound webhook throttle is an operator setting.** The per-client-IP bucket on the ingest surface
   was hardcoded to 10 requests/second with a burst of 20, and the "throttling never drops work" promise
@@ -190,8 +255,29 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   what that lane needs. The ingestion webhook the command mints is unchanged, so a narrowed lane still
   receives deliveries and its queue still drains. The web wizard and quick vend are unchanged: a human
   ticking verbs there has already made the choice. Proposed as ADR-0047. (#589)
+- **The `pool-review` pack stops two classes of phantom todo.** Both identities subscribe their pools to the
+  same org events, so over the 09-20 → 09-22 window every delivery reached both pools and two kinds became
+  todos that should never have existed: 92 of 184 comment todos were the receiving identity's own comment
+  arriving back on its own pool, and an `issues` delivery with action `assigned` — the documented way an
+  interactive session claims work — minted a build todo, so a worker built an issue a second time while a
+  session still held it. Two rules join the pack: `own-echo` drops comment and review deliveries whose
+  `sender.login` is the pool's own identity, and `assignment-is-not-dispatch` drops `assigned` and
+  `unassigned` on `issues` and `pull_request` for every pool. A pool no longer receives work for what its own
+  identity just posted, and a claim is no longer a dispatch; the sibling's signal, review requests addressed to
+  the identity, and every other issue and PR event route exactly as before. Pools stop picking up an issue by
+  assignment alone: work is dispatched by a lane handoff, `/sdd:work`, or Joe, per decision D2 of the
+  one-owner epic. (#439)
 
 ### Fixed
+
+- **A Cairn handoff is no longer pool work.** The pool rule pack gains `cairn-is-not-pool-work`, which
+  drops every delivery a pool webhook receives from a cairn webhook: a handoff is dispatched to the one
+  lane its tags name, and an identity pool is not a lane. Between 09-13 and 09-19, 24 of 59 handoffs were
+  worked in full by both pools, which meant one artifact, two workers, two pull requests. The rule keys
+  on the source Switchboard derived, never on anything the body says about itself, and it needs no params,
+  so it holds on both pools and with no identity set. Removing the pool endpoints' routes from the Cairn
+  webhook remains an operator step, because that path is routed by the Cairn webhook's own rules, where a
+  pool's pack is never consulted.
 
 - **An inbound delivery no longer takes the process down when no database is wired.** The delivery-path
   webhook lookup was the one read missing the nil-pool guard every other store read carries, so a request
@@ -254,6 +340,16 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
   redirects send the browser back to it. The path is re-validated at every hop and
   accepts only rooted same-origin paths, so it can never become an open redirect.
   (#199)
+
+- **The Board's Release and Fail reach a lease the human's agent holds.** Every Board action
+  matched only a lease the human had taken from the Board, so a todo an agent claimed answered
+  Release, Fail, Complete and Extend with a conflict, and a stuck attempt — including a fenced
+  one whose supervisor died holding the token — waited out its lease for the reaper. Release and
+  Fail now act on the todo's current lease, so the owning human recovers a stuck attempt without
+  waiting: Release returns it to the queue, Fail re-queues it with backoff (or dead-letters it,
+  on its last attempt), and each closes the attempt with the action's outcome, as SPEC-0034
+  REQ-6 promises. Complete and Extend stay on operator-taken leases per proposed ADR-0054.
+  (#513)
 
 ## [0.5.0] - 2026-09-28
 

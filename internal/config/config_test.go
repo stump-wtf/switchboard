@@ -227,3 +227,40 @@ func TestWebhookRateLimitSettings(t *testing.T) {
 		}
 	}
 }
+
+// TestProviderReadAllowedOrigins pins #614's operator bound: unset means no restriction (so a stored
+// provider address changes no behavior on its own), a valid list parses into origins, and a malformed
+// entry fails startup naming the variable — a typo in a security-relevant allowlist must not silently
+// admit the origin it failed to describe.
+func TestProviderReadAllowedOrigins(t *testing.T) {
+	t.Setenv("SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS", "")
+	cfg := FromEnv()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unset allowlist: %v", err)
+	}
+	if got := cfg.ProviderReadOrigins(); got != nil {
+		t.Fatalf("unset allowlist resolves to %v, want no restriction", got)
+	}
+
+	t.Setenv("SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS", " https://gitea.stump.rocks,https://api.github.com ")
+	cfg = FromEnv()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid allowlist: %v", err)
+	}
+	want := []string{"https://gitea.stump.rocks", "https://api.github.com"}
+	got := cfg.ProviderReadOrigins()
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("ProviderReadOrigins = %v, want %v", got, want)
+	}
+	if cfg.ProviderReadAllowedOrigins != "https://gitea.stump.rocks,https://api.github.com" {
+		t.Fatalf("ProviderReadAllowedOrigins = %q, want the trimmed env value", cfg.ProviderReadAllowedOrigins)
+	}
+
+	for _, bad := range []string{"https://gitea.stump.rocks/api/v1", "gitea.stump.rocks", "http://a.example", "https://user:pw@a.example"} {
+		t.Setenv("SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS", bad)
+		err := FromEnv().Validate()
+		if err == nil || !strings.Contains(err.Error(), "SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS") {
+			t.Errorf("SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS=%q: Validate() = %v, want an error naming it", bad, err)
+		}
+	}
+}

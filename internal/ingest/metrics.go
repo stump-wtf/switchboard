@@ -26,6 +26,13 @@ type Metrics interface {
 	// bad_signature, missing_signature, stale_timestamp, bad_token, too_large or malformed — never
 	// the client-safe free-text message.
 	WebhookVerifyFailure(provider, reason string)
+	// WebhookPreIntakeReject counts one delivery refused before intake against the webhook its path
+	// token named; webhookID is "" when nothing resolved one (an unknown token, a throttle that never
+	// reached a receiver). reason is the same bounded failure mode WebhookVerifyFailure takes, plus
+	// "rate_limited" for a delivery the inbound webhook throttle answers 429. Unlike
+	// WebhookVerifyFailure this one is read back off the process (the endpoint card), so the reason
+	// literals are part of the contract, not just its documentation. Governing: ADR-0051.
+	WebhookPreIntakeReject(webhookID, reason string)
 	// RoutingDecision counts one routing decision, drops included. webhookID is the server-minted
 	// webhook id; ruleID is the matched rule's id, or "" when none matched (reported as "default");
 	// action is "queue" or "drop".
@@ -61,5 +68,6 @@ type nopMetrics struct{}
 
 func (nopMetrics) WebhookDelivery(string, string, string) {}
 func (nopMetrics) WebhookVerifyFailure(string, string)    {}
+func (nopMetrics) WebhookPreIntakeReject(string, string)  {}
 func (nopMetrics) RoutingDecision(string, string, string) {}
 func (nopMetrics) RoutingFault(string)                    {}

@@ -71,6 +71,23 @@ func newLabelLimiter(limit int, reserved ...string) *labelLimiter {
 	return l
 }
 
+// admits reports whether v holds one of the limiter's own slots, without claiming one. A reader
+// that must quote a per-value number uses it to tell an admitted value from the overflow bucket:
+// quoting the overflow bucket's total as one webhook's would attribute other webhooks' refusals to
+// it. The webhook reject ledger (rejects.go) reads the card numbers this way.
+func (l *labelLimiter) admits(v string) bool {
+	if v == "" || v == Other || len(v) > maxLimitedValueBytes || !utf8.ValidString(v) {
+		return false
+	}
+	if _, ok := l.reserved[v]; ok {
+		return true
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	_, ok := l.admitted[v]
+	return ok
+}
+
 // label returns v when v is (or can now be) admitted, and Other otherwise. Values that could never
 // be a safe label — empty, the overflow sentinel itself, invalid UTF-8 (the client library panics
 // on it), or longer than maxLimitedValueBytes — map to Other without consuming a slot.

@@ -55,6 +55,9 @@ type fakeStore struct {
 	fences map[string][]byte
 	// attempts is each todo's seeded attempt history, newest first (SPEC-0034; get_todo reads it).
 	attempts map[string][]store.Attempt
+	// blockers is each held todo's recorded blocker set by todo id (issue #583); the optional
+	// BlockersForTodos seam answers from it, and list_todos decorates only state=blocked rows.
+	blockers map[string][]store.BlockerRef
 	// claims and reports record, in call order, every committed claim's inputs and every report a
 	// complete or fail was called with (SPEC-0034 REQ-1, REQ-5), for the attempt-input tests.
 	claims  []store.ClaimOpts
@@ -92,6 +95,7 @@ func newFakeStore() *fakeStore {
 		webhookSecrets: map[string]string{},
 		fences:         map[string][]byte{},
 		attempts:       map[string][]store.Attempt{},
+		blockers:       map[string][]store.BlockerRef{},
 		replayTargets:  map[string][]string{},
 		defaultLeases:  map[string]*int{},
 	}
@@ -510,6 +514,27 @@ func (f *fakeStore) putTodo(t store.Todo) {
 		t.CreatedAt = time.Now()
 	}
 	f.todos[t.ID] = t
+}
+
+// BlockersForTodos is the optional issue-dependency seam (issue #583) the list_todos handler probes
+// by type assertion; it answers from the seeded blockers map.
+func (f *fakeStore) BlockersForTodos(_ context.Context, ids []string) (map[string][]store.BlockerRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string][]store.BlockerRef{}
+	for _, id := range ids {
+		if refs := f.blockers[id]; len(refs) > 0 {
+			out[id] = append([]store.BlockerRef(nil), refs...)
+		}
+	}
+	return out, nil
+}
+
+// putBlockers seeds the blocker rows recorded against a held todo.
+func (f *fakeStore) putBlockers(id string, refs ...store.BlockerRef) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blockers[id] = refs
 }
 
 // todoState reads a todo's current state (test-side assertion helper).

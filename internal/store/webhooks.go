@@ -77,20 +77,67 @@ type Webhook struct {
 	// has ever been written for the webhook.
 	SecretSetByKind string
 	SecretSetByID   string
+	// ProviderBaseURL and ProviderRepo are where this webhook's provider lives for a RECONCILE read:
+	// the provider API root and its "owner/name" repository, both empty when nothing is configured. They
+	// are human-written configuration (ADR-0052), never agent-supplied, and nothing in the delivery
+	// path dials them.
+	ProviderBaseURL string
+	ProviderRepo    string
+	// ProviderReadTokenSet says a read-only provider credential is stored for this webhook. It is not
+	// the credential, which no read of this struct returns. An addressed webhook without one is waiting
+	// for the credential its owner provisions (#615): see ProviderConnectionState.
+	ProviderReadTokenSet bool
+	// ProviderConnectionSetAt is when the address or the credential was last written; nil until then.
+	ProviderConnectionSetAt *time.Time
 }
+
+// ProviderConnectionState reports how much of a reconcile read's configuration this webhook has, for
+// a human deciding whether a reconcile would work rather than why it silently did nothing:
+// "unset" (no address: nothing to reconcile against), "awaiting_credential" (an address with no read
+// credential stored, the same derived-not-stored shape as SPEC-0032's `awaiting_secret`), or "ready".
+// It reads the fields rather than the database, so any webhook row answers it identically.
+//
+// Governing: stump.wtf/switchboard#614 (the connection config), #615 (the credential it waits for).
+func (w Webhook) ProviderConnectionState() string {
+	return providerConnectionState(w.ProviderBaseURL, w.ProviderRepo, w.ProviderReadTokenSet)
+}
+
+// providerConnectionState is the derivation behind both webhook views (Webhook and HumanWebhook), so
+// a listing cannot report a state the other half of the API contradicts.
+func providerConnectionState(baseURL, repo string, tokenSet bool) string {
+	switch {
+	case baseURL == "" || repo == "":
+		return ProviderConnectionUnset
+	case !tokenSet:
+		return ProviderConnectionAwaitingCredential
+	default:
+		return ProviderConnectionReady
+	}
+}
+
+// The three states ProviderConnectionState returns. They are stable strings because a listing and a
+// CLI column both print them.
+const (
+	ProviderConnectionUnset              = "unset"
+	ProviderConnectionAwaitingCredential = "awaiting_credential"
+	ProviderConnectionReady              = "ready"
+)
 
 // webhookRowColumns are the columns a webhook read returns, in scan order: the row's identity and
 // routing shape, then the SPEC-0032 secret fields. One list rather than five hand-copied SELECT lists,
 // because a column spelled into four of them is a field that silently reads empty on the fifth.
 const webhookRowColumns = `id::text, endpoint_id::text, source_type, target_queue, trust_mode,
 		ingest_token, created_at, rotated_at, trusted_actors,
-		secret_origin, secret_supplied, secret_set_at`
+		secret_origin, secret_supplied, secret_set_at,
+		COALESCE(provider_base_url, ''), COALESCE(provider_repo, ''),
+		provider_read_token IS NOT NULL, provider_connection_set_at`
 
 // scanTargets returns the destinations matching webhookRowColumns, in order.
 func (w *Webhook) scanTargets() []any {
 	return []any{&w.ID, &w.EndpointID, &w.SourceType, &w.TargetQueue, &w.TrustMode,
 		&w.IngestToken, &w.CreatedAt, &w.RotatedAt, &w.TrustedActors,
-		&w.SecretOrigin, &w.SecretSupplied, &w.SecretSetAt}
+		&w.SecretOrigin, &w.SecretSupplied, &w.SecretSetAt,
+		&w.ProviderBaseURL, &w.ProviderRepo, &w.ProviderReadTokenSet, &w.ProviderConnectionSetAt}
 }
 
 // CreateWebhook inserts a webhook for an endpoint, enforcing the max-count ceiling under a

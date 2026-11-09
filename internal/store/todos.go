@@ -64,6 +64,10 @@ type Todo struct {
 	QuarantineDetail []byte
 	ReleasedBy       string
 	ReleasedAt       *time.Time
+	// IssueRef is the tracker issue this todo was minted from, canonicalized "owner/repo#number", and
+	// "" for every todo that did not come from a forge issue delivery. It is what an issue-dependency
+	// hold is keyed by (migration 0036, todo_blockers.go).
+	IssueRef string
 	// FinalAttempt is the attempt a dead-letter transition closed, set only on the Todo that
 	// transition returns and hands to the transition hook; nil everywhere else.
 	// Governing: SPEC-0034 REQ-15 "Dead-Letter Context for Notifications".
@@ -80,7 +84,8 @@ const todoCols = `id, endpoint_id::text, queue, COALESCE(source,''), COALESCE(ki
 	COALESCE(idempotency_key,''), COALESCE(assignee,''), state, COALESCE(owner,''),
 	lease_expires_at, attempt, max_attempts, result, created_at, claimed_at, completed_at,
 	next_retry_at, routing_trace, work_order,
-	COALESCE(quarantine_reason,''), quarantine_detail, COALESCE(released_by,''), released_at`
+	COALESCE(quarantine_reason,''), quarantine_detail, COALESCE(released_by,''), released_at,
+	COALESCE(issue_ref,'')`
 
 // scanTodo scans a todoCols row. extra receives any columns a query returns after todoCols (the
 // claim paths' lease-takeover flag).
@@ -90,7 +95,7 @@ func scanTodo(row pgx.Row, extra ...any) (Todo, error) {
 	err := row.Scan(append([]any{&t.ID, &endpointID, &t.Queue, &t.Source, &t.Kind, &t.Title, &t.Payload, &t.EventID,
 		&t.IdempotencyKey, &t.Assignee, &t.State, &t.Owner, &t.LeaseExpiresAt, &t.Attempt,
 		&t.MaxAttempts, &t.Result, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt, &t.NextRetryAt, &t.RoutingTrace,
-		&t.WorkOrder, &t.QuarantineReason, &t.QuarantineDetail, &t.ReleasedBy, &t.ReleasedAt}, extra...)...)
+		&t.WorkOrder, &t.QuarantineReason, &t.QuarantineDetail, &t.ReleasedBy, &t.ReleasedAt, &t.IssueRef}, extra...)...)
 	if endpointID != nil {
 		t.EndpointID = *endpointID
 	}
@@ -163,6 +168,14 @@ type CreateTodoParams struct {
 	// SPEC-0026 REQ-6.
 	QuarantineReason string
 	QuarantineDetail []byte
+	// IssueRef and Blockers together mint a held todo: IssueRef is the canonical "owner/repo#number"
+	// the todo is about, and Blockers are the tracker issues that keep it waiting. With any blockers
+	// the row is inserted in the `blocked` state (never `pending`), so no doorbell, ready hook or wake
+	// fires for it, and a second delivery for the same issue folds into the item already waiting
+	// instead of minting another. Empty Blockers means no hold: the row is minted `pending` as before.
+	// Governing: stump.wtf/switchboard#583, todo_blockers.go.
+	IssueRef string
+	Blockers []BlockerRef
 	// origin overrides Source as the created counter's source label, for callers whose Source is
 	// free text (a friend handoff stores the persona name). Metrics-only: never persisted, never
 	// shown, and unexported so only store code can set it. See todoMetricSource.
@@ -632,17 +645,23 @@ func createTodo(ctx context.Context, q querier, p CreateTodoParams) (Todo, bool,
 	if p.EndpointID == "" {
 		return Todo{}, false, fmt.Errorf("store: createTodo requires a non-empty EndpointID")
 	}
+	// A delivery whose issue names open blockers mints a hold, not work: its own insert path, because
+	// a hold folds into the item already waiting for that issue instead of the idempotency fold a
+	// redelivery of the same delivery gets. Governing: stump.wtf/switchboard#583.
+	if len(p.Blockers) > 0 {
+		return insertHeldTodo(ctx, q, p)
+	}
 	row := q.QueryRow(ctx, `
 		INSERT INTO todos (id, endpoint_id, queue, source, kind, title, payload, event_id, idempotency_key, assignee, routing_trace, work_order,
-			quarantine_reason, quarantine_detail)
-		VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8, NULLIF($9,''), NULLIF($10,''), $11, $12, NULLIF($13,''), $14)
+			quarantine_reason, quarantine_detail, issue_ref)
+		VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8, NULLIF($9,''), NULLIF($10,''), $11, $12, NULLIF($13,''), $14, NULLIF($15,''))
 		ON CONFLICT (endpoint_id, idempotency_key)
 			WHERE idempotency_key IS NOT NULL AND state <> 'done'
 				AND (state <> 'failed' OR next_retry_at IS NOT NULL)
 			DO NOTHING
 		RETURNING `+todoCols,
 		id, p.EndpointID, p.Queue, p.Source, p.Kind, p.Title, p.Payload, p.EventID, p.IdempotencyKey, p.Assignee, p.RoutingTrace, p.WorkOrder,
-		p.QuarantineReason, p.QuarantineDetail)
+		p.QuarantineReason, p.QuarantineDetail, p.IssueRef)
 	t, err := scanTodo(row)
 	if err == nil {
 		return t, true, nil

@@ -193,6 +193,44 @@ signed type.
 - **THEN** the response carries the new ingest URL and signing secret, and a delivery signed with the
   old secret is refused
 
+### Requirement: Provider Connection Config
+
+`PUT /api/v1/webhooks/{webhook_id}/provider-connection` with `{"provider_base_url", "provider_repo",
+"provider_read_token"}` MUST say where this webhook's provider lives so the reconcile pass (#616) can reach
+it, and MUST store the read-only credential that authenticates that read. The base URL and the repo are a
+pair: they are replaced whole on every write, a base URL of `""` clears both, and a body naming one without
+the other is `invalid_argument`. The base URL MUST be canonicalized to its origin plus path and MUST be
+`https` (loopback `http` excepted); when `SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS` is set, an origin not
+on the list — matched as an origin, never as a prefix — is refused with `403` `forbidden`.
+`provider_read_token` follows the keep rule SPEC-0026 REQ-4 established for `set_webhook_rules`: the key
+omitted leaves the stored token untouched, `""` clears it, a value replaces it. A non-empty token MUST be
+refused unless `SWITCHBOARD_SECRET_ENCRYPTION_KEY` is configured, because it is sealed with the same cipher
+as a signing secret (SPEC-0032) and MUST never be returned by any read thereafter. Writes MUST be
+reach-guarded like every other route here. The response and `GET /api/v1/webhooks` carry
+`provider_base_url`, `provider_repo`, the boolean `provider_read_token_set`, and
+`provider_connection_state` (`unset`, `awaiting_credential`, or `ready`). Agents read these fields on
+`list_webhooks` and have no verb that writes them: whoever supplies the token decides where it is sent, so
+the write belongs to a human (ADR-0052). `switchboard webhook connection set WEBHOOK_ID --base-url …
+--repo … --read-token-from -|@path|path [--clear-token]` is the same route.
+
+#### Scenario: The token is written once and never read back
+
+- **WHEN** the human sets a provider connection with `provider_read_token`, then lists webhooks
+- **THEN** the write response reports `provider_read_token_set: true` and `state: "ready"`, and neither the
+  write nor any later read carries the token itself
+
+#### Scenario: An address the operator excluded
+
+- **GIVEN** `SWITCHBOARD_PROVIDER_READ_ALLOWED_ORIGINS` lists `https://gitea.stump.rocks`
+- **WHEN** the human points a webhook at `https://gitea.stump.rocks.attacker.test/api/v1`
+- **THEN** the response is `403` with code `forbidden`, and the stored connection is unchanged
+
+#### Scenario: A credential a lane cannot see
+
+- **WHEN** an agent calls `list_webhooks` for a webhook whose connection is set
+- **THEN** the response shows the address, the repo, and that a token is stored, and no MCP verb lets the
+  agent change any of it
+
 ### Requirement: Rule Management
 
 The rule routes MUST mirror the rule verbs' inputs and outputs (SPEC-0020), including `default_action`,

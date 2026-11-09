@@ -39,7 +39,8 @@ type todoRow struct {
 	TrustMode       string
 	State           string
 	OwnerLabel      string
-	Held            bool // on the quarantine queue: no lifecycle controls (SPEC-0026 REQ-6, released or discarded in the Quarantine view)
+	Held            bool   // on the quarantine queue: no lifecycle controls (SPEC-0026 REQ-6, released or discarded in the Quarantine view)
+	WaitingOn       string // blocked todo: the open blocker issues it is waiting on, rendered as a row sub-line (ADR-0055)
 	HasLease        bool
 	LeaseSecs       int   // remaining lease seconds at render time (claimed)
 	LeaseDeadlineMS int64 // unix-ms lease deadline for the sb.js countdown
@@ -184,8 +185,8 @@ type panelView struct {
 }
 
 // todoFilters is the canonical ordered set of filter chips (SPEC-0015: all/pending/claimed/done/
-// failed, plus the dead-letter chip issue #588 adds).
-var todoFilters = []string{"all", "pending", "claimed", "done", "failed", "dead"}
+// failed, plus the dead-letter chip issue #588 adds and the blocked chip ADR-0055 adds).
+var todoFilters = []string{"all", "pending", "claimed", "done", "failed", "dead", "blocked"}
 
 // normalizeFilter maps a query-param filter to a canonical pill key, defaulting to "all". The four
 // A2A states (SPEC-0018) are intentionally not filter pills in story #58 — the pill set is SPEC-0015's
@@ -204,6 +205,8 @@ func normalizeFilter(f string) string {
 		return "failed"
 	case "dead", "dead_lettered", "dead-lettered":
 		return "dead"
+	case "blocked":
+		return "blocked"
 	default:
 		return "all"
 	}
@@ -322,11 +325,30 @@ func (h *Handler) CompleteTodo(w http.ResponseWriter, r *http.Request) {
 	h.respondTodoAction(w, r, "CompleteTodo", t, err)
 }
 
+// leaseOwnerForAction reads the todo the human owns and returns the owner of its live lease. The
+// Board's Release and Fail must reach a lease the human's agent holds, not only a lease the human
+// took from the Board, so the owning human can always recover a stuck attempt (SPEC-0034 REQ-6).
+// The store's owner check stays a compare-and-set against a concurrent takeover: a takeover
+// between the read and the transition makes the update miss and answer a conflict.
+func (h *Handler) leaseOwnerForAction(ctx context.Context, humanID, id string) (string, error) {
+	t, err := h.store.GetTodoOperatorOwned(ctx, humanID, id)
+	if err != nil {
+		return "", err
+	}
+	return t.Owner, nil
+}
+
 // FailTodo marks a claimed todo failed (SPEC-0003 retries until attempts exhausted, then dead-letters).
-// POST /todos/{id}/fail.
+// The lease may be the human's own or one their agent holds (SPEC-0034 REQ-6). POST /todos/{id}/fail.
 func (h *Handler) FailTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.FailTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"), "op:"+human.ID, []byte(`{}`))
+	id := chi.URLParam(r, "id")
+	owner, err := h.leaseOwnerForAction(r.Context(), human.ID, id)
+	if err != nil {
+		h.respondTodoAction(w, r, "FailTodo", store.Todo{}, err)
+		return
+	}
+	t, err := h.store.FailTodoOperatorOwned(r.Context(), human.ID, id, owner, []byte(`{}`))
 	h.respondTodoAction(w, r, "FailTodo", t, err)
 }
 
@@ -347,11 +369,19 @@ func (h *Handler) ExtendTodo(w http.ResponseWriter, r *http.Request) {
 	h.respondTodoAction(w, r, "ExtendTodo", t, err)
 }
 
-// ReleaseTodo hands a claimed todo the operator owns back to the queue immediately (→ pending).
-// POST /todos/{id}/release. Governing: SPEC-0015 REQ "Todos View And Drawer" (Release).
+// ReleaseTodo hands a claimed todo back to the queue immediately (→ pending). The lease may be the
+// human's own or one their agent holds, so a fenced attempt the agent can't close comes back to the
+// queue instead of waiting out its lease (SPEC-0034 REQ-6). POST /todos/{id}/release. Governing:
+// SPEC-0015 REQ "Todos View And Drawer" (Release).
 func (h *Handler) ReleaseTodo(w http.ResponseWriter, r *http.Request) {
 	human, _ := auth.FromContext(r.Context())
-	t, err := h.store.ReleaseTodoOperatorOwned(r.Context(), human.ID, chi.URLParam(r, "id"), "op:"+human.ID)
+	id := chi.URLParam(r, "id")
+	owner, err := h.leaseOwnerForAction(r.Context(), human.ID, id)
+	if err != nil {
+		h.respondTodoAction(w, r, "ReleaseTodo", store.Todo{}, err)
+		return
+	}
+	t, err := h.store.ReleaseTodoOperatorOwned(r.Context(), human.ID, id, owner)
 	h.respondTodoAction(w, r, "ReleaseTodo", t, err)
 }
 
@@ -471,7 +501,29 @@ func (h *Handler) todoRowFromItem(ctx context.Context, it store.TodoItem, oob, f
 		row.RetrySecs = secs
 		row.RetryDeadlineMS = it.NextRetryAt.UnixMilli()
 	}
+	// A blocked todo names what it waits on (ADR-0055): the refs recorded at hold time, so the
+	// operator sees "blocked · waiting on owner/repo#12" instead of a row that looks stuck. The read
+	// is best-effort — a failed blocker lookup leaves the sub-line empty rather than the row missing.
+	if it.State == store.StateBlocked && h.store != nil {
+		if refs, err := h.store.BlockersFor(ctx, it.ID); err == nil {
+			row.WaitingOn = waitingOn(refs)
+		}
+	}
 	return row
+}
+
+// waitingOn renders recorded blocker refs as the row sub-line text ("waiting on a/b#1, c/d#2"), or
+// the reason a hold has no refs to name — a hold always records at least one open blocker, so an
+// empty set means the refs were recorded before this table existed.
+func waitingOn(refs []store.BlockerRef) string {
+	if len(refs) == 0 {
+		return "waiting on blockers"
+	}
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, r.RefString())
+	}
+	return "waiting on " + strings.Join(out, ", ")
 }
 
 // buildDrawer assembles the detail-drawer render model: the header row, pretty-printed (and inert)
