@@ -266,6 +266,20 @@ that routed fan-out to N endpoints dedups per-target independently.
   type, or not a JSON object at all) titles as the source type's fallback, and no delivery is
   rejected or delayed for want of a readable title
 
+The same body title applies to a generic delivery whose event header names an event no summarizer
+titles: the fallback would otherwise discard the only name the delivery has.
+
+#### Scenario: A review delivery names the pull request and its verdict
+
+- **WHEN** a forge delivery's event is a review kind (`pull_request_approved`,
+  `pull_request_rejected`, `pull_request_comment`, `pull_request_review_request`) and the payload
+  carries the pull request it is about — including a review comment, which arrives in the issue
+  shape (`issue_comment` with `is_pull`) rather than the pull-request one
+- **THEN** the todo title names the pull request number, the verdict the event reports, the
+  repository, and the pull request's title, so a review queue covering several pull requests is
+  readable from the listing alone; a review delivery whose payload names no pull request titles as
+  the event-only fallback rather than inventing a number
+
 The 202 body MUST represent the FULL set of todos the delivery produced, since a routed
 delivery yields N:
 

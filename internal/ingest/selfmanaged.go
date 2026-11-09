@@ -670,6 +670,16 @@ func summarizeSelfManagedTitle(sourceType, event string, body []byte) string {
 	case "generic":
 		// Label the fallback with the source type so a generic webhook is still distinguishable on
 		// the board from one declared as a forge.
+		//
+		// A header naming an event this package cannot read — a vendor's own X-GitHub-Event-alike, or
+		// a forge event summarizeForge does not title — leaves the fallback as the only title, and the
+		// fallback says nothing about the work. There the sender's own name for the delivery wins, the
+		// same body title an unlabelled delivery gets; with no name, the fallback stands.
+		if !forgeEventTitled(event) {
+			if title := summarizeBodyTitle(body); title != "" {
+				return title
+			}
+		}
 		return summarizeForge(summarizeSelfManaged(sourceType), event, body)
 	}
 	// An explicitly non-forge source (stripe, slack, docker, ...) is taken at its word: its payload
